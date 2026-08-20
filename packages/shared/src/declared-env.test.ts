@@ -8,11 +8,16 @@
  * are not written down grows by accident and shrinks by accident.
  */
 
+import type { z } from 'zod';
 import { describe, expect, it } from 'vitest';
 
 import { McpServerRefSchema } from './agent.js';
 import { McpServerRegistrationSchema } from './config.js';
-import { isForbiddenDeclaredEnvKey } from './declared-env.js';
+import {
+  forbiddenDeclaredEnvNames,
+  forbiddenDeclaredEnvPrefixes,
+  isForbiddenDeclaredEnvKey,
+} from './declared-env.js';
 
 describe('isForbiddenDeclaredEnvKey', () => {
   it('refuses each category, and says which by naming a member of it', () => {
@@ -48,6 +53,38 @@ describe('isForbiddenDeclaredEnvKey', () => {
     }
   });
 
+  it('refuses EVERY member of the list, and the count is pinned', () => {
+    // A review measured ten of the original twenty-two deletable with the whole monorepo green: the tests
+    // sampled the list instead of iterating it. Sampling a denylist is how one shrinks by accident.
+    for (const name of forbiddenDeclaredEnvNames()) {
+      expect(isForbiddenDeclaredEnvKey(name), name).toBe(true);
+      expect(isForbiddenDeclaredEnvKey(name.toLowerCase()), name).toBe(true);
+    }
+    for (const prefix of forbiddenDeclaredEnvPrefixes()) {
+      expect(isForbiddenDeclaredEnvKey(`${prefix}ANYTHING`), prefix).toBe(true);
+    }
+    // The counts are the part that makes a DELETION red rather than merely unasserted.
+    expect(forbiddenDeclaredEnvNames()).toHaveLength(31);
+    expect(forbiddenDeclaredEnvPrefixes()).toHaveLength(6);
+  });
+
+  it('covers the vectors a review measured executing code, not just the ones already known', () => {
+    // Each of these was run, not reasoned about. `ZDOTDIR` is `BASH_ENV`'s vector for macOS's DEFAULT shell:
+    // pointing it at a directory holding a `.zshenv` ran that file before the target command. And
+    // `NPM_CONFIG_USERCONFIG` redirected npm's resolved registry — which lands on ADR-0084 §3's own
+    // canonical example, `npx -y @acme/server`, where it would repoint an APPROVED fingerprint's package.
+    for (const key of [
+      'ZDOTDIR',
+      'NPM_CONFIG_USERCONFIG',
+      'npm_config_registry',
+      'BASH_FUNC_x%%',
+    ]) {
+      expect(isForbiddenDeclaredEnvKey(key), key).toBe(true);
+    }
+    // `PATHEXT` for the same stated reason as `PATH`: resolution reads it, so accepting it would mislead.
+    expect(isForbiddenDeclaredEnvKey('PATHEXT')).toBe(true);
+  });
+
   it('permits an ordinary declared variable — the list is narrow, not a blanket refusal', () => {
     for (const key of ['ACME_TOKEN', 'API_BASE', 'LOG_LEVEL', 'MY_APP_HOME', 'NODE_ENV']) {
       expect(isForbiddenDeclaredEnvKey(key), key).toBe(false);
@@ -61,6 +98,15 @@ describe('isForbiddenDeclaredEnvKey', () => {
     expect(isForbiddenDeclaredEnvKey('PYTHONINSPECT')).toBe(true);
   });
 });
+
+/** Every issue's message and path, flattened — what a renderer would put on a terminal. */
+function issueTexts(parsed: {
+  readonly error: { readonly issues: readonly z.ZodIssue[] };
+}): string {
+  return parsed.error.issues
+    .map((issue) => `${issue.path.map(String).join('.')} ${issue.message}`)
+    .join('\n');
+}
 
 describe('both stdio entry points are held to the one list (ADR-0084 §4)', () => {
   const inline = (env: Record<string, string>): ReturnType<typeof McpServerRefSchema.safeParse> =>
@@ -93,6 +139,8 @@ describe('both stdio entry points are held to the one list (ADR-0084 §4)', () =
   });
 
   it('a NETWORK transport is unaffected — it forbids `env` outright already', () => {
+    // The first version asserted only that a network ref WITHOUT `env` parses, which stayed green when the
+    // `env` rejection was deleted. The claim in the title is the rejection, so that is what is asserted.
     expect(
       McpServerRefSchema.safeParse({
         id: 'api',
@@ -100,5 +148,32 @@ describe('both stdio entry points are held to the one list (ADR-0084 §4)', () =
         url: 'https://example.com/mcp',
       }).success,
     ).toBe(true);
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'api',
+        transport: 'http',
+        url: 'https://example.com/mcp',
+        env: { ACME: '1' },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('names a forbidden key only when the key is ECHO-SAFE, and bounds how many it names', () => {
+    // The blocker. An env key's charset is unconstrained, a `custom` issue's message is returned verbatim by
+    // the parser, and `relavium list` writes that to stdout with no sanitizer on the path — a review
+    // reproduced `ESC[2J` and `U+202E` on a real terminal, twice per line. An author who used the portable
+    // charset still gets told WHICH variable; anyone else gets a message naming the field and nothing else.
+    const hostile = 'GIT_\u001b[2J\u202Edrowssap';
+    const parsed = inline({ [hostile]: 'x' });
+    expect(parsed.success).toBe(false);
+    const issue = !parsed.success ? issueTexts(parsed) : '';
+    expect(issue).not.toContain('\u001b');
+    expect(issue).not.toContain('\u202E');
+
+    // …and the bound, so a hostile file cannot produce an issue per key.
+    const many: Record<string, string> = {};
+    for (let i = 0; i < 40; i += 1) many[`GIT_VAR_${String(i)}`] = 'x';
+    const capped = inline(many);
+    expect(!capped.success && capped.error.issues.length).toBeLessThanOrEqual(8);
   });
 });

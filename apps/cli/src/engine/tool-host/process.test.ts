@@ -2,6 +2,7 @@ import { access, mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { forbiddenDeclaredEnvNames, forbiddenDeclaredEnvPrefixes } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -153,6 +154,24 @@ describe('createNodeProcessCapability — environment (no secret leak)', () => {
       await expect(cap.spawn(NODE, ['-e', '1'], env, {})).rejects.toBeInstanceOf(
         ProcessDeniedError,
       );
+    }
+  });
+
+  it('refuses EVERY member of the shared list — the drift test (ADR-0084 §10.8)', async () => {
+    // The list moved to `@relavium/shared` so two process hosts could share it, and the docblock claimed
+    // "a test asserts they cannot drift apart" while none did: the case above samples it. Iterating the
+    // exported list is what makes a member removed from either consumer red.
+    const cap = proc();
+    for (const name of forbiddenDeclaredEnvNames()) {
+      await expect(cap.spawn(NODE, ['-e', '1'], { [name]: 'x' }, {}), name).rejects.toBeInstanceOf(
+        ProcessDeniedError,
+      );
+    }
+    for (const prefix of forbiddenDeclaredEnvPrefixes()) {
+      await expect(
+        cap.spawn(NODE, ['-e', '1'], { [`${prefix}ANYTHING`]: 'x' }, {}),
+        prefix,
+      ).rejects.toBeInstanceOf(ProcessDeniedError);
     }
   });
 

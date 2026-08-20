@@ -16,6 +16,7 @@ import {
   type WebSocketServerSpec,
 } from '@relavium/mcp';
 import {
+  isForbiddenDeclaredEnvKey,
   isPrivateOrLocalHost,
   type Agent,
   type AgentRef,
@@ -202,6 +203,18 @@ function buildStdioConfig(
     );
   }
   const command = ref.command;
+  // **Re-asserted here, defensively**, exactly as the network sibling re-asserts its own `url`/`env` rules
+  // and for the same stated reason: a programmatic caller that bypassed the schema must fail loud rather
+  // than reach a spawn. ADR-0084 §1 designates this function's caller as THE chokepoint, and
+  // `resolveMcpServerRef` hand-builds a ref from a registration that is documented as never re-parsed.
+  for (const key of Object.keys(ref.env ?? {})) {
+    if (isForbiddenDeclaredEnvKey(key)) {
+      throw new CliError(
+        'invalid_invocation',
+        `MCP server '${serverId}' declares an environment variable that may not be set — it can redirect the interpreter, the dynamic loader, or a tool's configuration.`,
+      );
+    }
+  }
   const env = buildChildEnv(serverId, ref.env, resolveSecret);
   const args = ref.args;
   return {

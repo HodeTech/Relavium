@@ -5,6 +5,7 @@ import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
+import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import { discoverCatalog, type CatalogEntry, type CatalogKind } from '../workflows/catalog.js';
 import { openHistoryReader } from '../history/reader.js';
 
@@ -170,7 +171,12 @@ function entryLine(entry: CatalogEntry, last: RunRecord | undefined | null): str
     parts.push(`[last: ${last === null ? '—' : last.status}]`);
   }
   if (!entry.valid) {
-    const reason = entry.error === undefined ? '' : `: ${entry.error}`;
+    // **Sanitized at the SINK.** A parse reason is artifact-derived by definition — it names fields an author
+    // wrote — and this line goes to `process.stdout.write` with no `renderError` boundary in front of it. A
+    // review reproduced `ESC[2J` and `U+202E` reaching a real terminal through it. The producing schema is
+    // echo-safe now too; both halves, because the next reason to reach this line will be written by someone
+    // who has not read that one.
+    const reason = entry.error === undefined ? '' : `: ${sanitizeUntrustedInline(entry.error)}`;
     parts.push(`(invalid${reason})`);
   }
   return parts.join('  ');

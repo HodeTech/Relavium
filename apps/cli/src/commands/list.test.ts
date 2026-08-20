@@ -132,6 +132,28 @@ describe('listCommand', () => {
     expect(out()).toContain('(invalid');
   });
 
+  it('SANITIZES a parse reason before it reaches the terminal', () => {
+    // A parse reason is artifact-derived by definition — it names fields an author wrote — and this line
+    // goes to `process.stdout.write` with no `renderError` boundary in front of it. A review reproduced
+    // `ESC[2J` and `U+202E` on a real terminal through exactly this path, twice per line.
+    const { io, out } = captureIo();
+    const catalog: CatalogEntry[] = [
+      {
+        slug: 'broken',
+        name: undefined,
+        tags: [],
+        path: '.relavium/workflows/broken.yaml',
+        valid: false,
+        error: 'invalid: \u001b[2J\u001b[1;31mPWNED\u202edrowssap',
+      },
+    ];
+    listCommand({ agents: false }, deps(io, { catalog }));
+    const text = out();
+    expect(text).toContain('(invalid');
+    expect(text).not.toContain('\u001b'); // no CSI / OSC reaches the terminal
+    expect(text).not.toContain('\u202e'); // nor a Trojan-Source bidi override
+  });
+
   it('does not borrow a real workflow last-run for an invalid entry sharing its slug', async () => {
     const { io, out } = captureIo();
     // Seed a completed run for the real 'code-review' workflow. The catalog has a VALID entry ('hello', so the

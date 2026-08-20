@@ -51,6 +51,20 @@ describe('resolveServerConfigs', () => {
     expect('toolsAllowlist' in configs[0]!).toBe(false);
   });
 
+  it('RE-ASSERTS the declared-env denylist, for a caller that bypassed the schema (ADR-0084 §4)', () => {
+    // The parse-time rule is the primary one, but `resolveMcpServerRef` hand-builds a ref from a
+    // registration and is documented as never re-parsed, and ADR-0084 §1 designates this function's caller
+    // as THE chokepoint. Its network sibling re-asserts its own rules for exactly this reason; this one did
+    // not. `stdioRef` builds a `McpServerRef` directly, which is the programmatic caller in question.
+    expect(() =>
+      resolveServerConfigs([stdioRef({ env: { NODE_OPTIONS: '--require /tmp/x.js' } })], '/work'),
+    ).toThrow(/environment variable/);
+    // …and an ordinary declared variable still passes, so the guard is narrow rather than a refusal.
+    expect(() =>
+      resolveServerConfigs([stdioRef({ env: { ACME_TOKEN: 'x' } })], '/work'),
+    ).not.toThrow();
+  });
+
   it('returns an empty list for undefined / empty mcp_servers', () => {
     expect(resolveServerConfigs(undefined, '/work')).toEqual([]);
     expect(resolveServerConfigs([], '/work')).toEqual([]);

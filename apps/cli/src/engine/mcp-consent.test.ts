@@ -114,6 +114,23 @@ describe('fingerprint (ADR-0084 §3)', () => {
     );
   });
 
+  it('the GOLDEN VECTORS — declaration to DIGEST, which is what ADR-0084 §3 asks for', () => {
+    // The canonical-form vectors in `@relavium/shared` pin `value → string`; §3 asks for `declaration →
+    // digest`, which additionally covers the `v1:` prefix, SHA-256, and the field set. A second
+    // implementation is verified against these, not against a second reading of the paragraph.
+    const vectors: readonly (readonly [ResolvedStdioSpawn, string])[] = [
+      [
+        spawnOf({ command: 'x', resolvedCommand: '/bin/x', args: [], env: {}, cwd: '/w' }),
+        'v1:50264fc33efd1056148d3d6642a98fcb74e03b214ed9c380feddb92f7e1714c2',
+      ],
+    ];
+    for (const [spawn, expected] of vectors) {
+      expect(fingerprint(spawn), JSON.stringify({ ...spawn, provenance: undefined })).toBe(
+        expected,
+      );
+    }
+  });
+
   it('an absent `args` and an empty one are the same declaration', () => {
     expect(fingerprint(spawnOf({ args: [] }))).toBe(fingerprint(spawnOf({ args: [] })));
   });

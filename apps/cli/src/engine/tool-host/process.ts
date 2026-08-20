@@ -95,18 +95,14 @@ export class ProcessCapabilityError extends HostCapabilityError {}
 export class ProcessDeniedError extends HostDeniedError {}
 
 /**
- * Declared env vars the host **forbids** even from a workflow author: keys that would run attacker code in
- * the child (or a grandchild), or steer a tool's config/identity, regardless of the allowlisted binary —
- * the audit the spec mandates ([built-in-tools.md](../../../../../docs/reference/shared-core/built-in-tools.md)
- * §Subprocess environment names `NODE_OPTIONS` as a hijack vector). Categories: interpreter/loader option
- * injection (`NODE_OPTIONS`/`NODE_PATH`, `PYTHON*`, `PERL5*`, `RUBY*`, `JAVA_*`/`CLASSPATH`, the `LD_`/`DYLD_`
- * dynamic loaders, `BASH_ENV`/`ENV`/`IFS`), the entire `GIT_` namespace (`GIT_DIR`, `GIT_CONFIG_*`,
- * `GIT_SSH*`, `GIT_EXEC_PATH`, hooks via `core.hooksPath` → RCE), and **config-home redirection**
- * (`HOME`/`XDG_CONFIG_HOME`/`USERPROFILE` repoint a tool's `~/.gitconfig`/rc to attacker-controlled files).
- * `PATH` is rejected too — executable resolution deliberately ignores a declared `PATH`. Keys are matched
- * case-insensitively (Windows env names are case-insensitive). A declared var is merged on top of the audited
- * base env; a stricter author-**opt-in allowlist** of permitted keys is the Phase-2.6 refinement (this profile's
- * `git_status` passes an empty `declaredEnv`, so the surface is only a power-user `run_command` `env` config).
+ * The declared-environment rule lives in `@relavium/shared`'s `isForbiddenDeclaredEnvKey` — one predicate,
+ * consumed here and by the two MCP stdio entry points
+ * ([ADR-0084](../../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §4).
+ *
+ * The list is deliberately NOT restated here. It was, in the docblock this replaces, and that copy had
+ * already drifted: it claimed `PERL5*`, `RUBY*` and `JAVA_*` were prefixes when only the exact names are.
+ * A stale restatement of a security control reads as complete and is not, which is why the ADR names the
+ * predicate as the list's one home.
  */
 
 /**

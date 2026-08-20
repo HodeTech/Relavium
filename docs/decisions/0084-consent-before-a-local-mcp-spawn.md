@@ -25,6 +25,34 @@
 > gate: this ADR records a decision, and §10's acceptance is what the implementation PR must satisfy before
 > merge.
 
+> **Amended 2026-08-20 — four corrections the first implementation step forced, each measured.**
+>
+> - **`digestOf` is NOT promoted, and §11's instruction to promote it was wrong.** Only `canonicalJson`
+>   moved to `@relavium/shared`; the hash stays with each caller because `node:crypto` may not be imported
+>   from a package the desktop WebView loads (CLAUDE.md rule 5). §3's pointer to
+>   `packages/db/src/effect-journal-store.ts` for the canonical form is superseded by
+>   `packages/shared/src/canonical.ts`.
+> - **`canonicalJson` REFUSES a shape with no faithful JSON form**, rather than serializing it. Measured:
+>   a `Date`, a `Map` and a class instance each produced `{}`; a non-finite number and an `undefined`
+>   property each produced `null`. Every one collides with a different, real value — in a function whose only
+>   job is to tell values apart. It is also depth-bounded, so a second implementation's own recursion limit
+>   is not an undocumented part of the contract. A sparse array used to serialize to `[,1]`, which is not
+>   JSON at all.
+> - **§4's denylist is wider than the categories it inherited.** Three vectors were measured executing code
+>   under names the original list permitted: `ZDOTDIR` (`BASH_ENV`'s vector for macOS's DEFAULT shell — a
+>   `.zshenv` ran before the target command), `NPM_CONFIG_USERCONFIG` (redirected npm's resolved registry,
+>   which lands on §3's own canonical example `npx -y @acme/server`, repointing an APPROVED fingerprint's
+>   package), and `BASH_FUNC_*`. `PATHEXT` and `COMSPEC` are added for the reason `PATH` already was —
+>   resolution reads them, so accepting them would mislead — along with `NODE_EXTRA_CA_CERTS`, `LESSOPEN`,
+>   `SHELLOPTS`, `PS4`, `PERLLIB` and `XDG_CONFIG_DIRS`. The Consequences bullet naming an "inherited gap"
+>   scoped it to other tools' config files; it was narrower than the truth, and the gap it still names — the
+>   cloud CLIs' config paths — is now the whole of it.
+> - **The §4 break is wider than "a workflow stops parsing".** It reaches PERSISTED state: a chat session's
+>   frozen agent snapshot is re-parsed on every read, and `relavium gate` re-parses
+>   `runs.workflow_definition_snapshot`, so a session and a PAUSED RUN authored under the old rules both
+>   stop loading. Fail-closed is the right direction — the declaration can redirect the loader, and resuming
+>   it would spawn under exactly that — but it is a consequence, not a footnote, and it was not recorded.
+
 ## Context
 
 A workflow or agent may declare an MCP server with `transport: stdio`, a `command`, and `args`. Opening that
