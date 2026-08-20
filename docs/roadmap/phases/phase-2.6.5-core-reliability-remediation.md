@@ -608,7 +608,7 @@ convention — enforces it.
   arbitrarily and asserts the resolved tool set is byte-identical.
 - **No assertion of the form "the model did not obey the injected instruction."**
 
-### CR-14 — A stream that ends without a terminal `stop` counts as success · Blocker · needs an ADR
+### CR-14 — A stream that ends without a terminal `stop` counts as success · Blocker · ✅ CLOSED 2026-08-19 ([ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md))
 
 **Evidence.** The fallback chain emits a success attempt when the provider iterator ends cleanly with no usage
 (`packages/llm/src/fallback-chain.ts`). The agent turn starts with a default `stopReason` of `stop` and returns
@@ -833,6 +833,31 @@ the written rows.
 >    Recorded as a dated amendment on ADR-0083 §5 rather than silently skipped.
 
 ---
+
+## W1 closing register
+
+Exit criterion 7: **per item, the code that closes it — verified by reading the code, not by trusting the
+mark.** Wave 1's completion claim was wrong twice before this discipline was adopted, and writing this register
+caught it a third time: `CR-14` and `CR-92` were both implemented and both still carried an OPEN heading here
+(*"needs an ADR"*, *"in the durability spine"*), which is precisely the failure the criterion exists to catch.
+
+| Item | ADR | The code that closes it | The test that would fail if it were reverted |
+|------|-----|--------------------------|-----------------------------------------------|
+| `CR-10` | — | `packages/core/src/engine/append-audit.ts` — a `RunStore` decorator recording asks, commits and outcomes per run | `append-audit.test.ts` + the certification against a real `history.db`. The property is **not** a log assertion: streamed events take sequence numbers and are never persisted, so a healthy run's log reads `[0,1,2,3,5,10,…]` and a lost event is byte-identical to a skipped one. The audit supplies the witness the log cannot. |
+| `CR-11` | [ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) | the run lease + fencing token in `packages/db` (`run_leases`) and `packages/core/src/engine/run-lease.ts` | `run-lease.test.ts` and the real two-process `run-lease.e2e.test.ts` — a bare compare-and-swap cannot produce the token, so a test that cannot produce it cannot test the mechanism |
+| `CR-92` | with `CR-10`'s | `packages/core/src/engine/durable-truth.ts` (the terminal is held until its persist is confirmed; media reclaim moved after it) + `apps/cli/src/engine/terminal-outbox.ts` (the durable outbox, append-only with leading-newline framing) | `durable-truth.test.ts`, `terminal-outbox.test.ts`, and the certification that live / history / resume / reconcile agree |
+| `CR-12` | [ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) | `packages/db/src/effect-journal-store.ts` + the tiered effect contract wired through `packages/core/src/engine/effect-*` | `effect-journal-store.test.ts`, `effect-resume-gate.test.ts`, `effect-turn-wiring.test.ts` |
+| `CR-13` | [ADR-0081](../../decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md) | `packages/core/src/engine/turn-messages.ts` — the summary rides as DATA in the first user-role message, wrapped `Untrusted`, never as `system` | `agent-session.test.ts`'s compaction cases + the `Untrusted` type-predicate tests. The delimiter alternative was rejected in the ADR because a formatting convention is one the untrusted text can close. |
+| `CR-14` | [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) | `packages/llm/src/stream-grammar.ts` — the terminal is held until EOF confirms it, and commitment is a TURN fact a provider cannot forge | `stream-grammar.test.ts` + the fallback-chain and agent-turn cases that previously counted a truncated stream as success |
+| `CR-15` | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | `packages/core/src/engine/input-admission.ts` — pure, synchronous, `'admit'` \| `'verify'`, typed refusal codes | `input-admission.test.ts` |
+| `CR-16` | [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md) | `apps/cli/src/engine/mcp-consent.ts` (resolve + fingerprint + the append-only grant log), `mcp-consent-gate.ts` (the chokepoint), `apps/cli/src/mcp/consent-prompt.ts`, and `packages/shared/src/{canonical,declared-env}.ts` | `mcp-consent.test.ts`, `mcp-consent-gate.test.ts`, `consent-prompt.test.ts`, and the spawn-counter cases in `mcp-servers.test.ts` — "nothing spawned" is counted at the process boundary, never read off a flag |
+| `CR-17` | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | `packages/core/src/engine/resume-identity.ts` | `resume-identity.test.ts` + `session-resume.test.ts` |
+
+Two things this register deliberately does not claim. It does not certify the **whole phase** — `W2`–`W9`
+remain, and exit criteria 1–6 are scored against the full register above, not against this table. And it
+records that `CR-16`'s **lazy-connect half was split out** rather than closed: it is a separate
+[deferred item](../deferred-tasks.md) with ADR-0052 §3 named as its blocker, because deferring the spawn with
+today's immutable registry would delete the agent's MCP tool grant outright.
 
 ## W2 — Liveness and deadlines
 
@@ -1225,7 +1250,7 @@ from persisting terminals reddens all three e2e tests.
 3. `expect` has `'settled' | 'repaired'` and no mode for "durability uncertain, outbox retry pending", which
    is `CR-92`'s own state and fits neither.
 
-### CR-92 — Terminal persistence failure lets live and durable truth diverge · High · in the durability spine
+### CR-92 — Terminal persistence failure lets live and durable truth diverge · High · ✅ CLOSED 2026-08-12
 The engine can complete the delivery chain for a terminal event even when its persistence failed, and
 reconciliation may later produce a different terminal than the original. Media reclaim can run before the
 terminal is durable. A caller can receive a success result and outputs while history shows the run failed.
