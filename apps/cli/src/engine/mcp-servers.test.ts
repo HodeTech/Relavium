@@ -1,10 +1,17 @@
 import { parseWorkflow, type WorkflowDefinition } from '@relavium/core';
-import { McpError, type McpClient, type McpConnection, type McpServerConfig } from '@relavium/mcp';
+import {
+  McpError,
+  type McpClient,
+  type McpConnection,
+  type McpServerConfig,
+  type StdioServerSpec,
+} from '@relavium/mcp';
 import type { Agent, McpServerRef, McpServerRegistration } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { CliError, isCliError } from '../process/errors.js';
 import { captureIo } from '../test-support.js';
+import type { ResolvedStdioSpawn } from './mcp-consent.js';
 import {
   buildChildEnv,
   connectAgentMcp,
@@ -33,6 +40,16 @@ const stdioRef = (over: Partial<McpServerRef> = {}): McpServerRef => ({
   command: 'my-server',
   ...over,
 });
+
+/**
+ * A gate that consents to everything, resolving nothing.
+ *
+ * `connectAgentMcp` / `connectWorkflowMcp` REFUSE a stdio declaration when no gate was wired (ADR-0084 §1),
+ * because that optionality is exactly what left four of the five entry points ungated. These cases are about
+ * host wiring rather than about consent, so they say so explicitly instead of inheriting a default.
+ */
+const PASS_CONSENT = (): Promise<ReadonlyMap<string, ResolvedStdioSpawn>> =>
+  Promise.resolve(new Map());
 
 describe('resolveServerConfigs', () => {
   it('maps a stdio ref to a config carrying its id + allowlist (open is a deferred spawn closure)', () => {
@@ -63,6 +80,93 @@ describe('resolveServerConfigs', () => {
     expect(() =>
       resolveServerConfigs([stdioRef({ env: { ACME_TOKEN: 'x' } })], '/work'),
     ).not.toThrow();
+  });
+
+  it('a REFUSING gate means nothing is ever handed to the client — §10.1 counted, not believed', async () => {
+    // §1: "proven by counting spawns, not by reading a flag". `startMcpClient` is what invokes every
+    // config's `open()`, so a counter on it observes the process boundary: zero calls is zero spawns. This
+    // is the shape of test whose absence made the gate's non-coverage of the chat family invisible.
+    let started = 0;
+    await expect(
+      connectAgentMcp([stdioRef()], {
+        cwd: '/work',
+        consentGate: () => Promise.reject(new CliError('invalid_invocation', 'declined')),
+        startMcpClient: () => {
+          started += 1;
+          return Promise.resolve(fakeClient());
+        },
+      }),
+    ).rejects.toBeInstanceOf(CliError);
+    expect(started).toBe(0);
+  });
+
+  it('…and an APPROVING gate hands them over exactly once', async () => {
+    let started = 0;
+    await connectAgentMcp([stdioRef()], {
+      cwd: '/work',
+      consentGate: () => Promise.resolve(new Map()),
+      startMcpClient: () => {
+        started += 1;
+        return Promise.resolve(fakeClient());
+      },
+    });
+    expect(started).toBe(1);
+  });
+
+  it('spawns the CONSENTED absolute executable, not the authored word (ADR-0084 §10.6)', async () => {
+    // The other half of resolving before the decision, and it was unmeasured: mutating the fallback to
+    // always use `ref.command` survived the entire 2487-test suite. If it regresses, the child's `PATH`
+    // selects the binary again under an approved fingerprint — silently, which is the whole failure mode
+    // §3 exists to close.
+    const seen: StdioServerSpec[] = [];
+    const configs = resolveServerConfigs(
+      [stdioRef({ command: 'node' })],
+      '/work',
+      undefined,
+      {
+        stdio: (_id, spec) => {
+          seen.push(spec);
+          return Promise.resolve({
+            listTools: () => Promise.resolve([]),
+            callTool: () => Promise.resolve({ content: [], isError: false }),
+            close: () => Promise.resolve(),
+          });
+        },
+      },
+      new Map([
+        [
+          'fs',
+          {
+            serverId: 'fs',
+            provenance: { kind: 'inline' as const },
+            command: 'node',
+            resolvedCommand: '/abs/planted/node',
+            args: [],
+            env: {},
+            cwd: '/work',
+            consentGate: PASS_CONSENT,
+          },
+        ],
+      ]),
+    );
+    await configs[0]?.open();
+    expect(seen[0]?.command).toBe('/abs/planted/node');
+  });
+
+  it('falls back to the authored command when no gate ran — the un-gated fixture path', async () => {
+    const seen: StdioServerSpec[] = [];
+    const configs = resolveServerConfigs([stdioRef({ command: 'node' })], '/work', undefined, {
+      stdio: (_id, spec) => {
+        seen.push(spec);
+        return Promise.resolve({
+          listTools: () => Promise.resolve([]),
+          callTool: () => Promise.resolve({ content: [], isError: false }),
+          close: () => Promise.resolve(),
+        });
+      },
+    });
+    await configs[0]?.open();
+    expect(seen[0]?.command).toBe('node');
   });
 
   it('returns an empty list for undefined / empty mcp_servers', () => {
@@ -317,7 +421,7 @@ describe('buildChildEnv (secret interpolation, 2.R Step 4)', () => {
 
 describe('connectAgentMcp', () => {
   it('returns undefined when the agent declares no servers (no client, nothing to tear down)', async () => {
-    const client = await connectAgentMcp(undefined, { cwd: '/work' });
+    const client = await connectAgentMcp(undefined, { cwd: '/work', consentGate: PASS_CONSENT });
     expect(client).toBeUndefined();
   });
 
@@ -328,6 +432,7 @@ describe('connectAgentMcp', () => {
     });
     const client = await connectAgentMcp([stdioRef()], {
       cwd: '/work',
+      consentGate: PASS_CONSENT,
       startMcpClient: (servers) => {
         seen = servers;
         return Promise.resolve(expected);
@@ -340,6 +445,7 @@ describe('connectAgentMcp', () => {
   it('wraps an McpError connect failure as a typed CliError with the secret-free message, no cause', async () => {
     const promise = connectAgentMcp([stdioRef()], {
       cwd: '/work',
+      consentGate: PASS_CONSENT,
       startMcpClient: () => Promise.reject(new McpError('spawn failed for "fs"')),
     });
     await expect(promise).rejects.toMatchObject({ code: 'invalid_invocation' });
@@ -353,7 +459,11 @@ describe('connectAgentMcp', () => {
   it('rethrows a non-McpError failure unchanged (an unexpected fault is not masked as invalid_invocation)', async () => {
     const boom = new TypeError('unexpected');
     await expect(
-      connectAgentMcp([stdioRef()], { cwd: '/work', startMcpClient: () => Promise.reject(boom) }),
+      connectAgentMcp([stdioRef()], {
+        cwd: '/work',
+        consentGate: PASS_CONSENT,
+        startMcpClient: () => Promise.reject(boom),
+      }),
     ).rejects.toBe(boom);
   });
 
@@ -364,6 +474,7 @@ describe('connectAgentMcp', () => {
     ];
     const client = await connectAgentMcp([{ ref: 'github' }], {
       cwd: '/work',
+      consentGate: PASS_CONSENT,
       registrations,
       startMcpClient: (servers) => {
         seen = servers;
@@ -371,6 +482,33 @@ describe('connectAgentMcp', () => {
       },
     });
     expect(seen?.[0]?.id).toBe('github'); // the ref resolved to a stdio connection keyed by the registration name
+    expect(client).toBeDefined();
+  });
+});
+
+describe('the consent gate is REQUIRED, not optional (ADR-0084 §1)', () => {
+  // The gate landed as an optional dependency and exactly one of five entry points wired it, so `chat`,
+  // `chat-resume`, Home and `agent run` all spawned local programs with no decision at all. An unwired gate
+  // is a wiring defect; it fails loud here rather than silently bypassing the chokepoint.
+  it('connectAgentMcp refuses a stdio declaration when no gate was wired, and starts nothing', async () => {
+    let started = 0;
+    await expect(
+      connectAgentMcp([stdioRef()], {
+        cwd: '/work',
+        startMcpClient: () => {
+          started += 1;
+          return Promise.resolve(fakeClient());
+        },
+      }),
+    ).rejects.toThrow(/without a consent gate/);
+    expect(started).toBe(0);
+  });
+
+  it('a NETWORK-only declaration still needs no gate — the refusal is about LOCAL programs', async () => {
+    const client = await connectAgentMcp(
+      [{ id: 'api', transport: 'http', url: 'https://example.com/mcp' }],
+      { cwd: '/work', startMcpClient: () => Promise.resolve(fakeClient()) },
+    );
     expect(client).toBeDefined();
   });
 });
@@ -388,12 +526,33 @@ describe('connectWorkflowMcp (run path)', () => {
     (toolIdsByServer: ReadonlyMap<string, readonly string[]>) => (): Promise<McpClient> =>
       Promise.resolve(fakeClient({ toolIdsByServer }));
 
+  it('refuses a stdio declaration when no gate was wired, naming the server (ADR-0084 §1)', async () => {
+    const def = wf(
+      `    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: node }] }\n`,
+    );
+    let started = 0;
+    await expect(
+      connectWorkflowMcp(def, {
+        cwd: '/w',
+        startMcpClient: () => {
+          started += 1;
+          return fakeStart(new Map())();
+        },
+      }),
+    ).rejects.toThrow(/without a consent gate.*fs|fs.*without a consent gate/s);
+    expect(started).toBe(0);
+  });
+
   it('returns undefined when no inline agent declares a server', async () => {
     const def = wf(
       `    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go }\n`,
     );
     expect(
-      await connectWorkflowMcp(def, { cwd: '/w', startMcpClient: fakeStart(new Map()) }),
+      await connectWorkflowMcp(def, {
+        cwd: '/w',
+        consentGate: PASS_CONSENT,
+        startMcpClient: fakeStart(new Map()),
+      }),
     ).toBeUndefined();
   });
 
@@ -416,6 +575,7 @@ describe('connectWorkflowMcp (run path)', () => {
     );
     const runtime = await connectWorkflowMcp(def, {
       cwd: '/w',
+      consentGate: PASS_CONSENT,
       startMcpClient: fakeStart(new Map([['fs', ['mcp_fs_read', 'mcp_fs_write']]])),
     });
     expect(runtime).toBeDefined();
@@ -439,6 +599,7 @@ describe('connectWorkflowMcp (run path)', () => {
     );
     const runtime = await connectWorkflowMcp(def, {
       cwd: '/w',
+      consentGate: PASS_CONSENT,
       startMcpClient: (servers) => {
         startedWith = servers;
         return Promise.resolve(fakeClient({ toolIdsByServer: new Map([['fs', ['mcp_fs_read']]]) }));
@@ -459,7 +620,11 @@ describe('connectWorkflowMcp (run path)', () => {
       ].join('\n'),
     );
     await expect(
-      connectWorkflowMcp(def, { cwd: '/w', startMcpClient: fakeStart(new Map()) }),
+      connectWorkflowMcp(def, {
+        cwd: '/w',
+        consentGate: PASS_CONSENT,
+        startMcpClient: fakeStart(new Map()),
+      }),
     ).rejects.toThrow(/conflicting settings/);
   });
 
@@ -474,7 +639,11 @@ describe('connectWorkflowMcp (run path)', () => {
       ].join('\n'),
     );
     await expect(
-      connectWorkflowMcp(narrowVsNarrow, { cwd: '/w', startMcpClient: fakeStart(new Map()) }),
+      connectWorkflowMcp(narrowVsNarrow, {
+        cwd: '/w',
+        consentGate: PASS_CONSENT,
+        startMcpClient: fakeStart(new Map()),
+      }),
     ).rejects.toThrow(/conflicting settings/);
 
     // The escalation direction: absent allowlist (all tools) vs an explicit narrow — also a conflict.
@@ -486,7 +655,11 @@ describe('connectWorkflowMcp (run path)', () => {
       ].join('\n'),
     );
     await expect(
-      connectWorkflowMcp(absentVsNarrow, { cwd: '/w', startMcpClient: fakeStart(new Map()) }),
+      connectWorkflowMcp(absentVsNarrow, {
+        cwd: '/w',
+        consentGate: PASS_CONSENT,
+        startMcpClient: fakeStart(new Map()),
+      }),
     ).rejects.toThrow(/conflicting settings/);
   });
 
@@ -502,6 +675,7 @@ describe('connectWorkflowMcp (run path)', () => {
     );
     const runtime = await connectWorkflowMcp(identical, {
       cwd: '/w',
+      consentGate: PASS_CONSENT,
       startMcpClient: fakeStart(new Map([['fs', ['mcp_fs_read']]])),
       resolveSecret: () => 'unused', // never invoked: the injected client ignores the spawn closures
     });
@@ -515,16 +689,22 @@ describe('connectWorkflowMcp (run path)', () => {
       ].join('\n'),
     );
     await expect(
-      connectWorkflowMcp(divergent, { cwd: '/w', startMcpClient: fakeStart(new Map()) }),
+      connectWorkflowMcp(divergent, {
+        cwd: '/w',
+        consentGate: PASS_CONSENT,
+        startMcpClient: fakeStart(new Map()),
+      }),
     ).rejects.toThrow(/conflicting settings/);
     // The placeholder must NOT surface in the operator-facing conflict message.
-    await connectWorkflowMcp(divergent, { cwd: '/w', startMcpClient: fakeStart(new Map()) }).catch(
-      (err: unknown) => {
-        if (!isCliError(err)) throw err; // narrow to CliError (no cast)
-        expect(err.message).not.toContain('secrets.gh');
-        expect(err.message).not.toContain('secrets.OTHER');
-      },
-    );
+    await connectWorkflowMcp(divergent, {
+      cwd: '/w',
+      consentGate: PASS_CONSENT,
+      startMcpClient: fakeStart(new Map()),
+    }).catch((err: unknown) => {
+      if (!isCliError(err)) throw err; // narrow to CliError (no cast)
+      expect(err.message).not.toContain('secrets.gh');
+      expect(err.message).not.toContain('secrets.OTHER');
+    });
   });
 
   it('fails loud when two agents share a server id but DIFFER on allow_local_endpoint (no silent opt-in sharing)', async () => {
@@ -538,7 +718,11 @@ describe('connectWorkflowMcp (run path)', () => {
       ].join('\n'),
     );
     await expect(
-      connectWorkflowMcp(def, { cwd: '/w', startMcpClient: fakeStart(new Map()) }),
+      connectWorkflowMcp(def, {
+        cwd: '/w',
+        consentGate: PASS_CONSENT,
+        startMcpClient: fakeStart(new Map()),
+      }),
     ).rejects.toThrow(/conflicting settings/);
   });
 
@@ -554,6 +738,7 @@ describe('connectWorkflowMcp (run path)', () => {
     );
     const runtime = await connectWorkflowMcp(def, {
       cwd: '/w',
+      consentGate: PASS_CONSENT,
       startMcpClient: (servers) => {
         startedWith = servers;
         return Promise.resolve(fakeClient({ toolIdsByServer: new Map([['fs', ['mcp_fs_read']]]) }));
@@ -573,6 +758,7 @@ describe('connectWorkflowMcp (run path)', () => {
     );
     const runtime = await connectWorkflowMcp(def, {
       cwd: '/w',
+      consentGate: PASS_CONSENT,
       startMcpClient: fakeStart(
         new Map([
           ['fs', ['mcp_fs_read']],
@@ -595,6 +781,7 @@ describe('connectWorkflowMcp (run path)', () => {
     );
     const runtime = await connectWorkflowMcp(def, {
       cwd: '/w',
+      consentGate: PASS_CONSENT,
       startMcpClient: fakeStart(new Map([['fs', ['mcp_fs_read']]])),
     });
     const entries = runtime!.workflow.workflow.agents ?? [];
@@ -612,6 +799,7 @@ describe('connectWorkflowMcp (run path)', () => {
     let startedWith: readonly McpServerConfig[] | undefined;
     const runtime = await connectWorkflowMcp(def, {
       cwd: '/w',
+      consentGate: PASS_CONSENT,
       registrations,
       startMcpClient: (servers) => {
         startedWith = servers;
@@ -632,6 +820,7 @@ describe('connectWorkflowMcp (run path)', () => {
     await expect(
       connectWorkflowMcp(def, {
         cwd: '/w',
+        consentGate: PASS_CONSENT,
         registrations: [],
         startMcpClient: fakeStart(new Map()),
       }),
@@ -649,6 +838,7 @@ describe('connectWorkflowMcp (run path)', () => {
     let startedWith: readonly McpServerConfig[] | undefined;
     const runtime = await connectWorkflowMcp(def, {
       cwd: '/w',
+      consentGate: PASS_CONSENT,
       registrations: [{ name: 'github', transport: 'stdio', command: 'gh' }],
       startMcpClient: (servers) => {
         startedWith = servers;
@@ -668,6 +858,7 @@ describe('connectWorkflowMcp (run path)', () => {
     );
     const runtime = await connectWorkflowMcp(def, {
       cwd: '/w',
+      consentGate: PASS_CONSENT,
       registrations: [{ name: 'remote', transport: 'http', url: 'https://api.example/mcp' }],
       startMcpClient: fakeStart(new Map([['remote', ['mcp_remote_x']]])),
     });
@@ -682,6 +873,7 @@ describe('connectWorkflowMcp (run path)', () => {
     await expect(
       connectWorkflowMcp(def, {
         cwd: '/w',
+        consentGate: PASS_CONSENT,
         registrations: [{ name: 'local', transport: 'http', url: 'http://127.0.0.1:4000/mcp' }],
         startMcpClient: fakeStart(new Map()),
       }),
@@ -696,6 +888,7 @@ describe('connectWorkflowMcp (run path)', () => {
     );
     const runtime = await connectWorkflowMcp(def, {
       cwd: '/w',
+      consentGate: PASS_CONSENT,
       registrations: [
         {
           name: 'local',
@@ -723,7 +916,12 @@ describe('resolveMcpServerRef (by-name resolution, 2.R Step 4b)', () => {
 
   it('resolves a { ref } to the registration connection (id = the registration name), carrying its allowlist', () => {
     const resolved = resolveMcpServerRef({ ref: 'github', tools_allowlist: ['issue'] }, regs);
+    // The resolved shape also carries the originating registration NAME — host-only, outside the strict
+    // schema, and the reason a config-declared server no longer displays as `inline` at the consent prompt
+    // (ADR-0084 §7). Asserted here so the field cannot be dropped silently.
+    expect(resolved.registrationName).toBe('github');
     expect(resolved).toEqual({
+      registrationName: 'github',
       id: 'github',
       transport: 'stdio',
       command: 'gh-mcp',
@@ -744,7 +942,7 @@ describe('resolveMcpServerRef (by-name resolution, 2.R Step 4b)', () => {
         allow_local_endpoint: true,
       },
     ];
-    expect(resolveMcpServerRef({ ref: 'local' }, netRegs)).toEqual({
+    expect(resolveMcpServerRef({ ref: 'local' }, netRegs)).toMatchObject({
       id: 'local',
       transport: 'http',
       url: 'http://127.0.0.1:4000/mcp',

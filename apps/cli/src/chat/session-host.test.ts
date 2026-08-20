@@ -112,6 +112,10 @@ async function build(overrides: Partial<Parameters<typeof buildChatSession>[0]> 
     now,
     uuid,
     providers: scriptedResolver([textTurn('hello there')]),
+    // `connectAgentMcp` REFUSES a stdio declaration when no gate was wired (ADR-0084 §1) — the optionality
+    // that left four of the five entry points ungated. These cases are about host wiring, not consent, so the
+    // default says so explicitly; a case about the gate itself overrides it.
+    consentGate: () => Promise.resolve(new Map()),
     ...overrides,
   });
   // In production the persister attaches this once `history.db` is open. Attaching a REAL in-memory journal
@@ -592,6 +596,7 @@ describe('buildResumedChatSession (2.N)', () => {
       messages,
       now: () => Date.parse(ISO),
       providers: scriptedResolver([textTurn('continued')]),
+      consentGate: () => Promise.resolve(new Map()), // see `build` above (ADR-0084 §1)
     });
   }
 
@@ -834,6 +839,7 @@ describe('buildResumedChatSession (2.N)', () => {
         now: () => Date.parse(ISO),
         providers: scriptedResolver([toolUseTurn('c1', 'mcp_fs_read'), textTurn('done')]),
         startMcpClient: () => realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(conn) }]),
+        consentGate: () => Promise.resolve(new Map()), // see `build` above (ADR-0084 §1)
       });
       // A resumed session's MCP tools are tier 3 too (ADR-0080) — same reason as `build()` above.
       built.attachEffectJournal((correlation) => createInMemoryEffectJournal(correlation));
@@ -879,6 +885,7 @@ describe('buildResumedChatSession (2.N)', () => {
         now: () => Date.parse(ISO),
         providers: scriptedResolver([textTurn('unused')]),
         startMcpClient: () => Promise.resolve(collidingClient),
+        consentGate: () => Promise.resolve(new Map()), // see `build` above (ADR-0084 §1)
       });
       await expect(building).rejects.toThrow(/duplicate tool id/);
       expect(closed).toBe(1);

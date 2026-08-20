@@ -6,6 +6,7 @@ import type { Agent, McpServerRef } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { connectAgentMcp, connectWorkflowMcp } from '../engine/mcp-servers.js';
+import type { ResolvedStdioSpawn } from '../engine/mcp-consent.js';
 
 /**
  * The 2.R Step 5 **real-spawn** MCP e2e — the inbound-MCP host path exercised against a genuine
@@ -55,10 +56,17 @@ function assertToolResult(value: unknown): asserts value is McpToolResult {
   }
 }
 
+/**
+ * A gate that consents to everything: this harness proves a REAL spawn round-trips, and the consent decision
+ * has its own tests. Stated rather than defaulted, because the connect hosts now refuse an unwired one.
+ */
+const PASS_CONSENT = (): Promise<ReadonlyMap<string, ResolvedStdioSpawn>> =>
+  Promise.resolve(new Map());
+
 describe('inbound MCP — real stdio spawn (2.R Step 5)', () => {
   it('chat host: spawns the fixture, discovers + namespaces its tools, round-trips a real tools/call', async () => {
     const client = defined(
-      await connectAgentMcp([echoServer()], { cwd: process.cwd() }),
+      await connectAgentMcp([echoServer()], { cwd: process.cwd(), consentGate: PASS_CONSENT }),
       'mcp client',
     );
     try {
@@ -126,7 +134,7 @@ describe('inbound MCP — real stdio spawn (2.R Step 5)', () => {
     );
 
     const runtime = defined(
-      await connectWorkflowMcp(def, { cwd: process.cwd() }),
+      await connectWorkflowMcp(def, { cwd: process.cwd(), consentGate: PASS_CONSENT }),
       'workflow runtime',
     );
     try {
@@ -197,7 +205,7 @@ describe('inbound MCP — real stdio spawn (2.R Step 5)', () => {
     );
 
     const runtime = defined(
-      await connectWorkflowMcp(def, { cwd: process.cwd() }),
+      await connectWorkflowMcp(def, { cwd: process.cwd(), consentGate: PASS_CONSENT }),
       'workflow runtime',
     );
     try {
@@ -242,6 +250,7 @@ describe('inbound MCP — real stdio spawn (2.R Step 5)', () => {
     const client = defined(
       await connectAgentMcp([server], {
         cwd: process.cwd(),
+        consentGate: PASS_CONSENT,
         resolveSecret: (name) => (name === 't' ? 'SENTINEL-abc123' : ''),
       }),
       'mcp client',

@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -164,6 +172,23 @@ describe('createFileTerminalOutbox', () => {
     mkdirSync(path);
     await expect(outbox.list()).resolves.toEqual([]);
     await expect(outbox.put(terminal('r2'))).resolves.toBeUndefined();
+  });
+
+  it('refuses to write THROUGH a symlink — the guard added with the consent store (ADR-0084 §5)', async () => {
+    // `appendFileSync` and `chmodSync` both follow links, so a planted symlink turns this outbox into a
+    // write primitive against any file the CLI can write. The guard landed with the identical one on the
+    // consent store, and only that one had a test; this is the copy that could have rotted unnoticed.
+    const target = join(dir, 'victim.txt');
+    writeFileSync(target, 'untouched');
+    rmSync(path, { force: true });
+    symlinkSync(target, path);
+    const outbox = createFileTerminalOutbox(path);
+
+    // A refusal, not a crash: `put` runs on a path where I/O has ALREADY failed once, so throwing here
+    // would replace a delivered terminal event with an unhandled rejection.
+    await expect(outbox.put(terminal('r1'))).resolves.toBeUndefined();
+    expect(readFileSync(target, 'utf8')).toBe('untouched');
+    await expect(outbox.list()).resolves.toEqual([]);
   });
 
   it('survives an event carrying a C1 / bidi payload — the line is re-read, so it must round-trip', async () => {

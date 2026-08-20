@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 
-import { effectScope, isEffectConflictError, type EffectCorrelation } from '@relavium/shared';
+import {
+  effectScope,
+  isEffectConflictError,
+  NonCanonicalValueError,
+  type EffectCorrelation,
+} from '@relavium/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
@@ -268,16 +273,21 @@ describe('the effect journal store', () => {
       // refused as a duplicate rather than admitted as a new one.
       const first = await port().prepare(0, 'fs_write', 3, { path: '/tmp/a', body: 'x' });
       expect(first.outcome).toBe('proceed');
+      // The SPECIFIC rejection, not merely one: `toBeDefined` also passes when the digest itself throws,
+      // which is the opposite of what this pins — a serializer that refused the shape outright would have
+      // looked like working dedup.
       await expect(
         port().prepare(0, 'fs_write', 3, { body: 'x', path: '/tmp/a' }),
-      ).rejects.toBeDefined();
+      ).rejects.toSatisfy(isEffectConflictError);
     });
 
     it('a shape with no canonical form REJECTS rather than crashing the dispatch', async () => {
       // The stricter form throws where the old permissive copy silently served `{}`, merging two different
       // values into one digest. The port already wraps `prepare` in a try/catch, so the throw arrives as a
       // rejection — pinned here, because an uncaught throw would take down a tool dispatch.
-      await expect(port().prepare(0, 'fs_write', 3, { when: new Date(0) })).rejects.toBeDefined();
+      await expect(port().prepare(0, 'fs_write', 3, { when: new Date(0) })).rejects.toBeInstanceOf(
+        NonCanonicalValueError,
+      );
     });
   });
 });

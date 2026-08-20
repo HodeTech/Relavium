@@ -89,13 +89,25 @@ function registerRun(program: Command, ctx?: CommandContext): void {
     return;
   }
 
-  run.action(async (workflow: string, opts: { input?: readonly string[] }) => {
-    ctx.result.exitCode = await executeCommand(
-      'run',
-      { positionals: [workflow], options: { input: opts.input } },
-      ctx,
-    );
-  });
+  run.action(
+    async (
+      workflow: string,
+      opts: { input?: readonly string[]; allowMcpStdio?: readonly string[] },
+    ) => {
+      ctx.result.exitCode = await executeCommand(
+        'run',
+        // Every registered option must be FORWARDED, not merely registered: `opts` is destructured by name
+        // here, so an option missing from this type is parsed by commander and then silently dropped before
+        // `buildRunArgs` can see it. `--allow-mcp-stdio` was — which made ADR-0084 §6's CI escape hatch
+        // inoperative end to end while its unit tests passed, because they call the gate directly.
+        {
+          positionals: [workflow],
+          options: { input: opts.input, allowMcpStdio: opts.allowMcpStdio },
+        },
+        ctx,
+      );
+    },
+  );
 }
 
 /**
@@ -313,13 +325,25 @@ function registerAgent(program: Command, ctx?: CommandContext): void {
     return;
   }
 
-  run.action(async (agentRef: string, opts: { input?: readonly string[]; fixture?: string }) => {
-    ctx.result.exitCode = await executeCommand(
-      'agent.run',
-      { positionals: [agentRef], options: { input: opts.input, fixture: opts.fixture } },
-      ctx,
-    );
-  });
+  run.action(
+    async (
+      agentRef: string,
+      opts: { input?: readonly string[]; fixture?: string; allowMcpStdio?: readonly string[] },
+    ) => {
+      ctx.result.exitCode = await executeCommand(
+        'agent.run',
+        {
+          positionals: [agentRef],
+          options: {
+            input: opts.input,
+            fixture: opts.fixture,
+            allowMcpStdio: opts.allowMcpStdio,
+          },
+        },
+        ctx,
+      );
+    },
+  );
   // A bare `relavium agent` (no `run`) is a clean invocation fault, not a thrown stack.
   agent.action(() => {
     throw new CliError('invalid_invocation', '`relavium agent` requires a subcommand (run).');

@@ -102,6 +102,8 @@ export interface BuildChatSessionOptions {
    * `chat`, `chat-resume`, the Home and `agent run` spawning ungated.
    */
   readonly consentGate?: StdioConsentGate;
+  /** The agent artifact these servers were declared in — shown at the consent prompt (ADR-0084 §7). */
+  readonly mcpArtifact?: string;
   /**
    * Resolve a `{{secrets.<name>}}` placeholder in an MCP server `env` value (2.R Step 4, ADR-0052 §6). The
    * command wires the isolated `mcp-secret:*` keychain → `RELAVIUM_MCP_*` env chain; absent ⇒ a `{{` env value
@@ -519,6 +521,8 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     : await connectAgentMcp(agent.mcp_servers, {
         cwd: opts.cwd,
         ...(opts.consentGate === undefined ? {} : { consentGate: opts.consentGate }),
+        ...(opts.mcpArtifact === undefined ? {} : { artifact: opts.mcpArtifact }),
+        ...(opts.mcpArtifact === undefined ? {} : { artifact: opts.mcpArtifact }),
         ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
         ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
         ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
@@ -670,6 +674,8 @@ export interface BuildResumedChatSessionOptions {
    * `chat`, `chat-resume`, the Home and `agent run` spawning ungated.
    */
   readonly consentGate?: StdioConsentGate;
+  /** The agent artifact these servers were declared in — shown at the consent prompt (ADR-0084 §7). */
+  readonly mcpArtifact?: string;
   /** Resolve `{{secrets.<name>}}` in an MCP server `env` (2.R Step 4; see {@link BuildChatSessionOptions.mcpSecretResolver}). */
   readonly mcpSecretResolver?: McpSecretResolver;
   /** Config `[[mcp_servers]]` registrations for by-name `ref` resolution (2.R Step 4b; see {@link BuildChatSessionOptions.mcpRegistrations}). */
@@ -716,6 +722,7 @@ export async function buildResumedChatSession(
   const mcp = await connectAgentMcp(agent.mcp_servers, {
     cwd: context.workingDir,
     ...(opts.consentGate === undefined ? {} : { consentGate: opts.consentGate }),
+    ...(opts.mcpArtifact === undefined ? {} : { artifact: opts.mcpArtifact }),
     ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
     ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
     ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),

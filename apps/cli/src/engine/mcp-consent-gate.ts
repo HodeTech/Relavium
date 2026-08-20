@@ -1,12 +1,11 @@
 import { join } from 'node:path';
 
-import type { McpServerRef } from '@relavium/shared';
-
 import { CliError } from '../process/errors.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { isInteractiveTerminal } from '../process/output-mode.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
+import type { ResolvedServerRef } from './mcp-servers.js';
 import {
   appendGrant,
   fingerprint,
@@ -42,7 +41,7 @@ import {
 export function createConsentGate(
   deps: ConsentGateDeps,
 ): (
-  refs: readonly McpServerRef[],
+  refs: readonly ResolvedServerRef[],
   cwd: string,
 ) => Promise<ReadonlyMap<string, ResolvedStdioSpawn>> {
   return (refs, cwd) => assertStdioConsent(refs, cwd, deps);
@@ -100,6 +99,15 @@ export interface ConsentGateDeps {
   readonly prompt?: ConsentPrompter | undefined;
   /** Injected so a test's grant carries a fixed timestamp. */
   readonly now?: (() => string) | undefined;
+  /**
+   * The artifact that declared these servers — shown at the prompt (§7), never fingerprinted.
+   *
+   * §7 lists it as a required field, "so the imported-artifact case names its own file", and the first
+   * implementation carried the field through three types without ever assigning it: `subject.artifact` was
+   * always `undefined` and the `declared in` line never rendered. The field that names the threat the whole
+   * ADR exists for was dead.
+   */
+  readonly artifact?: string | undefined;
 }
 
 /**
@@ -109,7 +117,7 @@ export interface ConsentGateDeps {
  * consented to rather than re-resolving the authored word against a `PATH` that may have changed.
  */
 export async function assertStdioConsent(
-  refs: readonly McpServerRef[],
+  refs: readonly ResolvedServerRef[],
   cwd: string,
   deps: ConsentGateDeps,
 ): Promise<ReadonlyMap<string, ResolvedStdioSpawn>> {
@@ -119,9 +127,9 @@ export async function assertStdioConsent(
 
   const subjects: { spawn: ResolvedStdioSpawn; digest: string }[] = [];
   for (const ref of stdio) {
-    const spawn = await resolveOrRefuse(ref, cwd);
+    const spawn = await resolveOrRefuse(ref, cwd, deps.artifact);
     resolved.set(spawn.serverId, spawn);
-    subjects.push({ spawn, digest: fingerprint(spawn) });
+    subjects.push({ spawn, digest: digestOrRefuse(spawn) });
   }
 
   const path = mcpConsentPath(deps.homeDir);
@@ -136,15 +144,30 @@ export async function assertStdioConsent(
   }
   const allowed = new Set(deps.allowedDigests ?? []);
 
-  const pending = subjects.filter(
-    ({ digest }) => !(grants?.has(digest) ?? false) && !allowed.has(digest),
-  );
+  // **Deduped by DIGEST.** Two ids naming a byte-identical declaration are one program and one decision —
+  // §10.18's "two agents declaring the same server in one artifact prompt ONCE". The first implementation
+  // asked twice and wrote two grant lines for one digest, and its own count test pinned "2 local programs",
+  // asserting the behaviour the acceptance forbids.
+  const seen = new Set<string>();
+  const pending = subjects.filter(({ digest }) => {
+    if ((grants?.has(digest) ?? false) || allowed.has(digest) || seen.has(digest)) return false;
+    seen.add(digest);
+    return true;
+  });
   if (pending.length === 0) return resolved;
 
   if (!canAsk(deps)) {
-    // §6: no prompt without all four signals. The digest is printed because it is exactly what
-    // `--allow-mcp-stdio` accepts, and it is not a secret — it is a hash of an approved declaration.
-    throw new CliError('invalid_invocation', refusalMessage(pending));
+    // §6: no prompt without all four signals. The per-server detail goes to STDERR as its own lines and the
+    // error message stays ONE line — `renderError` runs a message through `sanitizeInline`, which collapses
+    // every newline to a space, so a multi-line message arrived as an unreadable run-on with the digest —
+    // the one thing a CI author must copy — buried mid-line.
+    for (const { spawn, digest } of pending) {
+      deps.io.writeErr(`  ${safe(spawn.serverId)}: ${safe(spawn.resolvedCommand)}  ${digest}\n`);
+    }
+    throw new CliError(
+      'invalid_invocation',
+      `this run would start ${String(pending.length)} local program(s) not approved on this machine (listed above). Approve them interactively, or pass --allow-mcp-stdio <digest> for each — the digest is a hash of the declaration, not a secret.`,
+    );
   }
 
   // §2: the COUNT once, before the first question, so a user knows how many decisions they are entering
@@ -165,21 +188,58 @@ export async function assertStdioConsent(
         `MCP server '${safe(spawn.serverId)}' was not approved, so the run did not start.`,
       );
     }
-    appendGrant(path, {
-      v: 1,
-      digest,
-      command: spawn.resolvedCommand,
-      args: [...spawn.args],
-      envNames: Object.keys(spawn.env),
-      cwd: spawn.cwd,
-      grantedAt: now(),
-    });
+    try {
+      appendGrant(path, {
+        v: 1,
+        digest,
+        command: spawn.resolvedCommand,
+        args: [...spawn.args],
+        envNames: Object.keys(spawn.env),
+        cwd: spawn.cwd,
+        grantedAt: now(),
+      });
+    } catch (error) {
+      // A symlinked store, a full disk, an unwritable home. The run fails CLOSED either way — nothing has
+      // been spawned, the gate runs entirely before any config is built — but it must fail as an invocation
+      // fault naming the file, not as exit 1 "an unexpected internal error occurred" seconds after the user
+      // answered YES to a security prompt.
+      throw new CliError(
+        'invalid_invocation',
+        `your consent could not be recorded in ${safe(path)}: ${safe(error instanceof Error ? error.message : String(error))}`,
+        { cause: error },
+      );
+    }
   }
   return resolved;
 }
 
 /** Resolve one declaration, turning a resolution failure into the surface's typed exit-2 fault. */
-async function resolveOrRefuse(ref: McpServerRef, cwd: string): Promise<ResolvedStdioSpawn> {
+/**
+ * The declaration's digest, or a clean refusal when the declaration has no canonical form.
+ *
+ * §3 refuses a lone surrogate "at parse", because such a string has no UTF-8 encoding and a second,
+ * non-TypeScript implementation could not hold it, let alone reproduce the digest. `canonicalJson` is where
+ * that refusal lives; without this wrapper it left the gate as an untyped `NonCanonicalValueError` and
+ * surfaced as an internal error rather than as the refusal the ADR describes.
+ */
+function digestOrRefuse(spawn: ResolvedStdioSpawn): string {
+  try {
+    return fingerprint(spawn);
+  } catch (error) {
+    throw new CliError(
+      'invalid_invocation',
+      `MCP server '${safe(spawn.serverId)}' cannot be fingerprinted, so it cannot be approved: ${
+        error instanceof Error ? safe(error.message) : 'the declaration has no canonical form'
+      }.`,
+    );
+  }
+}
+
+async function resolveOrRefuse(
+  ref: ResolvedServerRef,
+  cwd: string,
+  artifact: string | undefined,
+): Promise<ResolvedStdioSpawn> {
   if (ref.id === undefined || ref.command === undefined) {
     throw new CliError(
       'invalid_invocation',
@@ -190,7 +250,15 @@ async function resolveOrRefuse(ref: McpServerRef, cwd: string): Promise<Resolved
     return await resolveStdioSpawn(
       {
         serverId: ref.id,
-        provenance: { kind: 'inline' },
+        // `resolveMcpServerRef` records the registration it resolved a by-name `ref` from on the host-only
+        // `__registration` field, because the schema has nowhere to carry it and the ref is never re-parsed.
+        // Without it a config-declared server displayed as `inline`, telling a user the declaration was in
+        // the artifact when it was in their own config.
+        provenance:
+          ref.registrationName === undefined
+            ? { kind: 'inline' }
+            : { kind: 'registration', name: ref.registrationName },
+        ...(artifact === undefined ? {} : { artifact }),
         command: ref.command,
         ...(ref.args === undefined ? {} : { args: ref.args }),
         ...(ref.env === undefined ? {} : { env: ref.env }),
@@ -218,18 +286,6 @@ function canAsk(deps: ConsentGateDeps): boolean {
   );
 }
 
-/** The non-interactive refusal — names each executable and prints the digest that authorizes it. */
-function refusalMessage(pending: readonly { spawn: ResolvedStdioSpawn; digest: string }[]): string {
-  const lines = pending.map(
-    ({ spawn, digest }) => `  ${safe(spawn.serverId)}: ${safe(spawn.resolvedCommand)}  ${digest}`,
-  );
-  return [
-    `this run would start ${String(pending.length)} local program(s) that have not been approved on this machine:`,
-    ...lines,
-    'Approve them interactively, or pass --allow-mcp-stdio <digest> for each (the digest is a hash of the declaration, not a secret).',
-  ].join('\n');
-}
-
 /** Compose what the prompt shows — sanitized and bounded at the point of composition (§7). */
 function subjectOf(
   spawn: ResolvedStdioSpawn,
@@ -249,8 +305,18 @@ function subjectOf(
     artifact: spawn.artifact === undefined ? undefined : safe(spawn.artifact),
     resolvedCommand: safe(spawn.resolvedCommand),
     authoredCommand: spawn.command === spawn.resolvedCommand ? undefined : safe(spawn.command),
-    args: spawn.args.map(safe),
-    env: Object.entries(spawn.env).map(([name, value]) => [safe(name), safe(displayValue(value))]),
+    // **The COUNT is bounded, not just each field's length.** A review measured a 406-argument declaration
+    // producing a 415-line block whose visible tail — the only part above the confirm prompt on any normal
+    // terminal — was entirely attacker-composed, with the real `executable` line at index 2. A per-field
+    // clip cannot stop that; only a per-LIST clip can, and this function's own comment claimed the property
+    // the clip alone did not provide.
+    args: clipArgs(spawn.args.map(safe)),
+    env: clipEnv(
+      Object.entries(spawn.env).map(([name, value]): readonly [string, string] => [
+        safe(name),
+        safe(displayValue(value)),
+      ]),
+    ),
     cwd: safe(spawn.cwd),
     digest,
     total,
@@ -271,11 +337,48 @@ function displayValue(value: string): string {
   return reference?.[1] === undefined ? value : `<secret:${reference[1]}>`;
 }
 
+/**
+ * Keep a displayed list to what fits above a prompt, with the remainder stated as a count.
+ *
+ * The overflow line is part of the decision rather than a footnote: a user must know they are approving
+ * more than they can see, and "12 of 406" is the fact that tells them to open the artifact instead.
+ */
+function clipArgs(items: readonly string[]): readonly string[] {
+  if (items.length <= MAX_DISPLAYED_ENTRIES) return items;
+  return [
+    ...items.slice(0, MAX_DISPLAYED_ENTRIES),
+    `… and ${String(items.length - MAX_DISPLAYED_ENTRIES)} more arguments — open the artifact to read them`,
+  ];
+}
+
+function clipEnv(
+  items: readonly (readonly [string, string])[],
+): readonly (readonly [string, string])[] {
+  if (items.length <= MAX_DISPLAYED_ENTRIES) return items;
+  return [
+    ...items.slice(0, MAX_DISPLAYED_ENTRIES),
+    [
+      `… and ${String(items.length - MAX_DISPLAYED_ENTRIES)} more`,
+      'environment variables — open the artifact to read them',
+    ] as const,
+  ];
+}
+
+/** How many arguments / environment variables the prompt shows before the rest become a count. */
+const MAX_DISPLAYED_ENTRIES = 12;
+
 /** Every displayed field goes through this: terminal controls stripped, length bounded. */
 function safe(text: string): string {
-  const cleaned = sanitizeUntrustedInline(text);
+  // **Zero-width too**, which §7 says these fields strip and the first implementation did not.
+  // `sanitizeUntrustedInline` deliberately KEEPS ZWJ/ZWNJ — correct for prose, wrong for a structured field
+  // in a trust decision, where `--safe\u200b--evil` and `--safe--evil` render identically and an executable
+  // name is exactly the kind of field the provider surface already rejects them from.
+  const cleaned = sanitizeUntrustedInline(text).replace(ZERO_WIDTH, '');
   return cleaned.length <= MAX_FIELD_CHARS ? cleaned : `${cleaned.slice(0, MAX_FIELD_CHARS)}…`;
 }
+
+/** ZWSP/ZWNJ/ZWJ, word joiner, Mongolian vowel separator, BOM — invisible, and identity-bearing here. */
+const ZERO_WIDTH = /[\u200B-\u200D\u2060\u180E\uFEFF]/g;
 
 /** A bound on any one displayed field — a hostile declaration cannot push the decision off the screen. */
 const MAX_FIELD_CHARS = 200;

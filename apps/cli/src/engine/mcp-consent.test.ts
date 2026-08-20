@@ -6,8 +6,10 @@
  * ADR got the answer wrong in a way measurement caught — those say which.
  */
 
+import { spawn } from 'node:child_process';
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -18,6 +20,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -31,6 +34,12 @@ import {
   type ConsentGrant,
   type ResolvedStdioSpawn,
 } from './mcp-consent.js';
+
+const CHILD_SCRIPT = fileURLToPath(new URL('./fixtures/concurrent-granter.mjs', import.meta.url));
+/** The child resolves workspace packages from `dist`, so the test is skipped rather than failed without it. */
+const SHARED_DIST = fileURLToPath(
+  new URL('../../../../packages/shared/dist/index.js', import.meta.url),
+);
 
 let dir = '';
 beforeEach(() => {
@@ -377,6 +386,71 @@ describe('the grant log (ADR-0084 §5)', () => {
     const stored = readGrants(path())?.get('v1:big');
     expect(stored?.args).toHaveLength(64);
     expect(stored?.digest).toBe('v1:big'); // the identity is untouched
+  });
+
+  it('two REAL concurrent processes each granting — the race the protocol exists for (§10.13)', async () => {
+    if (!existsSync(SHARED_DIST)) {
+      // Visibly skipped, never silently passed: the child resolves `@relavium/shared` the way any consumer
+      // would — from its built `dist` — and a `pnpm turbo run build` produces it (CI builds upstream first).
+      console.warn(
+        'SKIPPED §10.13 two-process test: @relavium/shared dist is absent (run turbo build)',
+      );
+      return;
+    }
+    await Promise.all(
+      ['v1:proc-a', 'v1:proc-b'].map(
+        (digest) =>
+          new Promise<void>((done, fail) => {
+            const child = spawn(
+              process.execPath,
+              ['--experimental-strip-types', '--no-warnings', CHILD_SCRIPT, path(), digest],
+              { stdio: 'inherit' },
+            );
+            child.on('error', fail);
+            child.on('exit', (code) =>
+              code === 0 ? done() : fail(new Error(`granter exited ${String(code)}`)),
+            );
+          }),
+      ),
+    );
+    // Both survive, and the file is still a valid store — an interleaved partial line would fail the fold.
+    const grants = readGrants(path());
+    expect(grants?.has('v1:proc-a')).toBe(true);
+    expect(grants?.has('v1:proc-b')).toBe(true);
+  });
+
+  it('`appendRevocation` refuses a symlinked store too — a tombstone REMOVES trust', () => {
+    appendGrant(path(), grantOf('v1:aaa'));
+    const target = join(dir, 'revoke-target.txt');
+    writeFileSync(target, 'untouched');
+    rmSync(path());
+    symlinkSync(target, path());
+    expect(() => {
+      appendRevocation(path(), 'v1:aaa', '2026-08-20T00:01:00.000Z');
+    }).toThrow(/symbolic link/);
+    expect(readFileSync(target, 'utf8')).toBe('untouched');
+  });
+
+  it('creates a MISSING parent directory 0700, not merely the file 0600', () => {
+    // §10.12 asks for both. A consent decision happens on a machine that may never have run a workflow, so
+    // this code creates the directory rather than assuming the history opener already did.
+    const nested = join(dir, '.relavium', 'mcp-consent.ndjson');
+    appendGrant(nested, grantOf('v1:aaa'));
+    expect(readGrants(nested)?.has('v1:aaa')).toBe(true);
+    if (process.platform !== 'win32') {
+      expect(statSync(join(dir, '.relavium')).mode & 0o777).toBe(0o700);
+    }
+  });
+
+  it('clips the stored command and cwd, not only the argument count', () => {
+    appendGrant(path(), {
+      ...grantOf('v1:long'),
+      command: 'c'.repeat(5000),
+      cwd: 'w'.repeat(5000),
+    });
+    const stored = readGrants(path())?.get('v1:long');
+    expect(stored?.command.length).toBeLessThan(600);
+    expect(stored?.cwd.length).toBeLessThan(600);
   });
 
   it('two independent appends both survive — what append-only buys over a rewrite', () => {

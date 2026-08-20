@@ -179,6 +179,8 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       cwd: deps.global.cwd,
       resolveSecret: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
       registrations: config.mcpServers,
+      // The file that declared them, for the prompt — the imported-artifact case naming its own file (§7).
+      artifact: source.path,
       // **Consent before any spawn** (ADR-0084 §1). Injectable so a fixture drives it without a terminal;
       // the default is the real gate, so an un-wired test path is a decision rather than an accident.
       consentGate:

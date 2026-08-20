@@ -174,4 +174,26 @@ describe('createCommand (2.J)', () => {
       expect(err.message).toContain('needs an interactive terminal');
     }
   });
+
+  it('fails loud in CI even with BOTH streams on a pseudo-TTY — the signal this guard was missing', async () => {
+    // The check listed --json, stdout and stdin and stopped there, so a runner that allocates a pseudo-TTY
+    // satisfied all three and the wizard asked a question nobody was there to answer: the job hung until its
+    // own timeout. Delegating to the shared `isInteractiveTerminal` adds the fourth signal.
+    const { io } = captureIo({ CI: 'true' });
+    const inCi: CliIo = { ...io, stdoutIsTty: true, stdinIsTty: true };
+    const global: GlobalOptions = {
+      json: false,
+      color: false,
+      cwd,
+      configPath: undefined,
+      verbosity: 'normal',
+    };
+    try {
+      await createCommand({ force: false }, { io: inCi, global });
+      expect.unreachable('create must not prompt in CI');
+    } catch (err) {
+      if (!isCliError(err)) throw err;
+      expect(err.message).toContain('needs an interactive terminal');
+    }
+  });
 });

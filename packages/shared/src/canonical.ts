@@ -39,6 +39,9 @@ const MAX_CANONICAL_DEPTH = 64;
  * - string escaping is **ECMAScript `JSON.stringify` semantics**;
  * - arrays keep their order; `undefined` inside an array serializes as `null`, matching `JSON.stringify`,
  *   and a HOLE serializes the same way rather than as nothing;
+ * - a **lone surrogate** — in a string or in a key — is REFUSED. `JSON.stringify` escapes it to `\udXXX`,
+ *   which is well-defined only inside ECMAScript: the value has no UTF-8 encoding at all, so a Rust or Go
+ *   implementation cannot hold it, let alone reproduce the digest a JS one computed;
  * - a shape with no faithful JSON form — a non-finite number, an `undefined` object property, a `Date`, a
  *   `Map`, a class instance — is REFUSED. `JSON.stringify` would flatten each into `{}` or `null`, which
  *   collides with a real `{}` or `null`, and a form built to distinguish values must not merge them.
@@ -55,6 +58,9 @@ export function canonicalJson(value: unknown, depth = 0): string {
     // `JSON.stringify` renders these as `null`, which COLLIDES with a real `null` — two different values,
     // one digest. A form whose whole job is to distinguish values must not merge them silently.
     throw new NonCanonicalValueError('a non-finite number has no canonical form');
+  }
+  if (typeof value === 'string' && hasLoneSurrogate(value)) {
+    throw new NonCanonicalValueError('a lone surrogate has no canonical form');
   }
   if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
   if (Array.isArray(value)) {
@@ -80,7 +86,29 @@ export function canonicalJson(value: unknown, depth = 0): string {
         // `null`. Neither is safe to guess at, so it is refused.
         throw new NonCanonicalValueError('an `undefined` property has no canonical form');
       }
+      if (hasLoneSurrogate(k)) {
+        throw new NonCanonicalValueError('a lone surrogate in a key has no canonical form');
+      }
       return `${JSON.stringify(k)}:${canonicalJson(v, depth + 1)}`;
     })
     .join(',')}}`;
+}
+
+/**
+ * Whether `text` contains a surrogate code unit that is not part of a well-formed pair.
+ *
+ * Written as an explicit scan rather than `String.prototype.isWellFormed` or a lookbehind regex: this package
+ * is loaded by the desktop WebView as well as by Node, and both of those are recent enough additions to the
+ * language that the floor would become an unstated part of a contract meant to outlive the runtime.
+ */
+function hasLoneSurrogate(text: string): boolean {
+  for (let index = 0; index < text.length; index += 1) {
+    const unit = text.charCodeAt(index);
+    if (unit < 0xd800 || unit > 0xdfff) continue;
+    if (unit >= 0xdc00) return true; // a trail reached on its own — a paired one is skipped below
+    const next = index + 1 < text.length ? text.charCodeAt(index + 1) : 0;
+    if (next < 0xdc00 || next > 0xdfff) return true; // a lead with no trail after it
+    index += 1; // a well-formed pair
+  }
+  return false;
 }

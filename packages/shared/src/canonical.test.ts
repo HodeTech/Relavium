@@ -107,3 +107,29 @@ describe('canonicalJson', () => {
     }
   });
 });
+
+describe('lone surrogates', () => {
+  // ADR-0084 §3 pins the refusal, and §10.15 asserts it: `JSON.stringify` escapes a lone surrogate to
+  // `\udXXX`, which is well-defined only inside ECMAScript. The value has no UTF-8 encoding at all, so a Rust
+  // implementation of the same digest cannot even hold the string, let alone reproduce the bytes.
+  it('refuses a lone high surrogate in a string', () => {
+    expect(() => canonicalJson({ a: '\ud800' })).toThrow(NonCanonicalValueError);
+  });
+
+  it('refuses a lone low surrogate in a string', () => {
+    expect(() => canonicalJson(['\udc00'])).toThrow(NonCanonicalValueError);
+  });
+
+  it('refuses a lone surrogate in a KEY, not only in a value', () => {
+    expect(() => canonicalJson({ '\udfff': 1 })).toThrow(NonCanonicalValueError);
+  });
+
+  it('accepts a WELL-FORMED pair — the refusal is about lone units, not about astral characters', () => {
+    expect(canonicalJson({ '😀': '🚀' })).toBe('{"😀":"🚀"}');
+  });
+
+  it('accepts a pair that ends the string, and refuses a lead that does', () => {
+    expect(canonicalJson('a😀')).toBe('"a😀"');
+    expect(() => canonicalJson('a\ud83d')).toThrow(NonCanonicalValueError);
+  });
+});

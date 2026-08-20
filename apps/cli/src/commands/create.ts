@@ -14,6 +14,7 @@ import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
+import { isInteractiveTerminal } from '../process/output-mode.js';
 
 export interface CreateCommandArgs {
   /** `--force`: overwrite an existing project entry with the same id; without it a collision is a clean exit-2 fault. */
@@ -42,13 +43,22 @@ export async function createCommand(
   // keystrokes (a non-TTY stdin makes clack's raw-mode setup throw, not hang). Under --json or either stream
   // piped there is no way to prompt, so fail loud. (An injected prompter — a test, or a future non-interactive
   // flag path — bypasses this gate.)
+  //
+  // Via the shared predicate, which adds the fourth signal this check was missing: a CI runner that allocates
+  // a pseudo-TTY satisfies all three of the conditions written here and would hang the pipeline on a question
+  // nobody is there to answer.
   if (
     deps.prompter === undefined &&
-    (deps.global.json || !deps.io.stdoutIsTty || !deps.io.stdinIsTty)
+    !isInteractiveTerminal({
+      stdoutIsTty: deps.io.stdoutIsTty,
+      stdinIsTty: deps.io.stdinIsTty,
+      json: deps.global.json,
+      env: deps.io.env,
+    })
   ) {
     throw new CliError(
       'invalid_invocation',
-      '`relavium create` needs an interactive terminal — it is not available under --json or a non-TTY pipe.',
+      '`relavium create` needs an interactive terminal — it is not available under --json, a non-TTY pipe, or CI.',
     );
   }
 

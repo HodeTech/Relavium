@@ -7,9 +7,9 @@
  * proves the code believes it did not spawn.
  */
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { McpServerRef } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -61,6 +61,44 @@ function io(
 }
 
 describe('assertStdioConsent — nothing spawns without a decision (ADR-0084 §1)', () => {
+  it('REPORTS an unreadable grant store instead of silently re-asking (§5)', async () => {
+    // §5 folds the whole store closed on any unparseable line, because a truncated one may be a TOMBSTONE.
+    // That is the safe outcome, but a silent one leaves the user re-approving every server they already
+    // approved with no idea why — so the fold is announced on stderr, naming the file they can inspect.
+    const store = mcpConsentPath(home);
+    mkdirSync(dirname(store), { recursive: true });
+    writeFileSync(store, '{"v":1,"digest":"v1:aaa"\n'); // a truncated line, as a crash mid-append leaves
+    const { io: cliIo, err } = io();
+    await assertStdioConsent([ref()], process.cwd(), {
+      io: cliIo,
+      global: globalOptions(),
+      homeDir: home,
+      prompt: () => Promise.resolve(true),
+    });
+    expect(err()).toContain('could not be read');
+    expect(err()).toContain(store);
+  });
+
+  it('refuses a declaration carrying a LONE SURROGATE rather than crashing (§10.15)', async () => {
+    // §3 refuses it "at parse": the string has no UTF-8 encoding, so a non-TypeScript implementation of the
+    // same digest could not hold it. The refusal must be a typed one — an escaping `NonCanonicalValueError`
+    // renders as an internal error and tells the author nothing about their own declaration.
+    const { io: cliIo } = io();
+    let asked = 0;
+    await expect(
+      assertStdioConsent([ref({ args: ['\ud800'] })], process.cwd(), {
+        io: cliIo,
+        global: globalOptions(),
+        homeDir: home,
+        prompt: () => {
+          asked += 1;
+          return Promise.resolve(true);
+        },
+      }),
+    ).rejects.toSatisfy((error) => isCliError(error) && /lone surrogate/.test(error.message));
+    expect(asked).toBe(0);
+  });
+
   it('a network-only declaration needs no consent and asks nothing (§10.19)', async () => {
     const { io: cliIo } = io();
     let asked = 0;
@@ -147,7 +185,7 @@ describe('non-interactive: refuse with the digest, never prompt (ADR-0084 §6)',
   it.each(cases)('%s → exit 2, nothing asked (§10.10)', async (_label, ioOver, globalOver) => {
     // All four signals, and stdout alone is not enough: a question in a machine-readable stream breaks
     // ADR-0049's contract, and `CI=true` with a pseudo-TTY would hang a pipeline on a question nobody answers.
-    const { io: cliIo } = io(ioOver);
+    const { io: cliIo, err } = io(ioOver);
     let asked = 0;
     const error: unknown = await assertStdioConsent([ref()], process.cwd(), {
       io: cliIo,
@@ -160,17 +198,23 @@ describe('non-interactive: refuse with the digest, never prompt (ADR-0084 §6)',
     }).catch((caught: unknown) => caught);
     expect(asked).toBe(0);
     expect(isCliError(error) && error.code).toBe('invalid_invocation');
-    expect(isCliError(error) && error.message).toMatch(/v1:[0-9a-f]{64}/);
+    // The DETAIL is on stderr as its own lines and the message is one line: `renderError` collapses every
+    // newline in a message to a space, so a multi-line one arrived as a run-on with the digest — the one
+    // thing a CI author must copy — buried mid-line.
+    expect(err()).toMatch(/v1:[0-9a-f]{64}/);
+    expect(isCliError(error) && error.message).not.toContain('\n');
+    expect(isCliError(error) && error.message).toContain('--allow-mcp-stdio');
   });
 
   it('the printed digest is exactly what `--allow-mcp-stdio` accepts (§10.9)', async () => {
     // Asserted by feeding the printed value back in — the loop a CI author actually walks.
-    const { io: cliIo } = io({ stdoutIsTty: false });
+    const { io: cliIo, err } = io({ stdoutIsTty: false });
     const deps = { io: cliIo, global: globalOptions(), homeDir: home };
     const error: unknown = await assertStdioConsent([ref()], process.cwd(), deps).catch(
       (caught: unknown) => caught,
     );
-    const digest = isCliError(error) ? /v1:[0-9a-f]{64}/.exec(error.message)?.[0] : undefined;
+    expect(isCliError(error)).toBe(true);
+    const digest = /v1:[0-9a-f]{64}/.exec(err())?.[0];
     expect(digest).toBeDefined();
     await expect(
       assertStdioConsent([ref()], process.cwd(), {
@@ -183,12 +227,10 @@ describe('non-interactive: refuse with the digest, never prompt (ADR-0084 §6)',
   it('`--allow-mcp-stdio` writes NO grant (§10.11)', async () => {
     // A flag is how a CI definition states its own trust; a shared runner that accumulated grants would
     // slowly agree to everything anyone ran on it.
-    const { io: cliIo } = io({ stdoutIsTty: false });
+    const { io: cliIo, err } = io({ stdoutIsTty: false });
     const deps = { io: cliIo, global: globalOptions(), homeDir: home };
-    const error: unknown = await assertStdioConsent([ref()], process.cwd(), deps).catch(
-      (caught: unknown) => caught,
-    );
-    const digest = isCliError(error) ? (/v1:[0-9a-f]{64}/.exec(error.message)?.[0] ?? '') : '';
+    await assertStdioConsent([ref()], process.cwd(), deps).catch(() => undefined);
+    const digest = /v1:[0-9a-f]{64}/.exec(err())?.[0] ?? '';
     await assertStdioConsent([ref()], process.cwd(), { ...deps, allowedDigests: [digest] });
     expect(() => readFileSync(mcpConsentPath(home), 'utf8')).toThrow();
   });
@@ -249,16 +291,45 @@ describe('what the prompt is given (ADR-0084 §7)', () => {
     expect(rendered).not.toContain('\\u202e');
   });
 
-  it('states the COUNT once before the first question (§2, §10.18)', async () => {
+  it('states the COUNT once before the first question (§2)', async () => {
+    // Two genuinely DIFFERENT declarations. An earlier version of this test used two ids naming a
+    // byte-identical one and pinned "2 local programs" — asserting exactly the behaviour §10.18 forbids.
     const { io: cliIo, err } = io();
+    await assertStdioConsent(
+      [ref({ id: 'a' }), ref({ id: 'b', args: ['--different'] })],
+      process.cwd(),
+      {
+        io: cliIo,
+        global: globalOptions(),
+        homeDir: home,
+        now: () => '2026-08-20T00:00:00.000Z',
+        prompt: () => Promise.resolve(true),
+      },
+    );
+    expect(err()).toContain('2 local programs');
+  });
+
+  it('two ids naming the SAME declaration prompt ONCE and record ONE grant (§10.18)', async () => {
+    // Two agents in one artifact commonly declare the same server. It is one program and one decision; the
+    // first implementation asked twice and appended two lines for one digest.
+    const { io: cliIo, err } = io();
+    let asked = 0;
     await assertStdioConsent([ref({ id: 'a' }), ref({ id: 'b' })], process.cwd(), {
       io: cliIo,
       global: globalOptions(),
       homeDir: home,
       now: () => '2026-08-20T00:00:00.000Z',
-      prompt: () => Promise.resolve(true),
+      prompt: () => {
+        asked += 1;
+        return Promise.resolve(true);
+      },
     });
-    expect(err()).toContain('2 local programs');
+    expect(asked).toBe(1);
+    expect(err()).not.toContain('local programs'); // the count line is for a PLURAL decision
+    const lines = readFileSync(mcpConsentPath(home), 'utf8')
+      .split('\n')
+      .filter((line) => line.trim() !== '');
+    expect(lines).toHaveLength(1);
   });
 });
 
