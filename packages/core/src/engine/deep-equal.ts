@@ -67,7 +67,7 @@ function equals(a: unknown, b: unknown, depth: number, seen: Map<unknown, Set<un
  */
 function alreadyComparing(a: unknown, b: unknown, seen: Map<unknown, Set<unknown>>): boolean {
   const partners = seen.get(a);
-  if (partners !== undefined && partners.has(b)) return true;
+  if (partners?.has(b) === true) return true;
   if (partners === undefined) seen.set(a, new Set([b]));
   else partners.add(b);
   return false;

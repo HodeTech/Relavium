@@ -130,6 +130,23 @@ export interface RunCommandDeps {
  * Pre-run faults (config / not-found / bad input / parse) throw a typed {@link CliError} (exit 2); run-time
  * outcomes arrive as events and map to 0/1/3.
  */
+/**
+ * Parse the workflow, turning an authored fault into the surface's typed exit-2 invocation error.
+ *
+ * A `WorkflowParseError` is the author's problem and reads as one; anything else is a bug in the engine and
+ * rethrows verbatim rather than being relabelled as an invalid invocation.
+ */
+function parseOrRefuse(yaml: string, source: string): WorkflowDefinition {
+  try {
+    return parseWorkflow(yaml, { source });
+  } catch (err) {
+    if (err instanceof WorkflowParseError) {
+      throw new CliError('invalid_invocation', err.message, { cause: err });
+    }
+    throw err;
+  }
+}
+
 export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Promise<ExitCode> {
   const build = deps.buildEngine ?? defaultBuildEngine;
   // One resolver shared by the key pre-flight and the engine, reading the CLI's env seam (io.env).
@@ -144,16 +161,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
 
   const source = resolveWorkflowSource(args.workflow, { cwd: deps.global.cwd, projectConfigDir });
 
-  let def: WorkflowDefinition;
-  try {
-    def = parseWorkflow(source.yaml, { source: relative(deps.global.cwd, source.path) });
-  } catch (err) {
-    if (err instanceof WorkflowParseError) {
-      throw new CliError('invalid_invocation', err.message, { cause: err });
-    }
-    throw err;
-  }
-
+  const def = parseOrRefuse(source.yaml, relative(deps.global.cwd, source.path));
   const inputs = resolveInputs(def, parseInputArgs(args.input));
 
   // Pre-flight provider keys: surface a missing key for an inline agent's PRIMARY provider as a clean

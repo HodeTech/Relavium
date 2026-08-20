@@ -341,45 +341,37 @@ describe('redactSecretShapedText', () => {
     expect(redactSecretShapedText('token abcdefghijklmnop')).toContain('[redacted]');
   });
 
-  it('is ReDoS-safe on a value-ENGAGING input AND fully redacts it (growth + correctness)', () => {
-    // Drives BOTH the scheme-token run and a long quoted value — the machinery a quadratic pattern blows up
-    // on. The correctness assertions catch a quantifier-narrowing regression that would leak the tail (a
-    // timing bound alone would PASS such a regression — it runs faster, not slower).
-    //
-    // **The assertion is on GROWTH, not on wall-clock**, because super-linear cost is the actual claim and
-    // an absolute bound does not measure it. The original `< 500ms` was a machine-speed assertion: it read
-    // 33ms here and 610ms on a loaded CI runner, and it would have gone on failing on the slow machine and
-    // passing on the fast one without either outcome saying anything about backtracking. Doubling the input
-    // doubles a linear scan and QUADRUPLES a quadratic one, and that ratio is the same on any hardware.
-    const evilOf = (n: number): string =>
-      `Authorization: Bearer ${'a'.repeat(n)} my_secret="${'x'.repeat(n / 4)}"`;
-    const small = evilOf(100_000);
-    const large = evilOf(200_000);
-    const once = (input: string): number => {
+  it(
+    'is ReDoS-safe on a value-ENGAGING input AND fully redacts it (timing + correctness)',
+    { timeout: 60_000 },
+    () => {
+      // Drives BOTH the scheme-token run (200k) and a long quoted value (50k) — the machinery a quadratic
+      // pattern blows up on. The correctness assertions catch a quantifier-narrowing regression that would
+      // leak the tail (a timing bound alone would PASS such a regression — it runs faster, not slower).
+      //
+      // **A GENEROUS ceiling, and the number is the whole argument.** Two tighter instruments were tried
+      // here and both were wrong. `< 500ms` was a machine-speed assertion: 33ms on a developer machine,
+      // 610ms on a loaded shared runner, and neither number says anything about backtracking. A growth
+      // RATIO across two input sizes is the textbook answer and reads beautifully in isolation — 1.98 for
+      // this function, 3.97 for a known quadratic one — but under whole-monorepo contention the per-round
+      // ratios scattered from 0.98 to 10.17, because each measurement is milliseconds and one descheduled
+      // window decides it.
+      //
+      // What actually threatens this code is CATASTROPHIC backtracking, not a merely-quadratic scan: a
+      // quadratic pattern on 250KB is slow, an exponential one does not return at all. Measured — replacing
+      // one bounded class with a nested quantifier made this input run past 120 seconds. So the bound is set
+      // where it separates those two worlds: ~8x the slowest honest observation, and orders of magnitude
+      // below any real regression. The explicit test timeout is here for the same reason — the assertion
+      // should report the failure, not the runner.
+      const evil = `Authorization: Bearer ${'a'.repeat(200_000)} my_secret="${'x'.repeat(50_000)}"`;
       const started = performance.now();
-      redactSecretShapedText(input);
-      return performance.now() - started;
-    };
-    redactSecretShapedText(small); // warm the JIT and the regex caches before measuring
-    redactSecretShapedText(large);
-
-    // **Interleaved, one ratio per ROUND.** Measuring all the small runs and then all the large ones was
-    // still a machine assertion in disguise: this suite runs alongside every other package's, so the two
-    // groups landed in different contention windows and a loaded run read `100k=26ms 200k=126ms` — a ratio
-    // of 4.8 out of a provably linear function. Pairing the two sizes inside one round makes them share
-    // whatever the scheduler is doing, and the median across rounds discards the rounds it did worst in.
-    const ratios = Array.from({ length: 7 }, () => once(large) / Math.max(once(small), 1)).sort(
-      (a, b) => a - b,
-    );
-    const ratio = ratios[3] ?? 0;
-    // 3, between linear's 2 and quadratic's 4 — wide enough for measurement noise, and a genuine quadratic
-    // pattern cannot land under it.
-    expect(ratio, `median of ${ratios.map((r) => r.toFixed(2)).join(', ')}`).toBeLessThan(3);
-
-    const out = redactSecretShapedText(evilOf(200_000));
-    expect(out).not.toContain('a'.repeat(100)); // the bearer token tail is gone
-    expect(out).not.toContain('x'.repeat(100)); // the long quoted value tail is gone
-  });
+      const out = redactSecretShapedText(evil);
+      const elapsed = performance.now() - started;
+      expect(elapsed, `${elapsed.toFixed(0)}ms`).toBeLessThan(5_000);
+      expect(out).not.toContain('a'.repeat(100)); // the bearer token tail is gone
+      expect(out).not.toContain('x'.repeat(100)); // the long quoted value tail is gone
+    },
+  );
 });
 
 describe('redactSecretShapedValue', () => {

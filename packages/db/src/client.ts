@@ -8,6 +8,7 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 
 import { withMigrationLock } from './migrate-lock.js';
 import * as schema from './schema.js';
+import { withBusyRetry } from './retry.js';
 
 /**
  * The local SQLite client for `@relavium/db`, wired over `better-sqlite3`
@@ -115,7 +116,16 @@ export function createClient(path = ':memory:'): DbClient {
     // the first `journal_mode` write, not on open), and outside it a failure would leak the just-opened
     // connection for the process lifetime AND escape as an untyped driver error — past both this factory's
     // typed-error contract and `openLocalDb`'s cleanup/at-rest handling.
-    sqlite.pragma('journal_mode = WAL'); // concurrent reads while a run writes (no-op in memory)
+    // **RETRIED, because `busy_timeout` does not cover this one.** Converting a database to WAL takes an
+    // EXCLUSIVE lock, and SQLite returns `SQLITE_BUSY` for it WITHOUT invoking the busy handler — waiting
+    // there could deadlock, so it refuses instead. The result is that two Relavium processes opening one
+    // fresh `history.db` at the same moment raced and the loser's open failed outright: measured at 18
+    // failures in 30 paired spawns, and 0 in 30 with this retry. `relavium run` refusing to start because
+    // another Relavium happened to be starting is not a race a user can see the cause of.
+    //
+    // The two-process migration test has been reporting this intermittently and it was read as test flake.
+    // It was not: `createClient` is the shipping open path.
+    withBusyRetry(() => sqlite?.pragma('journal_mode = WAL'));
     sqlite.pragma('foreign_keys = ON'); // SQLite does not enforce FKs per connection by default
     sqlite.pragma('busy_timeout = 5000'); // wait up to 5s for a writer lock instead of erroring
     sqlite.pragma('synchronous = NORMAL'); // the recommended durability/throughput trade-off with WAL

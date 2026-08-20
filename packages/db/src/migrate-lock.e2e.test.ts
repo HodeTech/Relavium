@@ -59,6 +59,28 @@ function race(dbPath: string): Promise<{ code: number | null; out: string; err: 
 
 describe('runMigrations — the two-process race (#99)', () => {
   it.skipIf(!existsSync(DB_DIST_PATH))(
+    'a fresh database survives many SIMULTANEOUS opens — the WAL-conversion race (#99b)',
+    async () => {
+      // The open half, isolated from the migration half and repeated, because one pair caught the defect
+      // only ~60% of the time. Six pairs make a regression a near-certainty rather than a coin flip, and
+      // this asserts the property `createClient` actually owes: two Relavium processes starting at the same
+      // moment against one fresh `history.db` both get a usable connection.
+      const dir = mkdtempSync(join(tmpdir(), 'relavium-open-race-'));
+      try {
+        for (let round = 0; round < 6; round += 1) {
+          const dbPath = join(dir, `round-${String(round)}.db`);
+          const [first, second] = await Promise.all([race(dbPath), race(dbPath)]);
+          expect(first.out, `round ${String(round)} first: ${first.err}`).toBe('OK');
+          expect(second.out, `round ${String(round)} second: ${second.err}`).toBe('OK');
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    60_000,
+  );
+
+  it.skipIf(!existsSync(DB_DIST_PATH))(
     'two concurrent processes BOTH succeed against one fresh history.db',
     async () => {
       const dir = mkdtempSync(join(tmpdir(), 'relavium-migrate-race-'));
@@ -66,6 +88,12 @@ describe('runMigrations — the two-process race (#99)', () => {
       try {
         // Started together, before either has awaited — as close to simultaneous as spawn allows. Without the
         // lock, the loser dies with a DrizzleError on a duplicate CREATE TABLE.
+        //
+        // The race it exercises is PROBABILISTIC, and for a while that made it look like a flaky test: it
+        // was reporting a real defect in `createClient` — the WAL conversion returns `SQLITE_BUSY` without
+        // invoking the busy handler, so the loser's OPEN failed before migrations were even reached (18
+        // failures in 30 paired spawns, measured). With the retry in place it is 0 in 30, so failing here
+        // again means that retry went away, not that the machine is loaded.
         const [first, second] = await Promise.all([race(dbPath), race(dbPath)]);
 
         for (const [label, result] of [

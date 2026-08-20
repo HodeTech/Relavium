@@ -711,7 +711,7 @@ export function createInMemoryEffectJournalStore(): {
           const row = rows.get(key(scope, slot, toolId));
           // Only out of `prepared`, mirroring the store: `committed → ambiguous` would claim we do not know
           // what the target did while retaining the result proving we do.
-          if (row !== undefined && row.state === 'prepared') {
+          if (row?.state === 'prepared') {
             rows.set(key(scope, slot, toolId), {
               ...row,
               state,

@@ -636,6 +636,37 @@ export class FallbackChain {
    * to fail over on, or `undefined` if the stream completed (a success was already emitted, or a
    * post-content failure was surfaced).
    */
+  /**
+   * How a failed stream attempt LEAVES — the one decision the three failure sites share.
+   *
+   * Committed means content already reached the caller, so the failure is SURFACED as an `error` chunk and
+   * the chain reports no failover candidate. The `committed()` stamp goes on here, on the way out, because
+   * this is the moment the fact becomes the node layer's problem
+   * ([ADR-0082](../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) §4):
+   * the chain already refuses to fail over, and without the stamp that refusal stopped at the chain and
+   * `#shouldRetry` re-dispatched a call that had already produced output.
+   *
+   * Uncommitted, the error is RETURNED instead, and the caller decides whether to fail over.
+   *
+   * Spliced with `yield*`, so the caller's `return yield* …` both forwards the chunk and adopts the return
+   * value — the three sites were byte-identical, which is how the `committed()` stamp came to be missing
+   * from one of them once already.
+   */
+  // A SYNC generator: nothing here awaits, and an async one would only add a microtask hop between the
+  // emit and the surfaced chunk. An async generator delegates to it with `yield*` unchanged.
+  *#failAttempt(
+    record: AttemptRecord,
+    error: LlmError,
+    state: StreamAttemptState,
+  ): Generator<StreamChunk, LlmError | undefined> {
+    this.#emit({ ...record, outcome: 'failed', error });
+    if (state.committed) {
+      yield { type: 'error', error: committed(error) };
+      return undefined;
+    }
+    return error;
+  }
+
   async *#runStreamAttempt(
     entry: FallbackPlanEntry,
     entryReq: LlmRequest,
@@ -676,27 +707,20 @@ export class FallbackChain {
       for (;;) {
         const step = await this.#raceStep(iterator, deadline);
         if (step.kind === 'timeout') {
-          const error = this.#classifyDeadline(deadline, entry.provider.id);
-          this.#emit({ ...record, outcome: 'failed', error });
-          if (state.committed) {
-            yield { type: 'error', error: committed(error) };
-            return undefined;
-          }
-          return error;
+          return yield* this.#failAttempt(
+            record,
+            this.#classifyDeadline(deadline, entry.provider.id),
+            state,
+          );
         }
         if (step.kind === 'done') break;
         const chunk = step.chunk;
         if (chunk.type === 'error') {
-          const error = this.#abortAware(chunk.error, entryReq, entry.provider.id);
-          this.#emit({ ...record, outcome: 'failed', error });
-          if (state.committed) {
-            // Stamped on the way OUT, because this is the moment the fact becomes the node layer's problem
-            // (ADR-0082 §4). The chain already refuses to fail over here; without the stamp that refusal
-            // stopped at the chain and `#shouldRetry` re-dispatched a call that had already produced output.
-            yield { type: 'error', error: committed(error) };
-            return undefined;
-          }
-          return error; // pre-content failure → caller decides failover
+          return yield* this.#failAttempt(
+            record,
+            this.#abortAware(chunk.error, entryReq, entry.provider.id),
+            state,
+          );
         }
         if (chunk.type === 'stop') {
           usage = chunk.usage;
@@ -705,17 +729,11 @@ export class FallbackChain {
         yield chunk;
       }
     } catch (err) {
-      const error = this.#abortAware(
-        this.#errorOf(err, entry.provider.id),
-        entryReq,
-        entry.provider.id,
+      return yield* this.#failAttempt(
+        record,
+        this.#abortAware(this.#errorOf(err, entry.provider.id), entryReq, entry.provider.id),
+        state,
       );
-      this.#emit({ ...record, outcome: 'failed', error });
-      if (state.committed) {
-        yield { type: 'error', error: committed(error) };
-        return undefined;
-      }
-      return error; // pre-content throw → caller decides failover
     } finally {
       // Every exit path — success, pre-content failure, surfaced failure, an early consumer `break` that
       // calls this generator's `return()`. Idempotent, so the success path below can be reached having
