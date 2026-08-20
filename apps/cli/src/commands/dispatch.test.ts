@@ -119,10 +119,11 @@ describe('build*Args (argv → typed core args)', () => {
     expect(buildAgentRunArgs(input(['a'], { input: ['k=v'], fixture: 'c.json' }))).toEqual({
       agent: 'a',
       input: ['k=v'],
+      allowMcpStdio: [],
       fixture: 'c.json',
     });
     const noFixture = buildAgentRunArgs(input(['a']));
-    expect(noFixture).toEqual({ agent: 'a', input: [] });
+    expect(noFixture).toEqual({ agent: 'a', input: [], allowMcpStdio: [] });
     expect('fixture' in noFixture).toBe(false);
   });
 

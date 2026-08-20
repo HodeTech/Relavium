@@ -162,6 +162,7 @@ export function buildAgentRunArgs(input: CommandInput): AgentRunCommandArgs {
   return {
     agent: reqPositional(input, 0, 'agent'),
     input: stringList(input.options['input']),
+    allowMcpStdio: stringList(input.options['allowMcpStdio']),
     ...(fixture === undefined ? {} : { fixture }),
   };
 }

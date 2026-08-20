@@ -39,7 +39,7 @@ import {
 import type { GatePrompter } from '../gate/prompter.js';
 import { selectGatePrompter } from '../gate/select-prompter.js';
 import type { OpenedHistory } from '../history/open.js';
-import { assertStdioConsent } from '../engine/mcp-consent-gate.js';
+import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
@@ -183,14 +183,13 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       // the default is the real gate, so an un-wired test path is a decision rather than an accident.
       consentGate:
         deps.consentGate ??
-        ((refs, cwd) =>
-          assertStdioConsent(refs, cwd, {
-            io: deps.io,
-            global: deps.global,
-            homeDir,
-            allowedDigests: args.allowMcpStdio,
-            prompt: createConsentPrompter(),
-          })),
+        createConsentGate({
+          io: deps.io,
+          global: deps.global,
+          homeDir,
+          allowedDigests: args.allowMcpStdio,
+          prompt: createConsentPrompter(),
+        }),
       ...(deps.startMcpClient === undefined ? {} : { startMcpClient: deps.startMcpClient }),
     });
     if (mcpRuntime !== undefined) surfaceMcpSkipped(deps.io, mcpRuntime.client.skipped);

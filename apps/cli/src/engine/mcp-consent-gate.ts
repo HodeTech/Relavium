@@ -31,6 +31,23 @@ import {
  * exists for.
  */
 
+/**
+ * The production gate, ready to hand to `connectAgentMcp` / `connectWorkflowMcp`.
+ *
+ * One constructor because §1 names BOTH connect paths and the first wiring reached only `relavium run` —
+ * leaving `chat`, `chat-resume`, the Home and `agent run` spawning ungated, which is the entire threat this
+ * ADR exists for (an imported agent is opened by `chat --agent`, not by `run`). A helper rather than four
+ * inline lambdas so a fifth surface cannot wire a subtly different one.
+ */
+export function createConsentGate(
+  deps: ConsentGateDeps,
+): (
+  refs: readonly McpServerRef[],
+  cwd: string,
+) => Promise<ReadonlyMap<string, ResolvedStdioSpawn>> {
+  return (refs, cwd) => assertStdioConsent(refs, cwd, deps);
+}
+
 /** Where the grant log lives, beside `history.db` and the terminal outbox. */
 export function mcpConsentPath(homeDir: string): string {
   return join(homeDir, '.relavium', 'mcp-consent.ndjson');

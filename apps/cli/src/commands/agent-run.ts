@@ -8,6 +8,9 @@ import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
 import { cassetteResolver, loadCassette } from '../chat/fixture.js';
 import { onceEffortNotice } from '../chat/effort-notice.js';
 import { buildChatSession, type BuiltChatSession } from '../chat/session-host.js';
+import { createConsentGate } from '../engine/mcp-consent-gate.js';
+import type { StdioConsentGate } from '../engine/mcp-servers.js';
+import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
 import { loadUserPricingOverlay } from '../engine/pricing-overlay.js';
@@ -39,6 +42,13 @@ export interface AgentRunCommandArgs {
   readonly input: readonly string[];
   /** `--fixture <path>` — replay a recorded LLM cassette (deterministic, offline). */
   readonly fixture?: string;
+  /**
+   * `--allow-mcp-stdio <digest>`, repeatable
+   * ([ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §6) — authorizes a
+   * stdio MCP server for THIS invocation and writes no grant. On `agent run` for the same reason as on
+   * `run`: both are the invocations a CI definition drives, where there is no one to ask.
+   */
+  readonly allowMcpStdio: readonly string[];
 }
 
 export interface AgentRunCommandDeps {
@@ -48,6 +58,11 @@ export interface AgentRunCommandDeps {
   readonly providers?: ProviderResolver;
   /** Injectable session builder (tests). Default {@link buildChatSession}. */
   readonly buildSession?: typeof buildChatSession;
+  /**
+   * Injectable consent gate (ADR-0084 §1) — the DEFAULT is the real one, so an un-wired production path is
+   * a deliberate choice rather than an omission. A fixture supplies one that never prompts.
+   */
+  readonly consentGate?: StdioConsentGate;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one; default env-only. */
   readonly mcpSecretResolver?: McpSecretResolver;
   readonly now?: () => number;
@@ -86,6 +101,18 @@ export async function agentRunCommand(
   // FULLY offline: no `[[mcp_servers]]` registrations and an env-only secret resolver (never the keychain).
   const built = await (deps.buildSession ?? buildChatSession)({
     chat: config.chat,
+    // **Consent before any stdio MCP spawn** (ADR-0084 §1). A one-shot `agent run` opens an agent artifact
+    // — often an imported one — which is exactly the case the gate exists for; `--fixture` replays offline
+    // and declares no servers, so the gate never fires there.
+    consentGate:
+      deps.consentGate ??
+      createConsentGate({
+        io: deps.io,
+        global: deps.global,
+        homeDir,
+        allowedDigests: args.allowMcpStdio,
+        prompt: createConsentPrompter(),
+      }),
     // ADR-0071 §6: a one-shot invoke has no transcript and no picker, so a withheld tier would otherwise vanish
     // completely — the turn runs, the authored knob does nothing, and the bill arrives at the provider's default.
     // STDERR, never stdout: `--json` owns stdout, and a warning line mid-stream is a parse error downstream.

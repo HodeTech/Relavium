@@ -294,7 +294,11 @@ function registerAgent(program: Command, ctx?: CommandContext): void {
       'Run a single agent one-shot (prompt on stdin); --fixture replays a recorded cassette.',
     )
     .option('--input <key=value...>', 'a session {{ctx.*}} variable (repeatable)')
-    .option('--fixture <path>', 'replay a recorded LLM cassette (deterministic, offline)');
+    .option('--fixture <path>', 'replay a recorded LLM cassette (deterministic, offline)')
+    .option(
+      '--allow-mcp-stdio <digest...>',
+      'authorize a stdio MCP server by its consent digest for this invocation (repeatable)',
+    );
 
   if (ctx === undefined) {
     run.action(() => {

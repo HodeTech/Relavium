@@ -11,6 +11,8 @@ import {
 import type { ProviderId } from '@relavium/llm';
 import { REASONING_EFFORTS, type AgentSessionRecord, type ReasoningEffort } from '@relavium/shared';
 import { exportSession } from '../chat/export.js';
+import { createConsentGate } from '../engine/mcp-consent-gate.js';
+import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import {
@@ -539,6 +541,16 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   // fail-loud exit-2 CliError, cause stripped) before the session is live.
   const built = await (deps.buildSession ?? buildChatSession)({
     chat: config.chat,
+    // **Consent before any stdio MCP spawn** (ADR-0084 §1). `chat --agent` is the ordinary way an imported
+    // agent is opened, which is the case the gate exists for — and the one the first wiring missed by
+    // covering only `relavium run`. No `--allow-mcp-stdio` here: a chat is interactive by construction, so
+    // the refusal directs a scripted caller at `agent run`, which has the flag.
+    consentGate: createConsentGate({
+      io: deps.io,
+      global: deps.global,
+      homeDir,
+      prompt: createConsentPrompter(),
+    }),
     agentRef: args.agent,
     cwd: deps.global.cwd,
     projectConfigDir,
@@ -719,6 +731,13 @@ export async function chatResumeCommand(
     resolvePrice = readUserPricingOverlay(opened.db);
     const resumed = await (deps.buildResumedSession ?? buildResumedChatSession)({
       chat: config.chat,
+      // Consent before any stdio MCP spawn (ADR-0084 §1) — every path that opens an agent, not only `run`.
+      consentGate: createConsentGate({
+        io: deps.io,
+        global: deps.global,
+        homeDir,
+        prompt: createConsentPrompter(),
+      }),
       record: loaded.session,
       messages: loaded.messages,
       now,

@@ -222,6 +222,12 @@ const ENTRIES: readonly CommandManifestEntry[] = [
         type: 'string',
         description: 'replay a recorded LLM cassette (deterministic, offline)',
       },
+      {
+        name: 'allowMcpStdio',
+        type: 'string',
+        description:
+          'authorize a stdio MCP server by its consent digest for this invocation (repeatable)',
+      },
     ],
     effect: 'write',
   },

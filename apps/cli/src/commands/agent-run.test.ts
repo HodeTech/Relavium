@@ -103,7 +103,9 @@ describe('agentRunCommand (2.Q)', () => {
     const { d, out } = deps('summarize this', {
       providers: scriptedResolver([textTurn('the summary')]),
     });
-    expect(await agentRunCommand({ agent: agentPath(), input: [] }, d)).toBe(EXIT_CODES.success);
+    expect(await agentRunCommand({ agent: agentPath(), input: [], allowMcpStdio: [] }, d)).toBe(
+      EXIT_CODES.success,
+    );
     expect(out()).toContain('the summary');
   });
 
@@ -128,7 +130,10 @@ describe('agentRunCommand (2.Q)', () => {
       json: true,
       providers: scriptedResolver([writeCall]),
     });
-    await agentRunCommand({ agent: join(cwd, 'writer.agent.yaml'), input: [] }, d);
+    await agentRunCommand(
+      { agent: join(cwd, 'writer.agent.yaml'), input: [], allowMcpStdio: [] },
+      d,
+    );
     const completed = parseNdjson(out()).find((e) => e['type'] === 'session:turn_completed');
     const error = isRecord(completed) ? completed['error'] : undefined;
     expect(isRecord(error) ? error['code'] : undefined).toBe('tool_denied');
@@ -156,7 +161,10 @@ describe('agentRunCommand (2.Q)', () => {
       json: false, // PLAIN mode — the surface that shares makePlainPrinter
       providers: scriptedResolver([writeCall]),
     });
-    await agentRunCommand({ agent: join(cwd, 'writer.agent.yaml'), input: [] }, d);
+    await agentRunCommand(
+      { agent: join(cwd, 'writer.agent.yaml'), input: [], allowMcpStdio: [] },
+      d,
+    );
     expect(out()).toContain('[turn failed: tool_denied]'); // the code IS shown
     expect(out()).not.toContain('session is still active'); // …but no session-continuity hint on a one-shot
   });
@@ -166,7 +174,10 @@ describe('agentRunCommand (2.Q)', () => {
     // closeMcp teardown in the finally. Drives the REAL buildChatSession over a fake connection (no spawn).
     writeFileSync(
       join(cwd, 'mcp.agent.yaml'),
-      `${AGENT_YAML}\nmcp_servers:\n  - id: fs\n    transport: stdio\n    command: x`,
+      // `node` rather than a placeholder: the consent gate resolves the declared command against the ambient
+      // PATH before deciding, so a name that resolves nowhere is a correct refusal about the wrong thing.
+      // The connection is still fake — nothing spawns — and the grant is pre-authorized by digest below.
+      `${AGENT_YAML}\nmcp_servers:\n  - id: fs\n    transport: stdio\n    command: node`,
     );
     let closed = 0;
     const conn: McpConnection = {
@@ -185,13 +196,16 @@ describe('agentRunCommand (2.Q)', () => {
     const buildSession: typeof buildChatSession = (o) =>
       buildChatSession({
         ...o,
+        // The gate's own behaviour is pinned in `mcp-consent-gate.test.ts`; this test is about MCP routing
+        // and teardown, so it supplies a gate that decides nothing rather than a real binary and a real grant.
+        consentGate: () => Promise.resolve(new Map()),
         startMcpClient: () =>
           realStartMcpClient([
             { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
           ]),
       });
     const code = await agentRunCommand(
-      { agent: join(cwd, 'mcp.agent.yaml'), input: [] },
+      { agent: join(cwd, 'mcp.agent.yaml'), input: [], allowMcpStdio: [] },
       { ...d, buildSession },
     );
     expect(code).toBe(EXIT_CODES.success);
@@ -205,7 +219,9 @@ describe('agentRunCommand (2.Q)', () => {
       json: true,
       providers: scriptedResolver([textTurn('reply')]),
     });
-    expect(await agentRunCommand({ agent: agentPath(), input: [] }, d)).toBe(EXIT_CODES.success);
+    expect(await agentRunCommand({ agent: agentPath(), input: [], allowMcpStdio: [] }, d)).toBe(
+      EXIT_CODES.success,
+    );
     // Every stdout line is a valid SessionEvent object (parseNdjson throws on a leaked human line).
     const types = parseNdjson<{ type: string }>(out()).map((e) => e.type);
     expect(types[0]).toBe('session:started'); // the subscription is wired before start() — first line
@@ -236,9 +252,12 @@ describe('agentRunCommand (2.Q)', () => {
     };
     writeFileSync(join(cwd, 'tool.json'), JSON.stringify(toolCassette));
     const { d, out } = deps('read it', { json: true }); // no providers ⇒ pure offline cassette path
-    expect(await agentRunCommand({ agent: agentPath(), input: [], fixture: 'tool.json' }, d)).toBe(
-      EXIT_CODES.success,
-    );
+    expect(
+      await agentRunCommand(
+        { agent: agentPath(), input: [], allowMcpStdio: [], fixture: 'tool.json' },
+        d,
+      ),
+    ).toBe(EXIT_CODES.success);
     const types = parseNdjson<{ type: string }>(out()).map((e) => e.type);
     expect(types).toContain('agent:tool_call'); // the recorded tool call is replayed onto the stream
     expect(types).toContain('session:turn_completed');
@@ -249,9 +268,12 @@ describe('agentRunCommand (2.Q)', () => {
     writeFileSync(join(cwd, 'c.json'), JSON.stringify(CASSETTE));
     // Pass BOTH a fixture and an injected resolver; the cassette must win (offline determinism beats the seam).
     const { d, out } = deps('hi', { providers: scriptedResolver([textTurn('INJECTED')]) });
-    expect(await agentRunCommand({ agent: agentPath(), input: [], fixture: 'c.json' }, d)).toBe(
-      EXIT_CODES.success,
-    );
+    expect(
+      await agentRunCommand(
+        { agent: agentPath(), input: [], allowMcpStdio: [], fixture: 'c.json' },
+        d,
+      ),
+    ).toBe(EXIT_CODES.success);
     expect(out()).toContain('cassette reply');
     expect(out()).not.toContain('INJECTED');
   });
@@ -261,23 +283,29 @@ describe('agentRunCommand (2.Q)', () => {
     // chain classifies it into a turn error ⇒ the command RESOLVES to exit 1 (it must not reject/crash).
     writeFileSync(join(cwd, 'empty.json'), JSON.stringify({ ...CASSETTE, calls: [] }));
     const { d } = deps('hi', {});
-    expect(await agentRunCommand({ agent: agentPath(), input: [], fixture: 'empty.json' }, d)).toBe(
-      EXIT_CODES.workflowFailed,
-    );
+    expect(
+      await agentRunCommand(
+        { agent: agentPath(), input: [], allowMcpStdio: [], fixture: 'empty.json' },
+        d,
+      ),
+    ).toBe(EXIT_CODES.workflowFailed);
   });
 
   it('replays a --fixture cassette deterministically with NO providers injected (offline)', async () => {
     writeFileSync(join(cwd, 'c.json'), JSON.stringify(CASSETTE));
     const { d, out } = deps('anything', {}); // no providers ⇒ the cassette resolver is built from the file
-    expect(await agentRunCommand({ agent: agentPath(), input: [], fixture: 'c.json' }, d)).toBe(
-      EXIT_CODES.success,
-    );
+    expect(
+      await agentRunCommand(
+        { agent: agentPath(), input: [], allowMcpStdio: [], fixture: 'c.json' },
+        d,
+      ),
+    ).toBe(EXIT_CODES.success);
     expect(out()).toContain('cassette reply'); // the recorded chunks were replayed
   });
 
   it('maps a turn failure to exit 1 (the turn outcome, not the command shell)', async () => {
     const { d } = deps('hi', { providers: unresolvedResolver() }); // every turn settles as an internal error
-    expect(await agentRunCommand({ agent: agentPath(), input: [] }, d)).toBe(
+    expect(await agentRunCommand({ agent: agentPath(), input: [], allowMcpStdio: [] }, d)).toBe(
       EXIT_CODES.workflowFailed,
     );
   });
@@ -286,7 +314,7 @@ describe('agentRunCommand (2.Q)', () => {
     // A failing turn under --json must still terminate the NDJSON stream: the finally's cancel() runs before
     // unsubscribe, so the recorded error event rides the stream and session:cancelled is the final line.
     const { d, out, err } = deps('hi', { json: true, providers: unresolvedResolver() });
-    expect(await agentRunCommand({ agent: agentPath(), input: [] }, d)).toBe(
+    expect(await agentRunCommand({ agent: agentPath(), input: [], allowMcpStdio: [] }, d)).toBe(
       EXIT_CODES.workflowFailed,
     );
     const types = parseNdjson<{ type: string }>(out()).map((e) => e.type);
@@ -330,7 +358,7 @@ describe('agentRunCommand (2.Q)', () => {
     });
 
     // Exit 1 is the truncated stream — the EXPECTED failure since ADR-0082, and not the one under test.
-    expect(await agentRunCommand({ agent: agentPath(), input: [] }, d)).toBe(
+    expect(await agentRunCommand({ agent: agentPath(), input: [], allowMcpStdio: [] }, d)).toBe(
       EXIT_CODES.workflowFailed,
     );
     expect(out()).toContain('done'); // the text emitted before the cut still reached the user
@@ -348,21 +376,24 @@ describe('agentRunCommand (2.Q)', () => {
     // working flag would mislead. It fails loud (exit 2) — before reading stdin — until interpolation lands.
     const { d } = deps('hi', { providers: scriptedResolver([textTurn('x')]) });
     await expect(
-      agentRunCommand({ agent: agentPath(), input: ['file=./x.ts'] }, d),
+      agentRunCommand({ agent: agentPath(), input: ['file=./x.ts'], allowMcpStdio: [] }, d),
     ).rejects.toThrow(/`--input` is not supported yet/);
   });
 
   it('rejects an empty stdin prompt as a clean exit-2 fault', async () => {
     const { d } = deps('   ', { providers: scriptedResolver([]) });
-    await expect(agentRunCommand({ agent: agentPath(), input: [] }, d)).rejects.toThrow(
-      /no input message/,
-    );
+    await expect(
+      agentRunCommand({ agent: agentPath(), input: [], allowMcpStdio: [] }, d),
+    ).rejects.toThrow(/no input message/);
   });
 
   it('rejects an unknown agent as a clean exit-2 (typed invalid_invocation) fault', async () => {
     const { d } = deps('hi', { providers: scriptedResolver([textTurn('x')]) });
     let thrown: unknown;
-    await agentRunCommand({ agent: join(cwd, 'ghost.agent.yaml'), input: [] }, d).catch((e) => {
+    await agentRunCommand(
+      { agent: join(cwd, 'ghost.agent.yaml'), input: [], allowMcpStdio: [] },
+      d,
+    ).catch((e) => {
       thrown = e;
     });
     expect(isCliError(thrown)).toBe(true); // a typed CliError (exit 2), not a raw provider/parse crash
@@ -373,7 +404,7 @@ describe('agentRunCommand (2.Q)', () => {
     writeFileSync(join(cwd, 'bad.json'), '{ not json');
     const { d } = deps('hi', {});
     await expect(
-      agentRunCommand({ agent: agentPath(), input: [], fixture: 'bad.json' }, d),
+      agentRunCommand({ agent: agentPath(), input: [], allowMcpStdio: [], fixture: 'bad.json' }, d),
     ).rejects.toThrow(/not valid JSON/);
   });
 });

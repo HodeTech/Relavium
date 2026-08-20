@@ -35,7 +35,7 @@ import type {
 } from '@relavium/shared';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
-import { connectAgentMcp } from '../engine/mcp-servers.js';
+import { connectAgentMcp, type StdioConsentGate } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { assembleToolEnv, clampChatTier, wiredToolIds } from '../engine/tool-host/assemble.js';
 import { CliError } from '../process/errors.js';
@@ -95,6 +95,13 @@ export interface BuildChatSessionOptions {
    * `mcp_servers` discover their tools without a live server in the unit path.
    */
   readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  /**
+   * The consent gate ([ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §1) —
+   * threaded to {@link connectAgentMcp} so a chat session's declared stdio server is not spawned until the
+   * user has agreed to it. §1 names BOTH connect paths; only `relavium run` wired it at first, which left
+   * `chat`, `chat-resume`, the Home and `agent run` spawning ungated.
+   */
+  readonly consentGate?: StdioConsentGate;
   /**
    * Resolve a `{{secrets.<name>}}` placeholder in an MCP server `env` value (2.R Step 4, ADR-0052 §6). The
    * command wires the isolated `mcp-secret:*` keychain → `RELAVIUM_MCP_*` env chain; absent ⇒ a `{{` env value
@@ -511,6 +518,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     ? undefined
     : await connectAgentMcp(agent.mcp_servers, {
         cwd: opts.cwd,
+        ...(opts.consentGate === undefined ? {} : { consentGate: opts.consentGate }),
         ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
         ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
         ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
@@ -655,6 +663,13 @@ export interface BuildResumedChatSessionOptions {
   readonly toolHost?: ToolHost;
   /** Injectable MCP connect-all (2.R; see {@link BuildChatSessionOptions.startMcpClient}). */
   readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  /**
+   * The consent gate ([ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §1) —
+   * threaded to {@link connectAgentMcp} so a chat session's declared stdio server is not spawned until the
+   * user has agreed to it. §1 names BOTH connect paths; only `relavium run` wired it at first, which left
+   * `chat`, `chat-resume`, the Home and `agent run` spawning ungated.
+   */
+  readonly consentGate?: StdioConsentGate;
   /** Resolve `{{secrets.<name>}}` in an MCP server `env` (2.R Step 4; see {@link BuildChatSessionOptions.mcpSecretResolver}). */
   readonly mcpSecretResolver?: McpSecretResolver;
   /** Config `[[mcp_servers]]` registrations for by-name `ref` resolution (2.R Step 4b; see {@link BuildChatSessionOptions.mcpRegistrations}). */
@@ -700,6 +715,7 @@ export async function buildResumedChatSession(
   // never leaks an opened connection.
   const mcp = await connectAgentMcp(agent.mcp_servers, {
     cwd: context.workingDir,
+    ...(opts.consentGate === undefined ? {} : { consentGate: opts.consentGate }),
     ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
     ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
     ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
