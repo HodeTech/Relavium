@@ -531,6 +531,40 @@ describe('WorkflowInputSchema — the ADR-0083 tightenings', () => {
     expect(input({ default: 'closing }} only' }).success).toBe(true);
   });
 
+  it('detects a pair in LINEAR time — a hostile artifact cannot stall the parse', () => {
+    // The detector was `/\{\{[\s\S]*?\}\}/`, which is quadratic on a value that opens many pairs and
+    // closes none: the engine retries the lazy scan from every `{{`, each time running to the end of the
+    // string. Measured at 1033ms for this input, growing with the SQUARE — and authored YAML is not trusted
+    // input any more (ADR-0084 settled that an artifact is often not the user's), so a shared file could
+    // stall a parse. The ceiling is deliberately loose: the point is quadratic-vs-linear, not a stopwatch.
+    const hostile = '{{'.repeat(60_000);
+    const started = performance.now();
+    expect(input({ default: hostile }).success).toBe(true); // no terminated pair — it is ordinary text
+    expect(performance.now() - started).toBeLessThan(250);
+  });
+
+  it('agrees with the regex it replaced on every shape that decides the answer', () => {
+    // A terminated pair exists iff some `}}` follows the FIRST `{{`. The cases that make the two forms
+    // differ if the rewrite is wrong are the ones where a `}}` sits BEFORE the opener, or where the braces
+    // overlap.
+    const pairs: readonly (readonly [string, boolean])[] = [
+      ['', false],
+      ['{{', false],
+      ['}}', false],
+      ['}}{{', false], // the close is before the open — not a pair
+      ['{{}}', true],
+      ['{{{}}', true],
+      ['{{ a }}', true],
+      ['a}}b{{c', false],
+      ['a{{b}}c{{d', true],
+      ['{{\n}}', true],
+      ['use {{ to open a mustache', false],
+    ];
+    for (const [text, expected] of pairs) {
+      expect(input({ default: text }).success, JSON.stringify(text)).toBe(!expected);
+    }
+  });
+
   it('does not recurse without bound into a nested default', () => {
     // `containsInterpolation` walks a `default`'s full shape with a cycle guard but had no depth cap, unlike
     // `pattern`, which is length-capped for exactly this class of concern. A `RangeError` raised inside a

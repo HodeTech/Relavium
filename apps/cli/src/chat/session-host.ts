@@ -38,7 +38,11 @@ import type {
 } from '@relavium/shared';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
-import { connectAgentMcp, type StdioConsentGate } from '../engine/mcp-servers.js';
+import {
+  connectAgentMcp,
+  type ConnectAgentMcpOptions,
+  type StdioConsentGate,
+} from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { assembleToolEnv, clampChatTier, wiredToolIds } from '../engine/tool-host/assemble.js';
 import { CliError } from '../process/errors.js';
@@ -48,7 +52,7 @@ import {
   reasoningWithheldByCapFor,
   unpricedModelNote,
 } from './effort-notice.js';
-import { resolveChatAgentSource } from './agent-source.js';
+import { resolveChatAgentSource, type ResolvedChatAgent } from './agent-source.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import { hostAttemptTimer, hostSleep } from '../process/sleep.js';
 
@@ -480,33 +484,65 @@ function buildSessionRuntime(
   };
 }
 
+/**
+ * The agent this session binds for its whole lifetime, and the FILE it came from.
+ *
+ * A `/clear` rebuild ([ADR-0062](../../../../docs/decisions/0062-context-compaction-and-cli-history-commands.md) §7)
+ * passes the CURRENT bound agent to rebind verbatim; otherwise the ref is resolved from disk, or the built-in
+ * default is built. Reusing the agent avoids a disk re-read — and its failure modes — on `/clear`.
+ *
+ * The artifact path travels with the agent for the consent prompt
+ * ([ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §7):
+ * `chat --agent ./downloaded.agent.yaml` is the imported-artifact case the gate exists for, and naming the
+ * word the user typed instead of the path it resolved to answers a different question than the one asked. A
+ * rebind has no file — the agent is already in memory — so it reports none rather than a stale one.
+ */
+function bindChatAgent(opts: BuildChatSessionOptions): ResolvedChatAgent {
+  if (opts.agent !== undefined) return { agent: opts.agent, artifact: undefined };
+  return resolveChatAgentSource(opts.agentRef, {
+    cwd: opts.cwd,
+    projectConfigDir: opts.projectConfigDir,
+    defaultModel: opts.chat.defaultModel,
+    // ADR-0059: the persisted `[chat].default_provider` is used verbatim for the DEFAULT agent so a
+    // live-discovered id whose prefix the inference cannot place still resolves; absent ⇒ inference.
+    ...(opts.chat.defaultProvider === undefined
+      ? {}
+      : { defaultProvider: opts.chat.defaultProvider }),
+    // ADR-0066: the `[chat].reasoning_effort` default is baked onto the DEFAULT agent only (an authored
+    // agent owns its own). Threaded here so a config default lights up a default-agent chat.
+    ...(opts.chat.reasoningEffort === undefined
+      ? {}
+      : { reasoningEffort: opts.chat.reasoningEffort }),
+  });
+}
+
+/**
+ * The MCP connect options, with every absent one OMITTED rather than passed as an explicit `undefined`.
+ *
+ * `exactOptionalPropertyTypes` is on, so `{ startMcpClient: undefined }` and `{}` are different types — the
+ * spread-or-nothing shape is what keeps a caller that did not wire a dependency from asserting it wired one
+ * to `undefined`.
+ */
+function mcpOptionsFor(
+  opts: BuildChatSessionOptions,
+  mcpArtifact: string | undefined,
+): ConnectAgentMcpOptions {
+  return {
+    cwd: opts.cwd,
+    ...(opts.consentGate === undefined ? {} : { consentGate: opts.consentGate }),
+    // The caller's label wins (`agent run` names the ref the user typed); otherwise the path the agent was
+    // actually read from — §7's "declared in <file>" for the imported-artifact case.
+    ...(mcpArtifact === undefined ? {} : { artifact: mcpArtifact }),
+    ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
+    ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
+    ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
+  };
+}
+
 export async function buildChatSession(opts: BuildChatSessionOptions): Promise<BuiltChatSession> {
   const sessionId = opts.uuid();
-  // A `/clear` rebuild (ADR-0062 §7) passes the CURRENT bound agent to rebind verbatim; otherwise resolve `agentRef`
-  // from disk / the built-in default. Reusing the agent avoids a disk re-read (and its failure modes) on `/clear`.
-  // The FILE the agent came from travels with it, for the consent prompt (ADR-0084 §7): `chat --agent
-  // ./downloaded.agent.yaml` is the imported-artifact case the gate exists for, and naming the word the user
-  // typed instead of the path it resolved to answers a different question than the one being asked.
-  const resolved =
-    opts.agent === undefined
-      ? resolveChatAgentSource(opts.agentRef, {
-          cwd: opts.cwd,
-          projectConfigDir: opts.projectConfigDir,
-          defaultModel: opts.chat.defaultModel,
-          // ADR-0059: the persisted `[chat].default_provider` is used verbatim for the DEFAULT agent so a
-          // live-discovered id whose prefix the inference cannot place still resolves; absent ⇒ inference.
-          ...(opts.chat.defaultProvider === undefined
-            ? {}
-            : { defaultProvider: opts.chat.defaultProvider }),
-          // ADR-0066: the `[chat].reasoning_effort` default is baked onto the DEFAULT agent only (an authored
-          // agent owns its own). Threaded here so a config default lights up a default-agent chat.
-          ...(opts.chat.reasoningEffort === undefined
-            ? {}
-            : { reasoningEffort: opts.chat.reasoningEffort }),
-        })
-      : { agent: opts.agent, artifact: undefined };
-  const agent = resolved.agent;
-  const mcpArtifact = opts.mcpArtifact ?? resolved.artifact;
+  const { agent, artifact } = bindChatAgent(opts);
+  const mcpArtifact = opts.mcpArtifact ?? artifact;
   const context: SessionContext = {
     workingDir: opts.cwd,
     // The EFFECTIVE tier (full→project clamped for the chat surface — a chat READ can exfiltrate) — the SAME value the factory
@@ -522,16 +558,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
   // (fixture/offline replay) bypasses the path entirely — no config build, no spawn, no dial.
   const mcp = opts.disableMcp
     ? undefined
-    : await connectAgentMcp(agent.mcp_servers, {
-        cwd: opts.cwd,
-        ...(opts.consentGate === undefined ? {} : { consentGate: opts.consentGate }),
-        // The caller's label wins (`agent run` names the ref the user typed); otherwise the path the agent
-        // was actually read from — §7's "declared in <file>" for the imported-artifact case.
-        ...(mcpArtifact === undefined ? {} : { artifact: mcpArtifact }),
-        ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
-        ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
-        ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
-      });
+    : await connectAgentMcp(agent.mcp_servers, mcpOptionsFor(opts, mcpArtifact));
 
   try {
     const { bus, deps, emit, host, governor, attachDurabilityProbe, attachEffectJournal } =

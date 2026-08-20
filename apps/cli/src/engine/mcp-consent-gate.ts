@@ -130,7 +130,7 @@ export async function assertStdioConsent(
   const resolved = new Map<string, ResolvedStdioSpawn>();
   if (stdio.length === 0) return resolved;
 
-  const subjects: { spawn: ResolvedStdioSpawn; digest: string }[] = [];
+  const subjects: Subject[] = [];
   for (const ref of stdio) {
     const spawn = await resolveOrRefuse(ref, cwd, deps.artifact);
     resolved.set(spawn.serverId, spawn);
@@ -147,34 +147,72 @@ export async function assertStdioConsent(
       `warning: ${sanitizeUntrustedInline(path)} could not be read; every stdio MCP server will be asked about again.\n`,
     );
   }
-  const allowed = new Set(deps.allowedDigests ?? []);
 
-  // **Deduped by DIGEST.** Two ids naming a byte-identical declaration are one program and one decision —
-  // §10.18's "two agents declaring the same server in one artifact prompt ONCE". The first implementation
-  // asked twice and wrote two grant lines for one digest, and its own count test pinned "2 local programs",
-  // asserting the behaviour the acceptance forbids.
+  const pending = undecided(subjects, grants, deps.allowedDigests);
+  if (pending.length === 0) return resolved;
+  if (!canAsk(deps)) refuseWithDigests(pending, deps);
+  await askAndRecord(pending, path, grants, deps);
+  return resolved;
+}
+
+/** One declaration and the digest that identifies it — what a decision is about. */
+interface Subject {
+  readonly spawn: ResolvedStdioSpawn;
+  readonly digest: string;
+}
+
+/**
+ * The declarations still needing a decision — **deduped by DIGEST**.
+ *
+ * Two ids naming a byte-identical declaration are one program and one decision (§10.18's "two agents
+ * declaring the same server in one artifact prompt ONCE"). The first implementation asked twice and wrote
+ * two grant lines for one digest, and its own count test pinned "2 local programs" — asserting the behaviour
+ * the acceptance forbids.
+ */
+function undecided(
+  subjects: readonly Subject[],
+  grants: ReadonlyMap<string, unknown> | undefined,
+  allowedDigests: readonly string[] | undefined,
+): readonly Subject[] {
+  const allowed = new Set(allowedDigests ?? []);
   const seen = new Set<string>();
-  const pending = subjects.filter(({ digest }) => {
+  return subjects.filter(({ digest }) => {
     if ((grants?.has(digest) ?? false) || allowed.has(digest) || seen.has(digest)) return false;
     seen.add(digest);
     return true;
   });
-  if (pending.length === 0) return resolved;
+}
 
-  if (!canAsk(deps)) {
-    // §6: no prompt without all four signals. The per-server detail goes to STDERR as its own lines and the
-    // error message stays ONE line — `renderError` runs a message through `sanitizeInline`, which collapses
-    // every newline to a space, so a multi-line message arrived as an unreadable run-on with the digest —
-    // the one thing a CI author must copy — buried mid-line.
-    for (const { spawn, digest } of pending) {
-      deps.io.writeErr(`  ${safe(spawn.serverId)}: ${safe(spawn.resolvedCommand)}  ${digest}\n`);
-    }
-    throw new CliError(
-      'invalid_invocation',
-      `this run would start ${String(pending.length)} local program(s) not approved on this machine (listed above). Approve them interactively, or pass --allow-mcp-stdio <digest> for each — the digest is a hash of the declaration, not a secret.`,
-    );
+/**
+ * §6: no prompt without all four signals — so list what would have run, and refuse.
+ *
+ * The per-server detail goes to STDERR as its own lines and the error message stays ONE line: `renderError`
+ * runs a message through `sanitizeInline`, which collapses every newline to a space, so a multi-line message
+ * arrived as an unreadable run-on with the digest — the one thing a CI author must copy — buried mid-line.
+ */
+function refuseWithDigests(pending: readonly Subject[], deps: ConsentGateDeps): never {
+  for (const { spawn, digest } of pending) {
+    deps.io.writeErr(`  ${safe(spawn.serverId)}: ${safe(spawn.resolvedCommand)}  ${digest}\n`);
   }
+  throw new CliError(
+    'invalid_invocation',
+    `this run would start ${String(pending.length)} local program(s) not approved on this machine (listed above). Approve them interactively, or pass --allow-mcp-stdio <digest> for each — the digest is a hash of the declaration, not a secret.`,
+  );
+}
 
+/**
+ * Ask about each undecided program in turn, recording each YES before moving to the next.
+ *
+ * Recorded as it goes rather than in one batch at the end: a user who approves three and then hits an
+ * unwritable home should not lose the two decisions they already made — and a refusal at any point stops the
+ * run, so a grant is never written for a program that did not get one.
+ */
+async function askAndRecord(
+  pending: readonly Subject[],
+  path: string,
+  grants: Parameters<typeof subjectOf>[4],
+  deps: ConsentGateDeps,
+): Promise<void> {
   // §2: the COUNT once, before the first question, so a user knows how many decisions they are entering
   // rather than discovering the second after granting the first.
   if (pending.length > 1) {
@@ -193,29 +231,40 @@ export async function assertStdioConsent(
         `MCP server '${safe(spawn.serverId)}' was not approved, so the run did not start.`,
       );
     }
-    try {
-      appendGrant(path, {
-        v: 1,
-        digest,
-        command: spawn.resolvedCommand,
-        args: [...spawn.args],
-        envNames: Object.keys(spawn.env),
-        cwd: spawn.cwd,
-        grantedAt: now(),
-      });
-    } catch (error) {
-      // A symlinked store, a full disk, an unwritable home. The run fails CLOSED either way — nothing has
-      // been spawned, the gate runs entirely before any config is built — but it must fail as an invocation
-      // fault naming the file, not as exit 1 "an unexpected internal error occurred" seconds after the user
-      // answered YES to a security prompt.
-      throw new CliError(
-        'invalid_invocation',
-        `your consent could not be recorded in ${safe(path)}: ${safe(error instanceof Error ? error.message : String(error))}`,
-        { cause: error },
-      );
-    }
+    recordGrant(path, spawn, digest, now());
   }
-  return resolved;
+}
+
+/**
+ * Persist one decision, or fail as an INVOCATION fault naming the file.
+ *
+ * A symlinked store, a full disk, an unwritable home. The run fails CLOSED either way — nothing has been
+ * spawned, the gate runs entirely before any config is built — but it must not surface as exit 1 "an
+ * unexpected internal error occurred" seconds after the user answered YES to a security prompt.
+ */
+function recordGrant(
+  path: string,
+  spawn: ResolvedStdioSpawn,
+  digest: string,
+  grantedAt: string,
+): void {
+  try {
+    appendGrant(path, {
+      v: 1,
+      digest,
+      command: spawn.resolvedCommand,
+      args: [...spawn.args],
+      envNames: Object.keys(spawn.env),
+      cwd: spawn.cwd,
+      grantedAt,
+    });
+  } catch (error) {
+    throw new CliError(
+      'invalid_invocation',
+      `your consent could not be recorded in ${safe(path)}: ${safe(error instanceof Error ? error.message : String(error))}`,
+      { cause: error },
+    );
+  }
 }
 
 /** Resolve one declaration, turning a resolution failure into the surface's typed exit-2 fault. */

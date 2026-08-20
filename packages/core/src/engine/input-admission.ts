@@ -86,33 +86,9 @@ export function resolveAndValidateWorkflowInputs(
 ): InputAdmissionResult {
   const declared: readonly WorkflowInput[] = workflow.workflow.inputs ?? [];
   const supplied = raw ?? {};
-  const issues: InputAdmissionIssue[] = [];
-
   // Unknown keys first — a typo'd name is the most common mistake and the least useful to report as
   // "missing required input" for the one it was meant to be.
-  //
-  // The LISTING can throw, not only the per-key read below: an exotic object's `ownKeys` trap is caller
-  // code, and a review reproduced `Object.keys(new Proxy({}, { ownKeys() { throw … } }))` escaping `start()`
-  // as a raw `Error`. A caller doing exactly what this ADR tells it to — narrowing on `EngineStateError` —
-  // would not catch it. Guarded the same way the value read is, and for the same reason: this function
-  // answers yes or no.
-  const declaredNames = new Set(declared.map((input) => input.name));
-  let suppliedKeys: readonly string[] = [];
-  try {
-    suppliedKeys = Object.keys(supplied);
-  } catch {
-    issues.push({ message: 'the supplied inputs could not be enumerated' });
-  }
-  const unknown = suppliedKeys.filter((key) => !declaredNames.has(key));
-  for (const key of unknown.slice(0, MAX_UNKNOWN_KEY_ISSUES)) {
-    const message = 'unknown input — the workflow declares no input by this name';
-    issues.push(isReferenceableInputName(key) ? { name: key, message } : { message });
-  }
-  if (unknown.length > MAX_UNKNOWN_KEY_ISSUES) {
-    issues.push({
-      message: `and ${String(unknown.length - MAX_UNKNOWN_KEY_ISSUES)} further unknown inputs`,
-    });
-  }
+  const issues: InputAdmissionIssue[] = [...unknownKeyIssues(declared, supplied)];
 
   // **BUILT, not cloned** (§7). A fresh null-prototype map, filled by walking the DECLARED inputs and
   // reading the caller's object through `Object.hasOwn`. The caller's object is never spread, assigned
@@ -123,51 +99,99 @@ export function resolveAndValidateWorkflowInputs(
   const resolved: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
 
   for (const input of declared) {
-    // The READ itself can throw: a caller's object may define the key as an accessor. Letting that escape
-    // would break this function's own contract — it "answers yes or no", and a caller narrowing on
-    // `EngineStateError` would instead catch a raw `Error` from someone else's getter.
-    let provided: unknown;
-    try {
-      provided = Object.hasOwn(supplied, input.name) ? supplied[input.name] : undefined;
-    } catch {
-      issues.push({ name: input.name, message: 'reading the supplied value threw' });
-      continue;
-    }
-    // Absent means absent: a missing key and an own `undefined` are both omissions and take the default.
-    // `null` is a VALUE and falls through to validation, where it fails every declared type.
-    if (provided === undefined) {
-      if (mode === 'verify') continue; // the record is the authority — invent nothing (§5, §8)
-      if (input.default !== undefined) {
-        // Already validated against this input's own contract at parse, so it needs no re-check — and a
-        // `required` input with a default is satisfied by it.
-        resolved[input.name] = input.default;
-        continue;
-      }
-      if (input.required === true) {
-        issues.push({ name: input.name, message: 'missing required input' });
-      }
-      continue;
-    }
-    // **In `verify` mode the TYPE is checked and the `validation` block is not**, and the asymmetry is the
-    // whole legacy question rather than an oversight. A review measured the alternative: a run paused before
-    // ADR-0083 landed, whose recorded `severity` is `99` against a `max: 10` the engine never enforced, became
-    // permanently unresumable — the offending value IS the record, so nothing the caller passes can fix it,
-    // and the run's completed work is lost. That is not drift detection: on the only shipping resume surface
-    // the workflow is re-parsed from the FROZEN snapshot, so the bounds cannot have changed between
-    // processes, and value-vs-workflow drift is §5's content check to catch. The declared TYPE stays enforced
-    // because it is what interpolation actually depends on — a `number` slot holding a string changes what a
-    // downstream expression computes, where a violated bound only means the run was admitted under looser
-    // rules than exist today.
-    const reason =
-      mode === 'verify'
-        ? violatesDeclaredType(provided, input.type)
-        : violatesInputContract(provided, input.type, input.validation);
-    if (reason === undefined) {
-      resolved[input.name] = provided;
-    } else {
-      issues.push({ name: input.name, message: reason });
-    }
+    const outcome = admitOne(input, supplied, mode);
+    if (outcome.kind === 'value') resolved[input.name] = outcome.value;
+    else if (outcome.kind === 'issue') issues.push({ name: input.name, message: outcome.message });
   }
 
   return issues.length > 0 ? { ok: false, issues } : { ok: true, inputs: resolved };
+}
+
+/** One declared input's verdict: a value to record, a problem to report, or nothing at all. */
+type AdmissionOutcome =
+  | { readonly kind: 'value'; readonly value: unknown }
+  | { readonly kind: 'issue'; readonly message: string }
+  | { readonly kind: 'omit' };
+
+/**
+ * Every supplied key the workflow declares no input for, bounded and reported as its own issue.
+ *
+ * The LISTING can throw, not only the per-key read: an exotic object's `ownKeys` trap is caller code, and a
+ * review reproduced `Object.keys(new Proxy({}, { ownKeys() { throw … } }))` escaping `start()` as a raw
+ * `Error`. A caller doing exactly what this ADR tells it to — narrowing on `EngineStateError` — would not
+ * catch it. Guarded for the same reason the value read is: this function answers yes or no.
+ */
+function unknownKeyIssues(
+  declared: readonly WorkflowInput[],
+  supplied: Readonly<Record<string, unknown>>,
+): readonly InputAdmissionIssue[] {
+  const declaredNames = new Set(declared.map((input) => input.name));
+  let suppliedKeys: readonly string[] = [];
+  try {
+    suppliedKeys = Object.keys(supplied);
+  } catch {
+    return [{ message: 'the supplied inputs could not be enumerated' }];
+  }
+  const unknown = suppliedKeys.filter((key) => !declaredNames.has(key));
+  const message = 'unknown input — the workflow declares no input by this name';
+  const issues: InputAdmissionIssue[] = unknown
+    .slice(0, MAX_UNKNOWN_KEY_ISSUES)
+    .map((key) => (isReferenceableInputName(key) ? { name: key, message } : { message }));
+  if (unknown.length > MAX_UNKNOWN_KEY_ISSUES) {
+    issues.push({
+      message: `and ${String(unknown.length - MAX_UNKNOWN_KEY_ISSUES)} further unknown inputs`,
+    });
+  }
+  return issues;
+}
+
+/**
+ * Admit ONE declared input: read it, apply the absence rule, and validate what is there.
+ *
+ * The READ itself can throw — a caller's object may define the key as an accessor. Letting that escape would
+ * break this function's own contract: it "answers yes or no", and a caller narrowing on `EngineStateError`
+ * would instead catch a raw `Error` from someone else's getter.
+ */
+function admitOne(
+  input: WorkflowInput,
+  supplied: Readonly<Record<string, unknown>>,
+  mode: InputAdmissionMode,
+): AdmissionOutcome {
+  let provided: unknown;
+  try {
+    provided = Object.hasOwn(supplied, input.name) ? supplied[input.name] : undefined;
+  } catch {
+    return { kind: 'issue', message: 'reading the supplied value threw' };
+  }
+  // Absent means absent: a missing key and an own `undefined` are both omissions and take the default.
+  // `null` is a VALUE and falls through to validation, where it fails every declared type.
+  if (provided === undefined) return absentOutcome(input, mode);
+
+  // **In `verify` mode the TYPE is checked and the `validation` block is not**, and the asymmetry is the
+  // whole legacy question rather than an oversight. A review measured the alternative: a run paused before
+  // ADR-0083 landed, whose recorded `severity` is `99` against a `max: 10` the engine never enforced, became
+  // permanently unresumable — the offending value IS the record, so nothing the caller passes can fix it,
+  // and the run's completed work is lost. That is not drift detection: on the only shipping resume surface
+  // the workflow is re-parsed from the FROZEN snapshot, so the bounds cannot have changed between
+  // processes, and value-vs-workflow drift is §5's content check to catch. The declared TYPE stays enforced
+  // because it is what interpolation actually depends on — a `number` slot holding a string changes what a
+  // downstream expression computes, where a violated bound only means the run was admitted under looser
+  // rules than exist today.
+  const reason =
+    mode === 'verify'
+      ? violatesDeclaredType(provided, input.type)
+      : violatesInputContract(provided, input.type, input.validation);
+  return reason === undefined
+    ? { kind: 'value', value: provided }
+    : { kind: 'issue', message: reason };
+}
+
+/** What an ABSENT input resolves to: the record's authority in `verify`, the declared default in `admit`. */
+function absentOutcome(input: WorkflowInput, mode: InputAdmissionMode): AdmissionOutcome {
+  if (mode === 'verify') return { kind: 'omit' }; // the record is the authority — invent nothing (§5, §8)
+  // A default was already validated against this input's own contract at parse, so it needs no re-check —
+  // and a `required` input carrying one is satisfied by it.
+  if (input.default !== undefined) return { kind: 'value', value: input.default };
+  if (input.required === true) return { kind: 'issue', message: 'missing required input' };
+  return { kind: 'omit' };
 }

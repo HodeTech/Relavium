@@ -52,27 +52,52 @@ function equals(a: unknown, b: unknown, depth: number, seen: Map<unknown, Set<un
   if (depth > MAX_DEPTH) return false;
   if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
 
+  if (alreadyComparing(a, b, seen)) return true;
+
+  if (Array.isArray(a) || Array.isArray(b)) return arraysEqual(a, b, depth, seen);
+  if (!isPlainObject(a) || !isPlainObject(b)) return false;
+  return objectsEqual(a, b, depth, seen);
+}
+
+/**
+ * Whether this exact PAIR is already being compared further up the stack — the cycle guard.
+ *
+ * Records the pair as a side effect, which is why it reads as a question and is called for its answer: two
+ * cyclic structures are equal exactly when assuming they are leads to no contradiction.
+ */
+function alreadyComparing(a: unknown, b: unknown, seen: Map<unknown, Set<unknown>>): boolean {
   const partners = seen.get(a);
-  if (partners !== undefined && partners.has(b)) return true; // this exact pair is already being compared
+  if (partners !== undefined && partners.has(b)) return true;
   if (partners === undefined) seen.set(a, new Set([b]));
   else partners.add(b);
+  return false;
+}
 
-  if (Array.isArray(a) || Array.isArray(b)) {
-    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-    // An INDEX loop, not `every`: `Array.prototype.every` SKIPS holes, so a sparse array compared equal to a
-    // dense one in one direction and unequal in the other — an equality relation that is not symmetric,
-    // measured. Harmless while the only caller compared scalar inputs; the workflow-content comparison walks
-    // `nodes`, `edges` and `enum`, where a false positive means accepting a different graph.
-    for (let index = 0; index < a.length; index += 1) {
-      if (!equals(a[index], b[index], depth + 1, seen)) return false;
-    }
-    return true;
+function arraysEqual(
+  a: unknown,
+  b: unknown,
+  depth: number,
+  seen: Map<unknown, Set<unknown>>,
+): boolean {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  // An INDEX loop, not `every`: `Array.prototype.every` SKIPS holes, so a sparse array compared equal to a
+  // dense one in one direction and unequal in the other — an equality relation that is not symmetric,
+  // measured. Harmless while the only caller compared scalar inputs; the workflow-content comparison walks
+  // `nodes`, `edges` and `enum`, where a false positive means accepting a different graph.
+  for (let index = 0; index < a.length; index += 1) {
+    if (!equals(a[index], b[index], depth + 1, seen)) return false;
   }
-  if (!isPlainObject(a) || !isPlainObject(b)) return false;
+  return true;
+}
 
+function objectsEqual(
+  a: Readonly<Record<string, unknown>>,
+  b: Readonly<Record<string, unknown>>,
+  depth: number,
+  seen: Map<unknown, Set<unknown>>,
+): boolean {
   const aKeys = Object.keys(a);
-  const bKeys = Object.keys(b);
-  if (aKeys.length !== bKeys.length) return false;
+  if (aKeys.length !== Object.keys(b).length) return false;
   // `Object.hasOwn` rather than `key in b`: an inherited property is not a value `b` carries, and the
   // length check above would otherwise be satisfied by a prototype the two objects merely share.
   return aKeys.every((key) => Object.hasOwn(b, key) && equals(a[key], b[key], depth + 1, seen));

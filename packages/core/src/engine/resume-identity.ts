@@ -133,21 +133,8 @@ export function verifyResumeIdentity(params: {
   if (!snapshot.ok) return snapshot;
   const supplied = snapshot.value;
 
-  // A caller that names a mode must name the recorded one. A caller that names none takes the recorded one
-  // — NOT the `'local'` default the previous code fell back to, which turned an omission into a mode change.
-  if (
-    params.suppliedExecutionMode !== undefined &&
-    params.suppliedExecutionMode !== recordedExecutionMode
-  ) {
-    return {
-      ok: false,
-      refusal: {
-        code: 'execution_mode_mismatch',
-        // Both values are members of a closed enum, so naming them is safe and is the actionable part.
-        message: `this run started in \`${recordedExecutionMode}\` mode; the resume supplied \`${params.suppliedExecutionMode}\``,
-      },
-    };
-  }
+  const modeRefusal = executionModeRefusal(params.suppliedExecutionMode, recordedExecutionMode);
+  if (modeRefusal !== undefined) return { ok: false, refusal: modeRefusal };
 
   const secretNames = new Set(
     (params.workflow.workflow.inputs ?? [])
@@ -155,82 +142,12 @@ export function verifyResumeIdentity(params: {
       .map((declaredInput) => declaredInput.name),
   );
 
-  // Built key by key from the RECORD, so a caller's map can never contribute a key the run did not have.
-  const effective: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  const reconciled = reconcileRecorded(recordedInputs, supplied, secretNames);
+  if (!reconciled.ok) return reconciled;
+  const effective = reconciled.effective;
 
-  for (const key of Object.keys(recordedInputs)) {
-    const recorded = recordedInputs[key];
-    const isSlot = isMaskedSecret(recorded);
-    if (secretNames.has(key) !== isSlot) {
-      // The workflow and the record disagree about whether this input is a secret. Either the record holds
-      // a raw value where a masked slot belongs — which this engine has never emitted — or it holds a slot
-      // for an input the workflow no longer declares secret. Both are content divergence, and §5's
-      // workflow-content check names it better; this refuses rather than guessing which side is right.
-      return {
-        ok: false,
-        refusal: {
-          code: 'input_mismatch',
-          message: named(
-            key,
-            isSlot
-              ? 'the run recorded this as a secret, but the supplied workflow no longer declares it one'
-              : 'the supplied workflow declares this a secret, but the run recorded a value for it',
-          ),
-        },
-      };
-    }
-    if (isSlot) {
-      // A secret is not in the record and cannot be: the caller re-supplies it by name, or the resume is
-      // refused. It is never silently substituted, defaulted, or dropped to `undefined` (§6).
-      const resupplied = Object.hasOwn(supplied, key) ? supplied[key] : undefined;
-      // The PLACEHOLDER is not a value. A caller that rebuilds its input map from the durable record — which
-      // is exactly what `relavium gate` does, reading `runs.input_json` — holds `{ secret: true, ref }` for
-      // this key, and accepting that would let the run continue with the mask as its credential: every
-      // downstream `{{inputs.<name>}}` evaluating to a marker object instead of failing. The CLI's own
-      // `assertNoMaskedSecretInputs` refuses it one layer up; the engine must not depend on that.
-      if (resupplied === undefined || isMaskedSecret(resupplied)) {
-        return {
-          ok: false,
-          refusal: {
-            code: 'secret_input_missing',
-            message: named(key, 'this run needs its `secret` value re-supplied to resume'),
-          },
-        };
-      }
-      effective[key] = resupplied;
-      continue;
-    }
-    if (Object.hasOwn(supplied, key) && !deepStructuralEquals(supplied[key], recorded)) {
-      return {
-        ok: false,
-        refusal: {
-          code: 'input_mismatch',
-          // VALUE-FREE. The two values are the run's own data; naming them would put arbitrary caller and
-          // record content into an error message and every log sink downstream of it.
-          message: named(key, 'the supplied value is not the one this run was admitted with'),
-        },
-      };
-    }
-    effective[key] = recorded;
-  }
-
-  for (const key of Object.keys(supplied)) {
-    if (Object.hasOwn(recordedInputs, key) || supplied[key] === undefined) continue;
-    // An own `undefined` is an omission, exactly as it is at admission — skipped above. Anything else is a
-    // key the run never had, and admitting it would let a resume introduce an input.
-    return {
-      ok: false,
-      refusal: secretNames.has(key)
-        ? {
-            code: 'secret_input_unexpected',
-            message: named(key, 'this run holds no `secret` slot by this name'),
-          }
-        : {
-            code: 'input_mismatch',
-            message: named(key, 'this run was not admitted with this input'),
-          },
-    };
-  }
+  const extraRefusal = unexpectedSuppliedRefusal(supplied, recordedInputs, secretNames);
+  if (extraRefusal !== undefined) return { ok: false, refusal: extraRefusal };
 
   // The SAME contract check `start()` runs (§8), in `verify` mode: the record is the authority, so no
   // default is invented and no presence rule is re-litigated — but every value present is held to the
@@ -338,6 +255,128 @@ export function verifyFrozenWorkflowContent(
       message:
         'the supplied workflow has the same id but different content than the one this run started on',
     };
+  }
+  return undefined;
+}
+
+/**
+ * A caller that names an execution mode must name the recorded one.
+ *
+ * A caller that names NONE takes the recorded one — not the `'local'` default the previous code fell back
+ * to, which turned an omission into a mode change.
+ */
+function executionModeRefusal(
+  supplied: ExecutionMode | undefined,
+  recorded: ExecutionMode,
+): ResumeIdentityRefusal | undefined {
+  if (supplied === undefined || supplied === recorded) return undefined;
+  return {
+    code: 'execution_mode_mismatch',
+    // Both values are members of a closed enum, so naming them is safe and is the actionable part.
+    message: `this run started in \`${recorded}\` mode; the resume supplied \`${supplied}\``,
+  };
+}
+
+/**
+ * Build the effective input map from the RECORD, key by key, so a caller's map can never contribute a key
+ * the run did not have — refusing on the first key where the two disagree.
+ */
+function reconcileRecorded(
+  recordedInputs: Readonly<Record<string, unknown>>,
+  supplied: Readonly<Record<string, unknown>>,
+  secretNames: ReadonlySet<string>,
+): { ok: true; effective: Record<string, unknown> } | { ok: false; refusal: ResumeIdentityRefusal } {
+  const effective: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const key of Object.keys(recordedInputs)) {
+    const recorded = recordedInputs[key];
+    const isSlot = isMaskedSecret(recorded);
+    if (secretNames.has(key) !== isSlot) {
+      // The workflow and the record disagree about whether this input is a secret. Either the record holds
+      // a raw value where a masked slot belongs — which this engine has never emitted — or it holds a slot
+      // for an input the workflow no longer declares secret. Both are content divergence, and §5's
+      // workflow-content check names it better; this refuses rather than guessing which side is right.
+      return {
+        ok: false,
+        refusal: {
+          code: 'input_mismatch',
+          message: named(
+            key,
+            isSlot
+              ? 'the run recorded this as a secret, but the supplied workflow no longer declares it one'
+              : 'the supplied workflow declares this a secret, but the run recorded a value for it',
+          ),
+        },
+      };
+    }
+    if (isSlot) {
+      const resupplied = resuppliedSecret(key, supplied);
+      if (resupplied.ok) effective[key] = resupplied.value;
+      else return resupplied;
+      continue;
+    }
+    if (Object.hasOwn(supplied, key) && !deepStructuralEquals(supplied[key], recorded)) {
+      return {
+        ok: false,
+        refusal: {
+          code: 'input_mismatch',
+          // VALUE-FREE. The two values are the run's own data; naming them would put arbitrary caller and
+          // record content into an error message and every log sink downstream of it.
+          message: named(key, 'the supplied value is not the one this run was admitted with'),
+        },
+      };
+    }
+    effective[key] = recorded;
+  }
+  return { ok: true, effective };
+}
+
+/**
+ * The re-supplied value for a masked secret slot, or the refusal (§6).
+ *
+ * A secret is not in the record and cannot be: the caller re-supplies it by name, or the resume is refused.
+ * It is never silently substituted, defaulted, or dropped to `undefined`.
+ *
+ * The PLACEHOLDER is not a value. A caller that rebuilds its input map from the durable record — which is
+ * exactly what `relavium gate` does, reading `runs.input_json` — holds `{ secret: true, ref }` for this key,
+ * and accepting that would let the run continue with the mask as its credential: every downstream
+ * `{{inputs.<name>}}` evaluating to a marker object instead of failing. The CLI's own
+ * `assertNoMaskedSecretInputs` refuses it one layer up; the engine must not depend on that.
+ */
+function resuppliedSecret(
+  key: string,
+  supplied: Readonly<Record<string, unknown>>,
+): { ok: true; value: unknown } | { ok: false; refusal: ResumeIdentityRefusal } {
+  const resupplied = Object.hasOwn(supplied, key) ? supplied[key] : undefined;
+  if (resupplied === undefined || isMaskedSecret(resupplied)) {
+    return {
+      ok: false,
+      refusal: {
+        code: 'secret_input_missing',
+        message: named(key, 'this run needs its `secret` value re-supplied to resume'),
+      },
+    };
+  }
+  return { ok: true, value: resupplied };
+}
+
+/**
+ * A supplied key the run never had — which admitting would let a resume INTRODUCE an input.
+ *
+ * An own `undefined` is an omission, exactly as it is at admission, and is skipped.
+ */
+function unexpectedSuppliedRefusal(
+  supplied: Readonly<Record<string, unknown>>,
+  recordedInputs: Readonly<Record<string, unknown>>,
+  secretNames: ReadonlySet<string>,
+): ResumeIdentityRefusal | undefined {
+  for (const key of Object.keys(supplied)) {
+    if (Object.hasOwn(recordedInputs, key) || supplied[key] === undefined) continue;
+    return secretNames.has(key)
+      ? {
+          code: 'secret_input_unexpected',
+          message: named(key, 'this run holds no `secret` slot by this name'),
+        }
+      : { code: 'input_mismatch', message: named(key, 'this run was not admitted with this input') };
   }
   return undefined;
 }

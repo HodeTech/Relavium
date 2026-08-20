@@ -141,7 +141,19 @@ const PATTERN_MAX_SOURCE = 512;
  * first version of this rule used `includes('{{')` — which rejected `default: 'use {{ to open a mustache'`,
  * a string core would never read a reference in, with no escape available anywhere to express it.
  */
-const INTERPOLATION_PAIR = /\{\{[\s\S]*?\}\}/;
+function hasInterpolationPair(text: string): boolean {
+  // **`indexOf`, not a regex.** `/\{\{[\s\S]*?\}\}/` is quadratic on an artifact that opens many pairs
+  // and closes none: the engine retries the lazy scan from every `{{`, each time running to the end of the
+  // string. Measured at 1033ms for a 120KB `default` of `'{{'` repeated, against 0.011ms here — and the cost
+  // grows with the square, so a larger file is worse. Authored YAML is not trusted input any more
+  // ([ADR-0084](../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) settled that an artifact
+  // is often not the user's), which turns a parse-time stall into something a shared file can cause.
+  //
+  // Exactly equivalent: a terminated pair exists iff some `}}` follows the FIRST `{{`. If the only `}}`
+  // sits before it (`}}{{`), neither form matches.
+  const open = text.indexOf('{{');
+  return open !== -1 && text.indexOf('}}', open + 2) !== -1;
+}
 
 /** How deep {@link containsInterpolation} walks a `default` before it stops looking. */
 const MAX_DEFAULT_DEPTH = 32;
@@ -159,7 +171,7 @@ function containsInterpolation(
   seen: WeakSet<object> = new WeakSet<object>(),
   depth = 0,
 ): boolean {
-  if (typeof value === 'string') return INTERPOLATION_PAIR.test(value);
+  if (typeof value === 'string') return hasInterpolationPair(value);
   if (typeof value !== 'object' || value === null) return false;
   // **Bounded, and giving up is SAFE here** — the reasoning matters more than the number. A `default`
   // nested deeper than this is a non-primitive, and `matchesDeclaredType` rejects a non-primitive default
