@@ -55,6 +55,13 @@ PR #75, 2026-07-13). The phase is a full-screen Home-managed CLI with conversati
 browsers, competitor-breadth tools, settings/theming/`en`+`tr` localization, and the
 run-ops resume follow-up.
 
+**An interlude is running between Wave 1 and Wave 2 of the remediation: Phase 2.6.5 (Core reliability),
+14 of 47 items closed** — `W0` (PR #82, 2026-08-11) and `W1`, the eight P0 blockers plus `CR-92`, merged
+2026-08-24 (PR #83) behind [ADR-0078](docs/decisions/0078-ordered-durable-append-and-the-terminal-outbox.md)–[ADR-0084](docs/decisions/0084-consent-before-a-local-mcp-spawn.md):
+ordered durable append, cross-process run ownership, the durable effect journal, untrusted compaction summaries,
+the stream-grammar seam obligation, engine-side input admission and resume identity, and consent before a local
+MCP spawn. No new product surface — only the invariants an existing surface already claims.
+
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);
 [README.md](README.md) is the public overview;

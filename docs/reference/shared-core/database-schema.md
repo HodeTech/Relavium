@@ -210,7 +210,7 @@ erDiagram
 
 #### `llm_providers`
 
-Registered LLM providers. The actual API key never lives here — only a reference; the key is stored in the OS keychain (see [keychain-and-secrets.md](keychain-and-secrets.md)).
+Registered LLM providers. The actual API key never lives here — only a reference; the key is stored in the OS keychain (see [keychain-and-secrets.md](../desktop/keychain-and-secrets.md)).
 
 | Column | Type | Constraints |
 |--------|------|-------------|
@@ -849,7 +849,7 @@ This realizes the concurrent-process write requirement recorded in the [ADR-0064
 
 At-rest encryption of `history.db` is **per-surface**:
 
-- **Desktop:** opened with SQLCipher. The passphrase is derived from a stable machine secret (combined with the OS keychain entry) so the database opens on restart without prompting the user; see [keychain-and-secrets.md](keychain-and-secrets.md).
+- **Desktop:** opened with SQLCipher. The passphrase is derived from a stable machine secret (combined with the OS keychain entry) so the database opens on restart without prompting the user; see [keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
 - **CLI (Phase 2):** opened with `better-sqlite3` **unencrypted**, guarded by owner-only OS file permissions — `~/.relavium/` at `0700` and `history.db` (with its `-wal`/`-shm` sidecars) at `0600`, set with an explicit `chmod` (umask-independent, applied even to a pre-existing directory). On Windows, POSIX mode bits do not apply (`chmod` is a no-op); protection falls to the per-user `%USERPROFILE%` NTFS ACL. The file holds **no credentials** — keys stay in the OS keychain ([ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md)) and the engine masks secrets at the bus before persistence ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) — so the unencrypted-at-rest content is run data (prompts, outputs, costs), not secrets. Rationale and the cross-surface Phase-3 follow-on: [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md).
 
 The per-project `runs.db` is **not** encrypted on any surface because it is intentionally git-committed and contains only non-sensitive run metadata (no prompts, completions, or tokens).

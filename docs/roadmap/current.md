@@ -90,7 +90,7 @@ flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
     LEDGER["#W15-1 — realized-cost ledger ✅<br/>ADR-0076 + ADR-0077"]
-    P265["Phase 2.6.5 — Core reliability<br/>46 CR items · 8 P0 ADRs · 9 closed<br/>absorbs the hostile-MCP class"]
+    P265["Phase 2.6.5 — Core reliability<br/>47 CR items · 8 P0 ADRs · W0+W1 closed (14)<br/>absorbs the hostile-MCP class"]
     W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
@@ -470,10 +470,16 @@ can be done from that document alone. An adversarial plan review on 2026-08-10 c
 the exit rule and the execution order, and added two items (`CR-17` resume identity, `CR-63` `input_schema`
 docs-only).
 
-> **Live status — 6 of 46 closed, merged 2026-08-11 (PR #82).** The prerequisite (`#W15-1`), the oracle
-> (`CR-90`, `CR-91`) and all of `W0` (`CR-01`–`CR-03`). `CR-64` was added in the same batch and is open.
-> **Next is the durability spine — `CR-10` first**, and it is ADR-first: no code until the decision is
-> recorded. Per-item history and the carried-forward gaps live in the phase document.
+> **Live status — 14 of 47 closed. `W0` and `W1` are both done.**
+>
+> - **Batch 1, merged 2026-08-11 (PR #82)** — the prerequisite (`#W15-1`), the oracle (`CR-90`, `CR-91`) and
+>   all of `W0` (`CR-01`–`CR-03`). `CR-64` was added in the same batch and is open.
+> - **Batch 2, merged 2026-08-24 (PR #83)** — all of `W1`: the eight P0 blockers plus `CR-92`, behind
+>   ADR-0078…ADR-0084. A comprehensive review of the assembled PR found seven further defects, six of them in
+>   the W1 code itself; all seven were fixed and mutation-verified before merge.
+>
+> **Next is `W2` — liveness and deadlines.** Per-item history, the seven post-review findings and the
+> carried-forward gaps live in the phase document.
 
 **This is the corrected execution order, and it is what the graph above shows:**
 

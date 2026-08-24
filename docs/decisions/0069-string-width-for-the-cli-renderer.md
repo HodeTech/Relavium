@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-07-10 (accepted 2026-07-11)
-- **Related**: [ADR-0068](0068-full-screen-tui-renderer-ink7-harness.md) · [ADR-0047](0047-cli-render-seam-and-framework-free-cores.md) · [ADR-0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md)
+- **Related**: [ADR-0068](0068-full-screen-tui-renderer-ink7-harness.md) · [ADR-0047](0047-cli-framework-commander-ink-clack.md) · [ADR-0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md)
 
 > **Accepted on 2026-07-11** when the maintainer merged PR #74 (2.6.F) into `main` — the merge carries the
 > `string-width` dependency, which is the [CLAUDE.md](../../CLAUDE.md) rule 2 approval this ADR gated. The code in
