@@ -190,7 +190,7 @@ erDiagram
     runs ||--o{ step_executions : "run_id CASCADE"
     runs ||--o{ run_events : "run_id CASCADE"
     runs ||--o{ run_costs : "run_id CASCADE"
-    runs ||--|| run_leases : "run_id CASCADE"
+    runs ||--o| run_leases : "run_id CASCADE"
     step_executions ||--o{ messages : "step_execution_id CASCADE"
     agents |o--o{ step_executions : "agent_id (nullable)"
     agents |o--o{ agent_sessions : "agent_id (nullable)"
@@ -198,6 +198,11 @@ erDiagram
     agent_sessions ||--o{ session_costs : "session_id CASCADE"
     media_objects ||--o{ media_references : "handle CASCADE"
 ```
+
+> **A run has AT MOST one lease, not exactly one** — hence `||--o|`. A lease row exists only while some
+> process owns the run: it is created on acquire and DELETED on release, so most runs have none for most of
+> their lifetime, and a finished run has none at all. The diagram read `||--||` and would have told a
+> future store author to make the row mandatory.
 
 > **Two edges are deliberately missing above.** `messages.run_id` and `run_events.step_execution_id` are denormalized for read-path efficiency — the schema comments say so explicitly ("the reference DDL declares no FK here"). They carry the value but not the constraint, so they're annotated on the entities above, not drawn as relationships.
 
@@ -583,8 +588,13 @@ CREATE INDEX idx_run_effects_scope ON run_effects (scope);  -- the resume gate r
 **No foreign key to `runs`, deliberately** — see the ER note above. The `scope` is an opaque string rather than
 a `run_id` column for the same reason it drops the attempt: a SESSION effect has no run at all, and the
 node-retry attempt resets to 1 on both a crash-resume and a budget approval, so a key containing it would miss
-the row the gate looks for. Retention is stated in [effect-journal.md](effect-journal.md) §9 and **is not
-implemented yet** — no sweep touches this table today.
+the row the gate looks for. Retention is stated in [effect-journal.md](effect-journal.md) §9 and is **partly implemented, by design**:
+the `committed` sweeps SHIP — a run's rows go when it reaches a terminal, and a session's when a turn can no
+longer be resumed — while **unresolved rows (`prepared` / `dispatched` / `ambiguous` / `needs_attention`) are
+never swept by age**. That asymmetry is the contract, not a gap: an unresolved row is the record an operator
+needs, and it outlives its run deliberately, which is the same reason the table carries no foreign key to
+`runs`. (This paragraph previously said no sweep touches the table at all, which contradicted both the
+shipped `effect-retention.ts` and §9 of the effect-journal reference.)
 
 ### Agent-session tables
 
