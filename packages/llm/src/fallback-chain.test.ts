@@ -898,6 +898,108 @@ describe('FallbackChain — backoff and cooldown', () => {
     await expect(chain.generate(userReq)).rejects.toThrow('cumulative overflowed');
   });
 
+  it('a cancel landing in the preAttempt gap does not wait for the provider deadline (generate)', async () => {
+    // The reachable gap: the loop checks cancellation, then `preAttempt` and credential resolution run, and
+    // only THEN is the deadline opened. A cancel landing in between reaches `openDeadline` already-aborted —
+    // which used to leave the hard race with nothing to observe, so an uncooperative provider held the call
+    // until the absolute timer. This test would hang for the shipped 120 s default without the caller latch.
+    const controller = new AbortController();
+    const primary = makeProvider({
+      id: 'anthropic',
+      generate: () => new Promise<never>(() => undefined), // ignores its signal entirely
+    });
+    const { options } = makeOptions({
+      preAttempt: () => {
+        controller.abort(); // the user pressed Ctrl-C exactly here
+        return Promise.resolve();
+      },
+    });
+    // The deadline port MUST be wired, or `#openDeadline` returns undefined and the chain plain-`await`s a
+    // provider that never settles — a hang with no deadline in it at all, which is a different bug. The
+    // timer here is never fired: settling proves the CALLER latch woke the race, not the clock.
+    const deadlinePort = {
+      newAbortController: (): AbortControllerLike => {
+        let aborted = false;
+        const listeners = new Set<() => void>();
+        return {
+          signal: {
+            get aborted() {
+              return aborted;
+            },
+            addEventListener: (_t: string, l: () => void) => listeners.add(l),
+            removeEventListener: (_t: string, l: () => void) => listeners.delete(l),
+          },
+          abort: () => {
+            if (aborted) return;
+            aborted = true;
+            for (const l of [...listeners]) l();
+          },
+        };
+      },
+      setTimer: () => () => undefined, // armed, never fired
+    };
+    const chain = new FallbackChain([entry(primary, 'claude-opus-4-8')], {
+      ...options,
+      ...deadlinePort,
+    });
+
+    const error = await rejectedError(chain.generate({ ...userReq, signal: controller.signal }));
+    expect(error.kind).toBe('cancelled');
+  });
+
+  it('…and the same gap on the STREAM path', async () => {
+    // Both paths open their own deadline, so both need the latch. The stream path is the one a user is most
+    // likely to cancel, because it is the one they are watching.
+    const controller = new AbortController();
+    const primary = makeProvider({
+      id: 'anthropic',
+      // A hand-rolled iterator rather than a generator: an `async function*` with no `yield` is a lint
+      // error, and the point is precisely that `next()` never settles.
+      stream: () => ({
+        [Symbol.asyncIterator]: () => ({ next: () => new Promise<never>(() => undefined) }),
+      }),
+    });
+    const { options } = makeOptions({
+      preAttempt: () => {
+        controller.abort();
+        return Promise.resolve();
+      },
+    });
+    // The deadline port MUST be wired, or `#openDeadline` returns undefined and the chain plain-`await`s a
+    // provider that never settles — a hang with no deadline in it at all, which is a different bug. The
+    // timer here is never fired: settling proves the CALLER latch woke the race, not the clock.
+    const deadlinePort = {
+      newAbortController: (): AbortControllerLike => {
+        let aborted = false;
+        const listeners = new Set<() => void>();
+        return {
+          signal: {
+            get aborted() {
+              return aborted;
+            },
+            addEventListener: (_t: string, l: () => void) => listeners.add(l),
+            removeEventListener: (_t: string, l: () => void) => listeners.delete(l),
+          },
+          abort: () => {
+            if (aborted) return;
+            aborted = true;
+            for (const l of [...listeners]) l();
+          },
+        };
+      },
+      setTimer: () => () => undefined, // armed, never fired
+    };
+    const chain = new FallbackChain([entry(primary, 'claude-opus-4-8')], {
+      ...options,
+      ...deadlinePort,
+    });
+
+    const chunks = await collect(chain.stream({ ...userReq, signal: controller.signal }));
+    const last = chunks.at(-1);
+    expect(last?.type).toBe('error');
+    expect(last?.type === 'error' ? last.error.kind : undefined).toBe('cancelled');
+  });
+
   it("threads the request's signal into the host timer, so a cancel can break the wait (#W15-14)", async () => {
     // The honoured Retry-After is clamped to a 60 s ceiling, not dropped — long enough that a cancel arriving
     // mid-wait has to be honoured. The chain passed the delay to a bare timer with no signal, so it could not.

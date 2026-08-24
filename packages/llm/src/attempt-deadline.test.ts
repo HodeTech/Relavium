@@ -121,6 +121,67 @@ describe('openDeadline (ADR-0082 §5-§7)', () => {
     scope.dispose();
   });
 
+  it('a PRE-ABORTED caller settles the race IMMEDIATELY — without waiting for the deadline', async () => {
+    // The liveness half the neighbouring test does not cover: it asserts `signal.aborted` and `classify()`,
+    // both of which were already right, and never races anything. A review measured what that hid — with a
+    // provider that ignores its signal, `race()` stayed pending until the ABSOLUTE timer fired, so a cancel
+    // landing in the gap between the loop's own check and `openDeadline` (during `preAttempt`, or credential
+    // resolution) looked ignored for the shipped default of 120 seconds.
+    //
+    // The timer is never fired here, and that is the assertion: settling proves the caller latch woke it.
+    const caller = controller();
+    caller.abort();
+    const timer = manualTimer();
+    const scope = openDeadline(120_000, controller, timer.set, caller.signal);
+
+    await expect(scope.race(NEVER)).resolves.toEqual({ outcome: 'deadline' });
+    expect(timer.armed()).toBe(1); // …still armed: nothing fired it
+    expect(scope.classify()).toBe('caller'); // …and the REASON is still caller cancellation
+    scope.dispose();
+    expect(timer.armed()).toBe(0);
+  });
+
+  it('a caller aborting BETWEEN races settles the next one immediately too', async () => {
+    // The latch has to survive past the wake: `onCallerAbort` wakes the waiters that exist AT THAT MOMENT,
+    // so a race registered afterwards would have had nothing to observe without the stored flag.
+    const caller = controller();
+    const timer = manualTimer();
+    const scope = openDeadline(120_000, controller, timer.set, caller.signal);
+
+    expect(await scope.race(Promise.resolve('chunk 1'))).toEqual({
+      outcome: 'settled',
+      value: 'chunk 1',
+    });
+    caller.abort(); // …no race is in flight, so there is no waiter to wake
+    await expect(scope.race(NEVER)).resolves.toEqual({ outcome: 'deadline' });
+    expect(timer.armed()).toBe(1);
+    expect(scope.classify()).toBe('caller');
+    scope.dispose();
+  });
+
+  it('does not leave the abandoned step UNHANDLED when the caller pre-aborted', async () => {
+    // The same hazard the deadline arm documents: the step is already invoked, so returning without a
+    // handler leaves a live promise nobody owns, and Node's default is `--unhandled-rejections=throw`.
+    const caller = controller();
+    caller.abort();
+    const timer = manualTimer();
+    const scope = openDeadline(120_000, controller, timer.set, caller.signal);
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      await scope.race(Promise.reject(new Error('late provider rejection')));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
+    scope.dispose();
+  });
+
   it('a caller that ALREADY aborted is honoured without a listener', () => {
     // Matching a native signal: a listener registered after the abort never fires, so the constructor has
     // to check first or the attempt would run unbounded under an already-cancelled caller.

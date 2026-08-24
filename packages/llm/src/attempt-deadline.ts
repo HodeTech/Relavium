@@ -76,6 +76,18 @@ export function openDeadline(
   const controller = newController();
   let expired = false;
   let disposed = false;
+  /**
+   * Caller cancellation, LATCHED — not merely forwarded to the provider-facing controller.
+   *
+   * The state has to be readable by a `race` that has not been called yet. Aborting the controller and
+   * registering a listener both act only on waiters that already exist, and a native signal does not re-emit
+   * `abort` to a listener attached later — so a cancellation landing before the first `race` left nothing
+   * for that race to observe. A review measured the consequence: with a provider that ignores its signal,
+   * `race()` stayed pending until the ABSOLUTE deadline fired, which on the shipped default is 120 seconds
+   * of a cancel that looks ignored. `classify()` said `caller` the whole time — the label was right and the
+   * liveness was not.
+   */
+  let callerCancelled = callerSignal?.aborted === true;
   const waiters = new Set<() => void>();
 
   const trip = (): void => {
@@ -86,11 +98,12 @@ export function openDeadline(
   const disarm = setTimer(timeoutMs, trip);
 
   const onCallerAbort = (): void => {
+    callerCancelled = true;
     for (const wake of waiters) wake();
     controller.abort();
   };
   // A caller that has ALREADY aborted never fires a listener (matching a native signal), so check first.
-  if (callerSignal?.aborted === true) {
+  if (callerCancelled) {
     controller.abort();
   } else {
     callerSignal?.addEventListener('abort', onCallerAbort);
@@ -99,7 +112,7 @@ export function openDeadline(
   return {
     signal: controller.signal,
     race: async <T>(step: Promise<T>) => {
-      if (expired) {
+      if (expired || callerCancelled) {
         // **Discarded, but discarded HANDLED.** `step` is `iterator.next()`, already invoked by the caller —
         // argument evaluation happens before the call — so returning without attaching a handler leaves a
         // live promise nobody owns. The likeliest way to reach here is the well-behaved case: the deadline
@@ -108,6 +121,11 @@ export function openDeadline(
         // Node's default is `--unhandled-rejections=throw`, so that killed the process mid-turn with a stack
         // trace instead of surfacing the `timeout` error the caller had just computed. A review reproduced
         // it: `unhandled= 1`.
+        //
+        // `callerCancelled` shares this arm because the disposal is identical — abandon the step, handle its
+        // late rejection — and only the LABEL differs, which `classify()` owns and gives to the caller. The
+        // outcome stays `'deadline'` here for exactly that reason: it means "this step was abandoned", not
+        // "the timer fired", and every caller of `race` reads `classify()` for the reason.
         void step.catch(() => undefined);
         return { outcome: 'deadline' };
       }
