@@ -240,9 +240,13 @@ function patternEscapesItsAnchors(source: string): boolean {
  * **No control characters, in every string-shaped format.** These values are echoed by surfaces and
  * written to log sinks; a `uri` of `http://x/\u001b[2J` is not a shape this contract should call valid.
  */
-const NO_CTRL = '[^\\s\\u0000-\\u001f\\u007f]';
-const NO_CTRL_NO_AT = '[^\\s\\u0000-\\u001f\\u007f@]';
-const NO_CTRL_LABEL = '[^\\s\\u0000-\\u001f\\u007f@.]';
+// `String.raw`, so these read as the regex SOURCE they are: one backslash means one backslash. The
+// doubled form was a step of mental arithmetic on every read, in a file where getting a character class
+// wrong silently WIDENS what `format:` accepts. `format-source.test.ts` pins the exclusions through the
+// admission entry point, so a drift in this escaping fails a test rather than quietly relaxing a gate.
+const NO_CTRL = String.raw`[^\s\u0000-\u001f\u007f]`;
+const NO_CTRL_NO_AT = String.raw`[^\s\u0000-\u001f\u007f@]`;
+const NO_CTRL_LABEL = String.raw`[^\s\u0000-\u001f\u007f@.]`;
 /**
  * RFC 3339, with PER-COMPONENT ranges.
  *
@@ -257,10 +261,10 @@ const RFC_3339 =
   /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])[Tt](?:[01]\d|2[0-3]):[0-5]\d:(?:[0-5]\d|60)(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/; // NOSONAR — the branches ARE the bounds; see above
 
 const FORMAT_CHECKS: ReadonlyMap<string, RegExp> = new Map<string, RegExp>([
-  ['email', new RegExp(`^${NO_CTRL_NO_AT}+@${NO_CTRL_LABEL}+(?:\\.${NO_CTRL_LABEL}+)+$`)],
+  ['email', new RegExp(String.raw`^${NO_CTRL_NO_AT}+@${NO_CTRL_LABEL}+(?:\.${NO_CTRL_LABEL}+)+$`)],
   // Any ABSOLUTE URI, not only a hierarchical one. The vocabulary key is `uri`: the previous `://`
   // requirement rejected `mailto:`, `urn:` and `data:`, which are URIs by every definition the word has.
-  ['uri', new RegExp(`^[a-z][a-z\\d+.-]*:${NO_CTRL}+$`, 'i')],
+  ['uri', new RegExp(String.raw`^[a-z][a-z\d+.-]*:${NO_CTRL}+$`, 'i')],
   ['uuid', /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i],
   ['date-time', RFC_3339],
 ]);
