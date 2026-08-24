@@ -21,6 +21,7 @@ import {
   blocksResume,
   type DurableWriteContext,
   EffectConflictError,
+  EffectTransitionError,
   type EffectCorrelation,
   type EffectDispatchPort,
   type EffectResumePort,
@@ -737,7 +738,15 @@ export function createInMemoryEffectJournalStore(): {
           const row = rows.get(key(scope, slot, toolId));
           // Only out of `prepared`, mirroring the store: `committed → ambiguous` would claim we do not know
           // what the target did while retaining the result proving we do.
-          if (row?.state === 'prepared') {
+          //
+          // …and a settle that moves NOTHING is refused loudly, exactly as the SQLite store now refuses it.
+          // Leaving durable truth alone is right; reporting that the transition happened is not — the effect
+          // may have landed and the record does not say so, which is the one condition
+          // `ToolEffectNeedsAttentionError` exists for.
+          if (row?.state !== 'prepared') {
+            return Promise.reject(new EffectTransitionError({ scope, slot, toolId }, state, 0));
+          }
+          {
             // Serialized on the way in, as `resultJson: JSON.stringify(result)` does in the SQLite store.
             const resultJson = result === undefined ? undefined : JSON.stringify(result);
             rows.set(key(scope, slot, toolId), {

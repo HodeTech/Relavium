@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
   effectScope,
+  EffectTransitionError,
   isEffectConflictError,
   NonCanonicalValueError,
   type EffectCorrelation,
@@ -94,14 +95,33 @@ describe('the effect journal store', () => {
     expect(store.recordsFor(RUN)).toHaveLength(0); // …and does not leak into a run's scope
   });
 
-  it('a settle out of a TERMINAL state is refused — the durable answer is not overwritten', () => {
+  it('a settle out of a TERMINAL state is refused LOUDLY — and the durable answer is not overwritten', () => {
     // `committed → ambiguous` is strictly a loss: the row would claim we do not know what the target did
     // while still carrying the result proving we do, and the resume gate reads exactly that pair.
+    //
+    // Leaving durable truth alone was always right; RETURNING SUCCESS was not. The `changes` count was
+    // discarded, so this second settle resolved normally and the caller went on believing the transition it
+    // asked for had happened.
     store.prepare(ID, RUN, ATTEMPT, 3, 'd');
     store.settle(ID, 'committed', { ticket: 42 });
-    store.settle(ID, 'ambiguous');
+    expect(() => {
+      store.settle(ID, 'ambiguous');
+    }).toThrow(EffectTransitionError);
 
     expect(store.recordsFor(RUN)[0]).toMatchObject({ state: 'committed', result: { ticket: 42 } });
+  });
+
+  it('a settle on a row that was never PREPARED is refused too, not silently ignored', () => {
+    // The other zero-row case, and the more dangerous one: the external effect may have LANDED, and the
+    // store reported that it had been journaled. A review reproduced it against this store — settle on an
+    // identity that had never been prepared returned normally having changed nothing. That converts
+    // corruption, an accidental delete, or a state-machine race into silent success, past the
+    // `ToolEffectNeedsAttentionError` path the registry keeps for exactly this.
+    expect(() => {
+      store.settle({ scope: 'run:r1:never', slot: 0, toolId: 'http_request' }, 'committed', {
+        a: 1,
+      });
+    }).toThrow(EffectTransitionError);
   });
 
   it('a replay verdict round-trips the retained result, and a DIFFERENT digest is refused', () => {

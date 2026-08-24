@@ -19,6 +19,7 @@ import { and, asc, eq, gte, inArray, lt } from 'drizzle-orm';
 
 import {
   canonicalJson,
+  EffectTransitionError,
   EFFECT_STATES,
   EFFECT_TIERS,
   EffectConflictError,
@@ -207,7 +208,8 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
       withBusyRetry(() =>
         db.transaction(
           (tx) => {
-            tx.update(runEffects)
+            const changed = tx
+              .update(runEffects)
               .set({
                 state,
                 // Retained ONLY when the caller had one to give. Its absence is load-bearing: the resume gate
@@ -221,7 +223,17 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
               // resume gate reads exactly that pair. A settle against an already-terminal row is a bug in the
               // caller, and the honest response is to leave the durable answer alone.
               .where(and(whereIdentity(identity), eq(runEffects.state, 'prepared')))
-              .run();
+              .run().changes;
+            // **Leaving durable truth alone is right; REPORTING that the transition happened is not.**
+            // The `changes` count was discarded, so a missing row and an already-terminal one both resolved
+            // as success — and the registry proceeded believing a real external effect was journaled. A
+            // review reproduced it: `settle` on an identity that had never been prepared returned normally
+            // having changed zero rows. Corruption, an accidental delete, or a state-machine race was
+            // converted from a loud fail-closed condition into a silent one, past the
+            // `ToolEffectNeedsAttentionError` path that exists for exactly this.
+            if (changed !== 1) {
+              throw new EffectTransitionError(identity, state, changed);
+            }
           },
           { behavior: 'immediate' },
         ),

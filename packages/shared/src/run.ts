@@ -471,6 +471,40 @@ export function blocksResume(record: {
   return record.state !== 'committed' || record.result === undefined;
 }
 
+/**
+ * A settle did not move exactly one `prepared` row — the transition the caller asked for did not happen.
+ *
+ * Distinct from {@link EffectConflictError}, and the distinction is what a caller does about it: a conflict
+ * means another attempt legitimately holds the identity and this dispatch must not proceed. This means the
+ * durable record is not what the caller believed — the row is missing, or already terminal — while the
+ * external effect it describes may well have LANDED. That is the one condition
+ * `ToolEffectNeedsAttentionError` exists for, and a store that swallowed it reported durable success for an
+ * effect nothing recorded.
+ */
+export class EffectTransitionError extends Error {
+  override readonly name = 'EffectTransitionError';
+  readonly identity: EffectIdentity;
+  readonly attemptedState: EffectState;
+  /** How many rows the transition actually moved — `0` for a missing or already-terminal row. */
+  readonly changed: number;
+
+  constructor(identity: EffectIdentity, attempted: EffectState, changed: number) {
+    super(
+      `effect ${identity.scope} slot ${String(identity.slot)} (${identity.toolId}) could not be settled to ` +
+        `${attempted}: ${String(changed)} prepared rows matched, expected exactly 1 — the row is missing or ` +
+        `already terminal, so the durable record does not describe what happened`,
+    );
+    this.identity = identity;
+    this.attemptedState = attempted;
+    this.changed = changed;
+  }
+}
+
+/** Narrow an unknown throw to {@link EffectTransitionError} — callers narrow on this, never on `message`. */
+export function isEffectTransitionError(value: unknown): value is EffectTransitionError {
+  return value instanceof EffectTransitionError;
+}
+
 /** Another attempt already holds this {@link EffectIdentity} — the concurrency collision, not a fault. */
 export class EffectConflictError extends Error {
   override readonly name = 'EffectConflictError';
