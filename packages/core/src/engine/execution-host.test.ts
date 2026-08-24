@@ -280,6 +280,27 @@ describe('InMemoryRunStore — the compare-and-append guard (CR-10, ADR-0078 §2
     expect(store.eventsFor('r1').map((e) => e.sequenceNumber)).toEqual([0]);
   });
 
+  it('mirrors the not-AHEAD guard too — equality alone does not order the log', async () => {
+    // The SQLite half reproduced a stale terminal appending behind durable work while its belief matched
+    // exactly. Sequence gaps are legitimate, so the incoming number is both unique and lower; only an
+    // explicit "> max" says the log is a prefix. A reference that accepted this would hide it from every
+    // `packages/core` test.
+    const store = new InMemoryRunStore();
+    await store.persistEvent(started(0), { expectedLastSequenceNumber: -1 });
+    await store.persistEvent(skipped(5), { expectedLastSequenceNumber: 0 });
+
+    await expect(
+      store.persistEvent(skipped(3), { expectedLastSequenceNumber: 5 }), // behind
+    ).rejects.toSatisfy(isAppendConflictError);
+    await expect(
+      store.persistEvent(skipped(5), { expectedLastSequenceNumber: 5 }), // replayed
+    ).rejects.toSatisfy(isAppendConflictError);
+    await expect(
+      store.persistEvent(skipped(9), { expectedLastSequenceNumber: 5 }), // a legitimate gap still lands
+    ).resolves.toBeUndefined();
+    expect(store.eventsFor('r1').map((e) => e.sequenceNumber)).toEqual([0, 5, 9]);
+  });
+
   it('accepts the FIRST append of a run only against `-1`', async () => {
     const store = new InMemoryRunStore();
     await expect(

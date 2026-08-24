@@ -84,6 +84,108 @@ describe('createRunHistoryStore', () => {
 
   // --- the compare-and-append guard (CR-10, ADR-0078 §2) ----------------------------------------------
 
+  it('REFUSES an event whose own sequence is not AHEAD of the log, even when the belief matches', async () => {
+    // The equality check alone does NOT order the log. Sequence gaps are legitimate — a transient event
+    // consumes a number without becoming a row — so `(run_id, seq)` uniqueness cannot establish order
+    // either: a stale event's number is unique AND lower. A review reproduced the consequence here: a
+    // terminal at 3 appended behind durable work at 5, `applyDerived` marked the run finished, and
+    // `listInterruptedRuns()` stopped reporting it — with the terminal-outbox drain deleting its recovery
+    // entry on that false success.
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      {
+        expectedLastSequenceNumber: -1,
+      },
+    );
+    await store.persistEvent(ev('node:started', 5, { nodeId: 'a', nodeType: 'agent' }), {
+      expectedLastSequenceNumber: 0,
+    });
+
+    // BEHIND the maximum — the stale terminal that started this.
+    await expect(
+      store.persistEvent(
+        ev('run:failed', 3, {
+          error: { code: 'internal', message: 'stale', retryable: false },
+          partialOutputs: {},
+        }),
+        { expectedLastSequenceNumber: 5 },
+      ),
+    ).rejects.toSatisfy(isAppendConflictError);
+
+    // EQUAL to the maximum — a replayed append, which the unique index would catch as a duplicate but only
+    // after `applyDerived` had already run inside the same transaction.
+    await expect(
+      store.persistEvent(
+        ev('node:completed', 5, {
+          nodeId: 'a',
+          output: {},
+          tokensUsed: { input: 1, output: 2, model: 'm' },
+          durationMs: 1,
+        }),
+        {
+          expectedLastSequenceNumber: 5,
+        },
+      ),
+    ).rejects.toSatisfy(isAppendConflictError);
+
+    // The refusal carries the incoming sequence, so a caller tells "your belief is stale" from "your event
+    // is behind" without parsing a message.
+    await store
+      .persistEvent(
+        ev('node:completed', 2, {
+          nodeId: 'a',
+          output: {},
+          tokensUsed: { input: 1, output: 2, model: 'm' },
+          durationMs: 1,
+        }),
+        {
+          expectedLastSequenceNumber: 5,
+        },
+      )
+      .catch((error: unknown) => {
+        expect(isAppendConflictError(error) && error.incomingSequenceNumber).toBe(2);
+      });
+
+    // …and nothing landed: the run is still open and the log is untouched.
+    expect(await store.listInterruptedRuns()).toHaveLength(1);
+    const seqs = client.db
+      .select({ seq: runEvents.seq })
+      .from(runEvents)
+      .where(eq(runEvents.runId, 'run-1'))
+      .all()
+      .map((r) => r.seq);
+    expect(seqs).toEqual([0, 5]);
+  });
+
+  it('still ALLOWS a legitimate gap — the guard orders the log, it does not make it dense', async () => {
+    // The half that must not regress: transient events consume sequence numbers without becoming rows, so
+    // an append at 9 over a log ending at 5 is ordinary, not a hole.
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      {
+        expectedLastSequenceNumber: -1,
+      },
+    );
+    await store.persistEvent(ev('node:started', 5, { nodeId: 'a', nodeType: 'agent' }), {
+      expectedLastSequenceNumber: 0,
+    });
+    await expect(
+      store.persistEvent(
+        ev('node:completed', 9, {
+          nodeId: 'a',
+          output: {},
+          tokensUsed: { input: 1, output: 2, model: 'm' },
+          durationMs: 1,
+        }),
+        {
+          expectedLastSequenceNumber: 5,
+        },
+      ),
+    ).resolves.toBeUndefined();
+  });
+
   it('REFUSES an append whose expected last sequence does not match the log', async () => {
     // Driven at the store because that is where the OTHER writers live — a second process, a replay, a
     // cloud store whose commits are genuinely concurrent. An earlier version of this comment claimed the

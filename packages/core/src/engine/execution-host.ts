@@ -357,6 +357,14 @@ export class InMemoryRunStore implements RunStore {
       if (actual !== expected) {
         return Promise.reject(new AppendConflictError(event.runId, expected, actual));
       }
+      // …and the SAME not-ahead guard, for the same reason the equality check is mirrored here: the equality
+      // alone does not order the log, because a legitimate sequence gap makes a stale event's number both
+      // unique and lower. A reference store that accepted what SQLite rejects would hide exactly this.
+      if (event.sequenceNumber <= actual) {
+        return Promise.reject(
+          new AppendConflictError(event.runId, expected, actual, event.sequenceNumber),
+        );
+      }
     }
     // The SAME fence check the SQLite store applies (ADR-0079 §2), and it belongs here for the identical
     // reason the guard above does. Its absence was measured, not theorised: with the fence unenforced here,

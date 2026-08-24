@@ -2226,6 +2226,58 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(await outbox.list()).toEqual([]); // and the entry is forgotten once it lands
   });
 
+  it('CR-92: a STALE held terminal is HELD, not written behind newer durable work', async () => {
+    // The reachable path for the ordering defect. A crashed process built its terminal from ITS view of the
+    // run; by the time the drain replays it, the log has moved on. The drain passes the CURRENT maximum as
+    // its belief — truthfully — so the equality guard is satisfied and only the "> max" half refuses. With
+    // that half missing, this appended a terminal behind live work, `applyDerived` marked the run finished,
+    // and the drain deleted the outbox entry as a success: the one record that the terminal was uncertain.
+    const inner = new InMemoryRunStore();
+    let refuse = true;
+    const store: RunStore = {
+      resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
+      listInterruptedRuns: () => inner.listInterruptedRuns(),
+      readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
+      persistEvent: async (event: RunEvent, ctx?: DurableWriteContext): Promise<void> => {
+        if (refuse && event.type === 'run:completed') throw new Error('the terminal write failed');
+        await inner.persistEvent(event, ctx);
+      },
+    };
+    const outbox = createInMemoryTerminalOutbox();
+    const host = createInMemoryHost({ store, terminalOutbox: outbox });
+    const handle = buildEngine(host, () => scriptedProvider([textTurn('a summary')])).start({
+      workflow: HAPPY_PATH,
+      inputs: INPUTS,
+    });
+    await drive(handle, host);
+    expect(handle.durability()).toBe('uncertain');
+    const held = await outbox.list();
+    expect(held).toHaveLength(1);
+
+    // Another writer advances the log PAST the held terminal's sequence, as a live owner resuming would.
+    refuse = false;
+    const ahead = (held[0]?.sequenceNumber ?? 0) + 10;
+    await inner.persistEvent(
+      {
+        type: 'node:skipped',
+        runId: handle.runId,
+        sequenceNumber: ahead,
+        timestamp: new Date(0).toISOString(),
+        nodeId: 'later',
+        reason: 'branch_not_taken',
+      },
+      // Unguarded: this writer stands in for a live owner and holds no stale belief for the guard to check.
+    );
+
+    const repaired = await buildEngine(host, () => scriptedProvider([])).drainTerminalOutbox();
+
+    expect(repaired).toEqual([]); // refused, so nothing was reported as recovered
+    expect(await outbox.list()).toHaveLength(1); // …and the evidence is STILL held, not deleted
+    const durable = inner.eventsFor(handle.runId);
+    expect(durable.filter((e) => e.type === 'run:completed')).toHaveLength(0);
+    expect(durable.at(-1)?.sequenceNumber).toBe(ahead); // the log is still an ordered prefix
+  });
+
   it('CR-92: a drained entry whose run ALREADY has a terminal is dropped, never appended', async () => {
     // The other direction: the original write may have committed and only its acknowledgement been lost.
     // Replaying blindly would break exactly-one-terminal from the path that exists to restore it.

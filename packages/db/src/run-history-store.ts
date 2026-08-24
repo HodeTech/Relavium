@@ -937,6 +937,20 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
       if (actual !== ctx.expectedLastSequenceNumber) {
         throw new AppendConflictError(runId, ctx.expectedLastSequenceNumber, actual);
       }
+      // **…and the event must be AHEAD of the log, which the equality above does not say.** Sequence gaps
+      // are legitimate — a transient event consumes a number without becoming a row — so the `(run_id, seq)`
+      // unique index cannot establish order either: a stale event's number is unique AND lower. A review
+      // reproduced the consequence against this store: a terminal at sequence 3 appended behind durable work
+      // at 5, `applyDerived` marked the run finished, and `listInterruptedRuns()` stopped reporting it. The
+      // terminal-outbox drain is the reachable path, and it deletes its recovery entry on that false success.
+      if (event.sequenceNumber <= actual) {
+        throw new AppendConflictError(
+          runId,
+          ctx.expectedLastSequenceNumber,
+          actual,
+          event.sequenceNumber,
+        );
+      }
     }
     // **The fence (ADR-0079 §2), beside the append guard and inside the SAME transaction.** Checked here
     // rather than before it because both are refusals of the same write and both must be atomic with it;

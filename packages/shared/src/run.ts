@@ -115,9 +115,15 @@ export interface DurableWriteContext {
    * two claims on this object are independent, and the run TERMINAL carries the fence without the append
    * guard (ADR-0078 §2 exempts it, ADR-0079 §5 does not).
    *
-   * The store rejects the append when its own maximum for the run differs. That is what makes the log a
-   * prefix rather than merely a set: a second process that committed something this writer never saw, an
-   * out-of-order commit, and a replayed append all present as a mismatch here.
+   * The store rejects the append when its own maximum for the run differs — and, independently, when the
+   * incoming event's own `sequenceNumber` is not GREATER than that maximum. Both halves are needed and the
+   * second was once missing: sequence gaps are legitimate (a transient event consumes a number without
+   * becoming a row), so a stale event's number is both unique and lower, and equality alone let a terminal
+   * append behind durable work while the derived projection called the run finished.
+   *
+   * Together they are what make the log a prefix rather than merely a set: a second process that committed
+   * something this writer never saw, an out-of-order commit, and a replayed append all present as a refusal
+   * here — the first as a mismatch, the last two as a sequence that does not advance.
    *
    * **"Last asked", not "last committed", and the difference is the whole guard.** After a failed write the
    * engine keeps running — `#emitDurable` is total for non-terminal store faults (ADR-0078 §6) — so it would
@@ -161,16 +167,27 @@ export class AppendConflictError extends Error {
   readonly runId: string;
   readonly expectedLastSequenceNumber: number;
   readonly actualLastSequenceNumber: number;
+  /**
+   * The refused event's own sequence number, when it was the sequence — not the belief — that was wrong.
+   *
+   * Present only for the not-ahead refusal, so a caller can tell the two apart without parsing a message.
+   */
+  readonly incomingSequenceNumber?: number;
 
-  constructor(runId: string, expected: number, actual: number) {
+  constructor(runId: string, expected: number, actual: number, incoming?: number) {
     super(
-      `durable append refused for run ${runId}: expected the log to end at sequence ${String(expected)}, ` +
-        `but it ends at ${String(actual)} — appending here would leave a hole a reader cannot distinguish ` +
-        `from an event that was never meant to persist`,
+      incoming !== undefined
+        ? `durable append refused for run ${runId}: the event carries sequence ${String(incoming)}, which ` +
+            `is not AHEAD of the log's ${String(actual)} — appending it would put this event behind work ` +
+            `that is already durable, and the log would stop being an ordered prefix of what happened`
+        : `durable append refused for run ${runId}: expected the log to end at sequence ${String(expected)}, ` +
+            `but it ends at ${String(actual)} — appending here would leave a hole a reader cannot distinguish ` +
+            `from an event that was never meant to persist`,
     );
     this.runId = runId;
     this.expectedLastSequenceNumber = expected;
     this.actualLastSequenceNumber = actual;
+    if (incoming !== undefined) this.incomingSequenceNumber = incoming;
   }
 }
 
