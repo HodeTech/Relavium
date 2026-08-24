@@ -483,6 +483,43 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
     expect(store.rows()).toHaveLength(1); // …with no second row invented for the replay
   });
 
+  it('stores NO `mapped` projection when the node configured no output_mapping', async () => {
+    // Without a mapping, `outputMapped` IS the full unbounded result — so persisting it would put the very
+    // thing "settle after bounding" exists to keep out of `history.db` straight back into it, with no cap
+    // and no sweep. A mutation storing `mapped` unconditionally passed the whole suite, so the property the
+    // conditional spread protects had no test at all.
+    const respond = () =>
+      Promise.resolve({
+        status: 200,
+        headers: {},
+        body: 'ok',
+        truncated: false,
+        url: 'https://api.example/x',
+      });
+    const has = (result: unknown, key: string): boolean =>
+      typeof result === 'object' && result !== null && key in result;
+
+    // Without a mapping: no `mapped` key at all.
+    const bare = createInMemoryEffectJournalStore();
+    await createToolRegistry({ tools: TOOLS, host: hostWith(respond) }).dispatch(POST, {
+      ...ctxWith(recordingJournal()),
+      effects: bare.for({ kind: 'run', runId: 'r1', nodeId: 'n1', attempt: 1 }),
+    });
+    expect(has(bare.rows()[0]?.result, 'mapped')).toBe(false);
+    expect(has(bare.rows()[0]?.result, 'value')).toBe(true); // …the row is otherwise complete
+
+    // WITH one: the author chose an extract, and its size is their call — so it IS retained. The pair is
+    // what makes the assertion above mean something rather than passing for a row that stores nothing.
+    const mapped = createInMemoryEffectJournalStore();
+    const withMapping = ctxWith(recordingJournal());
+    await createToolRegistry({ tools: TOOLS, host: hostWith(respond) }).dispatch(POST, {
+      ...withMapping,
+      config: { ...withMapping.config, outputMapping: { code: 'status' } },
+      effects: mapped.for({ kind: 'run', runId: 'r2', nodeId: 'n1', attempt: 1 }),
+    });
+    expect(has(mapped.rows()[0]?.result, 'mapped')).toBe(true);
+  });
+
   it('a replay re-delivers a legitimately `undefined` result AS `undefined` (§4)', async () => {
     // The defect a review reproduced against real SQLite. `JSON.stringify` DELETES a property whose value is
     // `undefined`, so the stored envelope lost its `value` key, the reader's `'value' in stored` guard

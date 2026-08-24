@@ -207,6 +207,94 @@ function neverLeftTheProcess(cause: unknown): boolean {
 }
 
 /**
+ * §7 step 8's SETTLE — after bounding, and deliberately so.
+ *
+ * ADR-0080 §7 said "immediately"; what ships settles once the BOUNDED value exists, for two reasons the spec
+ * is being corrected to state. First, the gate's job is to RE-DELIVER the model-facing result, so the bounded
+ * value is the one worth keeping — persisting the raw result would put unbounded `run_command` stdout into
+ * `history.db` with no cap and no sweep. Second, the wider window costs nothing but interruptions: a crash
+ * before this leaves the row `prepared`, which resume reads as unresolved and REFUSES. `prepared` is safe.
+ *
+ * **All four projections the outcome is built from, not just the bounded value.** A review proved why:
+ * storing only `bounded.value` and re-deriving the rest on replay ran `output_mapping` over the TRUNCATION
+ * PREVIEW. Same tool, same args, `output_mapping: { code: 'status' }` — the first dispatch put `200` into
+ * workflow state and the replayed one put `undefined`, silently, and only when the result had exceeded the
+ * bounding ceiling. §4 promises to RE-DELIVER what the original produced, so that is what is kept.
+ */
+async function settleCommitted(
+  ctx: ToolDispatchContext,
+  toolId: ToolId,
+  bounded: { readonly value: unknown; readonly truncated: boolean; readonly summary: string },
+  outputMapped: unknown,
+): Promise<void> {
+  const hadMapping = ctx.config.outputMapping !== undefined;
+  try {
+    // Encoded for storage on the way out (`toStoredEnvelope`), because the in-memory shape is not JSON-safe:
+    // a `value` of `undefined` is a legitimate result here and a deleted property there.
+    await ctx.effects.settle(
+      ctx.effectSlot,
+      toolId,
+      'committed',
+      toStoredEnvelope({
+        value: bounded.value,
+        truncated: bounded.truncated,
+        summary: bounded.summary,
+        // …the mapped projection ONLY when a mapping is configured. Without one, `outputMapped` IS the full
+        // result, and persisting that would put unbounded `run_command` stdout into `history.db` — the very
+        // thing settling after bounding exists to avoid. With one, the author chose an extract.
+        ...(hadMapping ? { mapped: outputMapped } : {}),
+        // Recorded rather than inferred from `'mapped' in envelope`: a mapping that legitimately projects to
+        // `undefined` would otherwise be indistinguishable from no mapping at all.
+        hadMapping,
+      } satisfies ReplayEnvelope),
+    );
+  } catch (cause) {
+    // **The one window where the effect PROVABLY happened and the record does not say so.** Spec §7 step 4:
+    // the row stays `prepared`, the run stops, and it is never retried. Letting this fall into the generic
+    // ladder made it `tool_failed` — indistinguishable from an ordinary tool bug, and on the chat surface it
+    // routed to the "fix the target and resend" hint, the one instruction that could make a human repeat a
+    // real external effect.
+    throw new ToolEffectNeedsAttentionError(toolId, cause);
+  }
+}
+
+/**
+ * What a FAILED dispatch means for the journal row — the whole of §7 step 4, in one place.
+ *
+ * Three outcomes, and the distinctions are the point:
+ *
+ * - **Not journaled at all** (`tier === undefined`), or a REPLAY: nothing to record. The replay guard is not
+ *   redundant even though only the dispatch is wrapped — a replay takes the other arm of the ternary and
+ *   cannot throw here today, and this is what keeps that true if the arm ever grows. A replay's row is
+ *   already terminal, and settling out of `committed` would lose the result the replay re-delivered.
+ * - **A proven NON-dispatch**: a missing host capability throws synchronously inside the dispatch arm before
+ *   the host is ever touched, so the effect demonstrably did not happen. `ambiguous` would claim we do not
+ *   know what the target did, about a call that never reached one — but doing nothing left the row
+ *   `prepared`, which the machine reads as UNRESOLVED: it blocked resume, was disclosed as an effect that
+ *   may have landed, and was never swept. The claim is released instead, restoring the state that preceded
+ *   the prepare a moment earlier.
+ * - **Everything else** — a network error, a timeout, an abort — is genuinely ambiguous and recorded as such.
+ *
+ * Both writes are quiet: the dispatch error is the one that explains what happened, and a failed write
+ * leaves the row `prepared`, which is the same conservative answer reached the long way.
+ */
+async function journalDispatchFailure(
+  ctx: ToolDispatchContext,
+  toolId: ToolId,
+  tier: EffectTier | undefined,
+  isFirstDispatch: boolean,
+  cause: unknown,
+): Promise<void> {
+  if (tier === undefined || !isFirstDispatch) return;
+  if (neverLeftTheProcess(cause)) {
+    await discardQuietly(ctx, toolId);
+    return;
+  }
+
+  await settleQuietly(ctx, toolId, 'ambiguous');
+}
+
+/**
  * Release a `prepared` claim for an effect that provably never left, swallowing a failure.
  *
  * Swallowing is not a silent catch here for the same reason it is not in {@link settleQuietly}: a release
@@ -398,30 +486,7 @@ async function dispatch(
     try {
       output = replayed === NOT_REPLAYED ? await def.dispatch(args, host, ctx) : replayed.value;
     } catch (cause) {
-      // **`ambiguous` means "we do not know what the target did" — so a demonstrable NON-dispatch is not
-      // ambiguous.** A missing host capability throws synchronously inside the dispatch arm before the host
-      // is ever touched, and recording that as ambiguous would leave a permanently unresolved row for a call
-      // that provably never left, blocking the node on a human for a wiring gap.
-      // The `replayed` test is NOT redundant even though this `try` now wraps only the dispatch: a replay
-      // takes the other arm of the ternary and cannot throw here today, and the guard is what keeps that
-      // true if the arm ever grows. A replay's row is already terminal, and settling out of `committed`
-      // would lose the very result the replay re-delivered.
-      if (tier !== undefined && replayed === NOT_REPLAYED) {
-        if (neverLeftTheProcess(cause)) {
-          // **A proven non-dispatch is not an unresolved effect.** Refusing to write `ambiguous` was right —
-          // it would claim we do not know what the target did, about a call that never reached one. But
-          // doing nothing was not: the row stayed `prepared`, which the state machine reads as UNRESOLVED,
-          // so a wiring error blocked workflow resume, was disclosed on session resume as an effect that
-          // may have landed, and was never swept by age. Permanent, misleading, operator-facing work.
-          //
-          // The claim is released instead, restoring exactly the state that preceded the prepare a moment
-          // earlier. Quietly, because the dispatch error below is the one that explains what happened, and a
-          // failed release leaves the row `prepared` — the same conservative answer, reached the long way.
-          await discardQuietly(ctx, def.id);
-        } else {
-          await settleQuietly(ctx, def.id, 'ambiguous');
-        }
-      }
+      await journalDispatchFailure(ctx, def.id, tier, replayed === NOT_REPLAYED, cause);
       throw cause;
     }
     // Abort that lands AFTER the host resolved must still classify as cancelled, not a success.
@@ -467,41 +532,7 @@ async function dispatch(
     //    no sweep. Second, the wider window costs nothing but interruptions: a crash before this leaves the
     //    row `prepared`, which resume reads as unresolved and REFUSES. `prepared` is the safe state.
     if (tier !== undefined && replayed === NOT_REPLAYED) {
-      try {
-        // Encoded for storage on the way out (`toStoredEnvelope`), because the in-memory shape is not
-        // JSON-safe: a `value` of `undefined` is a legitimate result here and a deleted property there.
-        await ctx.effects.settle(
-          ctx.effectSlot,
-          def.id,
-          'committed',
-          toStoredEnvelope({
-            // **All four projections the outcome is built from, not just the bounded value.** A review proved
-            // why: storing only `bounded.value` and re-deriving the rest on replay ran `output_mapping` over
-            // the TRUNCATION PREVIEW. Same tool, same args, `output_mapping: { code: 'status' }` — the first
-            // dispatch put `200` into workflow state and the replayed one put `undefined`, silently, and only
-            // when the result had exceeded the bounding ceiling. §4's promise is to RE-DELIVER what the
-            // original produced, so what the original produced is what is kept.
-            value: bounded.value,
-            truncated: bounded.truncated,
-            summary: bounded.summary,
-            // …and the mapped projection ONLY when a mapping is configured. Without one, `outputMapped` IS
-            // the full result, and persisting that would put unbounded `run_command` stdout into
-            // `history.db` — the very thing settling after bounding exists to avoid. With one, the author
-            // chose an extract, and its size is their call.
-            ...(ctx.config.outputMapping === undefined ? {} : { mapped: outputMapped }),
-            // Recorded rather than inferred from `'mapped' in envelope`: a mapping that legitimately projects
-            // to `undefined` would otherwise be indistinguishable from no mapping at all.
-            hadMapping: ctx.config.outputMapping !== undefined,
-          } satisfies ReplayEnvelope),
-        );
-      } catch (cause) {
-        // **The one window where the effect PROVABLY happened and the record does not say so.** Spec §7
-        // step 4: the row stays `prepared`, the run stops, and it is never retried. Letting this fall into
-        // the generic ladder made it `tool_failed` — indistinguishable from an ordinary tool bug, and on the
-        // chat surface it routed to the "fix the target and resend" hint, which is the one instruction that
-        // could make a human repeat a real external effect.
-        throw new ToolEffectNeedsAttentionError(def.id, cause);
-      }
+      await settleCommitted(ctx, def.id, bounded, outputMapped);
     }
     // An abort that lands during bounding (its async fast path yields a microtask) must still classify
     // as cancelled, not a success — the symmetric guard to line 109 after the dispatch await.
