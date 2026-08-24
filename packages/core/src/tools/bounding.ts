@@ -198,8 +198,8 @@ export function redactSecretShapedText(text: string): string {
       // the key=value pattern above: correctness of a security redactor + Sonar's static ReDoS (S5852) coverage
       // outrank the metric. `\w` / `[\w-]` fold only the classes that are EXACTLY `[A-Za-z0-9_]` / `[A-Za-z0-9_-]`;
       // the tighter `[A-Za-z0-9]` / `[A-Za-z0-9-]` families keep their narrower class (no `_`).
-      // NOSONAR — the per-regex complexity is the deliberate, documented exception explained just above.
       .replace(
+        // NOSONAR — the per-regex complexity is the deliberate, documented exception explained above
         /\b(?:sk-[A-Za-z0-9]{16,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|A[KSB]IA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|glpat-[\w-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[\w-]{30,}|ya29\.[\w-]{20,}|hf_[A-Za-z0-9]{20,}|npm_[A-Za-z0-9]{20,}|eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{6,})/g,
         '[redacted]',
       )

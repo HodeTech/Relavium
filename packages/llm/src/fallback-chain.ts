@@ -751,17 +751,30 @@ export class FallbackChain {
       // termination (ADR-0082 §5). `return()` on an already-completed iterator is a no-op.
       void Promise.resolve(iterator?.return?.(undefined)).catch(() => undefined);
     }
-    // The success emit sits OUTSIDE the try above, deliberately — but the FOLD inside it needs its own guard
-    // (#W15-9). `#foldUsage` re-throws anything that is not `UnknownModelError` so a money bug is loud: a
-    // provider returning non-integer usage trips `assertAccountableUsage`, a broken overlay or a custom tracker
-    // throws. On the `generate()` path that work sits INSIDE the attempt's try, so the throw reaches the caller
-    // classified. Here it escaped the async generator raw — breaking this method's own contract ("a terminal
-    // failure is surfaced as an `error` chunk, not a throw") and taking down a turn whose content had already
-    // been produced and billed for.
-    //
-    // Only the fold is guarded. A throw from the attempt OBSERVER is the consumer's bug, and it keeps
-    // propagating on both paths exactly as before — narrowing here means this guard cannot quietly become the
-    // handler for someone else's defect.
+    return yield* this.#settleUsage(entry, record, usage, state);
+  }
+
+  /**
+   * The attempt SUCCEEDED — now account for what it cost, and surface a fold failure rather than throw it.
+   *
+   * Sits outside the attempt's `try`/`finally` deliberately, but needs its own guard (#W15-9). `#foldUsage`
+   * re-throws anything that is not `UnknownModelError` so a money bug is loud: a provider returning
+   * non-integer usage trips `assertAccountableUsage`, and a broken overlay or a custom tracker throws. On the
+   * `generate()` path that work sits INSIDE the attempt's try, so the throw reaches the caller classified.
+   * Here it escaped the async generator raw — breaking `#runStreamAttempt`'s own contract ("a terminal
+   * failure is surfaced as an `error` chunk, not a throw") and taking down a turn whose content had already
+   * been produced and billed for.
+   *
+   * Only the FOLD is guarded. A throw from the attempt OBSERVER is the consumer's bug and keeps propagating
+   * on both paths exactly as before — narrowing here means this guard cannot quietly become the handler for
+   * someone else's defect.
+   */
+  *#settleUsage(
+    entry: FallbackPlanEntry,
+    record: AttemptRecord,
+    usage: Usage | undefined,
+    state: StreamAttemptState,
+  ): Generator<StreamChunk, undefined> {
     if (usage === undefined) {
       this.#emitSuccess(record, entry.model, undefined); // nothing to fold
       return undefined;

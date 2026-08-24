@@ -154,7 +154,7 @@ export function validateDeclaredEnv(
  * actionable half — and one who did not gets a message that names the field and nothing else.
  */
 function envKeyIsEchoSafe(key: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key);
+  return /^[A-Za-z_]\w*$/.test(key); // `\w` is EXACTLY `[A-Za-z0-9_]` in JS; the lead class cannot fold (no digits)
 }
 
 /** How many forbidden keys one `env` block reports before the rest are left to the next parse. */

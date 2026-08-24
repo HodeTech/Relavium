@@ -2918,7 +2918,7 @@ class RunExecution {
     if (guarded) {
       this.#lastAskedSequenceNumber = event.sequenceNumber;
     }
-    // NOSONAR — this closure's branch count is NOT extractable, and the reason is written throughout it:
+    // This closure's branch count is NOT extractable, and the reason is written throughout it:
     // every branch below is an ORDERING guarantee relative to `await prior` and the persist. Moving any of
     // them into a helper inserts a microtask hop at exactly the point the comments below record as having
     // reordered the log once already, and the `held`/`unclaimed` fast path exists specifically to AVOID that
@@ -3385,10 +3385,27 @@ export class WorkflowEngine {
    * concurrent double-resolve (two processes loading the same pending gate before either persists) is
    * closed by a Phase-2 store-level uniqueness constraint, not the in-memory reference (checkpoint.ts).
    */
-  // NOSONAR — one point over the threshold, and the branches ARE the ordering: the lease before any read,
+  /**
+   * Why the lease could not be taken — naming the holder and WHEN, not just "shortly".
+   *
+   * `RunLeaseInfo` already carries `expiresAt`, so the bound on the wait is free, and it is the difference
+   * between a caller that can back off intelligently and one that guesses. The holder id is opaque by design
+   * ([ADR-0079](../../../../docs/decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §1 —
+   * an owner is a process, not a name), so the deadline is the only concrete thing this message can offer.
+   */
+  async #ownedElsewhereMessage(runId: string): Promise<string> {
+    const holder = await this.#host.runLeases.read(runId);
+    if (holder === undefined) return 'another process owns this run';
+    const seconds = Math.max(0, Math.ceil((holder.expiresAt - this.#nowMs()) / 1000));
+    return `another process owns this run (held by ${holder.ownerId}) — retry once it finishes, or in at most ${String(seconds)}s when its lease expires`;
+  }
+
+  // One point over the threshold, and the branches ARE the ordering: the lease before any read,
   // the identity guard before the checkpoint, the checkpoint before the workflow. Each comment below states
   // which line it must precede, and a helper that hid one of those steps would make the sequence the reader
   // has to reconstruct rather than the one they can see (ADR-0079 §4, ADR-0083 §5).
+  //
+  // What CAN move out is a message the ordering does not depend on — see `#ownedElsewhereMessage`.
   async resumeFromCheckpoint(input: ResumeFromCheckpointInput): Promise<RunHandle> {
     // A gate resume supplies gateId + decision; a media-ONLY resume (1.AG Section D) supplies neither.
     const isGateResume = input.gateId !== undefined && input.decision !== undefined;
@@ -3406,16 +3423,9 @@ export class WorkflowEngine {
     // message is actionable rather than "something else has it".
     const fence = await this.#host.runLeases.acquire(input.runId, this.#ownerId, RUN_LEASE_TTL_MS);
     if (fence === undefined) {
-      const holder = await this.#host.runLeases.read(input.runId);
-      // **Say WHEN, not just "shortly".** `RunLeaseInfo` already carries `expiresAt`, so the bound on the
-      // wait is free — and it is the difference between a caller that can back off intelligently and one
-      // that guesses. The holder id is opaque by design (§1: an owner is a process, not a name), so the
-      // deadline is the only concrete thing this message can offer.
       throw new EngineStateError(
         'run_owned_elsewhere',
-        holder === undefined
-          ? 'another process owns this run'
-          : `another process owns this run (held by ${holder.ownerId}) — retry once it finishes, or in at most ${String(Math.max(0, Math.ceil((holder.expiresAt - this.#nowMs()) / 1000)))}s when its lease expires`,
+        await this.#ownedElsewhereMessage(input.runId),
         { runId: input.runId },
       );
     }

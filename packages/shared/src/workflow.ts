@@ -152,7 +152,7 @@ function hasInterpolationPair(text: string): boolean {
   // Exactly equivalent: a terminated pair exists iff some `}}` follows the FIRST `{{`. If the only `}}`
   // sits before it (`}}{{`), neither form matches.
   const open = text.indexOf('{{');
-  return open !== -1 && text.indexOf('}}', open + 2) !== -1;
+  return open !== -1 && text.includes('}}', open + 2);
 }
 
 /** How deep {@link containsInterpolation} walks a `default` before it stops looking. */

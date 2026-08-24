@@ -1337,6 +1337,42 @@ describe('FallbackChain.stream', () => {
     expect(trace[0]).toMatchObject({ provider: 'anthropic', outcome: 'failed' });
   });
 
+  it('stamps a FOLD failure after content too — the third stamp site', async () => {
+    // The one surfaced-failure path with no test: the stream succeeded, content already reached the caller,
+    // and then cost accounting threw — a broken overlay or a custom tracker. Its own comment claims the
+    // stamp keeps "every error the chain surfaces past content carries `contentCommitted`" true, and
+    // removing the stamp left all 773 tests in this package green. `kind: 'unknown'` already derives
+    // `retryable: false`, so nothing changes today — which is exactly why the invariant needs a test rather
+    // than a second, unrelated mechanism holding it up.
+    const provider = makeProvider({
+      id: 'anthropic',
+      stream: () => streamFrom([{ type: 'text_delta', text: 'partial output' }, STOP_CHUNK]),
+    });
+    const fallback = makeProvider({
+      id: 'openai',
+      stream: () => streamFrom([{ type: 'text_delta', text: 'never' }, STOP_CHUNK]),
+    });
+    const { options } = makeOptions({
+      costTracker: {
+        record: () => {
+          throw new TypeError('cumulative overflowed');
+        },
+      } as unknown as CostTracker,
+    });
+    const chain = new FallbackChain(
+      [entry(provider, 'claude-opus-4-8'), entry(fallback, 'gpt-5.5')],
+      options,
+    );
+
+    const chunks = await collect(chain.stream(userReq));
+
+    const last = chunks.at(-1);
+    expect(last?.type).toBe('error');
+    expect(last?.type === 'error' ? last.error.contentCommitted : undefined).toBe(true);
+    expect(last?.type === 'error' ? last.error.message : undefined).toContain('cost accounting');
+    expect(fallback.calls).toHaveLength(0); // surfaced, never failed over
+  });
+
   it('stamps a THROWN mid-stream failure too — the second stamp site', async () => {
     // A review reverted ONLY this site (leaving the error-chunk site intact) and 4,402 tests across three
     // packages stayed green. It is the reachable path where a provider's iterator THROWS after content — an

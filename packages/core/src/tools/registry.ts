@@ -188,6 +188,38 @@ async function prepareEffect(
   }
 }
 
+/**
+ * Step 1 — the tool this call names, if the node is allowed to use it.
+ *
+ * Three refusals, none of which has reached a target: a provider-executed call the engine never dispatches
+ * at all (content.ts; ADR-0030/0029 — surfacing one here is a caller bug), an id no registry entry matches,
+ * and an id the node was not granted. REGISTERED IS NOT AUTHORIZED, which is the whole reason the grant
+ * check sits beside the lookup rather than anywhere later.
+ */
+function resolveGrantedTool(
+  tools: ReadonlyMap<ToolId, ToolDef>,
+  toolCall: ToolCallPart,
+  ctx: ToolDispatchContext,
+): ToolDef {
+  if (toolCall.providerExecuted === true) {
+    throw new ToolPolicyError(
+      toolCall.name,
+      'provider_executed',
+      `tool \`${toolCall.name}\` is provider-executed and is not dispatched by the engine`,
+    );
+  }
+  const def = tools.get(toolCall.name);
+  if (def === undefined) throw new UnknownToolError(toolCall.name, [...tools.keys()]);
+  if (!ctx.grantedToolIds.has(def.id)) {
+    throw new ToolPolicyError(
+      def.id,
+      'not_granted',
+      `tool \`${def.id}\` is not granted to node \`${ctx.nodeId}\``,
+    );
+  }
+  return def;
+}
+
 async function dispatch(
   tools: ReadonlyMap<ToolId, ToolDef>,
   host: ToolHost,
@@ -196,28 +228,8 @@ async function dispatch(
 ): Promise<ToolDispatchOutcome> {
   throwIfAborted(ctx, undefined);
 
-  // A provider-executed tool_call is NOT dispatched by the engine (content.ts; ADR-0030/0029) — the
-  // engine never runs it or applies its allowlist. Surfacing it here is a caller bug.
-  if (toolCall.providerExecuted === true) {
-    throw new ToolPolicyError(
-      toolCall.name,
-      'provider_executed',
-      `tool \`${toolCall.name}\` is provider-executed and is not dispatched by the engine`,
-    );
-  }
-
   // 1. Resolve by exact id, then check the node grant (registered ≠ authorized).
-  const def = tools.get(toolCall.name);
-  if (def === undefined) {
-    throw new UnknownToolError(toolCall.name, [...tools.keys()]);
-  }
-  if (!ctx.grantedToolIds.has(def.id)) {
-    throw new ToolPolicyError(
-      def.id,
-      'not_granted',
-      `tool \`${def.id}\` is not granted to node \`${ctx.nodeId}\``,
-    );
-  }
+  const def = resolveGrantedTool(tools, toolCall, ctx);
 
   // 2. Assemble the effective argument set (model args + input_mapping + config-only, config wins).
   const effective = assembleArgs(def, toolCall.args, ctx);

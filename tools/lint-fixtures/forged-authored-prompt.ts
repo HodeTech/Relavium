@@ -29,9 +29,9 @@ export const satisfiesChained = dynamic satisfies string as AuthoredSystemPrompt
 /* A name-based selector cannot see `x as Alias`; making the alias requires writing the name, so the
    declaration is where the chain is closed. One error, on the declaration. */
 
-// NOSONAR — the "redundant" alias IS the fixture: `assert-fence.mjs` asserts the ESLint fence flags this
+// The "redundant" alias IS the fixture: `assert-fence.mjs` asserts the ESLint fence flags this
 // exact declaration, so removing it deletes the case rather than cleaning it up.
-type Alias = AuthoredSystemPrompt;
+type Alias = AuthoredSystemPrompt; // NOSONAR — the alias IS the fixture; see above
 export const viaAlias = dynamic as Alias;
 
 /* ---- CAUGHT: a type PREDICATE, which needs no assertion at all. -------------------------------- */
@@ -42,10 +42,10 @@ export const viaAlias = dynamic as Alias;
    One error, on the return annotation — the one place the name must appear. */
 
 function isAuthored(value: string): value is AuthoredSystemPrompt {
-  // NOSONAR — the body is irrelevant; the fixture is the RETURN ANNOTATION, which is the one place the
+  // The body is irrelevant; the fixture is the RETURN ANNOTATION, which is the one place the
   // brand's name must appear for the fence to have something to catch. `void` keeps the unused parameter
   // from being a second, unrelated lint error inside a file whose lint output is itself asserted.
-  void value;
+  void value; // NOSONAR — see above
   return true;
 }
 export function viaTypeGuard(): AuthoredSystemPrompt {

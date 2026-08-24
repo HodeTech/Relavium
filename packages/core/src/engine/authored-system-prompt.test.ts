@@ -6,7 +6,7 @@
 
 import type { LlmMessage } from '@relavium/llm';
 import { AgentSchema } from '@relavium/shared';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import { markUntrusted } from '../tools/untrusted.js';
 import { authoredSystemPrompt, type AuthoredSystemPrompt } from './authored-system-prompt.js';
@@ -50,10 +50,14 @@ describe('§6.1 — `system` is constructible only from authored sources', () =>
     const dynamic: string = HOSTILE;
     // @ts-expect-error a dynamic string may never be used where an authored system prompt is required
     const forged: AuthoredSystemPrompt = dynamic;
-    // The runtime line asserts the OTHER half: the brand is erased, so a branded value is byte-identical
-    // to the string it came from and costs nothing at run time. (It used to read `typeof forged === 'string'`,
-    // which is true of every string ever written and therefore proved nothing — Sonar was right to flag it.)
-    expect(forged).toBe(HOSTILE);
+    // **The assertion is TYPE-level, because that is the only level this property exists at.** Two runtime
+    // `expect`s were tried here and both were vacuous by construction — `typeof forged === 'string'` is true
+    // of every string ever written, and `expect(forged).toBe(HOSTILE)` compares a value to the one it was
+    // assigned from. `expectTypeOf` states the real claim: a plain `string` is not assignable to the brand.
+    // Together with the `@ts-expect-error` above — which fails the BUILD the moment that line type-checks —
+    // the pair covers both directions.
+    expectTypeOf(forged).toEqualTypeOf<AuthoredSystemPrompt>();
+    expectTypeOf<string>().not.toEqualTypeOf<AuthoredSystemPrompt>();
   });
 });
 
