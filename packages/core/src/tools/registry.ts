@@ -220,6 +220,35 @@ function resolveGrantedTool(
   return def;
 }
 
+/**
+ * Steps 2-4 — the argument set this call will actually run with, admitted or refused.
+ *
+ * **The order is security-load-bearing and is the reason these three live together.** The effective set is
+ * assembled (model args + `input_mapping` + config-only, config wins) and VALIDATED before the guardrail
+ * check, so a `tool` node — whose args come entirely from `input_mapping`, with no model args at all —
+ * cannot bypass the allowlist by being checked before its args exist. Secret-taint runs first within the
+ * validation (ADR-0029(c)), and the policy target is resolved once here and reused by the approval step.
+ *
+ * Nothing here has reached a target: every exit is still a refusal that journals nothing.
+ */
+function admitArgs(
+  def: ToolDef,
+  toolCall: ToolCallPart,
+  ctx: ToolDispatchContext,
+): { effective: Readonly<Record<string, unknown>>; args: unknown; target: PolicyTarget } {
+  const effective = assembleArgs(def, toolCall.args, ctx);
+  assertNoTaintedArgs(def.id, effective, ctx.secretArgKeys);
+  let args: unknown;
+  try {
+    args = def.parseArgs(effective);
+  } catch (cause) {
+    throw toArgsInvalid(def.id, cause);
+  }
+  const target = def.policyTarget?.(args) ?? {};
+  enforcePolicy(def, target, ctx);
+  return { effective, args, target };
+}
+
 async function dispatch(
   tools: ReadonlyMap<ToolId, ToolDef>,
   host: ToolHost,
@@ -231,22 +260,8 @@ async function dispatch(
   // 1. Resolve by exact id, then check the node grant (registered ≠ authorized).
   const def = resolveGrantedTool(tools, toolCall, ctx);
 
-  // 2. Assemble the effective argument set (model args + input_mapping + config-only, config wins).
-  const effective = assembleArgs(def, toolCall.args, ctx);
-
-  // 3. Validate the COMPLETE effective set: secret-taint first (ADR-0029(c)), then the tool's validator.
-  assertNoTaintedArgs(def.id, effective, ctx.secretArgKeys);
-  let args: unknown;
-  try {
-    args = def.parseArgs(effective);
-  } catch (cause) {
-    throw toArgsInvalid(def.id, cause);
-  }
-
-  // 4. Enforce the guardrail policy on the EFFECTIVE args (the resolved command/URL is now real). The
-  //    policy target is resolved once here and reused by the per-tool approval step (4b) below.
-  const target = def.policyTarget?.(args) ?? {};
-  enforcePolicy(def, target, ctx);
+  // 2-4. Assemble, validate and policy-check the EFFECTIVE argument set.
+  const { effective, args, target } = admitArgs(def, toolCall, ctx);
 
   // Whether THIS call must be journaled, decided once from the validated args (ADR-0080 §3). `undefined` ⇒
   // it mutates nothing external, or its duplicates are benign, and no row is written for it.

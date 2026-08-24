@@ -326,6 +326,9 @@ function redactArgVector(items: readonly unknown[], seen: WeakSet<object>): unkn
  * password never is. See {@link looksLikePort}.
  */
 function isSecretishFlag(item: string): boolean {
+  // NOSONAR — the "complexity" here is the LENGTH OF THE NAME LIST, not structure: one anchored alternation
+  // of literal flag names, no nesting, no backtracking to speak of. A Set lookup would trade that for
+  // hand-expanding `api[_-]?key` into three members apiece, which is where a real omission would hide.
   return /^-{1,2}(?:p|pw|password|passwd|secret|token|api[_-]?key|auth|access[_-]?key|private[_-]?key|client[_-]?secret|credential|passphrase|pin)$/i.test(
     item,
   );

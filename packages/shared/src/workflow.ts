@@ -254,6 +254,10 @@ const FORMAT_CHECKS: ReadonlyMap<string, RegExp> = new Map<string, RegExp>([
     // Per-component ranges. Unbounded `\\d{2}` groups accepted `0000-99-99T99:99:99Z` as a valid instant,
     // which is not a shape check failing gracefully — it is the check being absent. `60` seconds is a leap
     // second (RFC 3339 permits it).
+    //
+    // NOSONAR — the complexity IS the per-component ranges. Every alternation in it is one calendar or clock
+    // bound, so "simplifying" it means deleting bounds and reinstating the defect above; splitting it into
+    // several regexes would move the same branch count into code that no longer reads as one grammar.
     /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])[Tt](?:[01]\d|2[0-3]):[0-5]\d:(?:[0-5]\d|60)(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/,
   ],
 ]);
