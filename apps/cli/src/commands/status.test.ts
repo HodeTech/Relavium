@@ -27,11 +27,50 @@ describe('statusCommand', () => {
     return { io, global: globalOptions(json), openDb: () => ({ db, close: () => {} }) };
   }
 
+  it('NAMES a run whose terminal is held in the outbox — the exit-5 state (ADR-0078 §4/§5)', async () => {
+    // A run in this state is still `running` in the derived projection, so it listed here as an ordinary
+    // active run with nothing saying its outcome was already known. Exit 5 tells a script to "re-check
+    // `relavium status <runId>` after a subsequent invocation" — and only `run` and `gate` drain the outbox,
+    // because only they construct a `WorkflowEngine`. A user who does the natural thing and asks for status
+    // again saw the same stale truth forever. This is what makes the documented remedy discoverable.
+    const { io, out } = captureIo();
+    await seedRun(db, { slug: 'demo', runId: 'running-1', state: 'running' });
+    await statusCommand({
+      ...deps(io),
+      readTerminalOutbox: () =>
+        Promise.resolve([
+          {
+            type: 'run:completed',
+            runId: 'running-1',
+            sequenceNumber: 9,
+            timestamp: '2026-01-01T00:00:00.000Z',
+            outputs: {},
+            totalTokensUsed: { input: 1, output: 1 },
+            totalCostMicrocents: 1,
+            durationMs: 1,
+          },
+        ]),
+    });
+    expect(out()).toContain('this run has FINISHED');
+    expect(out()).toContain('relavium run');
+  });
+
+  it('is UNAFFECTED when the outbox cannot be read — a status read must not fail on it', async () => {
+    const { io, out } = captureIo();
+    await seedRun(db, { slug: 'demo', runId: 'running-1', state: 'running' });
+    const code = await statusCommand({
+      ...deps(io),
+      readTerminalOutbox: () => Promise.reject(new Error('outbox unreadable')),
+    });
+    expect(code).toBe(EXIT_CODES.success);
+    expect(out()).not.toContain('this run has FINISHED');
+  });
+
   it('reports "No active runs." when history holds only terminal runs', async () => {
     const { io, out } = captureIo();
     await seedRun(db, { slug: 'demo', runId: 'done', state: 'completed' });
 
-    expect(statusCommand(deps(io))).toBe(EXIT_CODES.success);
+    expect(await statusCommand(deps(io))).toBe(EXIT_CODES.success);
     expect(out()).toContain('No active runs.');
   });
 
@@ -45,7 +84,7 @@ describe('statusCommand', () => {
     });
     await seedRun(db, { slug: 'demo', runId: 'done', state: 'completed' }); // terminal → excluded
 
-    statusCommand(deps(io));
+    await statusCommand(deps(io));
     const text = out();
     expect(text).toContain('run paused-1 — paused');
     expect(text).toContain('n1 [transform]'); // the completed node step
@@ -80,7 +119,7 @@ describe('statusCommand', () => {
       })
       .run();
 
-    expect(statusCommand(deps(io))).toBe(EXIT_CODES.success);
+    expect(await statusCommand(deps(io))).toBe(EXIT_CODES.success);
     const text = out();
     expect(text).toContain('run paused-1 — paused');
     expect(text).toContain('pending gate gate-1 (approval)'); // the healthy run keeps its full detail
@@ -111,7 +150,7 @@ describe('statusCommand', () => {
       })
       .run();
 
-    expect(statusCommand(deps(io, true))).toBe(EXIT_CODES.success);
+    expect(await statusCommand(deps(io, true))).toBe(EXIT_CODES.success);
     const records = parseNdjson(out());
     const broken = records.find((r) => r['runId'] === 'broken');
     const healthy = records.find((r) => r['runId'] === 'paused-1');
@@ -125,7 +164,7 @@ describe('statusCommand', () => {
     const { io, out } = captureIo();
     await seedRun(db, { slug: 'demo', runId: 'run-x', state: 'running' });
 
-    statusCommand(deps(io));
+    await statusCommand(deps(io));
     const text = out();
     expect(text).toContain('run run-x — running');
     expect(text).toContain('n1 [transform]');
@@ -141,7 +180,7 @@ describe('statusCommand', () => {
       gate: { gateId: 'gate-1', gateType: 'approval', message: 'ship it?' },
     });
 
-    statusCommand(deps(io, true));
+    await statusCommand(deps(io, true));
     const records = parseNdjson<{
       runId: string;
       status: string;

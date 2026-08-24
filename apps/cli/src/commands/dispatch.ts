@@ -403,7 +403,7 @@ const executeLogs: CommandExecutor = (input, ctx) =>
   );
 
 const executeStatus: CommandExecutor = (_input, ctx) =>
-  Promise.resolve(statusCommand({ io: ctx.io, global: ctx.global }));
+  statusCommand({ io: ctx.io, global: ctx.global });
 
 /**
  * The lazy `llm_providers`-UUID → provider-slug (e.g. `anthropic`) resolver the `models` list path uses for its
