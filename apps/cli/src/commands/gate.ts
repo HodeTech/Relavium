@@ -3,13 +3,18 @@ import { statSync } from 'node:fs';
 
 import {
   EngineStateError,
+  isTransientEngineStateError,
   type CheckpointState,
   type RunHandle,
   type WorkflowDefinition,
   type WorkflowEngine,
 } from '@relavium/core';
 import {
+  createEffectJournalPort,
+  createEffectResumePort,
+  createEffectJournalStore,
   createRunHistoryStore,
+  createRunLeasePort,
   isCorruptRunEventError,
   isUnreadableRunEventLogError,
   loadRunSnapshot,
@@ -19,12 +24,14 @@ import { MaskedSecretSchema, WorkflowSchema, type RunStatus } from '@relavium/sh
 
 import { loadResolvedConfig } from '../config/load.js';
 import { openLocalDb } from '../db/open.js';
+import { terminalOutboxPath } from '../history/open.js';
 import {
   buildEngine as defaultBuildEngine,
   type BuildEngineOptions,
 } from '../engine/build-engine.js';
 import { createHistoryCheckpointer } from '../engine/checkpointer.js';
 import { onceEffortNotice, unpricedModelNote } from '../chat/effort-notice.js';
+import { sweepCommittedEffects } from '../engine/effect-retention.js';
 import { createCliHost } from '../engine/host.js';
 import {
   sweepHostMediaBestEffort as defaultSweepMedia,
@@ -36,6 +43,7 @@ import { createProviderResolver, type ProviderResolver } from '../engine/provide
 import { decisionFromFlags, type GateFlags } from '../gate/decision.js';
 import type { GatePrompter } from '../gate/prompter.js';
 import { selectGatePrompter } from '../gate/select-prompter.js';
+import { readSecretFromStdin, type StdinSecretContext } from '../secrets/read-secret.js';
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
@@ -83,6 +91,17 @@ export interface GateCommandArgs extends GateFlags {
   readonly runId: string;
   /** `--gate <gateId>`: which pending gate to resolve (required only when more than one is pending). */
   readonly gate?: string;
+  /**
+   * `--secret-stdin`: re-supply the run's `secret` inputs from stdin, one `name=value` per line
+   * ([ADR-0083](../../../../docs/decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md)
+   * §6). A `secret` is never persisted — the durable record holds only a masked slot — so a secret-bearing
+   * run cannot resume without it, and before this flag existed the only advice was "re-run the workflow".
+   *
+   * **Values never travel through argv**, which is why the flag is a boolean and not `--secret name=value`:
+   * a credential on a command line leaks to `ps`, shell history and CI logs. `relavium provider set-key`
+   * takes a key on stdin for exactly this reason.
+   */
+  readonly secretStdin?: boolean;
 }
 
 export interface GateCommandDeps {
@@ -98,6 +117,11 @@ export interface GateCommandDeps {
   readonly selectGatePrompter?: (io: CliIo, global: GlobalOptions) => GatePrompter | undefined;
   /** Injectable run-end host media GC (2.S/D-GC); defaults to {@link defaultSweepMedia}. Tests spy on it. */
   readonly sweepMedia?: typeof defaultSweepMedia;
+  /**
+   * Read the whole of stdin, for `--secret-stdin`. Injected so a test never touches the real stdin — and
+   * never has to put a credential-shaped string anywhere but its own closure.
+   */
+  readonly readSecretInput?: () => Promise<string>;
 }
 
 const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(['completed', 'failed', 'cancelled']);
@@ -134,13 +158,13 @@ async function resumeOrFail(
     return await engine.resumeFromCheckpoint(params);
   } catch (err) {
     if (err instanceof EngineStateError) {
-      throw new CliError(
-        'invalid_invocation',
-        `cannot resume run ${params.runId}: ${err.message}`,
-        {
-          cause: err,
-        },
-      );
+      // A TRANSIENT refusal gets its own code, and therefore its own exit code (ADR-0079 §7). Another
+      // process is running this gate right now; the caller should retry shortly, not conclude the command
+      // was malformed. Every other engine-state refusal is a permanent invocation fault.
+      const code = isTransientEngineStateError(err) ? 'run_owned_elsewhere' : 'invalid_invocation';
+      throw new CliError(code, `cannot resume run ${params.runId}: ${err.message}`, {
+        cause: err,
+      });
     }
     throw err;
   }
@@ -189,8 +213,11 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     }
 
     const workflow = parseSnapshot(snapshot.workflowDefinitionSnapshot, args.runId);
-    const inputs = parseInputs(snapshot.inputJson, args.runId);
-    assertNoMaskedSecretInputs(inputs, args.runId);
+    const inputs = await resolveSecretInputs(
+      parseInputs(snapshot.inputJson, args.runId),
+      args,
+      deps,
+    );
 
     // The workflow-scoped store records the NEW resume events (persist-before-deliver) and resolves the
     // workflow id for the engine's identity guard; the checkpointer reconstructs the paused state from the log.
@@ -252,6 +279,20 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     // far side of the gate — the very ADR-0064 §6 gap this closes. Non-fatal read (an empty map ⇒ no user pricing).
     const resolvePrice = readUserPricingOverlay(opened.db);
     const engine = await (deps.buildEngine ?? defaultBuildEngine)({
+      // The durable effect journal (ADR-0080). A gate resume runs the FAR side of a human gate, which is
+      // precisely where a tool-using agent node does its work — leaving it unwired refused every effectful
+      // tool on exactly the path the gate exists to enable.
+      effectJournal: (correlation) =>
+        createEffectJournalPort(
+          createEffectJournalStore(opened.db, { uuid: randomUUID, now: Date.now }),
+          correlation,
+          { providerAttempt: 1, toolCallId: 'gate' },
+        ),
+      // …and its READ half. THIS is the gate's home surface: a gate resume is the canonical "the process
+      // died mid-node and came back" case, which is exactly what effect-journal.md §4 exists to refuse.
+      effectResume: createEffectResumePort(
+        createEffectJournalStore(opened.db, { uuid: randomUUID, now: Date.now }),
+      ),
       providers,
       // ADR-0071 §6: the far side of a gate re-runs agent nodes, so an authored tier the bound model rejects is
       // withheld here too — and this surface has no other safety net (no picker, no footer, no client-side check).
@@ -278,13 +319,24 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       // tool-using agent node on the FAR side of a human gate reads/writes the ORIGINAL project context
       // (checkpoint/resume parity), not the gate caller's directory, and not `tool_unavailable`.
       toolEnv: { workspaceDir: saveToRoot, fsScopeTier: config.fsScope ?? 'sandboxed' },
-      host: createCliHost(store, { checkpointer, media: wiring.media }),
+      host: createCliHost(store, {
+        checkpointer,
+        media: wiring.media,
+        // Same outbox as the  path, and it must be the SAME FILE: a gate resume settles a run whose
+        // terminal a different process may already have failed to write (ADR-0078 §4).
+        terminalOutboxPath: terminalOutboxPath(homeDir),
+        // Same durable lease as the `run` path — a gate resume is exactly where two processes contend.
+        runLeases: createRunLeasePort(store),
+      }),
       resolveMediaSurface: wiring.resolveMediaSurface,
       ...(wiring.mediaCostEstimate === undefined
         ? {}
         : { mediaCostEstimate: wiring.mediaCostEstimate }),
       ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     });
+    // Same drain as the `run` path (ADR-0078 §4/§5) — a gate resume is equally "the next `relavium` start",
+    // and it is the one a user reaches for after seeing the `durabilityUncertain` exit code on a gated run.
+    await engine.drainTerminalOutbox().catch(() => undefined);
     const handle = await resumeOrFail(engine, {
       runId: args.runId,
       workflow,
@@ -297,15 +349,38 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       engine,
       handle,
       makeRenderer: () => (deps.selectRenderer ?? selectRenderer)(deps.io, deps.global),
-      gatePrompter: (deps.selectGatePrompter ?? selectGatePrompter)(deps.io, deps.global),
+      // **`--secret-stdin` makes this invocation non-interactive, and the prompter must know.**
+      // `selectGatePrompter` decides on STDOUT alone, so a `printf … | relavium gate … --secret-stdin` run
+      // from a terminal still selects a `@clack/prompts` prompter — over a stdin that was drained to EOF to
+      // read the credential. If the resumed run hits a SECOND gate, clack is asked to read from a closed
+      // stream: it either resolves its cancel sentinel (the gate goes unresolved, exit 3) or throws on raw
+      // mode. Both are wrong, so the honest answer is the one this invocation actually has — no prompter,
+      // and a later gate exits 3 the way every other non-interactive resume does.
+      gatePrompter:
+        args.secretStdin === true
+          ? undefined
+          : (deps.selectGatePrompter ?? selectGatePrompter)(deps.io, deps.global),
       io: deps.io,
     });
 
+    // **The durability decides fenced-ness; the outcome decides everything else.** Keyed on the outcome
+    // alone this is wrong in both directions: `outcome === undefined` misses a fenced run that had a stale
+    // `run:paused` buffered before the loss was discovered, while `!isTerminalOutcome(outcome)` sweeps up a
+    // LEGITIMATE re-pause at a later gate, which must still exit 3.
+    if (handle.durability() === 'uncertain') {
+      throw new CliError(
+        'run_owned_elsewhere',
+        `run ${args.runId} was taken over by another process during the resume; this decision was not recorded — read \`relavium logs ${args.runId}\` for its real outcome, then retry if the gate is still pending`,
+      );
+    }
     if (outcome === undefined) {
-      // The resumed handle closed with NO events. The engine returns a closed handle when its own internal
-      // checkpoint re-read already found the run terminal — i.e. a concurrent `relavium gate` settled it in the
-      // window between our selectGate pre-check and the engine's re-read. That is an idempotent no-op (the run
-      // already completed), not a failure: exit 0, mirroring the selectGate terminal path.
+      // **Two very different runs close with no `run:*` event, and telling them apart matters.** A closed
+      // handle (the engine's own checkpoint re-read found the run terminal — a concurrent `relavium gate`
+      // settled it between our pre-check and the engine's) is an idempotent no-op. A run FENCED mid-resume
+      // (ADR-0079 §5) also emits no terminal by design — and reporting that as "already settled … exit 0"
+      // is the worst available answer: the run is executing elsewhere, this process's gate decision was
+      // never made durable, and an automation loop records success. The disposition separates them at no
+      // cost: `createClosedRunHandle` reports `durable`, a fenced handle reports `uncertain`.
       deps.io.writeOut(`run ${args.runId} already settled; nothing to resume\n`);
       return EXIT_CODES.success;
     }
@@ -313,6 +388,13 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     // Host media GC (2.S/D-GC, ADR-0042 §4) — only when the gate-resumed run reaches a TERMINAL event, exactly as
     // `run` does (the SAME helper). A re-pause (a second gate / budget pause) is NOT terminal, so the still-paused
     // run's media survives for the next resume; a GC failure is swallowed (never a correctness break).
+    // Retention (effect-journal.md §9). A terminal run can no longer be resumed — `resumeFromCheckpoint`
+    // returns a closed handle for one — so its COMMITTED rows have no reader left and go. Unresolved rows
+    // are untouched by construction: they are the record an operator needs, and an exit-7 run's rows must
+    // survive precisely because its run is over.
+    if (isTerminalOutcome(outcome)) {
+      sweepCommittedEffects(deps.io, opened.db, args.runId);
+    }
     await sweepMediaAtTerminal({
       sweep: deps.sweepMedia ?? defaultSweepMedia,
       isTerminal: isTerminalOutcome(outcome),
@@ -321,7 +403,13 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       currentRunId: args.runId,
       graceMs: config.mediaGcGraceMs,
     });
-    return outcomeToExitCode(outcome);
+    // Same rule as  (ADR-0078 §5) — the resumed leg's terminal is durable, or the run says so.
+    // **Read off the HANDLE, never from a `subscribe()` here.** The resume gate settles `run:failed` INSIDE
+    // `resumeFromCheckpoint`'s await, before this code has a handle to subscribe to, and `subscribe` has no
+    // replay — a review measured a late subscriber seeing `undefined` and this surface reporting exit 1 for
+    // a run that had stopped for an unresolved external effect. `terminalError()` is captured on the
+    // handle's own construction-time subscription, which no ordering can outrun.
+    return outcomeToExitCode(outcome, handle.durability(), handle.terminalError());
   } finally {
     opened.close();
   }
@@ -424,25 +512,136 @@ function parseInputs(inputJson: string, runId: string): Record<string, unknown> 
 }
 
 /**
- * Fail closed if any restored input is a {@link MaskedSecret} placeholder. The durable `run:started.inputs`
- * the engine persists are **masked** — a `secret`-typed input is stored as `{ secret: true, ref }`, never its
- * plaintext (ADR-0006/0036). So a cross-process resume genuinely cannot restore the real value: resuming with
- * the masked placeholder would let a post-gate `{{ inputs.<secret> }}` silently evaluate to the placeholder
- * object, diverging from the in-process run. We refuse (exit 2) with an actionable message rather than resume
- * a secret-bearing run incorrectly. (Re-providing secret inputs on resume is a tracked follow-up — see
- * [deferred-tasks](../../../../docs/roadmap/deferred-tasks.md).)
+ * How many names a refusal lists before the rest become a count — the convention this file already uses for
+ * held nodes. A malformed paste on the SECRET channel would otherwise produce a stderr line as long as the
+ * payload, echoing whatever the user pasted.
  */
-function assertNoMaskedSecretInputs(inputs: Record<string, unknown>, runId: string): void {
+const MAX_REPORTED_SECRET_NAMES = 8;
+
+function nameList(names: readonly string[]): string {
+  return names.length <= MAX_REPORTED_SECRET_NAMES
+    ? names.join(', ')
+    : `${names.slice(0, MAX_REPORTED_SECRET_NAMES).join(', ')}, and ${String(names.length - MAX_REPORTED_SECRET_NAMES)} more`;
+}
+
+/** The two refusals `readSecretFromStdin` prints, written for THIS command rather than `provider set-key`. */
+const SECRET_STDIN_CONTEXT = (runId: string): StdinSecretContext => ({
+  pipeHint:
+    "pipe the run's `secret` inputs on stdin as `name=value` lines — e.g. " +
+    `\`printf 'api_key=%s\\n' "$VALUE" | relavium gate ${runId} --approve --secret-stdin\` ` +
+    '(a credential is never passed as an argument).',
+  emptyMessage: `no \`secret\` inputs were read from stdin for run ${runId} (empty input).`,
+});
+
+/**
+ * Re-supply the run's `secret` inputs, or refuse the resume
+ * ([ADR-0083](../../../../docs/decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md)
+ * §6).
+ *
+ * The durable record holds a `secret` input as `{ secret: true, ref }` and nothing else — there is no
+ * credential in it to restore. Passing the placeholder through would let a post-gate `{{ inputs.<secret> }}`
+ * evaluate to a marker object; the engine refuses that outright (`secret_input_missing`), and this refuses it
+ * earlier with a message that names the remedy.
+ *
+ * **`name=value` lines on stdin, behind an explicit `--secret-stdin`.** The flag is what keeps the command
+ * from blocking on a pipe nobody attached, and the VALUES never appear in argv, where a credential leaks to
+ * `ps`, shell history and CI logs. The name in the line is not itself a secret, and carrying it there rather
+ * than in a repeated flag removes the order dependency that would silently swap two credentials.
+ *
+ * Every masked slot must be supplied and nothing else may be: a name the run has no slot for is a mistake
+ * worth naming rather than ignoring, and an empty value is refused explicitly rather than by omission — the
+ * engine would accept `''` as "re-supplied", and a blank line in a piped heredoc is the likeliest way to
+ * produce one by accident.
+ */
+async function resolveSecretInputs(
+  inputs: Record<string, unknown>,
+  args: GateCommandArgs,
+  deps: GateCommandDeps,
+): Promise<Record<string, unknown>> {
   const masked = Object.keys(inputs).filter(
     (key) => MaskedSecretSchema.safeParse(inputs[key]).success,
   );
-  if (masked.length > 0) {
+  if (masked.length === 0) {
+    if (args.secretStdin === true) {
+      throw new CliError(
+        'invalid_invocation',
+        `run ${args.runId} has no \`secret\` inputs to re-supply — drop --secret-stdin.`,
+      );
+    }
+    return inputs;
+  }
+  if (args.secretStdin !== true) {
     throw new CliError(
       'invalid_invocation',
-      `run ${runId} has secret input(s) [${masked.join(', ')}] that are not persisted in plaintext, so a ` +
-        `cross-process resume cannot restore them — re-run the workflow instead of resuming.`,
+      `run ${args.runId} needs its \`secret\` input(s) [${masked.join(', ')}] re-supplied to resume — ` +
+        `they are never persisted. Pipe them on stdin as \`name=value\` lines with --secret-stdin ` +
+        `(e.g. \`printf '${masked[0] ?? 'name'}=%s\\n' "$VALUE" | relavium gate ${args.runId} --approve --secret-stdin\`).`,
     );
   }
+  const read =
+    deps.readSecretInput ??
+    ((): Promise<string> => readSecretFromStdin(SECRET_STDIN_CONTEXT(args.runId)));
+  const supplied = parseSecretLines(await read(), args.runId);
+  const missing = masked.filter((name) => !Object.hasOwn(supplied, name));
+  if (missing.length > 0) {
+    throw new CliError(
+      'invalid_invocation',
+      `stdin did not supply the \`secret\` input(s) [${nameList(missing)}] this run needs.`,
+    );
+  }
+  const unexpected = Object.keys(supplied).filter((name) => !masked.includes(name));
+  if (unexpected.length > 0) {
+    throw new CliError(
+      'invalid_invocation',
+      `stdin supplied [${nameList(unexpected)}], which run ${args.runId} has no \`secret\` slot for.`,
+    );
+  }
+  // A fresh null-prototype map, filled from the restored inputs and then the re-supplied secrets — never a
+  // spread of a `JSON.parse` result into a `{}`, which would put an input named `__proto__` through the
+  // prototype setter (ADR-0083 §7, the same hazard the engine's own accumulators avoid).
+  const merged: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const key of Object.keys(inputs)) merged[key] = inputs[key];
+  for (const key of Object.keys(supplied)) merged[key] = supplied[key];
+  return merged;
+}
+
+/**
+ * Split stdin into `name=value` pairs. Blank lines are ignored; everything else must be a pair with a
+ * non-empty name and value, so a malformed paste fails loudly instead of resuming with a wrong credential.
+ *
+ * A VALUE may contain `=` (the split is on the first one). It may not contain a newline — a credential that
+ * does is outside what this transport can express, and saying so is better than truncating one silently.
+ * No value is ever echoed, here or in any error below.
+ */
+function parseSecretLines(raw: string, runId: string): Record<string, string> {
+  const out: Record<string, string> = Object.create(null) as Record<string, string>;
+  for (const line of raw.split('\n')) {
+    // Only the CRLF carriage return is stripped from the line. The NAME is trimmed; the VALUE is taken
+    // VERBATIM after the first `=`. A first version trimmed the whole line, which silently removed a
+    // credential's trailing whitespace while preserving its leading whitespace — an asymmetry that turns a
+    // pasted key into a different key and reports it as an opaque 401 from the provider hours later.
+    const stripped = line.endsWith('\r') ? line.slice(0, -1) : line;
+    if (stripped.trim() === '') continue;
+    const at = stripped.indexOf('=');
+    const name = at === -1 ? '' : stripped.slice(0, at).trim();
+    const value = at === -1 ? '' : stripped.slice(at + 1);
+    // An all-whitespace value is refused with the empty one: it is not a credential, and accepting it would
+    // hand the run a blank secret that fails somewhere far from here.
+    if (name === '' || value.trim() === '') {
+      throw new CliError(
+        'invalid_invocation',
+        `stdin for run ${runId} must be \`name=value\` lines with a non-empty value.`,
+      );
+    }
+    if (Object.hasOwn(out, name)) {
+      throw new CliError(
+        'invalid_invocation',
+        `stdin for run ${runId} supplied the same \`secret\` name twice.`,
+      );
+    }
+    out[name] = value;
+  }
+  return out;
 }
 
 /**

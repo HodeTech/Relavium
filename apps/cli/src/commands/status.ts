@@ -1,3 +1,5 @@
+import type { RunEvent } from '@relavium/shared';
+
 import type { Db, RunHistoryReader, RunRecord, StepRecord } from '@relavium/db';
 
 import { loadResolvedConfig } from '../config/load.js';
@@ -9,15 +11,43 @@ import { writeRecordLines } from '../render/records.js';
 import { openHistoryReader } from '../history/reader.js';
 import { sanitizeInline } from '../render/sanitize.js';
 import { readPerRunOrDegrade } from '../history/per-run-read.js';
+import { createFileTerminalOutbox } from '../engine/terminal-outbox.js';
+import { terminalOutboxPath } from '../history/open.js';
 
 export interface StatusCommandDeps {
   readonly io: CliIo;
   readonly global: GlobalOptions;
   readonly openDb?: (homeDir: string) => { db: Db; close: () => void };
+  /** Injected in tests; production reads `~/.relavium/terminal-outbox.ndjson` through the file outbox. */
+  readonly readTerminalOutbox?: (homeDir: string) => Promise<readonly RunEvent[]>;
 }
+
+/**
+ * The run ids whose terminal is sitting in the outbox, or an empty set if it cannot be read.
+ *
+ * Best-effort by design: an unreadable outbox must degrade `status` to what it showed before, never fail it.
+ */
+async function heldTerminalRunIds(
+  homeDir: string,
+  read: StatusCommandDeps['readTerminalOutbox'],
+): Promise<ReadonlySet<string>> {
+  try {
+    const events = await (read ?? defaultReadTerminalOutbox)(homeDir);
+    return new Set(
+      events.map((event) => event.runId).filter((id): id is string => id !== undefined),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+const defaultReadTerminalOutbox = (homeDir: string): Promise<readonly RunEvent[]> =>
+  createFileTerminalOutbox(terminalOutboxPath(homeDir)).list();
 
 interface ActiveRunStatus {
   readonly run: RunRecord;
+  /** `true` when this run's terminal is held in the outbox — its outcome is known but not yet durable. */
+  readonly terminalHeld: boolean;
   readonly steps: readonly StepRecord[];
   readonly pendingGates: readonly PendingGate[];
   /** `true` when this run's event log could not be read, so `pendingGates` is a stand-in (#W15-15). */
@@ -31,15 +61,28 @@ interface ActiveRunStatus {
  * (canonical: [commands.md](../../../docs/reference/cli/commands.md)). `--json` emits one record per run.
  * Framework-free; no `runId` argument (it lists every active run).
  */
-export function statusCommand(deps: StatusCommandDeps): ExitCode {
+export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> {
   const { homeDir } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
   const { reader, close } = openHistoryReader(homeDir, deps.openDb);
+  // Runs whose TERMINAL is held in the outbox (ADR-0078 §4/§5) — read, never drained.
+  //
+  // A run in that state is still `running` in the derived projection, so it appears here as an ordinary
+  // active run with nothing saying its outcome is already known. Exit code 5 tells a script to "re-check
+  // `relavium status <runId>` after a subsequent invocation", and a review found that instruction can never
+  // resolve on its own: only `run` and `gate` drain the outbox, because only they construct a
+  // `WorkflowEngine`. A user who does the natural thing — ask for status again — sees the same stale truth
+  // forever. Naming the state here is what makes the documented remedy actionable.
+  //
+  // READ-ONLY, deliberately. Draining is a write that claims a run lease; a status read must not take
+  // ownership of a run another process may be finishing right now.
+  const held = await heldTerminalRunIds(homeDir, deps.readTerminalOutbox);
   try {
     const statuses: ActiveRunStatus[] = reader.listActiveRuns().map((run) => ({
       run,
+      terminalHeld: held.has(run.id),
       steps: reader.loadStepExecutions(run.id),
       // Only a `paused` run can hold a pending human gate: persisting a `human_gate:paused` event folds the
       // run's status to `paused` (run-history-store applyDerived), so reconstruct the log only for those — a
@@ -92,6 +135,9 @@ function toJson(status: ActiveRunStatus): unknown {
     runId: status.run.id,
     workflowId: status.run.workflowId,
     status: status.run.status,
+    // The run's outcome is already known and only its durable record is missing — the exit-5 state. A
+    // machine consumer needs this to tell "still working" from "finished, not yet recorded".
+    terminalHeld: status.terminalHeld,
     startedAt: status.run.startedAt ?? null,
     steps: status.steps.map((step) => ({
       nodeId: step.nodeId,
@@ -127,6 +173,14 @@ function renderRun(io: CliIo, status: ActiveRunStatus): void {
   for (const step of status.steps) {
     const attempt = step.attemptNumber > 1 ? ` (attempt ${step.attemptNumber})` : '';
     io.writeOut(`  ${step.status.padEnd(9)} ${step.nodeId} [${step.nodeType}]${attempt}\n`);
+  }
+  if (status.terminalHeld) {
+    // The run reads `running` because its terminal never became durable; without this line the exit-5
+    // instruction ("re-check `relavium status`") has nothing to show the user on the re-check.
+    io.writeOut(
+      '  ⚠ this run has FINISHED — its terminal is held in the outbox and is not durable yet.\n' +
+        '    Recovery is attempted by `relavium run` and `relavium gate`; the next one retries it.\n',
+    );
   }
   if (status.gatesUnavailable) {
     // NOT silence (#W15-15). Without this line a run whose gates were lost to a damaged `run_events` row

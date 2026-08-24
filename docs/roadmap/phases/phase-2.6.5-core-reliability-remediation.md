@@ -1,7 +1,7 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: planned
-- **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10
+- **Status**: in progress — the prerequisite and the oracle are closed; the durability spine is next
+- **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
   ledger implementation (**complete 2026-08-10**, ADR-0076 + ADR-0077 — see [Prerequisite](#prerequisite))
 - **Successor**: Wave 2 of the 2.5.5 remediation, **reduced** — this phase absorbs Wave 2's hostile-MCP
@@ -75,9 +75,8 @@ rejected: a phase whose exit criteria cannot be evaluated until a later phase is
 ## Prerequisite
 
 **`#W15-1` — the durable per-attempt realized-cost ledger — lands before `W1` starts. ✅ SATISFIED
-(2026-08-10).** All five steps are implemented and landed on `development`, each with an Opus and a Sonnet
-round folded; they ride **PR #82** and are **pending merge to `main`**. The decision acquired a correction on
-the way:
+(2026-08-10).** All five steps landed with an Opus and a Sonnet round folded each, and **merged to `main` via
+PR #82 on 2026-08-11**. The decision acquired a correction on the way:
 [ADR-0077](../../decisions/0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md) amends
 ADR-0076 §1, whose stated mechanism (an inline `await` at the attempt boundary) is unimplementable — the
 seam's attempt observer is synchronous. The ledger uses ADR-0074 §2's chain-and-join shape instead, with a
@@ -104,6 +103,32 @@ awaited emit inherits `CR-10`'s ordered tail for free.
 There is a second reason, and it is the one this project keeps re-learning: an accepted ADR with no
 implementation is a decision that reads as shipped. Wave 1's completion claim was wrong twice for exactly that
 shape.
+
+## Progress
+
+> **Batch 1 — merged to `main` 2026-08-11 (PR #82).** Six items, each with an Opus and a Sonnet review round
+> folded before the next one started, plus two review rounds over the PR as a whole.
+>
+> | Item | Closed | What it closed |
+> |------|--------|----------------|
+> | `#W15-1` | 2026-08-10 | The realized-cost ledger — ADR-0076 as amended by ADR-0077 |
+> | `CR-90` | 2026-08-10 | Root runs no longer collect (or count) a repo-local second checkout |
+> | `CR-91` | 2026-08-10 | The durable-truth oracle the spine below is proven with |
+> | `CR-01` | 2026-08-11 | `session:cancelled` now goes through the session durability latch |
+> | `CR-02` | 2026-08-11 | A failed turn flush no longer leaves the turn counter incremented, and the unclassified terminal reports real usage |
+> | `CR-03` | 2026-08-11 | The `--json` machine-output floor — five serializer paths, fenced by an ESLint selector |
+>
+> `CR-64` was **added** in the same batch (from the YAML/git-native review triage); it is open.
+>
+> **Next: the durability spine**, `CR-10` → `CR-11` → `CR-92` → `CR-12`, in that order and ADR-first. The
+> oracle exists specifically to prove it, and `CR-10` is the item everything else assumes.
+>
+> **Carried forward, named rather than implied.** ADR-0077's required regression (a ledger write refused while
+> a sibling's `#failure` already suppressed the abort) is unbuilt, and `#runAttempt`'s money-durability arm is
+> unreached without it. `CR-10`'s actual property is **not expressible from the durable log alone** — a
+> streamed event's absence looks identical to a lost one — so its acceptance needs the store harness named in
+> its own section, not the oracle. The oracle still owes `CR-92` three things: a `live` view that is not a
+> `RunEvent`, resume-leg payload comparison, and a "durability uncertain" mode.
 
 ## Working discipline for this phase
 
@@ -194,9 +219,9 @@ to correct.
 | `CR-12` | made (three-tier effect contract) | new, amends [ADR-0041](../../decisions/0041-external-action-governance-seam.md) + [ADR-0037](../../decisions/0037-engine-tool-execution-boundary.md) | yes | — |
 | `CR-13` | made (summary is untrusted, never `system`) | new, supersedes [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md) §1 | yes | prompt/trust |
 | `CR-14` | made (exactly one terminal, grammar pinned) | new | yes | — |
-| `CR-15` | made (engine-side admission) | new | yes | — |
-| `CR-16` | made (consent before spawn, lazy connect) | new | yes | hostile MCP |
-| `CR-17` | made (persist and verify resume identity) | with `CR-15`'s | yes | — |
+| `CR-15` | made (engine-side admission) | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | yes | — |
+| `CR-16` | made (consent before spawn; **lazy connect split out**, see [deferred-tasks.md](../deferred-tasks.md)) | [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md) | yes | hostile MCP |
+| `CR-17` | made (persist and verify resume identity) | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | yes | — |
 | `CR-20` | made (honour `timeout_ms`) | — | no | — |
 | `CR-21` | made (per-attempt deadline) | with `CR-14`'s | no | — |
 | `CR-22` | made (absolute deadlines) | — | no | — |
@@ -359,7 +384,7 @@ truth undermines both. `CR-13`, `CR-14` and `CR-15`+`CR-17` are independent line
 Seven of the eight are the set all three reviews converged on. `CR-17` was added by the plan review of this
 document and verified against the engine's own interface contract.
 
-### CR-10 — The durable event log is not a gap-free ordered prefix · Blocker · needs an ADR
+### CR-10 — The durable event log is not a gap-free ordered prefix · Blocker · ✅ CLOSED 2026-08-11
 
 **Evidence.** The engine assigns sequence numbers centrally but starts each event's persistence independently
 for concurrency; the code comment states the split explicitly ("persistence concurrent, delivery serialized").
@@ -368,6 +393,30 @@ still in flight (`packages/core/src/engine/engine.ts`, `packages/db/src/run-hist
 
 **Failure.** Event `N`'s write is slow; `N+1` commits; the process dies before `N`. The disk holds a pseudo-
 prefix with a hole in its sequence, and the causal predecessor the checkpoint fold depends on is missing.
+
+> **Corrections, verified against the tree 2026-08-11.** Three, and the ADR must carry all of them or it is
+> wrong on the first pass.
+>
+> 1. **The quoted code comment does not exist.** The tree says *"Persists stay concurrent; only delivery is
+>    serialized."* (`engine.ts:2259`), not "persistence concurrent, delivery serialized". Quote the real one.
+> 2. **Out-of-order COMMIT is not reachable on the CLI's own store on the happy path.** `better-sqlite3`'s
+>    `db.transaction(...)` is fully synchronous and `withBusyRetryAsync` calls it before its first real await,
+>    so the commit lands inside the same synchronous block that assigned the seq — measured, commit order was
+>    `1,2` every time. It becomes reachable through (a) a `SQLITE_BUSY` backoff that yields mid-retry — which
+>    `run-history-store.ts:873-878` and `database-schema.md:748` both already describe, and which cross-process
+>    contention makes expected — or (b) a genuinely async store (the port is `Promise`-typed; the Phase-2 cloud
+>    store; the engine's own test double). An ADR claiming "out-of-order commit happens routinely today" is
+>    false. What IS unconditionally true is that the engine *starts* the writes unordered, so nothing but
+>    timing prevents it.
+> 3. **The damage is the MISSING row, not a mis-ordered read.** `reconstructCheckpointState` deliberately does
+>    not re-sort (`checkpoint.ts:356`) because the reader already returns `ORDER BY seq`. A vanished
+>    `node:completed` leaves its vertex absent from `nodeStates`, so a resumed engine seeds it `pending` and
+>    re-runs it — which is how `CR-10` opens `CR-12`'s duplicate-effect door.
+>
+> **And what this item does NOT fix, stated so a later reader does not "simplify" it away.** ADR-0074's
+> sum-vs-last-wins rule and `checkpoint.ts:140-151`'s `Math.max` fold are driven by seq-ASSIGNMENT order among
+> concurrent emitters, not by commit order. An ordered append tail cannot give two concurrent `fan_out`
+> branches a canonical order — nothing can — so those fold rules survive this item completely unchanged.
 
 **Why it is first.** This is the root cause behind the sum-vs-max decision already recorded for conservative
 commitments: concurrent events under a `fan_out` have no canonical `seq` order. Every durability property below
@@ -380,7 +429,29 @@ compare-and-append against the expected last sequence.
 injected between the two must leave a prefix with no hole. Existing gap-free assertions must still pass.
 Break-verify by restoring the concurrent start.
 
-### CR-11 — No cross-process run ownership or fencing · Blocker · needs an ADR
+**Closed — the code that closes it, per exit criterion 7.** [ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md)
+§1–§3, implemented across `engine.ts` (`await prior` moved above the persist, so one tail serializes ask →
+write → deliver; `#lastAskedSequenceNumber` seeded from the checkpoint on resume; `reconcile()` carrying the
+same guard), `execution-host.ts` + `packages/shared/src/run.ts` (`DurableWriteContext`, `AppendConflictError`,
+and the reference store enforcing the identical predicate), and `run-history-store.ts` (`max(seq)` inside the
+existing `IMMEDIATE` transaction through `tx`). The canonical policy edit landed in
+[database-schema.md](../../reference/shared-core/database-schema.md) §"Concurrency & transaction behavior".
+
+The acceptance was discharged by **flipping a test rather than adding one**: the fan-out case in
+`m2-e2e-harness.e2e.test.ts` was written one commit earlier asserting `overlapViolations.length > 0` — the
+measured pre-`CR-10` baseline — and inverted here. Break-verified in the phase's own words: putting
+`await prior` back below the persist reddens it again.
+
+**Two things this item does NOT close, named rather than implied.** The run TERMINAL is exempt from the guard,
+because exactly-one-terminal (ADR-0036) outranks it — so a terminal can still land past a hole left by a lost
+non-terminal write, and `CR-10`'s prefix property holds for the non-terminal segment only. `CR-92` **decided**
+that exemption rather than removing it: once §4's outbox exists a guarded terminal *could* be refused, but
+doing so would turn the common "a non-terminal write was lost" case into a run that never durably ends, which
+is the wrong trade on the failure path. The reasoning is recorded at the guard itself. And the guard is proven
+against the reference store and the SQLite store's own unit tests; the end-to-end certification through the
+real `history.db` in `apps/cli` rides with `CR-92`.
+
+### CR-11 — No cross-process run ownership or fencing · Blocker · ✅ CLOSED 2026-08-17 ([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md))
 
 **Evidence.** The engine states that its cross-process guarantee rests on store uniqueness, but the only DB
 uniqueness is `(run_id, seq)`. `resumeFromCheckpoint` performs an in-memory check, then loads the checkpoint and
@@ -401,7 +472,15 @@ write carries the token and is rejected if it is stale. The process that loses b
 with a typed, actionable error. A lease that expires mid-run is fenced out of further durable writes — proven
 by driving a write with a stale token and asserting the rejection, not by asserting the lease table's contents.
 
-### CR-12 — No durable effect/idempotency journal on the hot path · Blocker · needs an ADR
+> **Scoped by [ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §4 —
+> "degrades to observer" is TWO deliverables, and only one is in this item.** The typed, actionable refusal is
+> in scope: the loser is rejected before it reads the checkpoint, so it never becomes a second producer even
+> briefly. An actual OBSERVER handle — tailing another process's durable log and synthesising a `RunHandle`
+> stream — is a new engine capability, deferred with its trigger named (the first surface that must *watch*
+> another process's run rather than merely be refused by it). Read as written, this paragraph could be taken
+> to require the full observer now; it does not.
+
+### CR-12 — No durable effect/idempotency journal on the hot path · Blocker · ✅ CLOSED 2026-08-18 ([ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md))
 
 **Evidence.** `NodeExecContext` carries an attempt number but no run/effect idempotency key.
 `ToolDispatchContext` carries a node id but no run correlation or semantic key. The registry calls
@@ -431,6 +510,32 @@ remove. The contract is therefore tiered:
 `ToolDispatchContext`. Side-effectful host ports take it as a required argument. A durable state machine in the
 run store: `prepared → dispatched → committed | ambiguous → needs_attention`, with the tier recorded per effect.
 
+> **Corrections, verified against the tree 2026-08-11. The key as written cannot work, and two scope claims
+> are wrong.**
+>
+> 1. **The single key conflates two identities and makes tier 1 unreachable.** With `nodeAttempt` and
+>    `toolCallId` in it, every retry and every resume produces a NEW key — so the journal can never dedup, and
+>    "safe retry under the same key" is unimplementable. It also contradicts two already-canonical sentences:
+>    `action-guard-seam.md:109` ("the node-retry attempt — part of replay correlation, **NOT** the idempotency
+>    key") and `:240`. The ADR needs **two**: a replay-stable `EffectIdentity` (attempt-free, `toolCallId`-free)
+>    carrying the UNIQUE constraint, and an `EffectAttemptId` for the audit row.
+> 2. **Three of the five components are not obtainable today.** `runId` is unreachable — `NodeExecContext`
+>    carries none, and the `AgentSession` path has none by design (ADR-0024; `action-guard-seam.md:100-113`
+>    makes `ActionCorrelation` a discriminated union precisely so a session never fabricates one). And the
+>    `attemptNumber` that reaches `dispatchToolCalls` is `nonSkippedAttempts` — the WITHIN-CHAIN provider
+>    counter, explicitly *not* the node-retry counter (the "Two attemptNumber families" split in
+>    `sse-event-schema.md`). The node-retry attempt is never threaded into the turn at all.
+> 3. **The `tool` NODE TYPE is not implemented** (`dispatcher.ts:58-76` fails loud), so the surface is three
+>    `.dispatch(` call sites in shipping source — `agent-session.ts:904`, `agent-turn.ts:584`, `registry.ts:128`
+>    — not four. Smaller than the finding implies; stated so a reviewer does not hunt for a fourth.
+> 4. **An MCP tool cannot be assigned a tier.** `DiscoveredTool` carries no MCP annotations
+>    (`readOnlyHint`/`destructiveHint`/`idempotentHint` — `annotation` appears zero times in `packages/mcp/src`),
+>    and every discovered tool gets one shared `MCP_TOOL_POLICY`. Even if the annotations were parsed they are
+>    attacker-controlled bytes from the very server the hostile-MCP class (`CR-16`, `W4`) defends against, so
+>    they may never *raise* trust. **Tier 3 is the only safe default for every MCP tool** — and its
+>    consequence (every MCP call becomes `needs_attention` after a crash) is a product decision, not an
+>    implementation detail.
+
 **Canonical docs this must correct, in the ADR's own PR:**
 
 - [architectural-principles.md](../../standards/architectural-principles.md) §11 currently states that a stable
@@ -450,7 +555,7 @@ retry path were reachable.
 explicitly scopes effect duplication out and names this as the decision that owns it. That ADR's implementation
 is this phase's [prerequisite](#prerequisite); this item is the larger of the two.
 
-### CR-13 — Compaction summary is elevated to `system` authority · Blocker (untrusted content) · needs an ADR
+### CR-13 — Compaction summary is elevated to `system` authority · Blocker (untrusted content) · ✅ CLOSED 2026-08-18 ([ADR-0081](../../decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md))
 
 **Evidence.** The prior conversation is handed to the summarizer as user-role data; the summarizer's model
 output is taken as a plain string, becomes the context preamble, and is concatenated directly into the authored
@@ -471,6 +576,23 @@ rejected injecting the summary as a transcript message because *"a summary messa
 a separate **untrusted content part inside the first user-role turn**, which is neither a standalone message nor
 a `system` concatenation; whatever is chosen, the rejected alternative is engaged on its own terms.
 
+> **Correction, verified against the tree 2026-08-11 — half of ADR-0062 §1's rejection ground was ALREADY
+> false when it was written.** The "two consecutive user messages" hazard is closed at the seam:
+> `anthropic.ts:427-443`'s `mergeAdjacentSameRole` folds consecutive same-role messages into one with
+> concatenated content blocks, and its own docblock says it exists so "adjacent user messages the API would
+> 400" are fixed there. `git log -S` dates it to `1abd68c5`, **2026-06-14 — three weeks before ADR-0062**. So
+> the superseding ADR does not merely offer a better alternative; it shows the rejection rested on a hazard
+> that no longer existed. (The `assistant`-first half of the rejection is still genuine, and the chosen shape
+> must not reintroduce it.)
+>
+> **And one guarantee that must NOT be overclaimed:** the OpenAI adapter joins content parts on the wire
+> (`parts.map(...).join('')`), so "the bytes arrive as a separate part" is false there. The guarantee to
+> claim is the **role boundary** plus an explicit in-band separator — never a wire-level part boundary.
+>
+> Two things the finding's reading list gets wrong: **ADR-0024 and ADR-0011 are cited, not amended.** Neither
+> says anything about system-prompt authority (zero `system` hits in either), and the seam SHAPE is unchanged
+> — `LlmRequest.system` stays `z.string().optional()`.
+
 **Fix.** Carry the summary as untrusted. Dynamic summary bytes must never reach the `system` builder. Make
 `AgentTurnParams.system` accept only a branded type the authored builder can produce, so the compiler — not a
 convention — enforces it.
@@ -486,7 +608,7 @@ convention — enforces it.
   arbitrarily and asserts the resolved tool set is byte-identical.
 - **No assertion of the form "the model did not obey the injected instruction."**
 
-### CR-14 — A stream that ends without a terminal `stop` counts as success · Blocker · needs an ADR
+### CR-14 — A stream that ends without a terminal `stop` counts as success · Blocker · ✅ CLOSED 2026-08-19 ([ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md))
 
 **Evidence.** The fallback chain emits a success attempt when the provider iterator ends cleanly with no usage
 (`packages/llm/src/fallback-chain.ts`). The agent turn starts with a default `stopReason` of `stop` and returns
@@ -497,6 +619,26 @@ no-terminal case as success** — so the fix changes that test, deliberately, ra
 **Failure.** A transport, proxy or provider closes after `text_delta: "partial"` with no terminal chunk.
 Relavium treats the partial text as a completed assistant answer and passes it downstream as a successful node
 output.
+
+> **Correction, verified against the tree 2026-08-11 — the Failure paragraph above is FALSE as written, and
+> it inverts where the defect is.** All three shipped adapters ALREADY detect a no-terminal EOF and yield an
+> `error` chunk rather than a `stop`: `anthropic.ts:843` (`sawStop` tracked at `:801`) emits
+> `kind: 'transport', 'stream ended before message_delta (truncated response)'`; `openai.ts:1301`
+> (`state.sawTerminal` at `:1261`) and `gemini.ts:935` (`:910`) emit their equivalents. A real transport cut
+> against a first-party provider is therefore already classified today.
+>
+> The gap is real but sits one layer up, in two places the finding does not name:
+>
+> 1. **The chain has no trust boundary for a FOREIGN provider.** `FallbackChain` accepts any `LLMProvider`;
+>    `cassetteProvider`, `scriptedProvider` and Phase-2's `ManagedGatewayProvider` are not the three audited
+>    adapters. The grammar must be enforced where the seam is crossed, not only inside implementations we
+>    happen to own.
+> 2. **The chain's own `usage === undefined ⇒ succeeded` semantics** — the success path does not require that
+>    a terminal was ever seen.
+>
+> This changes the item's fix, not its severity: the enforcement point is `FallbackChain`, and the adapters'
+> existing detection becomes defence in depth rather than the mechanism. Rules 1–6 must be stated as a seam
+> obligation the chain verifies, so a provider that does not keep them fails classified rather than silently.
 
 **Fix — the grammar, stated in full.** The ADR pins all of it, and names which layer enforces it (adapter vs.
 `FallbackChain`) so the rule has one owner:
@@ -515,7 +657,7 @@ terminal produces a classified error, not a node success. A content-committed tr
 failover. The superseded test is rewritten to assert the new rule **and keeps a note recording the reasoning for
 the behaviour it replaces**, the same way `checkpointer.test.ts` was handled in Wave 1.
 
-### CR-15 — The engine does not enforce the authored input contract · Blocker · needs an ADR
+### CR-15 — The engine does not enforce the authored input contract · Blocker · ✅ CLOSED 2026-08-19 ([ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md))
 
 **Evidence.** The shared contract states the engine validates inputs before a run starts. `WorkflowEngine.start()`
 passes the caller's `inputs` object straight to the run execution, which stores it without cloning, applying
@@ -547,7 +689,7 @@ event.
 - An admission failure produces a typed error and **no `runId`, no `run:started`, no row** — asserted by
   checking the store is untouched.
 
-### CR-16 — Stdio MCP spawns a local process before consent · Blocker · needs an ADR
+### CR-16 — Stdio MCP spawns a local process before consent · Blocker · ✅ CLOSED 2026-08-20 ([ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md))
 
 **Evidence.** The MCP connection is opened while the chat session is being built, before a mode or turn starts;
 the agent-run path prepares MCP first and applies mode policy afterwards. An agent or workflow declaration
@@ -561,12 +703,58 @@ load time.
 fingerprint fails closed. In non-interactive mode, fail closed unless an explicit `--allow-mcp-stdio <digest>`
 is supplied. Replace auto-start with lazy connect on first actual MCP tool need.
 
+> **Corrections, verified against the tree 2026-08-11.**
+>
+> 1. **Lazy connect is structurally blocked and is SPLIT OUT of this item.** MCP `ToolDef`s exist only because
+>    `listTools()` ran at connect (`manager.ts:80`), and `createToolRegistry` returns exactly `{has, list,
+>    dispatch}` with the tools Map captured at construction — no `register()`/`add()`, a deliberate ADR-0052 §3
+>    invariant. Deferring the spawn therefore DELETES the agent's MCP tool grant, and there is no "first actual
+>    MCP tool need" to trigger the connect because the model is never told the tools exist. The unblocker (a
+>    persisted tool-list cache) is itself deferred by ADR-0052 §3. **Consent-before-spawn alone satisfies this
+>    item's entire Acceptance paragraph** and is the security-relevant half; lazy connect becomes a separate
+>    item with its blocker named. Adding a registry mutation API would REVERSE ADR-0052 §3 and needs a
+>    supersession — it must not happen inside an implementation PR.
+> 2. **`cwd` is HOST-supplied, not authored.** `McpServerRefSchema` has no `cwd` field and is `.strict()`; the
+>    cwd comes from `deps.global.cwd` / `context.workingDir`. So a fingerprint that includes it changes when
+>    the user changes directory — decide deliberately whether it is *in* the identity or merely *displayed*.
+> 3. **`relavium import` spawns nothing** — it is synchronous YAML I/O and never connects. The arbitrary
+>    execution happens at the next `chat --agent` / `agent run` / `run`, which is what the Acceptance already
+>    says ("importing **and opening**"). Also: `import` re-serializes through `serializeAuthored`, so the
+>    on-disk bytes differ from the downloaded bytes — a hash over the imported file does not identify the
+>    artifact the user reviewed.
+> 4. **`CR-41` is not implementable for the websocket transport at the pinned SDK version.**
+>    `WebSocketClientTransport`'s constructor is `constructor(url)` — no fetch, no agent, no dialer hook — while
+>    `http` and `sse` both accept an injectable `fetch`. ADR-0053 §2 asserts otherwise and is wrong. The
+>    websocket transport needs an explicit stated posture, not an implied one.
+
 **Acceptance.** Importing and opening an artifact with a stdio MCP server spawns nothing until consent — proven
 with a **real spawn counter** injected at the process boundary, asserted at zero, not by inspecting a state
 flag. A non-interactive run without the digest flag fails closed with an actionable message. A changed
 fingerprint re-prompts.
 
-### CR-17 — A resume trusts caller-supplied identity it never verifies · Blocker *(plan review)* · ADR with `CR-15`
+> **Closed 2026-08-20 by [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md).** The ADR's §10
+> is a 19-item acceptance list that supersedes the paragraph above; the implementation PR states which test
+> satisfies each item. Four things the item as written did not anticipate, each settled in the ADR:
+>
+> 1. **Provenance is the wrong axis.** "Untrusted-provenance import" cannot be the trigger — a `git pull`
+>    changes a committed artifact with no import step. The gate covers **every** stdio server, on every path.
+> 2. **`cwd` is IN the identity** (correction 2 above asked for a deliberate decision). A `command` may be
+>    relative, so `node server.js` in two directories is two programs; a grant that ignored `cwd` would
+>    approve both.
+> 3. **The environment is in it too, with its values type-tagged.** `NODE_OPTIONS` is a *name*: a digest over
+>    names alone let one grant match every value of it. A sole `{{secrets.NAME}}` reference contributes only
+>    the name, so no credential enters the digest — and the tag is what stops a literal `secret:acme` from
+>    colliding with a real reference.
+> 4. **The command is resolved BEFORE the decision and that path spawned after it**, so a `PATH` change in
+>    between cannot substitute a binary under an approved fingerprint. The declared-environment denylist that
+>    `run_command` already had is now shared with this host — it was a gap, not a decision.
+>
+> Correction 1's split is honoured: lazy connect is its own [deferred item](../deferred-tasks.md) with
+> ADR-0052 §3 named as its blocker and the tool-list cache as its unblocker, and ADR-0084 §8 explicitly
+> declines to decide it. The desktop's Rust spawner is outside this gate and owes the same contract
+> ([mcp-integration.md](../../reference/shared-core/mcp-integration.md#consent-before-a-local-stdio-spawn-cross-surface-contract)).
+
+### CR-17 — A resume trusts caller-supplied identity it never verifies · Blocker *(plan review)* · ✅ CLOSED 2026-08-19 ([ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md))
 
 **Evidence.** `ResumeFromCheckpointInput` (`packages/core/src/engine/engine.ts`) documents its own gap: the
 checkpoint verifies workflow identity, but `inputs`, `executionMode` and `planOptions` are **not** checkpoint-
@@ -589,13 +777,87 @@ perfect log and a single owner, the resumed run can be a different run.
   defined re-supply contract on resume; a mismatch is a typed error, never a silent substitution.
 - A divergence produces a typed error, never a silent continue.
 
+> **Corrections, verified against the tree 2026-08-11.**
+>
+> 1. **"Key reference plus version" is not implementable against any contract in this repo.** `maskInputs`
+>    emits `{ secret: true, ref: \`inputs.${key}\` }` — a SELF-reference to the input name, not a keychain or
+>    env reference. ADR-0006 defines no version concept, and there is no secret-store resolution for workflow
+>    inputs at all. `sse-event-schema.md:247` already states the false version of this ("the keychain/env
+>    reference"); that sentence is a doc correction this item owes. The versioned re-supply contract belongs
+>    with the already-deferred secrets workstream, not invented here — **scope it out and name the blocker.**
+>    What this item CAN do, and must: exclude `secret`-typed values from the digest and prove no secret value
+>    reaches any persisted row.
+> 2. **The engine's own docblock is wrong in the other direction.** `engine.ts:196` says the checkpoint "does
+>    not yet persist inputs / executionMode" — `run-history-store.ts:558-562` writes all three columns. The
+>    engine simply has no READER: `RunStore` exposes only `resolveWorkflowId` / `persistEvent` /
+>    `listInterruptedRuns`. The gap is a read port, not a write.
+> 3. **A workflow content digest would refuse every MCP-bearing gate resume today.** `run.ts:252` starts the
+>    AUGMENTED workflow while `history/open.ts:41` persists the UN-augmented definition. Resolve which one the
+>    digest covers, or this ships a regression on the first gate resume.
+
 **Acceptance.** Resuming with a changed input, a changed `executionMode`, or a changed plan each fails with a
 distinct typed error. Resuming with a `secret` input re-supplied at the same version succeeds; at a different
 version it fails. The digest of a run started with defaults omitted equals the digest of the same run started
 with those defaults written out explicitly. No secret value appears in any persisted row — asserted by scanning
 the written rows.
 
+> **What shipped, against the three corrections above and this acceptance.**
+>
+> 1. **Correction 3 was resolved by fixing the SNAPSHOT, not by narrowing the check.** `relavium run` now opens
+>    the history store *after* `connectWorkflowMcp`, with the augmented workflow, so
+>    `runs.workflow_definition_snapshot` freezes the graph the engine is actually started on. MCP-discovered
+>    tool grants are part of workflow identity ([ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §5),
+>    so verifying against the un-augmented definition would have been verifying the wrong thing rather than
+>    avoiding a regression.
+> 2. **There is no digest.** A hash needs a primitive a platform-free engine does not have, and a hash over raw
+>    YAML reports a mismatch for reindented text that parses identically. The comparison is deep structural
+>    equality over normalized parse output, which is what
+>    [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §5
+>    promises: "formatting and key order cannot cause a false mismatch".
+>
+>    **The acceptance's defaults-omitted-vs-written-out case is NOT met, and is withdrawn** the way items 3
+>    and 4 are. A first version of this note claimed it was answered "by construction". A review measured
+>    otherwise: `WorkflowSchema` contains no `.default()`, `.transform()`, `.preprocess()` or `.catch()`
+>    anywhere in its chain, so an omitted optional field is simply ABSENT from the parse output while an
+>    explicitly-written one is PRESENT, and the comparison counts keys — two workflows differing only by
+>    `required: false` written out versus omitted compare unequal. Unreachable on the CLI gate path, where
+>    both sides come from one snapshot; real for a host that re-serialises its workflow with optionals
+>    materialised. Closing it needs a canonicalisation step that drops fields equal to their absent meaning,
+>    which is a normalization decision this item did not make and should not make in passing.
+> 3. **The "same version / different version" secret acceptance is WITHDRAWN**, as correction 1 predicted. There
+>    is no key-versioning concept in the tree. §6 verifies the SLOT — that the same named `secret` input was
+>    re-supplied — and states plainly that it cannot prove the value is the same credential. `relavium gate
+>    --secret-stdin` is the re-supply contract; the value travels on stdin, never argv.
+> 4. **`plan_mismatch` was not implemented.** Every case it could name is already covered by `buildRunPlan`'s
+>    dangling-`agent_ref` refusal plus the workflow-content check; a code no refusal can reach is dead taxonomy.
+>    Recorded as a dated amendment on ADR-0083 §5 rather than silently skipped.
+
 ---
+
+## W1 closing register
+
+Exit criterion 7: **per item, the code that closes it — verified by reading the code, not by trusting the
+mark.** Wave 1's completion claim was wrong twice before this discipline was adopted, and writing this register
+caught it a third time: `CR-14` and `CR-92` were both implemented and both still carried an OPEN heading here
+(*"needs an ADR"*, *"in the durability spine"*), which is precisely the failure the criterion exists to catch.
+
+| Item | ADR | The code that closes it | The test that would fail if it were reverted |
+|------|-----|--------------------------|-----------------------------------------------|
+| `CR-10` | — | `packages/core/src/engine/append-audit.ts` — a `RunStore` decorator recording asks, commits and outcomes per run | `append-audit.test.ts` + the certification against a real `history.db`. The property is **not** a log assertion: streamed events take sequence numbers and are never persisted, so a healthy run's log reads `[0,1,2,3,5,10,…]` and a lost event is byte-identical to a skipped one. The audit supplies the witness the log cannot. |
+| `CR-11` | [ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) | the run lease + fencing token in `packages/db` (`run_leases`) and `packages/core/src/engine/run-lease.ts` | `run-lease.test.ts` and the real two-process `run-lease.e2e.test.ts` — a bare compare-and-swap cannot produce the token, so a test that cannot produce it cannot test the mechanism |
+| `CR-92` | with `CR-10`'s | `packages/core/src/engine/durable-truth.ts` (the terminal is held until its persist is confirmed; media reclaim moved after it) + `apps/cli/src/engine/terminal-outbox.ts` (the durable outbox, append-only with leading-newline framing) | `durable-truth.test.ts`, `terminal-outbox.test.ts`, and the certification that live / history / resume / reconcile agree |
+| `CR-12` | [ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) | `packages/db/src/effect-journal-store.ts` + the tiered effect contract wired through `packages/core/src/engine/effect-*` | `effect-journal-store.test.ts`, `effect-resume-gate.test.ts`, `effect-turn-wiring.test.ts` |
+| `CR-13` | [ADR-0081](../../decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md) | `packages/core/src/engine/turn-messages.ts` — the summary rides as DATA in the first user-role message, wrapped `Untrusted`, never as `system` | `agent-session.test.ts`'s compaction cases + the `Untrusted` type-predicate tests. The delimiter alternative was rejected in the ADR because a formatting convention is one the untrusted text can close. |
+| `CR-14` | [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) | `packages/llm/src/stream-grammar.ts` — the terminal is held until EOF confirms it, and commitment is a TURN fact a provider cannot forge | `stream-grammar.test.ts` + the fallback-chain and agent-turn cases that previously counted a truncated stream as success |
+| `CR-15` | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | `packages/core/src/engine/input-admission.ts` — pure, synchronous, `'admit'` \| `'verify'`, typed refusal codes | `input-admission.test.ts` |
+| `CR-16` | [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md) | `apps/cli/src/engine/mcp-consent.ts` (resolve + fingerprint + the append-only grant log), `mcp-consent-gate.ts` (the chokepoint), `apps/cli/src/mcp/consent-prompt.ts`, and `packages/shared/src/{canonical,declared-env}.ts` | `mcp-consent.test.ts`, `mcp-consent-gate.test.ts`, `consent-prompt.test.ts`, and the spawn-counter cases in `mcp-servers.test.ts` — "nothing spawned" is counted at the process boundary, never read off a flag |
+| `CR-17` | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | `packages/core/src/engine/resume-identity.ts` | `resume-identity.test.ts` + `session-resume.test.ts` |
+
+Two things this register deliberately does not claim. It does not certify the **whole phase** — `W2`–`W9`
+remain, and exit criteria 1–6 are scored against the full register above, not against this table. And it
+records that `CR-16`'s **lazy-connect half was split out** rather than closed: it is a separate
+[deferred item](../deferred-tasks.md) with ADR-0052 §3 named as its blocker, because deferring the spawn with
+today's immutable registry would delete the agent's MCP tool grant outright.
 
 ## W2 — Liveness and deadlines
 
@@ -613,6 +875,23 @@ semantics — which our security standard forbids for outbound requests.
 `kind: 'timeout'`, a user cancel stays `cancelled`. A pre-content timeout may fail over; a content-committed one
 must not. Prove timer cleanup with a fake clock. This is a different timer from `CR-20` — both are needed, and
 the pre/post-content split must agree with `CR-14`'s rule 7, so it lands on that ADR.
+
+### CR-21b — `generateMedia()` submission has no deadline either · Medium
+
+Named by [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
+§10 rather than folded into `CR-21`, because it is a different call path and folding it in would have made
+that ADR's title claim more than its mechanism delivers.
+
+`CR-21` bounds every `generate`/`stream` attempt made through `FallbackChain`. The **first**
+`generateMedia()` submission is neither: it is not a poll, so
+[ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)'s poll deadline does
+not cover it, and it is not a chain attempt, so `CR-21`'s does not either. It is awaited directly and
+unbounded in `agent-runner.ts`, which is the same "the vendor SDK default becomes our liveness semantics"
+that `CR-21` exists to remove.
+
+**Fix + acceptance.** The same hard-race treatment `CR-21` lands, applied to the submission call: a
+deadline abort classifies `timeout`, a caller abort stays `cancelled`, cleanup proven with a fake clock. A
+submission that never settles and ignores its signal fails within the deadline rather than hanging the node.
 
 ### CR-22 — Gate and run deadlines are not preserved across resume · High
 The checkpoint's pending gate carries gate/node/budget data but not an absolute deadline, and the whole-run
@@ -971,7 +1250,7 @@ from persisting terminals reddens all three e2e tests.
 3. `expect` has `'settled' | 'repaired'` and no mode for "durability uncertain, outbox retry pending", which
    is `CR-92`'s own state and fits neither.
 
-### CR-92 — Terminal persistence failure lets live and durable truth diverge · High · in the durability spine
+### CR-92 — Terminal persistence failure lets live and durable truth diverge · High · ✅ CLOSED 2026-08-12
 The engine can complete the delivery chain for a terminal event even when its persistence failed, and
 reconciliation may later produce a different terminal than the original. Media reclaim can run before the
 terminal is durable. A caller can receive a success result and outputs while history shows the run failed.
@@ -979,6 +1258,24 @@ terminal is durable. A caller can receive a success result and outputs while his
 identity. If durability is uncertain the API must not say `completed` — it returns a distinct typed result.
 Terminal asset cleanup and handle resolution happen only after the terminal is durable. The test proves live,
 history, resume and reconcile agree.
+
+> **Corrections, verified against the tree 2026-08-11.**
+>
+> 1. **"Handle resolution" does not locate on the terminal path.** `#recordProducedMedia` (`engine.ts:2483`)
+>    only RECORDS handles; re-materialization is a media-EGRESS concern (ADR-0043), not a settle step. Only
+>    the cleanup half is real — `#reclaimRunMedia` (`engine.ts:2300`), which must move after a successful
+>    terminal persist so a terminal whose write failed has not already released the run's media references.
+>    Note this is a DIFFERENT call from the media de-inline twenty lines earlier, which must stay OUTSIDE the
+>    new serialized region or an unbounded host stall blocks every later durable write.
+> 2. **`#emitDurable`'s totality must be preserved for NON-terminal events.** ADR-0077's B1/B2/B3 correctness
+>    rests explicitly on it (`money-durability.ts:152-154`, `engine.ts:2188-2190` both say the catch is
+>    "deliberately unreachable" for this reason), and both money events are non-terminal. Scope every
+>    disposition change to the TERMINAL arm, and re-derive both of those comments in the same change — a
+>    reviewer reading only `#emitDurable` will not find them.
+> 3. **`reconcile()` is a SECOND write path and bypasses `#emitDurable` entirely** (`engine.ts:2775` calls the
+>    store directly). Its repair must become conditional on no terminal being present, or the outbox retry and
+>    the repair can both append one — breaking ADR-0036's exactly-one-terminal. Fixing it is nearly free today
+>    (no shipping caller) and becomes a data-loss bug the moment any surface wires it.
 
 ### CR-93 — Process-global catalog and parameter-learning state is not tenant-safe · Medium now, High for cloud
 Process-global mutable state is fine for a single local user and wrong for the multi-tenant cloud surface.

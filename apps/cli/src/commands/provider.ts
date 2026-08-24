@@ -271,7 +271,11 @@ function providerAdd(args: ProviderCommandArgs, deps: ProviderCommandDeps): void
 async function providerSetKey(args: ProviderCommandArgs, deps: ProviderCommandDeps): Promise<void> {
   const id = parseProviderId(requireName(args));
   const meta = KNOWN_PROVIDERS[id];
-  const key = await deps.readSecret(); // from stdin — never an argv flag
+  // Trimmed HERE, not by the reader. `readSecretFromStdin` returns the pipe verbatim because its other
+  // caller (`gate --secret-stdin`) is line-oriented and must not lose a credential's trailing whitespace;
+  // a single pasted API key, by contrast, routinely arrives with a stray newline or space from a dashboard
+  // copy, and the onboarding wizard already trims its own value to persist a byte-identical credential.
+  const key = (await deps.readSecret()).trim(); // from stdin — never an argv flag
   const account = keychainAccount(id);
   deps.keychain.set(account, key); // KeychainUnavailableError surfaces (no silent plaintext fallback)
   // Register the row only if it's new — never overwrite a base URL the user set via `provider add --base-url`.

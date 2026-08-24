@@ -239,6 +239,13 @@ export const LlmErrorKindSchema = z.enum([
   'overloaded',
   'timeout',
   'transport',
+  // The provider broke the STREAM GRAMMAR — a chunk after the terminal, or a second terminal
+  // ([ADR-0082](../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
+  // §1-§2). Deliberately NOT in `RETRYABLE_KINDS`: an implementation that cannot keep the grammar will not
+  // keep it on the second call, so a node re-dispatch burns the budget and names the wrong cause. The chain
+  // still ADVANCES to the next entry on a pre-content violation — a different provider may be well-behaved —
+  // which is why failover is no longer derived from `retryable` alone.
+  'protocol',
   'auth',
   'bad_request',
   'content_filter',
@@ -268,6 +275,22 @@ export const LlmErrorSchema = z.object({
   // (unlike `message`/`code`). Never log, serialize, or put it in a run event: any sink must strip
   // `cause` first (the run-event error shape `{ code, message, retryable }` already excludes it).
   cause: z.unknown().optional(), // original error for debugging — never re-thrown across the seam
+  /**
+   * The attempt had already yielded a non-terminal chunk when it failed
+   * ([ADR-0082](../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
+   * §4). Set by `FallbackChain` when it SURFACES a failure past that point; absent otherwise.
+   *
+   * **Why this is a separate field and not `retryable: false`.** `makeLlmError` derives `retryable` from
+   * `kind` so a miswired adapter cannot produce an inconsistent pair, and that invariant is worth keeping: a
+   * reader seeing `kind: 'timeout', retryable: false` would have no way to tell a deliberate suppression
+   * from a bug, and the reason would be nowhere in the value. Commitment is a fact about the ATTEMPT, not
+   * about the error class, so it is carried as one.
+   *
+   * The chain already refuses to fail over past content. This is what carries the same fact to the
+   * node-retry budget ABOVE the chain, which otherwise re-dispatches — a second answer and a second charge
+   * for a call the user already saw output from.
+   */
+  contentCommitted: z.literal(true).optional(),
 });
 export type LlmError = z.infer<typeof LlmErrorSchema>;
 

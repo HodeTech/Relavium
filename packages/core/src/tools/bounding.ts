@@ -143,6 +143,28 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
 export function redactSecretShapedText(text: string): string {
   return (
     text
+      // **URL userinfo — `scheme://user:pass@host`.** The single most common shape a real credential takes in a
+      // tool argument: a database connection string, a Redis URL, a webhook with an embedded token. It has no
+      // `key=value` and no well-known prefix, so every other pattern here misses it — a review REPRODUCED the
+      // gap by recovering a stored `run_effects` digest from guessed plaintext. That matters more since
+      // ADR-0080: the same projection now feeds a durable, never-swept digest, which is a permanent offline
+      // oracle rather than a line in an ephemeral event stream. The host is deliberately KEPT — it is the
+      // diagnostic half, and it is not the secret.
+      .replace(
+        /([a-z][\w+.-]{0,31}:\/\/)[^/@\s:"',}\]]{0,256}:[^/@\s"',}\]]{1,256}@/gi,
+        '$1[redacted]@',
+      )
+      // …and the COLON-LESS form — `scheme://TOKEN@host`. A webhook with an embedded bearer, a Stripe-style
+      // key-as-username (`https://sk_live_…:@api.stripe.com`, whose password half is empty), `curl -u tok:`.
+      // The rule above cannot see any of them: it requires a `:` with a non-empty right side. The `{16,}`
+      // floor is what keeps `https://example.com` and a short vanity handle out — a credential in this
+      // position is long, and a userinfo short enough to fall under the floor carries little to recover.
+      .replace(/([a-z][\w+.-]{0,31}:\/\/)[^/@\s"',}\]]{16,256}@/gi, '$1[redacted]@')
+      // …and a token in a URL QUERY. `?token=…` is already caught by the `key=value` rule below, but the
+      // SIGNED-URL shape — a long opaque value under an unrecognised parameter name — is not, and a
+      // pre-signed S3 URL or a webhook `?t=<token>` is exactly that. Bounded to a long value so an ordinary
+      // `?limit=10` or `?q=cats` is untouched; the parameter NAME is kept as the diagnostic half.
+      .replace(/([?&][\w.-]{1,64}=)[^\s&"',}\]]{24,512}/g, '$1[redacted]')
       // A PEM private-key block (multi-line, space-separated markers the `private_key` key-pattern can't see).
       // The body span is bounded (`{0,20000}?`, lazy) so an unterminated block can't drive an unbounded scan.
       .replace(
@@ -177,6 +199,7 @@ export function redactSecretShapedText(text: string): string {
       // outrank the metric. `\w` / `[\w-]` fold only the classes that are EXACTLY `[A-Za-z0-9_]` / `[A-Za-z0-9_-]`;
       // the tighter `[A-Za-z0-9]` / `[A-Za-z0-9-]` families keep their narrower class (no `_`).
       .replace(
+        // NOSONAR — the per-regex complexity is the deliberate, documented exception explained above
         /\b(?:sk-[A-Za-z0-9]{16,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|A[KSB]IA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_\w{20,}|glpat-[\w-]{16,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[\w-]{30,}|ya29\.[\w-]{20,}|hf_[A-Za-z0-9]{20,}|npm_[A-Za-z0-9]{20,}|eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{6,})/g,
         '[redacted]',
       )
@@ -195,18 +218,165 @@ export function redactSecretShapedValue(value: unknown): unknown {
   return redactSecretShapedWalk(value, new WeakSet<object>());
 }
 
+/**
+ * Does this OBJECT KEY name a secret? The same keyword alternation the `key=value` text rule uses, anchored
+ * as a whole-name test rather than an inline one.
+ *
+ * **Why a key rule exists at all.** Tool args are STRUCTURED: `{"headers":{"X-Api-Key":"hunter2"}}` puts the
+ * key and its value in separate JSON members, so the text rule's `key=value` pattern — which needs them
+ * adjacent in one string — can never see it. A review enumerated what got through: a nested `api_key`, an
+ * `X-Api-Key` header, a top-level `password`, an array of `--token` arguments, and a NUMERIC `pin`. Every
+ * one of those was hashed into `run_effects.args_digest`, which is permanent and never swept.
+ *
+ * MCP is the worst case and the reason this is not optional: the repo controls neither those tools' schemas
+ * nor their argument names, and `{"auth":{"token": …}}` is their ordinary shape.
+ */
+function isSecretishKey(key: string): boolean {
+  const words = keyWords(key);
+  if (words.some((word) => SECRET_WORDS.has(word))) return true;
+  // A `key` that is qualified by what KIND of key it is. `key` alone is far too common to redact — it is
+  // the name of half the map entries in this codebase — so it counts only next to a qualifier.
+  return words.some(
+    (word, index) =>
+      word === 'key' &&
+      (KEY_QUALIFIERS.has(words[index - 1] ?? '') || KEY_QUALIFIERS.has(words[index + 1] ?? '')),
+  );
+}
+
+/**
+ * Split an argument name into lowercase WORDS, across the three conventions a tool argument actually uses:
+ * `snake_case`, `kebab-case`/header case, and `camelCase`.
+ *
+ * **Whole words, not substrings, and that is the entire point.** The first version of this test reused the
+ * text rule's `[\w-]{0,32}<keyword>[\w-]{0,16}` wrapper, which matches a keyword ANYWHERE inside a name —
+ * so `author` (contains `auth`), `pinned` and `opinion` (contain `pin`), `spinner`, `tokenizer` and
+ * `authors` were all redacted. That is worse than cosmetic: the digest is computed over this projection, so
+ * two calls differing ONLY in a falsely-redacted field become byte-identical inputs, and §4's replay then
+ * answers one with the other's recorded result — the exact failure the digest exists to prevent.
+ */
+function keyWords(key: string): readonly string[] {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[^A-Za-z0-9]+/)
+    .filter((word) => word.length > 0)
+    .map((word) => word.toLowerCase())
+    .map((word) => (word.endsWith('s') && word.length > 3 ? word.slice(0, -1) : word));
+}
+
+/** Names that mean "this is a credential" on their own. */
+const SECRET_WORDS: ReadonlySet<string> = new Set([
+  'password',
+  'passwd',
+  'pwd',
+  'passphrase',
+  'secret',
+  'token',
+  'apikey',
+  'authorization',
+  'auth',
+  'credential',
+  'pin',
+  'jwt',
+]);
+
+/** What has to sit next to a bare `key` before it counts as a credential. */
+const KEY_QUALIFIERS: ReadonlySet<string> = new Set([
+  'api',
+  'access',
+  'private',
+  'secret',
+  'signing',
+  'encryption',
+  'session',
+]);
+
+/**
+ * An array, walked — plus the ARGUMENT-VECTOR shape a plain walk cannot see.
+ *
+ * `["--token", "hunter2"]` puts the flag and its value in adjacent, independent elements. Neither is
+ * secret-SHAPED on its own and there is no key naming either, so every other rule here misses it — and it is
+ * exactly how a shell command carries a credential, which makes it the `run_command` case. The element
+ * FOLLOWING a secret-ish flag is redacted; the flag itself is kept, because which flag was passed is
+ * diagnostic and is not the secret.
+ */
+function redactArgVector(items: readonly unknown[], seen: WeakSet<object>): unknown[] {
+  const out: unknown[] = [];
+  let redactNext = false;
+  for (const item of items) {
+    if (redactNext && typeof item === 'string') {
+      // A port is not a credential, however password-shaped its flag was.
+      out.push(looksLikePort(item) ? redactSecretShapedWalk(item, seen) : '[redacted]');
+      redactNext = false;
+      continue;
+    }
+    redactNext = typeof item === 'string' && isSecretishFlag(item);
+    out.push(redactSecretShapedWalk(item, seen));
+  }
+  return out;
+}
+
+/**
+ * A CLI flag that introduces a credential — `--token`, `--password`, `-p`. (`--password=…` is the text
+ * rule's job, since flag and value are one string there.)
+ *
+ * `-p` is deliberately kept AND deliberately qualified. It really is the password flag for `mysql` and
+ * `psql`, and dropping it would leak those verbatim — but it is also the port flag for `ssh` and the
+ * port-mapping flag for `docker run`, and a review caught this destroying `ssh -p 2222` and
+ * `docker run -p 8080:80`. The value shape settles it: a port is digits, optionally `host:container`, and a
+ * password never is. See {@link looksLikePort}.
+ */
+/**
+ * The flag names, as one anchored alternation.
+ *
+ * Its "complexity" is the LENGTH OF THE NAME LIST, not structure: no nesting, no backtracking to speak of.
+ * A Set lookup would trade that for hand-expanding `api[_-]?key` into three members apiece, which is exactly
+ * where a real omission would hide.
+ */
+const SECRETISH_FLAG =
+  /^-{1,2}(?:p|pw|password|passwd|secret|token|api[_-]?key|auth|access[_-]?key|private[_-]?key|client[_-]?secret|credential|passphrase|pin)$/i; // NOSONAR — the metric is counting NAMES; see above
+
+function isSecretishFlag(item: string): boolean {
+  return SECRETISH_FLAG.test(item);
+}
+
+/** `2222`, `8080:80`, `127.0.0.1:8080:80` — a port or a port mapping, never a credential. */
+function looksLikePort(value: string): boolean {
+  return /^(?:[\d.]{1,15}:)?\d{1,5}(?::\d{1,5})?(?:\/(?:tcp|udp))?$/i.test(value);
+}
+
+/**
+ * One member of an object, redacted with its KEY taken into account.
+ *
+ * The shape scrub runs first and WINS when it fires, so `{"Authorization": "Bearer tok…"}` keeps its
+ * diagnostic scheme (`Bearer [redacted]`) rather than collapsing to a bare `[redacted]` — the scheme is not
+ * the secret, and knowing which auth scheme a call used is exactly the sort of thing a stored row is for.
+ * The wholesale redaction is the FALLBACK, for the case the shape scrub structurally cannot see: an opaque
+ * value with no recognisable prefix, a nested object, an array, or a number.
+ */
+function redactUnderKey(key: string, item: unknown, seen: WeakSet<object>): unknown {
+  const walked = redactSecretShapedWalk(item, seen);
+  if (!isSecretishKey(key) || item === null || item === undefined) return walked;
+  // The shape scrub already fired on this string — keep its more informative output.
+  if (typeof item === 'string' && walked !== item) return walked;
+  return '[redacted]';
+}
+
 function redactSecretShapedWalk(value: unknown, seen: WeakSet<object>): unknown {
   if (typeof value === 'string') return redactSecretShapedText(value);
   if (typeof value !== 'object' || value === null) return value;
   if (seen.has(value)) return '[cyclic]'; // break the cycle (mirrors redactInlineMedia) — never re-emit the ref
   seen.add(value);
-  if (Array.isArray(value)) return value.map((item) => redactSecretShapedWalk(item, seen));
+  if (Array.isArray(value)) return redactArgVector(value, seen);
   if (!isPlainObject(value)) return value; // Date/RegExp/Map/… — leave for native handling
   const out: Record<string, unknown> = {};
   // Scrub the KEY too (a secret-shaped key is redacted; a normal name is unchanged — see the doc above). A
   // display-only field, so a rare collision of two keys both redacting to `[redacted]` losing one is acceptable.
   for (const [key, item] of Object.entries(value)) {
-    out[redactSecretShapedText(key)] = redactSecretShapedWalk(item, seen);
+    // **The key decides, whatever the value's shape.** Checked BEFORE the walk, because the walk only
+    // inspects strings by shape — so a numeric PIN, a nested credential object, or a high-entropy opaque
+    // token with no recognisable prefix all survive it. `null`/`undefined` are left alone so an absent
+    // field does not become a phantom `[redacted]` in a diagnostic.
+    out[redactSecretShapedText(key)] = redactUnderKey(key, item, seen);
   }
   return out;
 }

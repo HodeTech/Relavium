@@ -4,6 +4,8 @@ import { mkdir } from 'node:fs/promises';
 import {
   InMemoryRunStore,
   createInMemoryCheckpointer,
+  resolveInMemoryLeases,
+  createInMemoryTerminalOutbox,
   type Checkpointer,
   type ExecutionHost,
   type RunStore,
@@ -16,6 +18,9 @@ import {
   fetchMediaBytes,
   type Db,
 } from '@relavium/db';
+import type { RunLeasePort } from '@relavium/shared';
+
+import { createFileTerminalOutbox } from './terminal-outbox.js';
 
 /**
  * Host media-port roots the CLI resolves per-invocation and injects into {@link createCliHost} (2.S). Each is
@@ -63,6 +68,21 @@ export interface CliHostOptions {
   readonly checkpointer?: Checkpointer;
   /** The media-port roots (2.S) — see {@link CliMediaOptions}. Absent ⇒ a media-producing run fails loud. */
   readonly media?: CliMediaOptions;
+  /**
+   * Where a terminal the store refused is held (ADR-0078 §4) — conventionally
+   * `~/.relavium/terminal-outbox.ndjson`, beside `history.db` but deliberately NOT inside it.
+   *
+   * Absent ⇒ the in-memory reference, which survives nothing. That is correct for a test double and wrong
+   * for a shipping surface, so every real CLI wiring passes a path; the default exists so a fixture does not
+   * have to touch the filesystem to construct a host.
+   */
+  readonly terminalOutboxPath?: string;
+  /**
+   * Cross-process run ownership (ADR-0079). Absent ⇒ the in-memory reference, which guards nothing across
+   * processes — correct for a fixture, wrong for a shipping surface, so every real wiring passes the
+   * durable one built from the SAME store the run persists to.
+   */
+  readonly runLeases?: RunLeasePort;
 }
 
 /**
@@ -113,6 +133,15 @@ export function createCliHost(
       'createCliHost: a checkpointer requires an explicit durable RunStore (the checkpointer must reconstruct from the same store the run persists to)',
     );
   }
+  // A DURABLE store paired with the in-memory lease reference silently FENCES every run: the engine claims
+  // a fence the store has never heard of, so its first guarded write is refused (ADR-0079 §2) and the run
+  // stops without a terminal. The failure is invisible at the call site and looks like a hung run, so it is
+  // rejected at wiring time — the same posture as the checkpointer check above, and the same reason.
+  if (options?.runLeases === undefined && !(store instanceof InMemoryRunStore)) {
+    throw new Error(
+      'createCliHost: a durable RunStore requires an explicit runLeases port built from the same store (createRunLeasePort) — the in-memory reference would fence every run',
+    );
+  }
   // Construct each media port ONCE from its root/handle (a port is absent when its config is). The single
   // `FilesystemMediaStore` instance is THE store `host.mediaStore` exposes and `resolveForEgress` reads — a
   // handle put by the de-inline choke point must resolve in the failover re-materialization (one CAS, ADR-0042).
@@ -129,13 +158,29 @@ export function createCliHost(
     ids: { newId: () => randomUUID() },
     store,
     checkpointer: options?.checkpointer ?? createInMemoryCheckpointer(store),
+    terminalOutbox:
+      options?.terminalOutboxPath === undefined
+        ? createInMemoryTerminalOutbox()
+        : createFileTerminalOutbox(options.terminalOutboxPath),
+    // Through the shared resolver, not a bare `??`. Minting an UNBOUND in-memory port here left the
+    // sanctioned in-memory `createCliHost` path with a store that consults no lease table, so under the
+    // fence rule every such run was refused at its second write — the precise wiring failure the loud throw
+    // above exists to prevent, reintroduced 25 lines below it. One resolver so the two cannot drift again.
+    runLeases: resolveInMemoryLeases(store, options?.runLeases, () => Date.now()),
     // A NATIVE AbortController — its `signal` is a real `AbortSignal` that the provider SDKs thread into
     // `fetch`, so a run cancel actually aborts an in-flight LLM stream (→ prompt `run:cancelled`). The
     // engine's in-house `createAbortController` is for TESTS ONLY (its signal is not `instanceof
     // AbortSignal`, so adapters drop it and a Ctrl-C can't interrupt a live stream). See execution-host.ts.
     newAbortController: () => new AbortController(),
-    setTimer: (ms, onFire) => {
+    setTimer: (ms, onFire, kind = 'work') => {
       const timer = setTimeout(onFire, ms);
+      // **A liveness timer is `unref`'d; a work timer is not.** A work timer is something the run is parked
+      // ON — a gate deadline, a retry backoff, a media poll — so it SHOULD hold the event loop open, or the
+      // CLI would exit out from under a run that is merely waiting. The ADR-0079 lease heartbeat is the
+      // opposite: it re-arms itself forever and advances nothing, so if it were ever the last handle
+      // standing it would hang the process instead of letting it exit. It is disarmed on settle and on
+      // fence, but `unref` makes a leak impossible rather than merely unlikely.
+      if (kind === 'liveness') timer.unref();
       return () => {
         clearTimeout(timer);
       };

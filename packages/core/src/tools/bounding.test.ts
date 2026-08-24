@@ -341,17 +341,37 @@ describe('redactSecretShapedText', () => {
     expect(redactSecretShapedText('token abcdefghijklmnop')).toContain('[redacted]');
   });
 
-  it('is ReDoS-safe on a value-ENGAGING input AND fully redacts it (timing + correctness)', () => {
-    // Drives BOTH the scheme-token run (200k) and a long quoted value (50k) — the machinery a quadratic pattern
-    // blows up on. The correctness assertions catch a quantifier-narrowing regression that would leak the tail
-    // (a pure timing bound would pass such a regression — it runs FASTER, not slower).
-    const evil = `Authorization: Bearer ${'a'.repeat(200_000)} my_secret="${'x'.repeat(50_000)}"`;
-    const started = performance.now();
-    const out = redactSecretShapedText(evil);
-    expect(performance.now() - started).toBeLessThan(500);
-    expect(out).not.toContain('a'.repeat(100)); // the bearer token tail is gone
-    expect(out).not.toContain('x'.repeat(100)); // the long quoted value tail is gone
-  });
+  it(
+    'is ReDoS-safe on a value-ENGAGING input AND fully redacts it (timing + correctness)',
+    { timeout: 60_000 },
+    () => {
+      // Drives BOTH the scheme-token run (200k) and a long quoted value (50k) — the machinery a quadratic
+      // pattern blows up on. The correctness assertions catch a quantifier-narrowing regression that would
+      // leak the tail (a timing bound alone would PASS such a regression — it runs faster, not slower).
+      //
+      // **A GENEROUS ceiling, and the number is the whole argument.** Two tighter instruments were tried
+      // here and both were wrong. `< 500ms` was a machine-speed assertion: 33ms on a developer machine,
+      // 610ms on a loaded shared runner, and neither number says anything about backtracking. A growth
+      // RATIO across two input sizes is the textbook answer and reads beautifully in isolation — 1.98 for
+      // this function, 3.97 for a known quadratic one — but under whole-monorepo contention the per-round
+      // ratios scattered from 0.98 to 10.17, because each measurement is milliseconds and one descheduled
+      // window decides it.
+      //
+      // What actually threatens this code is CATASTROPHIC backtracking, not a merely-quadratic scan: a
+      // quadratic pattern on 250KB is slow, an exponential one does not return at all. Measured — replacing
+      // one bounded class with a nested quantifier made this input run past 120 seconds. So the bound is set
+      // where it separates those two worlds: ~8x the slowest honest observation, and orders of magnitude
+      // below any real regression. The explicit test timeout is here for the same reason — the assertion
+      // should report the failure, not the runner.
+      const evil = `Authorization: Bearer ${'a'.repeat(200_000)} my_secret="${'x'.repeat(50_000)}"`;
+      const started = performance.now();
+      const out = redactSecretShapedText(evil);
+      const elapsed = performance.now() - started;
+      expect(elapsed, `${elapsed.toFixed(0)}ms`).toBeLessThan(5_000);
+      expect(out).not.toContain('a'.repeat(100)); // the bearer token tail is gone
+      expect(out).not.toContain('x'.repeat(100)); // the long quoted value tail is gone
+    },
+  );
 });
 
 describe('redactSecretShapedValue', () => {
@@ -382,5 +402,179 @@ describe('redactSecretShapedValue', () => {
     const cyclic: Record<string, unknown> = { a: 1 };
     cyclic['self'] = cyclic;
     expect(() => redactSecretShapedValue(cyclic)).not.toThrow();
+  });
+});
+
+describe('redactSecretShapedText — URL userinfo (ADR-0080 §11)', () => {
+  it('strips `user:pass@` from a URL while KEEPING the host', () => {
+    // The shape every other pattern here misses: no `key=value`, no well-known prefix. A review recovered a
+    // stored `run_effects` digest from guessed plaintext through exactly this gap — and since ADR-0080 the
+    // same projection feeds a DURABLE, never-swept digest, so the exposure is a permanent offline oracle
+    // rather than a line in an ephemeral stream. The host is kept deliberately: it is the diagnostic half.
+    expect(redactSecretShapedText('https://admin:S3cr3tPassw0rd@internal.example.com/api')).toBe(
+      'https://[redacted]@internal.example.com/api',
+    );
+    expect(redactSecretShapedText('postgres://user:hunter2@db.example.com:5432/app')).toBe(
+      'postgres://[redacted]@db.example.com:5432/app',
+    );
+    expect(redactSecretShapedText('redis://:onlyapassword@cache.internal:6379')).toBe(
+      'redis://[redacted]@cache.internal:6379',
+    );
+  });
+
+  it('does NOT run past a JSON delimiter — over-redaction collapses two calls into one digest', () => {
+    // THE destructive case, and the reason the classes are delimiter-bounded. Compact JSON has no
+    // whitespace, so an unbounded password class swallows `host:port","payee":"…` up to the next `@`. A
+    // review proved the consequence: two payment requests differing only in payee produced the SAME
+    // `args_digest`, so a resumed run's `prepare` returned `replay` and handed the model the OTHER payee's
+    // receipt for a payment that never happened. That is verbatim what §4 says must not occur.
+    const alice = '{"endpoint":"https://api.pay.io:8080","payee":"alice@corp.com","amount":100}';
+    const mallory =
+      '{"endpoint":"https://api.pay.io:8080","payee":"mallory@corp.com","amount":100}';
+
+    expect(redactSecretShapedText(alice)).toBe(alice);
+    expect(redactSecretShapedText(mallory)).toBe(mallory);
+    expect(redactSecretShapedText(alice)).not.toBe(redactSecretShapedText(mallory));
+  });
+
+  it('catches the COLON-LESS form — `scheme://TOKEN@host`', () => {
+    // The shape the first rule structurally cannot see: it requires a `:` with a non-empty right side. A
+    // webhook with an embedded bearer and a Stripe-style key-as-username (empty password) are both this.
+    expect(redactSecretShapedText('https://s3cr3tT0kenABCDEFGH@internal.example/hook')).toBe(
+      'https://[redacted]@internal.example/hook',
+    );
+    expect(redactSecretShapedText('https://sk_live_ABCDEFGHIJKLMNOP:@api.stripe.com/v1/x')).toBe(
+      'https://[redacted]@api.stripe.com/v1/x',
+    );
+  });
+
+  it('leaves a credential-free URL untouched — the negative control', () => {
+    // Without this the rule above passes for an implementation that mangled every URL, which would destroy
+    // the diagnostic value of the row for the overwhelmingly common case.
+    for (const url of [
+      'https://api.example.com/v1/things?limit=10',
+      'https://example.com/path@fragment',
+      'mailto:someone@example.com',
+    ]) {
+      expect(redactSecretShapedText(url)).toBe(url);
+    }
+  });
+});
+
+describe('redactSecretShapedValue — the KEY decides, whatever the value looks like (ADR-0080 §11)', () => {
+  // Every case here was enumerated by a review that recovered the plaintext from a stored
+  // `run_effects.args_digest`. The digest is permanent and never swept, so each of these was a lasting
+  // offline oracle on a `history.db` the spec itself says may be unencrypted at rest.
+  const SECRET = 'hunter2-l0w-entropy';
+
+  const leaks: readonly { what: string; input: Record<string, unknown> }[] = [
+    { what: 'a NESTED secret key', input: { auth: { api_key: SECRET } } },
+    { what: 'a nested header name', input: { headers: { 'X-Api-Key': SECRET } } },
+    { what: 'a top-level password', input: { password: SECRET } },
+    {
+      what: 'the value FOLLOWING a secret-ish flag in an arg vector',
+      input: { args: ['deploy', '--token', SECRET] },
+    },
+    { what: 'a NUMERIC secret', input: { pin: 493021 } },
+    { what: 'a credential object', input: { credentials: { user: 'u', pass: SECRET } } },
+  ];
+
+  for (const { what, input } of leaks) {
+    it(`redacts ${what}`, () => {
+      expect(JSON.stringify(redactSecretShapedValue(input))).not.toContain(SECRET);
+      expect(JSON.stringify(redactSecretShapedValue(input))).not.toContain('493021');
+    });
+  }
+
+  it('matches a keyword only as a WHOLE WORD — `author` is not `auth`', () => {
+    // The first version reused the text rule's `[\w-]{0,32}<keyword>[\w-]{0,16}` wrapper, which matches a
+    // keyword anywhere inside a name. A review caught `author`, `authors`, `pinned`, `opinion`, `spinner`
+    // and `tokenizer` all being replaced with `[redacted]`. That is worse than losing diagnostics: the
+    // DIGEST is computed over this projection, so two calls differing only in a falsely-redacted field
+    // become byte-identical inputs, and §4's replay then answers one with the other's recorded result.
+    const preserved = {
+      author: 'Jane Doe',
+      authors: ['Jane', 'Sam'],
+      pinned: true,
+      opinion: 'nice',
+      spinner: 'dots',
+      tokenizer: 'bpe',
+      key: 'a-map-key', // bare `key` is far too common to redact — it counts only next to a qualifier
+      keys: ['a', 'b'],
+    };
+    expect(redactSecretShapedValue(preserved)).toEqual(preserved);
+  });
+
+  it('…and still catches every real credential name, in all three casing conventions', () => {
+    for (const name of [
+      'api_key',
+      'apiKey',
+      'X-Api-Key',
+      'password',
+      'auth',
+      'authToken',
+      'client_secret',
+      'access_token',
+      'credentials',
+      'private_key',
+      'sessionKey',
+    ]) {
+      expect(JSON.stringify(redactSecretShapedValue({ [name]: 'hunter2' }))).not.toContain(
+        'hunter2',
+      );
+    }
+  });
+
+  it('a `-p` VALUE that is a port survives; a password does not', () => {
+    // `-p` is the password flag for `mysql`/`psql` AND the port flag for `ssh` and `docker run`. Dropping it
+    // leaks the first; keeping it blindly destroyed the second — a review caught `ssh -p 2222` and
+    // `docker run -p 8080:80` being replaced. The value's shape is what tells them apart.
+    expect(redactSecretShapedValue({ argv: ['ssh', '-p', '2222', 'user@host'] })).toEqual({
+      argv: ['ssh', '-p', '2222', 'user@host'],
+    });
+    expect(redactSecretShapedValue({ argv: ['docker', 'run', '-p', '8080:80', 'nginx'] })).toEqual({
+      argv: ['docker', 'run', '-p', '8080:80', 'nginx'],
+    });
+    expect(redactSecretShapedValue({ argv: ['mysql', '-p', 'hunter2dragon'] })).toEqual({
+      argv: ['mysql', '-p', '[redacted]'],
+    });
+  });
+
+  it('leaves ordinary structured args alone — the negative control', () => {
+    // Without this the rule above is satisfied by redacting everything, which would strip the stored row of
+    // the diagnostic value that is its whole remaining purpose.
+    const benign = {
+      url: 'https://api.example.com/v1/things',
+      method: 'POST',
+      limit: 10,
+      tags: ['alpha', 'beta'],
+      nested: { name: 'report', count: 3 },
+      // …and an ordinary arg vector: a flag that names nothing secret leaves its value alone.
+      argv: ['deploy', '--env', 'staging', '--verbose'],
+    };
+    expect(redactSecretShapedValue(benign)).toEqual(benign);
+  });
+
+  it('keeps the auth SCHEME when the shape scrub already fired', () => {
+    // `Bearer` is not the secret, and which scheme a call used is exactly what a stored row is for. The
+    // wholesale key redaction is the fallback for what the shape scrub structurally cannot see.
+    expect(redactSecretShapedValue({ Authorization: 'Bearer tok_abcdef123456' })).toEqual({
+      Authorization: 'Bearer [redacted]',
+    });
+  });
+
+  it('redacts a long opaque value in a URL query under an unrecognised parameter name', () => {
+    // A pre-signed URL or a webhook `?t=<token>`: the parameter name means nothing to the keyword rule, and
+    // the value has no well-known prefix. The NAME is kept — it is the diagnostic half.
+    const signed = 'https://files.example.com/o/x?X-Amz-Signature=' + 'a'.repeat(64);
+    const out = redactSecretShapedText(signed);
+    expect(out).not.toContain('a'.repeat(64));
+    expect(out).toContain('X-Amz-Signature=');
+  });
+
+  it('leaves a SHORT query value alone — the negative control for the rule above', () => {
+    expect(redactSecretShapedText('https://api.example.com/v1/things?limit=10&q=cats')).toBe(
+      'https://api.example.com/v1/things?limit=10&q=cats',
+    );
   });
 });

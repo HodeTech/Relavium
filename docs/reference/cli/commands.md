@@ -118,12 +118,12 @@ The command set below is the confirmed surface. Commands ship **per workstream**
 
 | Command | Purpose |
 |---------|---------|
-| `relavium run <workflow> [--input k=v]` | Execute a workflow. Streams progress; resolves with the workflow output. |
+| `relavium run <workflow> [--input k=v] [--allow-mcp-stdio <digest>]` | Execute a workflow. Streams progress; resolves with the workflow output. |
 | `relavium chat [--agent <ref>]` | Start an interactive [agent session](../contracts/agent-session-spec.md) (the agent-first REPL). See [chat-session.md](chat-session.md). |
 | `relavium chat-resume <sessionId>` | Reload a persisted session from `history.db` and continue the conversation. |
 | `relavium chat-list` | List past agent sessions (id, agent, last activity), the way `relavium list` lists workflows. |
 | `relavium chat-export <sessionId>` | Export a session to a `.relavium.yaml` scaffold for review ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). |
-| `relavium agent run <agent> [--fixture <path>] [--json]` | Run a single agent **one-shot** (non-interactive) on the same AgentSession infra — the prompt is read from stdin, one turn, then exit. See [`relavium agent run`](#relavium-agent-run) and [agent-run-fixture.md](agent-run-fixture.md). |
+| `relavium agent run <agent> [--fixture <path>] [--json] [--allow-mcp-stdio <digest>]` | Run a single agent **one-shot** (non-interactive) on the same AgentSession infra — the prompt is read from stdin, one turn, then exit. See [`relavium agent run`](#relavium-agent-run) and [agent-run-fixture.md](agent-run-fixture.md). |
 | `relavium list` | List discovered workflows (and, with a flag, agents) in the current project. |
 | `relavium create [--force]` | Scaffold a new agent or a minimal single-agent workflow YAML via an interactive wizard (schema-validated before write). |
 | `relavium import <path> [--force]` | Import an external `.relavium.yaml` / `.agent.yaml` into the project, validated + slug-deduplicated. |
@@ -190,6 +190,7 @@ relavium run ./workflows/code-review.relavium.yaml --input file=./src/index.ts -
 - `--json` switches to NDJSON [RunEvent](../contracts/sse-event-schema.md) output.
 - `Ctrl-C` (SIGINT) requests a cooperative cancel; the run drains to `run:cancelled` and exits non-zero (`1`).
 - A missing API key for an inline agent's **primary** provider is caught **pre-flight** as an invalid invocation (exit `2`) naming the `RELAVIUM_<PROVIDER>_API_KEY` to set, before the run starts. The pre-flight is a strict subset of the keys a run may touch, so it never blocks a valid run: a `fallback_chain` provider's key (read only if the chain fails over to it) and a `$ref`-resolved external agent's key (until `$ref` resolution lands, 2.M–2.Q) are conditional and instead surface mid-run as a run failure (exit `1`).
+- `--allow-mcp-stdio <digest>` (repeatable) authorizes a **local MCP program** for this invocation only, when there is no one to prompt. A workflow declaring a `stdio` MCP server that has not been approved on this machine exits `2` before anything spawns — see [Local MCP servers need consent](#local-mcp-servers-need-consent).
 - On a `human_gate` node the run **pauses**: in interactive mode it prompts inline; in CI mode it exits with the gate-paused code (`3`, see [Exit codes](#exit-codes)) and can be resumed with `relavium gate`. The emitted `human_gate:paused` event carries the `runId` + `gateId` needed for the resume (`relavium gate <runId> --gate <gateId>`); with `--json` they are on the NDJSON event line, otherwise the plain/TUI renderer prints them inline (`paused at gate <gateId> (<type>)`, also echoed in the final summary). (`relavium status`, `relavium logs <runId>`, and `relavium gate list` also surface pending `gateId`s, 2.I.)
 
 > **Implementation status (as of workstream 2.G).** `run` is wired to the `@relavium/core` engine: path/id resolution, `--input` coercion, the full lifecycle event stream, exit codes `0`/`1`/`2`/`3`, SIGINT→cancel, and the stable `--json` NDJSON machine contract (stdout = pure RunEvent stream, diagnostics → stderr; see [above](#the---json-machine-output-contract)) are live. The interactive **`ink` TUI** (2.E) renders the live run on a TTY — per-node status + spinners, the active node's streaming tokens, a running cost/duration footer, and a persistent final summary. Under `--no-color` it keeps the TUI but suppresses ANSI color; it falls back to the plain line renderer when no TTY is attached or `CI=true`, and to NDJSON under `--json` (the three renderers are one `onEvent` seam over one bus). Provider keys resolve from the **OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var → error** (2.C; manage them with `relavium provider`), and runs persist to durable history (2.H). The **interactive human-gate prompt** + out-of-band [`relavium gate`](#relavium-gate) resume are live (2.G): on a TTY a `human_gate` node renders a `@clack/prompts` card inline (approve / reject + comment / input) and the run continues; under `--json`/CI/no-TTY there is no prompt and the run exits `3`, resumable later by `relavium gate <runId>`. Built-in tools that need a host capability (filesystem, process, egress) are **fail-closed** (unavailable) pending a security-reviewed capability workstream.
@@ -226,7 +227,7 @@ Two rows the replay may not be able to read, and it says which is which ([ADR-00
 
 ### `relavium status`
 
-Shows the currently active/paused runs (from `runs` + `step_executions`) and each one's per-node status. Useful while a long workflow runs in another terminal or was launched detached. For any run paused at a human gate it also prints the **pending `gateId`(s)** (with gate type and node id), so a CI author can pass the right one to `relavium gate <runId> --gate <gateId>` — required when a run has more than one gate pending at once. It takes **no argument** (it lists every active run; a terminal run is not shown — inspect one with `relavium logs <runId>`). A run whose event log is damaged is still listed, without its gate detail, rather than aborting the listing ([ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) §5). Under `--json` each active run is one NDJSON record — `{ runId, workflowId, status, startedAt, steps, pendingGates }`, where each `steps` entry is `{ nodeId, nodeType, status, attemptNumber, startedAt, completedAt, durationMs, costMicrocents }` and each `pendingGates` entry is `{ gateId, nodeId, gateType, message, expiresAt? }` (the same pending-gate shape [`gate list`](#relavium-gate-list) emits).
+Shows the currently active/paused runs (from `runs` + `step_executions`) and each one's per-node status. Useful while a long workflow runs in another terminal or was launched detached. For any run paused at a human gate it also prints the **pending `gateId`(s)** (with gate type and node id), so a CI author can pass the right one to `relavium gate <runId> --gate <gateId>` — required when a run has more than one gate pending at once. It takes **no argument** (it lists every active run; a terminal run is not shown — inspect one with `relavium logs <runId>`). A run whose event log is damaged is still listed, without its gate detail, rather than aborting the listing ([ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) §5). A run whose TERMINAL is held in the terminal outbox is named as such — it reads `running` in the derived projection because its terminal never became durable, so without the marker it is indistinguishable from a run still working ([exit code `5`](#exit-codes)). The listing READS the outbox and never drains it: draining claims a run lease, and a status read must not take ownership of a run another process may be finishing. Under `--json` each active run is one NDJSON record — `{ runId, workflowId, status, terminalHeld, startedAt, steps, pendingGates }`, where each `steps` entry is `{ nodeId, nodeType, status, attemptNumber, startedAt, completedAt, durationMs, costMicrocents }` and each `pendingGates` entry is `{ gateId, nodeId, gateType, message, expiresAt? }` (the same pending-gate shape [`gate list`](#relavium-gate-list) emits).
 
 ### `relavium models`
 
@@ -266,6 +267,9 @@ relavium gate <runId> --approve
 relavium gate <runId> --reject --comment "Too risky"
 relavium gate <runId> --input '{"region": "us-east-1"}'      # for gate_type=input
 relavium gate <runId> --gate <gateId> --approve            # disambiguate when >1 gate is pending
+
+# a run with `secret`-typed inputs: re-supply them on stdin, never in argv
+printf 'api_key=%s\n' "$API_KEY" | relavium gate <runId> --approve --secret-stdin
 ```
 
 - Exactly **one** of `--approve` / `--reject` / `--input` is required and they are mutually exclusive; `--comment <text>` annotates an approve/reject rationale and is invalid with `--input` (which carries the payload). A bad combination is an invalid invocation (exit `2`).
@@ -273,9 +277,15 @@ relavium gate <runId> --gate <gateId> --approve            # disambiguate when >
 - **Do not pass secrets via `--input`.** The value reaches the durable event log (`human_gate:resumed.payload`) and the `--json` stream, and argv itself leaks into `ps` / shell history / CI logs — exactly the exposure `relavium provider set-key`'s stdin-only rule avoids. Use a non-secret gate input; supply secrets through the OS keychain / env (`RELAVIUM_<PROVIDER>_API_KEY`), never a gate payload.
 - `--gate <gateId>` selects **which** pending gate to resolve. The resume contract is `engine.resume(runId, gateId, decision)` — `gateId` is mandatory on the resume path (it is carried on the `human_gate:paused` event; see [sse-event-schema.md](../contracts/sse-event-schema.md) and `resume_run` in [ipc-contract.md](../contracts/ipc-contract.md)). `--gate` is **optional on the CLI**: when exactly one gate is pending the CLI fills it in automatically; when **more than one** gate is pending it is **required**, and omitting it is an invalid invocation (exit `2`) listing the pending `gateId`s.
 - Read the pending `runId` + `gateId` from the run's own output: the `human_gate:paused` event line under `--json`, or the `paused at gate <gateId> (<type>)` line the plain/TUI renderer prints. [`relavium gate list`](#relavium-gate-list), `relavium status`, and `relavium logs <runId>` (2.I) also surface them out-of-band.
+- **`--secret-stdin` re-supplies the run's `secret`-typed inputs** ([ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §6). A `secret` is never persisted — the durable record holds only a masked `{ secret: true, ref }` slot — so a secret-bearing run cannot resume without the value being handed back. Each is one **`name=value` line on stdin**; blank lines are ignored, and anything else is an invalid invocation (exit `2`).
+  - **Values never travel through argv**, which is why this is a boolean flag and not `--secret <name=value>`: a credential on a command line leaks to `ps`, shell history and CI logs — the same rule `relavium provider set-key` follows. The *name* in the line is not a secret, and carrying it there rather than in a repeated flag removes the ordering dependency that would silently swap two credentials.
+  - **Every masked slot must be supplied and nothing else may be.** A missing slot, a name the run has no slot for, a repeated name, and an **empty or all-whitespace value** are each exit `2`. A value may contain `=` (the split is on the first one); it may not contain a newline. The **name** is trimmed; the **value is taken verbatim** after the first `=`, so leading and trailing spaces are part of the credential — only a CRLF carriage return is removed. (An earlier version trimmed the whole line, which silently stripped a trailing space from a pasted key and surfaced hours later as an opaque `401`.)
+  - **`--secret-stdin` makes the invocation non-interactive.** Reading the credential drains stdin, so a resumed run that reaches a *second* human gate cannot prompt: it exits `3` and is resolvable by another `relavium gate`, exactly as a `--json` or CI resume does.
+  - Without the flag, a secret-bearing resume is refused (exit `2`) and the message names the slots and this remedy. With the flag on a run that has **no** secrets, the command refuses rather than blocking on a pipe nobody attached.
+  - What this proves is the **slot**, not the credential: the engine verifies that the same named `secret` input was re-supplied and cannot tell whether the value is the same key or a rotated one. ADR-0083 §6 states that limit rather than implying more.
 - **Idempotent.** A doubled decision — the run already finished, or the named gate was already resolved — is a clean exit-`0` no-op, never a double-advance (it leans on the engine's checkpoint/gate-state idempotency). An unknown `runId` is exit `2`. Idempotency is **per gate**, though: on a *sequential* multi-gate workflow a blind repeat *without* `--gate` (after the first decision advanced the run and it re-paused at the **next** gate) auto-fills and resolves *that* gate — so an automated retry-until-exit-`0` loop should **pin `--gate <gateId>`** to avoid resolving later gates unattended.
 
-> **Implementation status (2.G).** `relavium gate` runs in a **fresh process** from the original `run`: it reloads the run's frozen `WorkflowDefinition` + inputs from the durable history snapshot (2.H), reconstructs the paused checkpoint from the persisted event log, and calls `engine.resumeFromCheckpoint` over the same store — then drives the resumed run to its terminal (exit `0` complete / `1` failed / `3` paused again at a later gate). The recorded `decidedBy` is the constant `cli` (a deterministic, non-PII marker; the desktop/portal supply a real user id). Budget-cap pauses (`budget:paused`, [ADR-0028](../../decisions/0028-workflow-resource-governance.md)) are **not** resolved here — that is the separate `relavium budget resume` surface ([deferred-tasks](../../roadmap/deferred-tasks.md)). A run that declares a **`secret`-typed input** cannot be resumed cross-process: secrets are never persisted in plaintext (only a masked placeholder is, ADR-0006/0036), so `relavium gate` **fails closed (exit `2`)** rather than resume with a value it cannot restore — re-run the workflow instead (re-providing secret inputs on resume is a [tracked follow-up](../../roadmap/deferred-tasks.md)). The [`relavium gate list`](#relavium-gate-list) multi-gate listing is live (2.I).
+> **Implementation status (2.G).** `relavium gate` runs in a **fresh process** from the original `run`: it reloads the run's frozen `WorkflowDefinition` + inputs from the durable history snapshot (2.H), reconstructs the paused checkpoint from the persisted event log, and calls `engine.resumeFromCheckpoint` over the same store — then drives the resumed run to its terminal (exit `0` complete / `1` failed / `3` paused again at a later gate). The recorded `decidedBy` is the constant `cli` (a deterministic, non-PII marker; the desktop/portal supply a real user id). Budget-cap pauses (`budget:paused`, [ADR-0028](../../decisions/0028-workflow-resource-governance.md)) are **not** resolved here — that is the separate `relavium budget resume` surface ([deferred-tasks](../../roadmap/deferred-tasks.md)). A run that declares a **`secret`-typed input** is resumed by re-supplying it on stdin with `--secret-stdin` (above); without the flag `relavium gate` still **fails closed (exit `2`)**, because secrets are never persisted in plaintext (only a masked placeholder is, ADR-0006/0036) and there is nothing to restore. The engine enforces the same rule independently — it refuses a resume whose masked slot was not filled, and refuses the placeholder itself as a value. The [`relavium gate list`](#relavium-gate-list) multi-gate listing is live (2.I).
 
 ### `relavium gate list`
 
@@ -313,7 +323,9 @@ echo "review it" | relavium agent run code-reviewer --fixture ./fixtures/review.
 - `--input k=v` is **reserved** — currently **rejected** (exit `2`): a session does not yet interpolate `{{ctx.*}}` into the agent's prompt (the engine passes `system_prompt` verbatim), so the flag is failed loud rather than exposed as an inert no-op. It re-opens when session prompt interpolation lands (a tracked engine follow-up, [deferred-tasks.md](../../roadmap/deferred-tasks.md)).
 - `--fixture <path>` replays a recorded LLM **cassette** so the run is deterministic and fully offline (no key, no network, no keychain) — the format is documented in [agent-run-fixture.md](agent-run-fixture.md). A malformed cassette exits `2`.
 - `--json` emits the [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) NDJSON stream on stdout (the same shape `chat --json` produces); otherwise the assistant reply streams in human form.
-- **Not persisted** — a stateless invoke (no `history.db` row), unlike the REPL. The exit code is the **turn's outcome**: `0` on success, `1` on a turn error; an invocation fault is `2`. It is **never** `4` (that is the interactive REPL's session-ended code).
+- `--allow-mcp-stdio <digest>` (repeatable) authorizes a **local MCP program** for this invocation only. `agent run` is the one-shot, pipeline-facing member of the chat family — its stdin carries the prompt, so it can never prompt for consent, and an agent declaring an unapproved `stdio` MCP server exits `2` before anything spawns. See [Local MCP servers need consent](#local-mcp-servers-need-consent).
+- **The transcript is not persisted** — a stateless invoke (no session/message row), unlike the REPL. It does still **open `history.db`** to attach the effect journal ([effect-journal.md](../shared-core/effect-journal.md)): an external effect is carried forward by the target, not by the run, so an unattached journal would refuse every effectful tool on this surface. The rows it writes are never read back. A `history.db` that cannot be opened fails the invocation.
+- The exit code is the **turn's outcome**: `0` on success, `1` on a turn error; an invocation fault is `2`. It is **never** `4` (that is the interactive REPL's session-ended code).
 
 ### `relavium provider`
 
@@ -346,6 +358,44 @@ relavium provider list --verify                         # + a live key-verificat
   ([keychain-and-secrets.md](../desktop/keychain-and-secrets.md)). An unavailable keychain (locked / no Linux
   Secret Service) surfaces a clean error — never a silent plaintext fallback.
 
+### Local MCP servers need consent
+
+Every command that can open an **MCP-bearing artifact** — `relavium run`, `relavium chat`,
+`relavium chat-resume`, `relavium agent run`, and the bare-invocation Home — passes through the same gate
+before any local program starts ([ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md)). An
+agent or workflow with a `stdio` MCP server declares a **program on your machine**; the artifact chooses it,
+so the decision is yours. Network transports (`http`, `sse`, `websocket`) need no consent — there is no local
+process — and a server already approved on this machine is not asked about again.
+
+The prompt asks **once per server**, showing the resolved executable, each argument on its own line, the
+environment (a secret shows as a `<secret:NAME>` marker, never its value), the working directory, the artifact
+that declared it, and the fingerprint. It **defaults to No**, and Ctrl-C is a refusal. A refused server means
+the invocation stops before anything spawns.
+
+Approval is recorded per machine in `~/.relavium/mcp-consent.ndjson`. It covers the exact declaration — a
+changed executable, argument, environment value or working directory is a different program and is asked about
+again.
+
+**Asking requires all four of**: a TTY stdout, a TTY stdin, no `--json`, and no CI environment. Missing any of
+them — a pipeline, a piped stdin, a machine-readable stream — the invocation **refuses with exit `2`** rather
+than prompting into a stream nobody reads or hanging a job on a question nobody answers. The refusal prints
+each unapproved server and its digest on stderr:
+
+```
+  fs: /usr/local/bin/npx  v1:9f2c…
+```
+
+The digest is a hash of the declaration, **not a secret**. To authorize those servers for a non-interactive
+invocation, review each one and pass it back:
+
+```bash
+relavium run pipeline.relavium.yaml --allow-mcp-stdio v1:9f2c… --allow-mcp-stdio v1:41ab…
+```
+
+`--allow-mcp-stdio` is repeatable, authorizes **only that invocation**, and **writes no grant** — a CI runner
+does not accumulate standing trust. It exists on `relavium run` and `relavium agent run`, the two commands a
+pipeline invokes; the interactive chat family answers at the prompt instead.
+
 ## Exit codes
 
 CI relies on deterministic exit codes:
@@ -357,12 +407,23 @@ CI relies on deterministic exit codes:
 | `2` | Invalid invocation (bad arguments, workflow not found, schema validation error) |
 | `3` | Run paused at a human gate (CI/non-interactive mode) — resume with `relavium gate` |
 | `4` | A chat session ended — via `/exit`, `/cancel` (or Ctrl-C in TTY mode), or an input-stream EOF — a user-initiated end of a `relavium chat` REPL — see [chat-session.md](chat-session.md) |
+| `5` | The run **produced** a terminal, but whether it reached the durable log is **not known** ([ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §5). The terminal is held in the outbox and retried on the next start |
+| `6` | The run is owned by **another process** — either refused before starting, or fenced out mid-flight and stopped without claiming an outcome ([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §5, §7). The only **transient** code: retry shortly |
+| `7` | An external **effect** from a prior attempt of this run is unresolved, so the run stopped for a human ([ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) §2b; [effect-journal.md](../shared-core/effect-journal.md) §4, §8). The only code whose remedy is **do not retry** — check the target, then clear the row (the resolving command is a named follow-up; today the row is cleared out of band); resuming re-enters the same gate |
 
+> Codes `5` and `6` are both "the run's record is not what you might assume", and they differ in what to do next: `5` means a terminal exists and the CLI will retry writing it for you, so re-check after the next invocation; `6` means another process owns the run and is recording it, so there is nothing local to retry — read `relavium logs <runId>` for the truth (`relavium status` takes no argument and lists only ACTIVE runs, so it will not show a run another process has already finished). A run that produced no terminal at all is always `6`, never `5`.
+>
+> Exit code `7` is the one code a retry can make WORSE. Every other non-zero code either fails identically forever (`2`), resolves on its own (`6`), or describes a run that can be re-run (`1`). A `7` means an external effect — a filed ticket, a sent webhook, a started payment — may already have landed and nothing recorded what the target did. Retrying it is how one effect becomes two. An automation loop must surface a `7` to a person, never re-invoke on it.
+>
+> Exit code `6` is the one refusal worth retrying unchanged. Every other invocation fault (`2`) is a mistake in the call and fails identically forever, while `6` means another `relavium` process holds a live lease on the run and resolves on its own when that process finishes or its lease expires. An automation loop should back off and retry on `6`, and never on `2`.
+>
 > Exit code `3` lets CI distinguish a pause-for-approval (a `run:paused` event — the run's aggregate suspension, a human/approval/budget gate — in non-interactive mode) from a hard failure. This is the canonical home for the gate-paused code; other docs reference it as `3`.
 >
 > Under `--json`, a pre-run fault (exit `2`) writes its structured `{ "type": "error", … }` detail to **stderr** while stdout stays empty ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)) — the exit code is the primary fault signal; read stderr for the detail.
 >
 > Exit code `4` is the canonical **chat-session-ended** code: it marks a deliberate `/exit` (or its `--json` equivalent, a final `session:cancelled`/end event) from the `relavium chat` REPL, kept distinct from a successful workflow run (`0`) and a hard failure (`1`) so a wrapper script can tell "the user quit the chat" apart from either. Other docs reference it as `4`.
+>
+> Exit code `5` is **durability-uncertain**, and it is deliberately neither `0` nor `1`. The run may well have COMPLETED — the outputs are in the delivered terminal — and only its durable record is missing, so reporting success would be as wrong as reporting failure. The terminal is held in the host's terminal outbox (`~/.relavium/terminal-outbox.ndjson`, beside `history.db` and deliberately not inside it) and retried by the next **`relavium run`** or **`relavium gate`** — those two and no others, because the drain is a `WorkflowEngine` method and they are the only commands that construct one. `chat`, `agent run` and the bare-invocation Home run on `AgentSession` and have no engine to drain with. A script seeing `5` should treat the run as done-but-unrecorded; `relavium status` NAMES such a run (`terminalHeld` in `--json`) so the state is visible, but it does not itself drain — draining claims a run lease, and a status read must not take ownership of a run another process may be finishing. Other docs reference it as `5`.
 >
 > The bare-invocation **interactive Home** (2.5.B, [home.md](home.md)) is a long-lived mode whose **clean exit is `0`** (Ctrl-C / Ctrl-D on an empty prompt). A chat launched from inside the Home has its own exit code `4`, which the **Home loop consumes** — a chat ending returns to the Home, never leaked. An external signal to the Home runs teardown then exits the conventional `128+signo` (**`130`** SIGINT / **`143`** SIGTERM) so a pipeline still detects the interruption.
 
@@ -374,6 +435,16 @@ The CLI is designed to run inside pipelines. A typical pattern: install globally
 # illustrative CI step
 - run: npm install -g relavium
 - run: relavium run .relavium/code-review.relavium.yaml --input file=src/index.ts --json
+```
+
+A workflow whose agents declare a **`stdio` MCP server** will not spawn one in a pipeline: there is no one to
+ask, so it exits `2` and prints each server's digest. Review each program, then authorize it per invocation —
+see [Local MCP servers need consent](#local-mcp-servers-need-consent).
+
+```yaml
+- run: >
+    relavium run .relavium/code-review.relavium.yaml --input file=src/index.ts --json
+    --allow-mcp-stdio v1:9f2c…
 ```
 
 For a complete walkthrough (key handling, gates, artifacts, exit-code checks), see [run-a-workflow-in-ci.md](../../tutorials/cli/run-a-workflow-in-ci.md).

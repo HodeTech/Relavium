@@ -17,6 +17,7 @@ import {
   createRunHistoryStore,
   isCorruptRunEventError,
   isUnreadableRunEventLogError,
+  loadRunSnapshot,
   runEvents,
   runMigrations,
   type Db,
@@ -27,6 +28,8 @@ import type { RunEvent } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { buildEngine, type BuildEngineOptions } from '../engine/build-engine.js';
+import { createRunLeasePort } from '@relavium/db';
+
 import { createCliHost } from '../engine/host.js';
 import type { GatePrompter } from '../gate/prompter.js';
 import { isCliError, toUserFacing } from '../process/errors.js';
@@ -41,10 +44,19 @@ import {
   type GateCommandDeps,
 } from './gate.js';
 
-/** A WorkflowEngine stub exposing only resumeFromCheckpoint — for the closed-handle / EngineStateError paths
- *  that the real engine can't be driven into deterministically (they need a concurrent-settle race). */
+/**
+ * A WorkflowEngine stub for the closed-handle / EngineStateError paths that the real engine can't be driven
+ * into deterministically (they need a concurrent-settle race).
+ *
+ * `drainTerminalOutbox` is stubbed too because `gateCommand` calls it at start (ADR-0078 §4/§5). A stub that
+ * omits it throws a `TypeError` the command's own error mapping then reports as an invocation fault — which
+ * is how these two tests found the wiring rather than the wiring finding them.
+ */
 function stubEngine(resumeFromCheckpoint: WorkflowEngine['resumeFromCheckpoint']): WorkflowEngine {
-  return { resumeFromCheckpoint } as unknown as WorkflowEngine;
+  return {
+    resumeFromCheckpoint,
+    drainTerminalOutbox: () => Promise.resolve([]),
+  } as unknown as WorkflowEngine;
 }
 
 /** A closed RunHandle: its event stream completes immediately with zero events (what createClosedRunHandle yields). */
@@ -55,6 +67,8 @@ function emptyHandle(runId: string): RunHandle {
     subscribe: () => () => {},
     cancel: () => {},
     whenConsumersReady: () => Promise.resolve(),
+    durability: () => 'durable' as const,
+    terminalError: () => undefined,
   };
 }
 
@@ -64,6 +78,26 @@ workflow:
   id: gate-resume
   inputs:
     - { name: n, type: number }
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: double, type: transform, transform: '({ d: inputs.n * 2 })' }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: double }
+    - { from: double, to: out }
+`;
+
+// A gated run carrying a `secret` input — the durable record holds only its masked slot, so resuming it
+// needs ADR-0083 §6's stdin re-supply. `double` reads `n`, not the secret: the parser forbids interpolating
+// a `secret` into agent/tool text (ADR-0029), and a transform reading it would put it in a node output.
+const GATED_SECRET = `schema_version: '1.0'
+workflow:
+  id: gate-secret
+  inputs:
+    - { name: n, type: number }
+    - { name: api_key, type: secret }
   nodes:
     - { id: start, type: input }
     - { id: g, type: human_gate, gate_type: approval }
@@ -216,7 +250,9 @@ describe('gateCommand', () => {
         definitionJson: JSON.stringify(def),
       },
     });
-    const engine = await buildEngine({ host: createCliHost(store) });
+    const engine = await buildEngine({
+      host: createCliHost(store, { runLeases: createRunLeasePort(store) }),
+    });
     const handle = engine.start({ workflow: def, inputs });
     let runId = '';
     const gateIds: string[] = [];
@@ -227,6 +263,156 @@ describe('gateCommand', () => {
     }
     return { runId, gateIds };
   }
+
+  describe('secret re-supply (ADR-0083 §6)', () => {
+    const SECRET = 'sk-live-not-in-the-log';
+    const seedSecretRun = (): Promise<{ runId: string; gateIds: string[] }> =>
+      setupPausedRun(GATED_SECRET, { n: 7, api_key: SECRET });
+
+    it('refuses without --secret-stdin, and NAMES the remedy', async () => {
+      // The old message said "re-run the workflow instead of resuming", which threw away the run's
+      // completed work for a credential the user still had. There is a way to resume now, so it says so.
+      const { runId } = await seedSecretRun();
+      const { io } = captureIo();
+      await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toMatchObject({
+        code: 'invalid_invocation',
+      });
+      await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toThrow(/api_key/);
+      await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toThrow(
+        /--secret-stdin/,
+      );
+    });
+
+    it('resumes with the value from stdin, and the value never reaches the log', async () => {
+      const { runId } = await seedSecretRun();
+      const { io } = captureIo();
+      const code = await gateCommand(
+        { runId, approve: true, secretStdin: true },
+        { ...deps(io), readSecretInput: () => Promise.resolve(`api_key=${SECRET}\n`) },
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      // The run continued past the gate — `double` ran on the RECORDED `n`, not on anything re-supplied.
+      const events = reader().loadRunEvents(runId);
+      expect(events.some((event) => event.type === 'run:completed')).toBe(true);
+      // …and the credential is in none of it. The engine never re-emits `run:started` on resume, so the
+      // only masked record stays the original one.
+      const serialised = JSON.stringify(events);
+      expect(serialised).not.toContain(SECRET);
+      expect(serialised).toContain('inputs.api_key');
+    });
+
+    it('refuses a stdin payload that misses a slot, names one the run does not have, or is malformed', async () => {
+      const { runId } = await seedSecretRun();
+      const cases: readonly (readonly [string, RegExp])[] = [
+        ['n=7\n', /did not supply/], // the slot the run needs is absent
+        [`api_key=${SECRET}\nother=x\n`, /no .?secret.? slot/], // a name the run has no slot for
+        ['api_key=\n', /non-empty value/], // an empty value is refused explicitly, not accepted as ''
+        ['api_key\n', /non-empty value/], // not a pair at all
+        [`api_key=${SECRET}\napi_key=${SECRET}\n`, /twice/], // the same name supplied twice
+      ];
+      for (const [payload, expected] of cases) {
+        const { io } = captureIo();
+        await expect(
+          gateCommand(
+            { runId, approve: true, secretStdin: true },
+            { ...deps(io), readSecretInput: () => Promise.resolve(payload) },
+          ),
+        ).rejects.toThrow(expected);
+      }
+    });
+
+    it('refuses --secret-stdin on a run with no secrets, rather than reading a pipe for nothing', async () => {
+      const { runId } = await setupPausedRun();
+      const { io } = captureIo();
+      let read = 0;
+      await expect(
+        gateCommand(
+          { runId, approve: true, secretStdin: true },
+          {
+            ...deps(io),
+            readSecretInput: () => {
+              read += 1;
+              return Promise.resolve('');
+            },
+          },
+        ),
+      ).rejects.toThrow(/no .?secret.? inputs to re-supply/);
+      expect(read).toBe(0); // never blocked on a pipe nobody attached
+    });
+
+    it('reads from the REAL stdin reader when no reader is injected, and names THIS command', async () => {
+      // Every other test here injects `readSecretInput`, so the production wiring was replaceable with a
+      // stub while the suite stayed green — and what a `gate` user actually saw when they forgot the pipe
+      // was an example for `relavium provider set-key`, an unrelated command.
+      //
+      // Driven through the TTY guard rather than through the stream: flipping `isTTY` makes the reader
+      // refuse immediately, which exercises the real function and its message without touching stdin.
+      const { runId } = await seedSecretRun();
+      const { io } = captureIo();
+      const original = process.stdin.isTTY;
+      try {
+        Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+        await expect(
+          gateCommand({ runId, approve: true, secretStdin: true }, deps(io)),
+        ).rejects.toThrow(new RegExp(`relavium gate ${runId} --approve --secret-stdin`));
+      } finally {
+        Object.defineProperty(process.stdin, 'isTTY', { value: original, configurable: true });
+      }
+    });
+
+    it('carries an input named `__proto__` through the merge (ADR-0083 §9.7, the CLI path)', async () => {
+      // §9.7 requires `__proto__` / `constructor` / `toString` to round-trip as ordinary inputs "on the CLI
+      // path AND the engine path". The engine half is pinned in `resume-identity.test.ts`; this half was not,
+      // and both of this command's accumulators could be changed to `{}` with the suite green — which would
+      // put the name through the prototype setter and drop the input from the resumed run.
+      const yaml = GATED_SECRET.replace(
+        '- { name: api_key, type: secret }',
+        '- { name: __proto__, type: secret }',
+      );
+      const { runId } = await setupPausedRun(yaml, { n: 7, ['__proto__']: SECRET });
+      const { io } = captureIo();
+      const code = await gateCommand(
+        { runId, approve: true, secretStdin: true },
+        { ...deps(io), readSecretInput: () => Promise.resolve(`__proto__=${SECRET}\n`) },
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      expect(({} as Record<string, unknown>)[SECRET]).toBeUndefined();
+      const serialised = JSON.stringify(reader().loadRunEvents(runId));
+      expect(serialised).not.toContain(SECRET);
+    });
+
+    it('a run with no secrets and no flag is untouched by any of this', async () => {
+      const { runId } = await setupPausedRun();
+      const { io } = captureIo();
+      expect(await gateCommand({ runId, approve: true }, deps(io))).toBe(EXIT_CODES.success);
+    });
+  });
+
+  it('hands the engine a store that can READ the frozen definition (ADR-0083 §5)', async () => {
+    // `readWorkflowSnapshot` is the only production implementation of §5's content verification, and a review
+    // measured it replaceable with `() => Promise.resolve(undefined)` while the whole monorepo stayed green:
+    // the engine then takes the documented "this store holds no snapshot" branch and skips content
+    // verification on every resume, silently and forever. The check cannot be pinned by its OUTCOME on this
+    // path — `gate.ts` builds the workflow from the same column the engine reads, so the two agree by
+    // construction — so what is pinned is the wiring: the store this command builds answers with the column.
+    const { runId } = await setupPausedRun();
+    const { io } = captureIo();
+    let captured: BuildEngineOptions | undefined;
+    const code = await gateCommand(
+      { runId, approve: true },
+      {
+        ...deps(io),
+        buildEngine: (opts) => {
+          captured = opts;
+          return buildEngine(opts);
+        },
+      },
+    );
+    expect(code).toBe(EXIT_CODES.success);
+    const frozen = await captured?.host?.store.readWorkflowSnapshot(runId);
+    expect(frozen).toBe(loadRunSnapshot(db, runId)?.workflowDefinitionSnapshot);
+    expect(JSON.parse(frozen ?? '{}')).toMatchObject({ workflow: { id: 'gate-resume' } });
+  });
 
   it('wires the same media host + catalog resolveMediaSurface on a gate-resumed run (2.S)', async () => {
     // Seed a generative model into the SHARED db so the gate-path catalog (over opened.db) resolves it.
@@ -703,6 +889,8 @@ describe('selectGate', () => {
     runStatus: 'paused',
     workflowId: 'wf',
     startedAtMs: 0,
+    admittedInputs: {},
+    executionMode: 'local',
     nodeStates: new Map(),
     completedNodeIds: [],
     pendingGates: [],
@@ -850,7 +1038,9 @@ describe('gateCommand — a run written by a NEWER binary (ADR-0075)', () => {
         definitionJson: JSON.stringify(def),
       },
     });
-    const engine = await buildEngine({ host: createCliHost(store) });
+    const engine = await buildEngine({
+      host: createCliHost(store, { runLeases: createRunLeasePort(store) }),
+    });
     const handle = engine.start({ workflow: def, inputs: { n: 7 } });
     let runId = '';
     let lastSeq = 0;

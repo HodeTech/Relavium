@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 
-import { createProviderStore, createRunHistoryReader } from '@relavium/db';
+import {
+  createEffectJournalPort,
+  createEffectJournalStore,
+  createProviderStore,
+  createRunHistoryReader,
+} from '@relavium/db';
 import type { AgentSessionRecord, ReasoningEffort } from '@relavium/shared';
 import { render } from 'ink';
 import { createElement } from 'react';
@@ -12,6 +17,8 @@ import {
   transcriptBoundFor,
   type ReseatTarget,
 } from '../commands/chat.js';
+import { createConsentGate } from '../engine/mcp-consent-gate.js';
+import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import {
   buildChatSession,
   buildResumedChatSession,
@@ -21,6 +28,8 @@ import {
 } from '../chat/session-host.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import { onceEffortNotice } from '../chat/effort-notice.js';
+import { unresolvedEffectNotice } from '../engine/effect-retention.js';
+import { sanitizeInline } from '../render/sanitize.js';
 import type { DoctorProbes } from '../chat/doctor.js';
 import {
   createSessionPersister,
@@ -530,6 +539,15 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
             ? {}
             : { initialSequenceNumber: opts.initialSequenceNumber }),
         });
+        // The durable effect journal (ADR-0080), wired where `history.db` is open. Without it every
+        // effectful tool on the bare-`relavium` Home — `!ls`, an appending `write_file`, a non-GET
+        // `http_request`, every MCP tool — is refused, which is exactly what a review found here.
+        built.attachEffectJournal((correlation) =>
+          createEffectJournalPort(createEffectJournalStore(opened.db, { uuid, now }), correlation, {
+            providerAttempt: 1,
+            toolCallId: 'home',
+          }),
+        );
         // createChatLineHandler owns the mode control (ADR-0057): it applies the initial `ask` mode → the
         // fail-closed approval regime — BEFORE the session opens, so the full-capability host is never live without it.
         const {
@@ -551,7 +569,25 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         persister.start();
         // Open a FRESH session; a RESUMED session already landed at idle inside AgentSession.resume — start() would
         // throw and re-emitting session:started would double a terminal-less lifecycle event.
-        if (opts.open) built.session.start();
+        if (opts.open) {
+          built.session.start();
+        } else {
+          // A RESUMED session: §8's disclosure, and §9's retention for the turns it can no longer resume.
+          // Into the TRANSCRIPT, never raw stderr — the alt buffer would swallow a stderr line after one
+          // frame, which is the same reasoning `onBudgetWarning` and `onEffortWithheld` already follow.
+          const effectNotice = unresolvedEffectNotice(
+            opened.db,
+            built.session.sessionId,
+            sanitizeInline,
+          );
+          if (effectNotice !== undefined) store.notice(effectNotice);
+          // §9's retention is deliberately NOT run here. The sweep needs the resumed turn count as its
+          // exclusive bound, and this builder does not carry `resumeState` — the reseat path two hundred
+          // lines below does. Sweeping without a bound would delete the live turn's committed rows, which
+          // is the one thing §9 forbids, so the Home defers to `chat-resume`'s sweep over the same
+          // `history.db`. The rows are session-scoped and the sweep is idempotent, so nothing is lost —
+          // only deferred until the next `chat-resume` of that session.
+        }
         // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the session's fs-scope tier.
         const mentionFs = assembleToolEnv({
           profile: 'chat-read-only',
@@ -634,6 +670,13 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           ? [freshModel, effectiveChat?.defaultProvider]
           : [config.chat.defaultModel, config.chat.defaultProvider];
       const built: BuiltChatSession = await (deps.buildSession ?? buildChatSession)({
+        // Consent before any stdio MCP spawn (ADR-0084 §1) — the Home opens an agent like every other path.
+        consentGate: createConsentGate({
+          io: deps.io,
+          global: deps.global,
+          homeDir,
+          prompt: createConsentPrompter(),
+        }),
         chat: {
           ...config.chat,
           defaultModel,
@@ -704,6 +747,12 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         noteToStore(budgetWarningText(warning));
       const built = await (deps.buildResumedSession ?? buildResumedChatSession)({
         chat: config.chat,
+        consentGate: createConsentGate({
+          io: deps.io,
+          global: deps.global,
+          homeDir,
+          prompt: createConsentPrompter(),
+        }),
         record,
         messages: loaded.messages,
         now,

@@ -98,7 +98,7 @@ concern, **not** part of this sandbox).
 **For an expression that completes within its resource caps, the result is a pure function of the
 injected scope** — the same scope always yields the same value (or the same deterministic language
 error). This is what keeps checkpoint/resume and retry-from-node (idempotency key
-`runId + nodeId + retryCount`) reproducible. Non-determinism is removed at the language level (no
+the effect journal's identities — see [effect-journal.md](effect-journal.md)) reproducible. Non-determinism is removed at the language level (no
 clock, no RNG, no async, no I/O — see [Language surface](#language-surface-deny-by-default-allow-list)).
 
 The resource caps themselves are **not** part of the deterministic result — see

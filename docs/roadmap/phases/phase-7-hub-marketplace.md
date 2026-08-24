@@ -67,7 +67,7 @@ workflows are downloaded as git-committable YAML files; execution stays local.
   allows installing a specific version or "latest."
 - **Provenance chain**: an installed agent records its Hub source (slug, version, installed
   at) in the local `.relavium/` metadata, so a user always knows where a third-party agent
-  came from — critical for the import-trust/consent gate (2.6.B).
+  came from — critical for the local-spawn consent gate ([ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md), closed in 2.6.5 `CR-16`), which names the declaring artifact at the prompt.
 - **`relavium hub` in CI**: `relavium hub install relavium/code-reviewer@v2.1` in a CI
   pipeline pulls the agent, making Hub-published workflows CI-portable.
 
@@ -203,7 +203,7 @@ members can install them; non-members cannot see or install them.
 
 | Risk | Mitigation |
 |------|------------|
-| Malicious agents in the marketplace (crypto miners, data exfiltration) | Mandatory secret scan at publish; the import-trust/consent gate (2.6.B) prompts the user on first install from an untrusted source; starter packs are Relavium-reviewed; user ratings surface quality signals |
+| Malicious agents in the marketplace (crypto miners, data exfiltration) | Mandatory secret scan at publish; the local-spawn consent gate ([ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md), closed in 2.6.5 `CR-16`) prompts before any declared local program runs — on every artifact, not only an untrusted one; starter packs are Relavium-reviewed; user ratings surface quality signals |
 | Secret leakage in published YAML | Automated scan pipeline at upload — reject before acceptance; the scan pattern set is maintained and expanded |
 | Hub becomes a support burden (stale agents, broken listings) | Deprecation markers; automated schema re-validation on provider/model catalog updates; "last verified" date on listings |
 | Scope creep into execution platform | Explicit out-of-scope boundary: the Hub never executes, never holds keys, never proxies LLM calls |

@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-07-06
-- **Related**: [ADR-0024](0024-agent-first-entry-point-agentsession.md) (the one-model-per-lifetime rule this refines), [ADR-0026](0026-session-export-to-workflow.md), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md) (the instance-scoped approval cache a reseat re-primes), [ADR-0062](0062-context-compaction-and-cli-history-commands.md) (the `/clear` host-swap machinery + the `contextPreamble` a reseat must carry), [phase-2.6-conversational-authoring.md](../roadmap/phases/phase-2.6-conversational-authoring.md) (2.6.C), [architectural-principles.md](../standards/architectural-principles.md)
+- **Related**: [ADR-0024](0024-agent-first-entry-point-agentsession.md) (the one-model-per-lifetime rule this refines), [ADR-0026](0026-session-export-to-workflow.md), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md) (the instance-scoped approval cache a reseat re-primes), [ADR-0062](0062-context-compaction-and-cli-history-commands.md) (the `/clear` host-swap machinery + the compaction summary a reseat must carry), [phase-2.6-conversational-authoring.md](../roadmap/phases/phase-2.6-conversational-authoring.md) (2.6.C), [architectural-principles.md](../standards/architectural-principles.md)
 
 > **Proposed 2026-06-28 alongside the Phase 2.6 plan; Accepted 2026-07-06** and implemented as a 2.5.G follow-up
 > (the in-chat `/models` reseat requested with the Phase-2.5 CLI-consolidation model work), pulling the ADR forward
@@ -24,6 +24,13 @@
 > the populated column. **Known limitation (low):** the resolution is by model STRING (ignoring provider), so a
 > model id shared across two providers could mis-attribute to the other provider's catalog row; deferred as a
 > latent edge (real model ids are globally unique; the FK stays valid either way).
+
+> **Amended 2026-08-18 by [ADR-0081](0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md).**
+> A reseat still carries the compaction summary across the rebuild — that is unchanged and load-bearing.
+> What changed is what it carries it AS: no longer a `contextPreamble` prepended to the new session's system
+> prompt, but untrusted content placed in the first user-role turn by the same request-assembly projection
+> every other path uses. The reseat is one of the two places ADR-0081's acceptance criteria re-assert the
+> property, because the original defect survived a reseat.
 
 ## Context
 

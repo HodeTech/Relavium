@@ -8,6 +8,7 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 
 import { withMigrationLock } from './migrate-lock.js';
 import * as schema from './schema.js';
+import { withBusyRetry } from './retry.js';
 
 /**
  * The local SQLite client for `@relavium/db`, wired over `better-sqlite3`
@@ -110,17 +111,33 @@ export function createClient(path = ':memory:'): DbClient {
     if (path !== ':memory:') {
       mkdirSync(dirname(path), { recursive: true });
     }
-    sqlite = new Database(path);
+    // A local binding as well as the outer `let`: the outer one is what the `catch` closes, and inside a
+    // closure TypeScript cannot narrow it away from `undefined`, which would turn a real invariant into an
+    // optional chain that silently skips the pragma.
+    const opened = new Database(path);
+    sqlite = opened;
     // The PRAGMAs and the Drizzle bind are INSIDE the try: any of them can fail (a corrupt header surfaces on
     // the first `journal_mode` write, not on open), and outside it a failure would leak the just-opened
     // connection for the process lifetime AND escape as an untyped driver error — past both this factory's
     // typed-error contract and `openLocalDb`'s cleanup/at-rest handling.
-    sqlite.pragma('journal_mode = WAL'); // concurrent reads while a run writes (no-op in memory)
-    sqlite.pragma('foreign_keys = ON'); // SQLite does not enforce FKs per connection by default
-    sqlite.pragma('busy_timeout = 5000'); // wait up to 5s for a writer lock instead of erroring
-    sqlite.pragma('synchronous = NORMAL'); // the recommended durability/throughput trade-off with WAL
-    const db = drizzle(sqlite, { schema });
-    return { db, sqlite, path };
+    //
+    // **The WAL switch is RETRIED, because `busy_timeout` does not cover this one.** Converting a database
+    // to WAL takes an EXCLUSIVE lock, and SQLite returns `SQLITE_BUSY` for it WITHOUT invoking the busy
+    // handler — waiting there could deadlock, so it refuses instead. Two Relavium processes opening one
+    // fresh `history.db` at the same moment therefore raced and the loser's OPEN failed outright: measured
+    // at 18 failures in 30 paired spawns, and 0 in 30 with this retry. What a user saw was `relavium run`
+    // refusing to start because another Relavium happened to be starting.
+    //
+    // The two-process migration test had been reporting this intermittently and it was read as test flake.
+    // It was not: `createClient` is the shipping open path. (Setting `busy_timeout` first was measured too,
+    // and does NOT help — 15/25 with it first against 17/25 with it second — so the pragma order is left as
+    // it was rather than changed on a plausible-sounding theory.)
+    withBusyRetry(() => opened.pragma('journal_mode = WAL'));
+    opened.pragma('foreign_keys = ON'); // SQLite does not enforce FKs per connection by default
+    opened.pragma('busy_timeout = 5000'); // wait up to 5s for a writer lock instead of erroring
+    opened.pragma('synchronous = NORMAL'); // the recommended durability/throughput trade-off with WAL
+    const db = drizzle(opened, { schema });
+    return { db, sqlite: opened, path };
   } catch (err) {
     // Close what we opened before propagating, or the connection leaks on every failed setup.
     try {

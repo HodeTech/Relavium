@@ -63,6 +63,7 @@ import {
   type BudgetAdmission,
 } from './budget-governor.js';
 import { LedgerDurabilityError, type TurnMoneyPort } from './money-durability.js';
+import type { AuthoredSystemPrompt } from './authored-system-prompt.js';
 import type { NodeStreamEvent } from './node-executor.js';
 
 /**
@@ -125,16 +126,37 @@ export type PreEgressHook = (info: {
   readonly mediaUnitsEstimate?: readonly MediaUnitsEstimate[];
 }) => void | BudgetAdmission | Promise<void | BudgetAdmission>;
 
-/** The chain capabilities the host supplies (the platform-level subset of {@link FallbackChainOptions}). */
+/**
+ * The chain capabilities the host supplies (the platform-level subset of {@link FallbackChainOptions}).
+ *
+ * `newAbortController` / `setTimer` / `attemptTimeoutMs` carry ADR-0082 §6's per-attempt deadline. They sit
+ * HERE, on the host-supplied subset, for the same reason `sleep` and `now` do: the engine is platform-free
+ * and has no ambient `AbortController` or `setTimeout`. A host that omits them gets the pre-ADR-0082
+ * unbounded behaviour — both or neither, never half.
+ */
 export type ChainCapabilities = Pick<
   FallbackChainOptions,
-  'keyFor' | 'sleep' | 'now' | 'onAuthError' | 'resolveForEgress'
+  | 'keyFor'
+  | 'sleep'
+  | 'now'
+  | 'onAuthError'
+  | 'resolveForEgress'
+  | 'newAbortController'
+  | 'setTimer'
+  | 'attemptTimeoutMs'
 >;
 
 /** Everything one agent turn needs — no run/session correlation key, no `NodeExecContext`. */
 export interface AgentTurnParams {
-  /** Authored system text ONLY (agent `system_prompt` + node `system_prompt_append`) — never untrusted data. */
-  readonly system?: string;
+  /**
+   * Authored system text ONLY — and since [ADR-0081](../../../../docs/decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md)
+   * the type says so rather than this comment.
+   *
+   * The comment above used to read "never untrusted data", and ADR-0062 §1 shipped a model-written summary
+   * of untrusted input into this field anyway, behind an XML fence the untrusted text can close. A branded
+   * type built only by {@link authoredSystemPrompt} makes the ordinary typed path unable to do that.
+   */
+  readonly system?: AuthoredSystemPrompt;
   /** The initial conversation. The core appends assistant + tool messages across the loop on a copy. */
   readonly messages: readonly LlmMessage[];
   /** LLM-visible tool defs for the request (already normalized + narrowed to the node's grant). */
@@ -256,6 +278,12 @@ export function codeForLlmError(error: LlmError): ErrorCode {
     case 'overloaded':
     case 'timeout':
     case 'transport':
+    case 'protocol':
+      // `protocol` (ADR-0082 §9): a provider that cannot keep the stream grammar is not usable for this
+      // request, and the remedy is the one this code already names — try another model, or take it up with
+      // whoever runs that endpoint. No new `ErrorCode`, because no surface would act on the distinction
+      // differently; the load-bearing half (do not re-dispatch) rides `retryable: false`, which is where the
+      // engine actually reads it.
       return 'provider_unavailable';
     case 'cancelled':
       return 'cancelled';
@@ -298,8 +326,22 @@ function codeForToolError(err: ToolDispatchError): { code: ErrorCode; retryable:
       // tool + the unwired arm via the error message), never a bare `internal`. The advertise-filter (2.5.A)
       // makes this a backstop — an unwired tool is not offered — but a slipped-through call still classifies clean.
       return { code: 'tool_unavailable', retryable: false };
+    // Both are "a human must look at this", and neither is ever retried. They are separate discriminants
+    // because they describe opposite facts — nothing happened (another attempt owns the identity) vs
+    // something happened and the record is wrong — which matters to a surface choosing what to say, not to
+    // the retry decision here.
+    case 'effect_unrecorded':
+    case 'effect_conflict':
+      // ADR-0080 §7: another attempt already holds this effect's identity. A refusal, not a fault — and
+      // never retried, because a retry re-collides, burns the whole node budget, and reports the wrong
+      // cause. It is the first real producer of `effect_needs_attention`.
+      return { code: 'effect_needs_attention', retryable: false };
     case 'execution_failed':
-      return { code: 'tool_failed', retryable: true };
+      // **`err.retryable`, not a hard-coded `true`.** The registry stamps `false` once an effect has left
+      // the process (ADR-0080 §8), and this is the ONE reader that decides whether the node re-dispatches.
+      // Hard-coding it made that stamp unreadable: a review measured that setting it unconditionally
+      // changed nothing anywhere, so a timed-out POST re-ran the node and re-fired the effect.
+      return { code: 'tool_failed', retryable: err.retryable };
     default:
       // unknown_tool / invalid_args reach here only after the correction budget is spent.
       return { code: 'tool_failed', retryable: false };
@@ -401,13 +443,22 @@ async function streamOneTurn(
   messages: readonly LlmMessage[],
   params: AgentTurnParams,
   getModel: () => string,
+  /**
+   * Has an EARLIER round of this turn already produced content? (ADR-0082 §4.)
+   *
+   * The chain's own `contentCommitted` is per-`stream()`-call, and a tool-using turn calls `stream()` once
+   * per round — so round 1's failure carries no chain-level commitment however much the user was shown in
+   * round 0. Without this the node re-dispatched the whole turn: a review measured six provider calls, the
+   * same assistant text emitted three times, and a tool dispatched three times.
+   */
+  turnCommitted = false,
 ): Promise<{ content: ContentPart[]; stopReason: StopReason }> {
   const acc = newAccumulator();
   let stopReason: StopReason = 'stop';
   for await (const chunk of chain.stream(buildRequest(messages, params))) {
     foldChunk(chunk, acc, params, getModel);
     if (chunk.type === 'error') {
-      throwMappedChainError(chunk.error);
+      throwMappedChainError(chunk.error, turnCommitted);
     }
     if (chunk.type === 'stop') stopReason = chunk.stopReason;
   }
@@ -440,7 +491,7 @@ async function generateOneTurn(
 }
 
 /** Map a chain failure — a streamed `error` chunk or a thrown `generate()` error — into the turn taxonomy. */
-function throwMappedChainError(error: LlmError): never {
+function throwMappedChainError(error: LlmError, turnCommitted = false): never {
   // A pre-egress budget hook may throw its own AgentTurnError or Budget*Error; preserve it rather than
   // remapping the wrapped LlmError to a generic internal code.
   if (error.cause instanceof AgentTurnError) {
@@ -468,7 +519,32 @@ function throwMappedChainError(error: LlmError): never {
   if (error.cause instanceof LedgerDurabilityError) {
     throw error.cause;
   }
-  throw new AgentTurnError(codeForLlmError(error), error.message, error.retryable);
+  throw new AgentTurnError(
+    codeForLlmError(error),
+    error.message,
+    foldRetryable(error, turnCommitted),
+  );
+}
+
+/**
+ * Whether a chain failure may be RE-DISPATCHED by the node-retry budget (ADR-0082 §4).
+ *
+ * Exported and used at every site that turns an `LlmError` into a node's retry flag, rather than stated once
+ * in a comment: a review pointed out that "the one fold site" was a global claim the code did not have —
+ * `mapGenerateMediaError` and the media-job poll both carry `retryable` through untouched, and the moment
+ * `generateMedia` is routed through the chain (which §10 anticipates) the fold would be lost silently.
+ *
+ * Two inputs, because commitment is observed at two scopes:
+ *
+ * - `error.contentCommitted` — the CHAIN saw content in this `stream()` call before it failed.
+ * - `turnCommitted` — the TURN has produced content in an EARLIER round. A tool-using turn calls
+ *   `chain.stream()` once per round, so a fresh attempt's error carries no chain-level commitment however
+ *   much the user has already been shown. A review measured the consequence: six provider calls, the same
+ *   assistant text emitted three times, and the `echo` tool dispatched three times — verbatim the harm §4
+ *   exists to remove, with only ADR-0080's effect journal standing between it and a duplicated side effect.
+ */
+export function foldRetryable(error: LlmError, turnCommitted = false): boolean {
+  return error.retryable && error.contentCommitted !== true && !turnCommitted;
 }
 
 /**
@@ -575,14 +651,20 @@ async function dispatchToolCalls(
   params: AgentTurnParams,
   getModel: () => string,
   attemptNumber: number,
+  /** The running effect-slot ordinal for the TURN — see `dispatchToolUseTurn`'s `slotBase`. */
+  slotBase: number,
 ): Promise<{ messages: LlmMessage[]; correctable: boolean }> {
   const results: LlmMessage[] = [];
   let correctable = false;
-  for (const call of toolCalls) {
+  // INDEXED, and the index is the effect slot (ADR-0080). One model response can contain several tool calls,
+  // so the correlation alone cannot tell two effects of one turn apart — the second legitimate effect would
+  // collide with the first on the journal's UNIQUE identity. The provider's return order is the ordinal.
+  for (const [slot, call] of toolCalls.entries()) {
     throwIfAborted(params.signal);
     try {
       const outcome = await params.registry.dispatch(call, {
         ...params.dispatchContext,
+        effectSlot: slotBase + slot,
         signal: params.signal,
       });
       // Emit AFTER dispatch: the registry's `events.call.toolInput` is the SANITIZED payload
@@ -660,7 +742,15 @@ async function dispatchToolUseTurn(
   activeModel: () => string,
   nonSkippedAttempts: number,
   corrections: number,
-): Promise<number> {
+  /**
+   * The running effect-slot ordinal for this TURN (ADR-0080), not for this model response.
+   *
+   * It cannot reset per response, and a test caught why: an `isError` tool result makes the model retry the
+   * SAME tool in the next round, and a per-response index would give that retry slot 0 again — colliding
+   * with its own earlier attempt on the journal's UNIQUE identity and refusing a legitimate second call.
+   */
+  slotBase: number,
+): Promise<{ corrections: number; slotBase: number }> {
   // Append the assistant turn (incl. reasoning — carried for the same-provider replay, ADR-0039).
   messages.push({ role: 'assistant', content: turnContent });
   const toolCalls = turnContent.filter((p): p is ToolCallPart => p.type === 'tool_call');
@@ -681,7 +771,13 @@ async function dispatchToolUseTurn(
   // alone would not be a barrier, since `#emitDurable` absorbs a store fault and resolves.
   await params.money?.join();
   // A reached `tool_use` stop always followed a successful (non-skipped) attempt, so `nonSkippedAttempts >= 1`.
-  const dispatched = await dispatchToolCalls(toolCalls, params, activeModel, nonSkippedAttempts);
+  const dispatched = await dispatchToolCalls(
+    toolCalls,
+    params,
+    activeModel,
+    nonSkippedAttempts,
+    slotBase,
+  );
   let next = corrections;
   if (dispatched.correctable) {
     next += 1;
@@ -694,7 +790,8 @@ async function dispatchToolUseTurn(
     }
   }
   messages.push(...dispatched.messages);
-  return next;
+  // The base advances by THIS response's call count, so the next round's slots continue rather than restart.
+  return { corrections: next, slotBase: slotBase + toolCalls.length };
 }
 
 /**
@@ -1007,6 +1104,8 @@ async function driveAgentTurn(
     }
 
     let corrections = 0;
+    // Runs across the WHOLE turn, not per model response — see `dispatchToolUseTurn`'s `slotBase`.
+    let slotBase = 0;
 
     for (let toolTurn = 0; ; toolTurn += 1) {
       throwIfAborted(params.signal);
@@ -1022,7 +1121,42 @@ async function driveAgentTurn(
       // reservation that can deny a concurrent branch without ever reaching egress.
       throwIfAborted(params.signal);
 
-      const turn = await streamOneTurn(chain, messages, params, () => activeModel);
+      // **CR-95 / ADR-0080 §10: a budget pause is refused once this turn has dispatched tools.**
+      //
+      // A `BudgetPauseError` from the pre-egress governor becomes a `paused` outcome, and on approval the
+      // engine resets the node to `pending` and dispatches it FROM THE START — repeating every provider call
+      // and, fatally, every tool call this turn already made. Before the first tool round that replay is
+      // harmless (it re-runs one provider call). After it, the replay re-fires external effects: the exact
+      // duplicate the effect journal exists to prevent, generated by our own budget path.
+      //
+      // So past the first round the pause is refused and the node fails closed with the budget error. The two
+      // alternatives both lose: completing the loop past the cap spends money the user capped, and
+      // pausing-then-resuming IS the replay. Failing closed neither overspends nor duplicates — deliberately
+      // the more disruptive of the two honest options.
+      // Past round 0 the TURN has produced content — the assistant text and the tool calls of the previous
+      // round both reached the user — so a failure here is content-committed even though this `stream()`
+      // call may have produced nothing yet (ADR-0082 §4).
+      const turnCommitted = toolTurn > 0;
+      const turn = await (toolTurn === 0
+        ? streamOneTurn(chain, messages, params, () => activeModel)
+        : streamOneTurn(chain, messages, params, () => activeModel, turnCommitted).catch(
+            (error: unknown) => {
+              if (error instanceof BudgetPauseError) {
+                // NOT `error.message` — it ends "run paused for approval", which is exactly what does not
+                // happen here. Reported verbatim on `relavium run` and both `--json` surfaces it told the
+                // operator to go approve a pause that will never arrive, for a run that had already failed.
+                throw new AgentTurnError(
+                  'budget_exceeded',
+                  `pre-egress budget check would exceed the cap of ${error.limitMicrocents} micro-cents ` +
+                    `(spent ${error.spentMicrocents}); the node had already run tools this turn, so it failed ` +
+                    `instead of pausing — approving and resuming would re-fire them (ADR-0080 §7). Raise the ` +
+                    `budget cap and start a new run.`,
+                  false,
+                );
+              }
+              throw error;
+            },
+          ));
       // Cancel-wins independent of adapter cooperation: if the signal fired mid-stream but a
       // non-signal-honoring adapter still settled cleanly, fail `cancelled` rather than return a
       // stray completed result (mirrors the registry's post-await re-check).
@@ -1041,14 +1175,15 @@ async function driveAgentTurn(
       // A tool-use turn: append the assistant turn + dispatch its calls (extracted to keep this loop within
       // the cognitive-complexity budget). Returns the updated correction count; throws on a protocol anomaly
       // or an exhausted correction budget.
-      corrections = await dispatchToolUseTurn(
+      ({ corrections, slotBase } = await dispatchToolUseTurn(
         turn.content,
         messages,
         params,
         () => activeModel,
         nonSkippedAttempts,
         corrections,
-      );
+        slotBase,
+      ));
     }
   } finally {
     // An iterator consumer/fold/event sink can throw before FallbackChain emits its record. The provider may

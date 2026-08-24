@@ -32,8 +32,11 @@ import {
   runAgentTurn,
   type AgentTurnParams,
   type ChainCapabilities,
+  codeForLlmError,
+  foldRetryable,
 } from './agent-turn.js';
 import type { NodeStreamEvent } from './node-executor.js';
+import { unwiredEffectJournal } from '@relavium/shared';
 
 const CAPS: CapabilityFlags = {
   tools: true,
@@ -64,8 +67,20 @@ function scriptedProvider(id: ProviderId, scripts: StreamChunk[][]): LlmProvider
       throw new Error('generate not used in these tests');
     },
     stream: (): AsyncIterable<StreamChunk> => {
-      const chunks = scripts[call] ?? [];
+      // Indexed directly, NOT `scripts[call] ?? []` — matching `m2-e2e-harness.e2e.test.ts:102` and
+      // `m5-chat-harness.e2e.test.ts:77`, which already do. The `?? []` gave an unscripted call a SILENT
+      // EMPTY stream, which the chain reads today as a successful zero-usage attempt: a test that overran
+      // its script passed for a reason it never stated. `CR-14` turns that same shape into a classified
+      // error, so leaving the fallback here would have shown a wall of unrelated red in CR-14's own PR
+      // with real regressions hidden inside it. An overrun now yields `undefined` and fails loudly at the
+      // iteration site instead.
+      const chunks = scripts[call];
       call += 1;
+      if (chunks === undefined) {
+        throw new Error(
+          `scriptedProvider: unexpected stream call #${call} (only ${scripts.length} scripted)`,
+        );
+      }
       return streamOf(chunks);
     },
   };
@@ -124,6 +139,10 @@ function baseParams(
     toolPolicy: {},
     fsScope: 'sandboxed',
     gateApproved: false,
+    // No effects are dispatched here, so the journal is deliberately the LOUD unwired one: a silent
+    // no-op would make a real wiring mistake look exactly like a fixture that never had effects.
+    effects: unwiredEffectJournal(),
+    effectSlot: 0,
   };
   const params: AgentTurnParams = {
     messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
@@ -414,6 +433,78 @@ describe('runAgentTurn — tool loop', () => {
     { type: 'tool_call_end', id },
     STOP('tool_use'),
   ];
+
+  it('CR-95: a budget pause AFTER a tool round fails closed instead of pausing', async () => {
+    // The replay this refuses: a `paused` outcome resets the node to `pending` and re-dispatches it FROM THE
+    // START on approval, re-firing every tool call this turn already made. Before ADR-0080 that made the
+    // budget path a duplicate-effect generator — the very thing the effect journal exists to prevent.
+    const provider = scriptedProvider('anthropic', [
+      toolUseTurn('t1'),
+      [{ type: 'text_delta', text: 'done' }, STOP()],
+    ]);
+    let egress = 0;
+    const params = baseParams(provider, {
+      preEgress: () => {
+        egress += 1;
+        if (egress === 2) throw new BudgetPauseError(900, 1000, 90); // the SECOND egress — tools have run
+        return undefined;
+      },
+    });
+
+    // `budget_exceeded`, non-retryable — NOT a pause. A pause here would be resumable, and resuming replays.
+    await expect(runAgentTurn(params)).rejects.toMatchObject({
+      code: 'budget_exceeded',
+      retryable: false,
+    });
+    expect(egress).toBe(2); // it really did get past the first round; the guard is the second one
+  });
+
+  it('CR-95: a budget pause BEFORE any tool round still pauses — the negative control', async () => {
+    // Scoped deliberately. On the first egress nothing external has happened, so a replay costs one provider
+    // call and the pause stays useful. Without this control the guard above passes for an implementation that
+    // simply removed budget pauses altogether.
+    const provider = scriptedProvider('anthropic', [
+      toolUseTurn('t1'),
+      [{ type: 'text_delta', text: 'done' }, STOP()],
+    ]);
+    const params = baseParams(provider, {
+      preEgress: () => {
+        throw new BudgetPauseError(900, 1000, 90);
+      },
+    });
+
+    await expect(runAgentTurn(params)).rejects.toBeInstanceOf(BudgetPauseError);
+  });
+
+  it('gives each tool call of one response its OWN effect slot', async () => {
+    // One model response can contain several tool calls, and the journal's UNIQUE identity is
+    // (scope, slot, toolId). Without an ordinal the second legitimate effect of a turn collides with the
+    // first and is refused as a duplicate — so the loop is indexed and the index IS the slot (ADR-0080).
+    const provider = scriptedProvider('anthropic', [
+      [
+        { type: 'tool_call_start', id: 'a', name: 'echo' },
+        { type: 'tool_call_end', id: 'a' },
+        { type: 'tool_call_start', id: 'b', name: 'echo' },
+        { type: 'tool_call_end', id: 'b' },
+        STOP('tool_use'),
+      ],
+      [{ type: 'text_delta', text: 'done' }, STOP()],
+    ]);
+    const slots: number[] = [];
+    const registry = stubRegistry();
+    const params = baseParams(provider, {
+      registry: {
+        ...registry,
+        dispatch: (call, ctx) => {
+          slots.push(ctx.effectSlot);
+          return registry.dispatch(call, ctx);
+        },
+      },
+    });
+
+    await expect(runAgentTurn(params)).resolves.toMatchObject({ text: 'done' });
+    expect(slots).toEqual([0, 1]); // distinct, and in the provider's return order
+  });
 
   it('performs a tool round-trip then completes', async () => {
     const provider = scriptedProvider('anthropic', [
@@ -1267,8 +1358,15 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
   });
 
   it('conservatively settles a clean provider EOF that omits the terminal usage record', async () => {
-    // FallbackChain treats an iterator ending without a `stop` chunk as a successful empty turn. It may still have
-    // reached/billed the provider, so this must not be mistaken for the proven pre-egress release path.
+    // **Rewritten, not deleted** (ADR-0082 §12.17). The reasoning it recorded was: "FallbackChain treats an
+    // iterator ending without a `stop` chunk as a successful empty turn. It may still have reached/billed
+    // the provider, so this must not be mistaken for the proven pre-egress release path." The second
+    // sentence is the money invariant and is UNCHANGED — the first is what ADR-0082 supersedes: the chain
+    // now classifies that EOF as a `transport` failure instead of a success.
+    //
+    // So the turn REJECTS where it used to resolve, and the property that matters survives the change
+    // intact (§12.15-16): the commitment is settled at its reserved estimate, never RELEASED, because we
+    // still cannot prove the provider was not billed.
     const provider = scriptedProvider('anthropic', [[]]);
     let releases = 0;
     let conservativeSettlements = 0;
@@ -1285,7 +1383,7 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
     };
 
     const params = baseParams(provider, { preEgress: () => admission });
-    await expect(runAgentTurn(params)).resolves.toMatchObject({ text: '' });
+    await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'provider_unavailable' });
     expect(conservativeSettlements).toBe(1);
     expect(releases).toBe(0);
     // Here `onAttempt` DID fire, so the commitment carries the within-chain attempt — the same counter the
@@ -1362,5 +1460,33 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
     const result = await runAgentTurn(baseParams(provider));
     expect(result.text).toBe('final');
     expect(captured.reasoningOnContinuation).toBe(true);
+  });
+});
+
+describe('codeForLlmError — the `protocol` mapping (ADR-0082 §9)', () => {
+  it('maps to `provider_unavailable`, not `internal`', () => {
+    // The compiler guards that AN arm exists — deleting the case fails the exhaustive switch — but not
+    // WHICH code it returns, and the choice is a stated decision with a five-line rationale and no assertion
+    // behind it. `internal` would tell the user our engine broke when in fact their provider did.
+    expect(
+      codeForLlmError({
+        kind: 'protocol',
+        retryable: false,
+        provider: 'anthropic',
+        message: 'the provider emitted a second terminal',
+      }),
+    ).toBe('provider_unavailable');
+  });
+
+  it('…and `foldRetryable` refuses a committed failure at either scope', () => {
+    const timeout = {
+      kind: 'timeout' as const,
+      retryable: true,
+      provider: 'anthropic' as const,
+      message: 'slow',
+    };
+    expect(foldRetryable(timeout)).toBe(true); // neither scope committed
+    expect(foldRetryable({ ...timeout, contentCommitted: true })).toBe(false); // this stream
+    expect(foldRetryable(timeout, true)).toBe(false); // an earlier round of this turn
   });
 });

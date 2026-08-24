@@ -45,10 +45,19 @@ import {
   type MediaBilledModality,
   type MediaUrlFetch,
   type NodeSkippedReason,
+  RUN_LEASE_HEARTBEAT_MS,
+  RUN_LEASE_TTL_MS,
+  isLeaseFencedError,
   type Retry,
+  type RunDurability,
   type RunEvent,
+  type RunFence,
   type RunStatus,
   type TokensUsed,
+  type EffectCorrelation,
+  type EffectDispatchPort,
+  type EffectResumePort,
+  type UnresolvedEffect,
 } from '@relavium/shared';
 import type { EndpointKind, MediaJobStatus, PricingOverlay, ProviderId } from '@relavium/llm';
 
@@ -58,6 +67,8 @@ import { resolveContext, resolveTemplate } from '../interpolation/resolve.js';
 import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
 import type { PlanVertex, RunPlan } from '../run-plan.js';
 import type { WorkflowDefinition } from '../parser.js';
+import { resolveAndValidateWorkflowInputs } from './input-admission.js';
+import { verifyFrozenWorkflowContent, verifyResumeIdentity } from './resume-identity.js';
 import { EngineStateError } from './errors.js';
 import { RunEventBus, type RunEventDraft } from './event-bus.js';
 import { RunLoopInvariantError } from './invariant-error.js';
@@ -73,7 +84,7 @@ import {
   MoneyDurability,
   isLedgerDurabilityError,
 } from './money-durability.js';
-import type { AbortControllerLike, ExecutionHost } from './execution-host.js';
+import type { AbortControllerLike, ExecutionHost, InterruptedRun } from './execution-host.js';
 import type {
   GateRequest,
   MediaJobSubmission,
@@ -191,19 +202,31 @@ export interface StartInput {
 /**
  * Inputs to {@link WorkflowEngine.resumeFromCheckpoint} — resume a run from a PRIOR process (1.R).
  *
- * **Invariant (caller's responsibility):** `workflow`, `inputs`, `executionMode`, and `planOptions` must
- * be the SAME values the run started with. The checkpoint persists the workflow identity (verified — a
- * mismatch throws `workflow_mismatch`) but does not yet persist `inputs` / `executionMode`, so passing
- * different ones would silently diverge the rehydrated execution from its `run:started` state. A future
- * revision will reconstruct these from the checkpoint and ignore the caller-supplied values.
+ * **Identity is VERIFIED, not assumed (ADR-0083 §5).** This used to carry an "invariant (caller's
+ * responsibility)" that `inputs` and `executionMode` be the same values the run started with, checked by
+ * nothing — so a caller that reconstructed either differently, or passed neither, silently continued the run
+ * under a state its own `run:started` never had. They are now folded from that event into `CheckpointState`
+ * and the caller's copies are **checked against the record and then discarded**: a difference is a typed
+ * refusal (`input_mismatch` / `execution_mode_mismatch`), and an omission takes the recorded value rather
+ * than a default. `workflow` identity is still verified by surrogate id (`workflow_mismatch`).
+ *
+ * A `secret` input is the one thing the record cannot hold — it is persisted as `{ secret: true, ref }` — so
+ * the caller **re-supplies it by name** or the resume is refused (`secret_input_missing`). §6 states exactly
+ * what that proves: the SLOT, not the credential.
+ *
+ * `planOptions` is verified by agent ID, not by content (§5) — an agent file edited between processes is
+ * not detected, recorded as a limitation in §10.
  */
 export interface ResumeFromCheckpointInput {
   readonly runId: string;
   /** The workflow to resume against — the engine refuses one whose identity differs (workflow_mismatch). */
   readonly workflow: WorkflowDefinition;
-  /** MUST match the run's original inputs (not yet checkpoint-derived — see the interface note). */
+  /**
+   * The caller's copy of the run's inputs, VERIFIED against the admission record rather than used. Omit it
+   * and the record is used unchanged — except for a `secret`, which must be re-supplied here by name.
+   */
   readonly inputs?: Readonly<Record<string, unknown>>;
-  /** MUST match the run's original mode (not yet checkpoint-derived — see the interface note). */
+  /** VERIFIED against the recorded mode; omit to take the recorded one (never a `'local'` default). */
   readonly executionMode?: ExecutionMode;
   readonly planOptions?: BuildRunPlanOptions;
   /**
@@ -241,6 +264,22 @@ function assertValidResumeInput(input: ResumeFromCheckpointInput): void {
 
 /** Construction dependencies for the engine — the injected host and node-executor seams. */
 export interface WorkflowEngineDeps {
+  /**
+   * Builds a per-node effect journal from a run correlation (ADR-0080) — a FACTORY rather than a port,
+   * because the correlation differs per node and per retry attempt and only the run loop knows both.
+   *
+   * Absent ⇒ a dispatch gets `unwiredEffectJournal()` and an EFFECT IS REFUSED. That is the fail-closed
+   * direction: a host with no journal must not silently dispatch unrecorded effects.
+   */
+  readonly effectJournal?: (correlation: EffectCorrelation) => EffectDispatchPort;
+  /**
+   * The journal's READ half, consumed by the resume gate
+   * ([effect-journal.md](../../../docs/reference/shared-core/effect-journal.md) §4). Optional for the same
+   * reason `effectJournal` is: a host with no journal has no rows to gate on. A host that wires the WRITE
+   * half and forgets this one is the dangerous combination, and `resumeFromCheckpoint` says so out loud.
+   */
+  readonly effectResume?: EffectResumePort;
+
   readonly host: ExecutionHost;
   readonly executor: NodeExecutor;
   /** Validate every emitted event against `RunEventSchema` (default `true`; off only for a hot path). */
@@ -313,6 +352,33 @@ function maskInputs(
  * bus, and the handle. All mutation happens on the single (serialized) drive loop, so there is no
  * cross-vertex data race despite concurrent branch execution.
  */
+/**
+ * A run's ownership of its own lease (ADR-0079). Five states, because two booleans could not tell the cases
+ * apart and the confusion cost a real bug: a parked run fenced ITSELF out against the row it had released.
+ *
+ * - `unclaimed` — before the first acquire. `run:started` is written here, unfenced, because the lease row
+ *   references `runs.id` and so cannot exist until that event is folded.
+ * - `held` — this process owns the run and may write.
+ * - `parked` — a gate park handed the lease back (§4). The run is not being executed, but its gate deadline,
+ *   the run-level `timeout_ms` and cooperative cancel all stay armed, so a write can still arrive: it must
+ *   RE-TAKE the claim first, which is usually uncontended.
+ * - `lost` — another process owns the run. Write nothing, claim nothing (§5).
+ * - `done` — the run settled and the lease was released. Terminal: a later write must not resurrect the row
+ *   (`acquire` computes `(current?.generation ?? 0) + 1`, so a re-acquire over a deleted row would insert a
+ *   `run_leases` row nothing ever releases). **Defence in depth, not a demonstrated path**: no test in the
+ *   suite dies when this arm is made permissive — measured, not assumed — because `#settled` already turns
+ *   every known post-terminal caller away earlier. It is kept because the cost is one switch arm and the
+ *   failure it guards is a silent, unbounded row leak.
+ *
+ * The same is true of the `lost` arm and of `#settle`'s post-terminal `#lostOwnership()` guard: making either
+ * permissive also leaves the suite green. The reason is the same in all three cases and is deliberate —
+ * `#fence` is RETAINED after ownership ends, so the store's own transactional check refuses the stale token
+ * independently of what this switch decides. Two backstops, and the store's is the one proven across
+ * processes. Do not read the redundancy as dead code; read it as the engine refusing to rely on the store
+ * being reachable to know what it is entitled to write.
+ */
+type RunOwnership = 'unclaimed' | 'held' | 'parked' | 'lost' | 'done';
+
 class RunExecution {
   readonly runId: string;
   readonly handle: RunHandle;
@@ -366,8 +432,74 @@ class RunExecution {
   #scheduling = false;
   #rerun = false;
   #pauseEpisode = false;
-  /** Serializes event DELIVERY by sequenceNumber so an async store can't deliver events out of order. */
+  /**
+   * Serializes the run's durable APPEND, its write and its DELIVERY, in that order (ADR-0078 §1).
+   *
+   * It began as a delivery-only tail — the persist was started before `await prior` — which left two events
+   * for one run overlapping in flight. Moving the await above the write made the one tail carry all three,
+   * which is what makes {@link #lastAskedSequenceNumber} well-defined at the call site.
+   */
   #deliveryTail: Promise<void> = Promise.resolve();
+  /**
+   * The sequence number last ASKED of the store for this run, or `-1` before the first append.
+   *
+   * Advanced for a guarded (non-terminal) event whether or not its write lands — see
+   * `DurableWriteContext.expectedLastSequenceNumber` for why "asked" rather than "committed" is the value
+   * that makes the next append fail closed after a lost write.
+   */
+  #lastAskedSequenceNumber = -1;
+  /**
+   * Whether the run's TERMINAL reached the durable log (ADR-0078 §5), surfaced through
+   * `RunHandle.durability`. `'uncertain'` means the terminal was delivered in-process but its write did not
+   * land and it was handed to the host's `TerminalOutbox` instead — the one state in which a caller must not
+   * be told the run completed.
+   */
+  #terminalDurability: RunDurability = 'pending';
+  /**
+   * This run's ownership claim (ADR-0079). Carried on every durable write, so the store refuses one from a
+   * process that has been taken over.
+   *
+   * `undefined` only before the first acquire — which includes `run:started` itself, because the lease row
+   * references `runs.id` and so cannot exist until that event is folded. **Deliberately RETAINED after a
+   * release**: a released row makes the store's missing-lease arm fire, so a write that somehow escapes the
+   * `#owned` check below is still refused rather than silently accepted unguarded.
+   */
+  #fence: RunFence | undefined;
+  /**
+   * Whether this process currently HOLDS the lease, as distinct from merely remembering a fence.
+   *
+   * The two came apart when §4 began releasing on a gate park. A parked run is not being executed, but it is
+   * not inert either — its gate deadline, the run-level `timeout_ms` and a cooperative cancel all stay armed
+   * by design, and every one of them ends at `#settle`. Without this flag those paths wrote a terminal while
+   * unowned, and because a terminal is exempt from the append guard (ADR-0078 §2) and an ABSENT fence is a
+   * pass rather than a refusal, the store accepted it — putting a second terminal into a run another process
+   * was finishing. That is precisely the divergence ADR-0079 exists to prevent, reintroduced by §4 itself.
+   */
+  #ownership: RunOwnership = 'unclaimed';
+  /**
+   * Builds a per-node effect journal from a run correlation (ADR-0080). Injected as a FACTORY rather than a
+   * port, because the correlation differs per node and per retry attempt and only the run loop knows both.
+   */
+  readonly #effectJournal: ((correlation: EffectCorrelation) => EffectDispatchPort) | undefined;
+  /** The journal's READ half — the resume gate (effect-journal.md §4). Absent when no host wired one. */
+  readonly #effectResume: EffectResumePort | undefined;
+  /** The owning engine's identity — passed in, never minted here, so one engine is one owner. */
+  readonly #ownerId: string;
+  /**
+   * Set when a durable write was refused by the FENCE rather than by a store fault (ADR-0079 §5).
+   *
+   * It suppresses the terminal entirely. A fenced process knows it lost; it does NOT know what happened to
+   * the run, because the new owner may be completing it right now. Writing `run:failed` would be a durable
+   * lie about somebody else's run — and could not be written anyway, since the fence rejects it too.
+   */
+  /** Guards {@link RunExecution.#settleFenced} so overlapping discovery points tear down exactly once. */
+  #fencedSettled = false;
+  /** Consecutive heartbeats that could not be written — bounded tolerance, see `#beat`. */
+  #missedBeats = 0;
+  /** Disarms the lease heartbeat. Cleared at settle, like every other timer this run arms. */
+  #heartbeatDisarm: (() => void) | undefined;
+  /** Ends the handle's iteration without a terminal — the fenced path only (ADR-0079 §5). */
+  #closeStream: (() => void) | undefined;
   #startEpochMs = 0;
   #cumulativeCostMicrocents = 0;
   #totalInputTokens = 0;
@@ -384,6 +516,11 @@ class RunExecution {
     bus: RunEventBus;
     capacity: number;
     onSettled: (runId: string) => void;
+    /** The owning engine's lease identity (ADR-0079 §1). */
+    ownerId: string;
+    /** Builds a per-node effect journal from a run correlation (ADR-0080); absent ⇒ effects are refused. */
+    effectJournal?: (correlation: EffectCorrelation) => EffectDispatchPort;
+    effectResume?: EffectResumePort;
     resolverCapabilities: ResolverCapabilities;
     maxTokensEstimate?: number;
     /** The user-pricing overlay (2.5.G S10, ADR-0065 §2) — into the workflow PRE-EGRESS governor so a user-priced
@@ -405,6 +542,9 @@ class RunExecution {
     this.#resolverCapabilities = params.resolverCapabilities;
     this.#bus = params.bus;
     this.#onSettled = params.onSettled;
+    this.#ownerId = params.ownerId;
+    this.#effectJournal = params.effectJournal;
+    this.#effectResume = params.effectResume;
     this.#abort = params.host.newAbortController();
 
     const secretNames = new Set(
@@ -512,6 +652,10 @@ class RunExecution {
         }
       },
       params.capacity,
+      () => this.#terminalDurability,
+      (close) => {
+        this.#closeStream = close;
+      },
     );
   }
 
@@ -529,6 +673,33 @@ class RunExecution {
         inputs: this.#maskedInputs,
         executionMode: this.#executionMode,
       });
+      // **Ownership is taken right AFTER `run:started`, not before it — a deviation from ADR-0079 §3 that
+      // the FK forced, recorded rather than quietly absorbed.** §3 said the lease row is created inside the
+      // same transaction as the fold; `run_leases.run_id` references `runs.id`, and that row only exists
+      // once `run:started` has folded, so an acquire before the first event fails the foreign key. Doing it
+      // here keeps the store free of any lease coupling.
+      //
+      // The window it opens is a run that is durable and momentarily unowned. It is not reachable in
+      // practice — the `runId` came from `ids.newId()` in the same tick and no other process has yet had a
+      // chance to see it — and it is not harmful even if it were: a racing process would acquire first, our
+      // acquire would be refused, and this run would fail before executing a single node. Refused, never
+      // duplicated.
+      if (!(await this.#acquireLease())) {
+        // Name it. Without a `#failure` this settles on the generic default — `internal: "the run failed"` —
+        // so a user whose `history.db` is locked, unmigrated or read-only saw every `relavium run` die with a
+        // message pointing at nothing. The docblock above already diagnoses this case; the event should say
+        // it too. Secret-free: no path, no store detail, just what could not be established.
+        this.#failure = {
+          error: {
+            code: 'internal',
+            message:
+              'the run could not take ownership of its own id — the host run-lease port refused a fresh run',
+            retryable: false,
+          },
+        };
+        await this.#settle('run:failed');
+        return;
+      }
     } catch {
       // Could not even start the run (e.g. the store rejected) — close with the single terminal event
       // rather than leaving a started-but-never-finished run. Never swallowed: it becomes run:failed.
@@ -620,6 +791,65 @@ class RunExecution {
       };
       return false;
     }
+  }
+
+  /**
+   * **The resume gate** ([ADR-0080](../../../docs/decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) §2b,
+   * [effect-journal.md](../../../docs/reference/shared-core/effect-journal.md) §4). Returns `true` when the
+   * run may proceed; on `false` the caller settles it, and `#failure` already carries the reason.
+   *
+   * Runs on EVERY resume, before anything is scheduled — which is the point. A crashed effectful node has a
+   * durable row saying an external effect may have landed; re-running it is the duplicate this whole item
+   * exists to prevent. The registry's own `prepare` would refuse the colliding call a second time, but only
+   * if the re-run happens to reach the same tool at the same slot with the same args: a model that answers
+   * differently sails past it, and the run would complete "successfully" with an ambiguous real-world effect
+   * left unresolved. The gate is what makes that impossible.
+   *
+   * **Only nodes that will actually re-run are read.** A node the checkpoint records as `completed`,
+   * `failed` or `skipped` is never re-dispatched (`#seedFromCheckpoint`), so its rows are history, not a
+   * blocker. Everything else — `pending`, and the `paused` node this resume is here to advance — is queried.
+   *
+   * **Tier 1 and 2 fall through to the same refusal as tier 3, deliberately.** §4's table says those
+   * reconcile from an idempotency key or a receipt lookup, and no reconciler exists yet. Treating "we have
+   * not built the reconciler" as "proceed" would be the fail-open this contract rejects; the refusal is
+   * conservative and names the tier, so the follow-up is visible rather than silently assumed.
+   */
+  async #effectResumeGateOrFail(): Promise<boolean> {
+    if (this.#effectResume === undefined) return true;
+    let blocking: readonly UnresolvedEffect[];
+    try {
+      // ONE range scan for the whole run, not one query per node. That is faster on the resume critical
+      // path, and it is also more correct: a node RENAMED between the crash and the resume leaves rows
+      // under an id a per-node loop would never think to ask about, and an orphaned row should block.
+      blocking = await this.#effectResume.unresolvedForRun(this.runId);
+    } catch (error) {
+      // A read that FAILS is not "nothing is blocking" — the same answer ADR-0075 gives for an unreadable
+      // event log. Refusing on an unreadable journal is the only honest option: the alternative is resuming
+      // a run whose external effects are unknown.
+      this.#failure = {
+        error: {
+          code: 'effect_needs_attention',
+          message: `the effect journal could not be read, so this run cannot be resumed safely: ${error instanceof Error ? error.message : String(error)}`,
+          retryable: false,
+        },
+      };
+      return false;
+    }
+    if (blocking.length === 0) return true;
+    this.#failure = {
+      error: {
+        code: 'effect_needs_attention',
+        message:
+          `${String(blocking.length)} external effect(s) from a prior attempt are unresolved, so this run ` +
+          `cannot continue without a human: ` +
+          blocking
+            .map((b) => `${b.nodeId}/${b.identity.toolId} (${b.state}, tier ${String(b.tier)})`)
+            .join(', ') +
+          `. Check the target before resolving them — resuming again re-enters this gate and stops here.`,
+        retryable: false,
+      },
+    };
+    return false;
   }
 
   /**
@@ -749,6 +979,10 @@ class RunExecution {
     }
     // Post-resume events continue gap-free from the last persisted sequence number.
     bus.seedSequence(runId, cp.lastSequenceNumber + 1);
+    // …and so does the append guard. Left at `-1` a resumed leg's first append would claim the log is empty
+    // and the store would refuse it, so ADR-0078 §2's guard would break resume outright. The checkpoint's
+    // `lastSequenceNumber` is read from the durable rows, which is exactly the belief the store will check.
+    this.#lastAskedSequenceNumber = cp.lastSequenceNumber;
     // Keep measuring durationMs from the ORIGINAL start, so a resumed run's terminal reports total
     // wall-clock (pre- + post-resume), not just the post-resume segment. NO `run:started` is re-emitted —
     // it is already in the persisted log.
@@ -767,6 +1001,11 @@ class RunExecution {
    *    double-delivery) → kick the loop WITHOUT re-applying (no second `human_gate:resumed`); otherwise
    *    apply the decision via {@link resume}. The terminal-checkpoint case never reaches here (closed handle).
    */
+  /** Adopt the fence the engine acquired on the resume path, and start heartbeating it (ADR-0079 §4). */
+  adoptLease(fence: RunFence): void {
+    void this.#acquireLease(fence);
+  }
+
   async beginResume(
     gateId: string,
     decision: GateDecision,
@@ -781,10 +1020,17 @@ class RunExecution {
       await this.#settle(this.#cancelling ? 'run:cancelled' : 'run:failed');
       return;
     }
+    // AFTER context resolution and BEFORE the gate decision is applied. Applying a decision first would let
+    // an approval spend money on a run the next line refuses anyway; refusing first would report a journal
+    // problem for a run whose inputs do not even resolve.
+    if (!(await this.#effectResumeGateOrFail())) {
+      await this.#settle('run:failed');
+      return;
+    }
     if (gateAlreadyResolved) {
       this.#schedule();
     } else {
-      await this.resume(gateId, decision);
+      await this.resume(gateId, decision, true);
     }
   }
 
@@ -821,6 +1067,13 @@ class RunExecution {
       await this.#settle(this.#cancelling ? 'run:cancelled' : 'run:failed');
       return;
     }
+    // The media-only resume takes the SAME gate. A run parked on a media job can still have a crashed
+    // effectful node elsewhere in the graph, and this path used to be the untested twin that skipped
+    // every guard the gate form got.
+    if (!(await this.#effectResumeGateOrFail())) {
+      await this.#settle('run:failed');
+      return;
+    }
     this.#schedule();
   }
 
@@ -838,6 +1091,7 @@ class RunExecution {
     }
     this.#settled = true; // any straggler timer callback now short-circuits on the #settled guard
     this.#abort.abort();
+    this.#stopHeartbeat();
     for (const disarm of this.#gateTimers.values()) {
       disarm();
     }
@@ -891,7 +1145,12 @@ class RunExecution {
     return gate;
   }
 
-  async resume(gateId: string, decision: GateDecision): Promise<void> {
+  async resume(
+    gateId: string,
+    decision: GateDecision,
+    /** Set by `beginResume`, which already ran the effect gate — see the note at the claim below. */
+    alreadyGated = false,
+  ): Promise<void> {
     if (this.#resolvedGates.has(gateId)) {
       // Idempotent: this gate's decision was already applied (a re-delivery / reconnect) — never advance
       // the run twice (execution-model.md §gate). Checked BEFORE #settled so a re-delivery after the run
@@ -904,11 +1163,50 @@ class RunExecution {
         gateId,
       });
     }
+    // **The gate claim is taken SYNCHRONOUSLY, before any await.** Everything from the `#resolvedGates.has`
+    // check above to this line used to be one synchronous block, and that is what made a duplicate
+    // `resume()` — an IPC double-submit, a retried request, a double-clicked button — absorb into the
+    // documented idempotent no-op. Inserting an `await` above the claim opened a microtask window in which
+    // both callers passed the `has` check, one won, and the loser got an uncaught
+    // `EngineStateError('run_not_paused')` instead. A review reproduced it with two concurrent `resume()`
+    // calls and no journal wired at all: the mere fact that the gate check is `async` was enough.
     const gate = this.#assertGatePending(gateId);
     this.#resolvedGates.add(gateId);
+    // …and only now, holding the claim, the effect gate. **`#pendingGates.delete` stays BELOW this await**,
+    // and that ordering is load-bearing in the other direction: with the gate already removed, the idle
+    // check that runs during the await window sees no runnable node AND no pending gate, and settles the
+    // run `internal` — "run stalled with no runnable node". A mutation test caught it. The run must keep
+    // looking parked until it is actually being advanced. **The in-process resume takes the SAME gate**, so
+    // the docblock's "every resume" is true of all three entry points rather than of the two that happen to
+    // go through a checkpoint. A budget approval resets the node's attempt to 1 and re-dispatches it FROM
+    // THE START — a replay of its tool calls in this very process — and `agent-turn.ts`'s CR-95 guard is
+    // what stops that becoming a duplicate today; a second, structural check at the same choke point does
+    // not depend on that guard staying correct.
+    //
+    // `alreadyGated` is set by `beginResume`, which runs the same check before it applies the decision:
+    // without it a checkpoint-based gate resume scanned twice, contradicting the "ONE range scan" the
+    // method's own docblock promises.
+    if (!alreadyGated && !(await this.#effectResumeGateOrFail())) {
+      this.#pendingGates.delete(gateId); // it is not resumable past this refusal; do not leave it pending
+      await this.#settle('run:failed');
+      return;
+    }
     this.#pendingGates.delete(gateId);
     this.#disarmTimer(gateId); // a decision arrived before the timeout — cancel the armed timer (1.Q)
     this.#pauseEpisode = false; // a later idle-with-gates re-emits run:paused for the remaining gates
+    // Re-take ownership **only if the pause actually released it** (§4), because a parked run is not being
+    // executed. This is the IN-PROCESS resume, so it is normally uncontended — but if another process
+    // claimed the run while it was parked, that process owns it now and this one must not proceed.
+    //
+    // `#owned` is the precise question "did we give ownership up", and it has to be asked. A CROSS-process
+    // resume arrives here already holding the lease `resumeFromCheckpoint` acquired before it read the
+    // checkpoint, and `acquire` treats a same-owner call as a renewal that still BUMPS the generation — so re-acquiring there would move the fence out from under the engine's own in-flight
+    // claim (stranding the outer release path on a stale generation) and arm a second heartbeat. That is the
+    // A resumed execution is born `held` (`adoptLease`), so `parked` is false there and nothing bumps the
+    // generation under the engine's own in-flight claim — the hazard `resumeFromCheckpoint`'s comment names
+    // as the subtlest way to get this wrong. `#emitDurable` is the guarantee; this is the early, cheap check,
+    // kept because `resume()` mutates gate state before its first write.
+    if (this.#ownership === 'parked' && !(await this.#reclaim())) return;
 
     // A budget gate's two decisions (reject ⇒ a run-level budget failure; approve ⇒ continue the deferred
     // pre-egress call) resolve in #resolveBudgetGate; a `true` return means it owned this gate — then only
@@ -1278,6 +1576,20 @@ class RunExecution {
         // re-dispatch. The ledger must not be dropped with it: an approved node is the one the user just
         // authorised MORE money on, so it is the last place to stop recording what that money was.
         money: this.#money.turnPort(() => this.#cumulativeCostMicrocents),
+        // The durable effect journal (ADR-0080), with the RUN correlation closed over. Only the run loop
+        // knows the `runId` and the node-retry attempt — exactly the reasoning that puts the ledger here.
+        // Absent when no host wired a journal, in which case the dispatch gets `unwiredEffectJournal()` and
+        // an effect is REFUSED rather than silently unrecorded.
+        ...(this.#effectJournal === undefined
+          ? {}
+          : {
+              effects: this.#effectJournal({
+                kind: 'run',
+                runId: this.runId,
+                nodeId: vertex.id,
+                attempt: attemptNumber,
+              }),
+            }),
       };
       // After the executor completes, an `output` node with `save_to` writes its produced media to the
       // host (1.AF/D16). A write failure FAILS the node (→ run:failed) — save_to is a real deliverable.
@@ -1927,13 +2239,194 @@ class RunExecution {
     this.#pauseEpisode = true;
     const gateIds = [...this.#pendingGates.keys()];
     const mediaJobNodeIds = [...this.#pendingMediaJobs.keys()];
-    await this.#emitDurable({
-      type: 'run:paused',
-      runId: this.runId,
-      pendingGateCount: gateIds.length,
-      gateIds,
-      ...(mediaJobNodeIds.length === 0 ? {} : { pendingMediaJobNodeIds: mediaJobNodeIds }),
-    });
+    // **Only for a GATE park, never a media park** — measured, and getting it wrong hung twenty-two tests.
+    // `run:paused` covers both, but they are opposite situations: a run waiting on a human is not being
+    // executed by anyone, while a run parked on an async media job is still being polled by THIS process on
+    // its own timer. Surrendering the latter would hand ownership away mid-work and fence this process out
+    // of its own in-flight job.
+    //
+    // The lease is held while the run EXECUTES. A run waiting on a human gate is not executing and may wait
+    // for days; holding its lease would refuse every other process for the TTL over a run nobody is working
+    // on, and would make the second decision of a two-gate workflow fail against this process's own stale
+    // claim. Whichever process resumes re-acquires (ADR-0079 §4).
+    //
+    // **Defence in depth, not the sole protection** — measured, and worth stating so a future refactor judges
+    // the risk correctly. Two other mechanisms already cover this: `#emitDurable` re-reads the ownership
+    // state at WRITE time rather than caching it, and `#schedule`'s single-flight guard means a post-gate
+    // dispatch cannot begin until the `#step()` containing this whole function has unwound. A reviewer moved
+    // the hand-off back after the emit AND injected a real delay to force the race, and the suite stayed
+    // green. The ordering is kept because it makes the invariant true by construction rather than by two
+    // coincidences, but it is not load-bearing alone.
+    //
+    // **The claim is dropped BEFORE the pause is observable, and the row is deleted after.** Both halves are
+    // forced, in opposite directions. The row must go last because `run:paused` is itself a fence-guarded
+    // write — deleting first would make the run's own pause event fail its own guard. But `#owned` must drop
+    // FIRST, because `#emitDurable` delivers to consumers, and an inline prompter (`relavium gate`'s
+    // interactive re-pause) resumes the instant it sees `run:paused` — synchronously, before this function
+    // continues. Dropping `#owned` after the emit let that resume observe `#owned === true`, skip its
+    // re-acquire, and then have the row deleted out from under it; its very next `node:started` was fenced
+    // and the run died `uncertain` on the happy path. Deleting the row late is safe because `release` is
+    // scoped to `(ownerId, generation)`: if a resume already re-acquired, the generation has moved and this
+    // delete matches nothing.
+    await this.#emitDurable(
+      {
+        type: 'run:paused',
+        runId: this.runId,
+        pendingGateCount: gateIds.length,
+        gateIds,
+        ...(mediaJobNodeIds.length === 0 ? {} : { pendingMediaJobNodeIds: mediaJobNodeIds }),
+      },
+      { handOff: mediaJobNodeIds.length === 0 },
+    );
+    const parked = this.#ownership === 'parked' ? this.#fence : undefined;
+    if (parked !== undefined) await this.#releaseLeaseRow(parked);
+  }
+
+  /**
+   * Acquire this run's lease and start its heartbeat (ADR-0079 §3, §6).
+   *
+   * For a FRESH run this is uncontended by construction — the `runId` came from `ids.newId()` moments ago —
+   * so a refusal here means the host's lease port is broken rather than that someone else owns the run. It
+   * still fails the run rather than proceeding unowned: an unfenced run is exactly what CR-11 exists to
+   * prevent, and silently continuing would make the guarantee optional in practice.
+   *
+   * A RESUMED run already holds a fence, acquired before the checkpoint was read, and passes it in.
+   */
+  async #acquireLease(existing?: RunFence): Promise<boolean> {
+    if (existing !== undefined) {
+      this.#fence = existing;
+      this.#ownership = 'held';
+      this.#startHeartbeat();
+      return true;
+    }
+    const fence = await this.#host.runLeases.acquire(this.runId, this.#ownerId, RUN_LEASE_TTL_MS);
+    if (fence === undefined) return false;
+    this.#fence = fence;
+    this.#ownership = 'held';
+    this.#startHeartbeat();
+    return true;
+  }
+
+  /**
+   * Re-arm the lease every {@link RUN_LEASE_HEARTBEAT_MS} through the host's timer seam — the ADR-0045
+   * media-poll precedent, so the platform-free engine names no `setInterval`.
+   *
+   * A heartbeat that returns `false` means the lease was taken over. That is the SAME state a fenced write
+   * produces, and it is handled the same way: the run stops without claiming an outcome. Discovering it here
+   * rather than at the next write matters — a run between nodes may not write for a while, and every second
+   * it keeps executing is a second it may call a tool the new owner is also calling.
+   */
+  #startHeartbeat(): void {
+    const fence = this.#fence;
+    if (fence === undefined) return;
+    // Arming is IDEMPOTENT: only one disarm handle is ever held, so arming over a live beat would strand the
+    // previous timer with no way to stop it — a heartbeat that keeps renewing a stale fence for the life of
+    // the process, long after the run it belonged to settled.
+    this.#stopHeartbeat();
+    // **`'liveness'`, not a work timer** — the kind is the whole reason the seam carries one. This beat
+    // advances nothing and re-arms itself for as long as the run lives, so it must not join the set a test
+    // fires to drive a run forward (a drive-to-quiescence loop would never terminate) nor the set that
+    // answers "is this run waiting on something", and it must not be what holds a CLI process open. See
+    // {@link TimerKind}.
+    this.#heartbeatDisarm = this.#host.setTimer(
+      RUN_LEASE_HEARTBEAT_MS,
+      () => void this.#beat(fence),
+      'liveness',
+    );
+  }
+
+  /** One heartbeat: refresh the lease, then either re-arm or stop as a fenced run. */
+  async #beat(fence: RunFence): Promise<void> {
+    if (this.#settled || this.#ownership !== 'held') return;
+    let alive = false;
+    try {
+      alive = await this.#host.runLeases.heartbeat(this.runId, fence, RUN_LEASE_TTL_MS);
+      this.#missedBeats = 0;
+    } catch {
+      // A heartbeat that cannot be WRITTEN is not a takeover — we still hold the row, and the next write's
+      // fence check is the authority. Treating an I/O blip as a loss would stop a run that still owns itself.
+      //
+      // But the tolerance is BOUNDED, because unbounded it hides the one failure §6 names as its reason for
+      // existing. A store that is persistently unwritable means the lease provably expires, somebody takes
+      // the run over, and this process keeps dispatching nodes and calling tools with no beat ever telling
+      // it. Once the misses cover the whole TTL the lease is expired whatever the store says, so the claim
+      // is one this process can no longer prove — and §5's rule is that an unprovable claim stops.
+      this.#missedBeats += 1;
+      alive = this.#missedBeats * RUN_LEASE_HEARTBEAT_MS < RUN_LEASE_TTL_MS;
+    }
+    // Re-checked, and against `held` rather than `lost`: the await above suspends, and a gate park during it
+    // hands the claim back without setting `lost`. A beat that then acted would either re-arm a timer for a
+    // parked run or read a deliberate release as a takeover.
+    if (this.#settled || this.#ownership !== 'held') return;
+    if (!alive) {
+      this.#loseOwnership();
+      return;
+    }
+    this.#startHeartbeat(); // re-arm; one-shot timers only (ADR-0036 Decision 5)
+  }
+
+  /**
+   * Whether ownership was lost — read through a METHOD, deliberately.
+   *
+   * `#loseOwnership()` mutates `#ownership` from inside a call TypeScript's control-flow analysis cannot see
+   * through, so a bare `this.#ownership === 'lost'` after an earlier check on the same field narrows to
+   * `never` and is reported as an unintentional comparison. The two sites that need this are the ones asking
+   * "did the await I just finished take my ownership away", which is exactly when the field can have moved.
+   */
+  #lostOwnership(): boolean {
+    return this.#ownership === 'lost';
+  }
+
+  /** The one transition into `lost` (§5) — every discovery point routes here, so the teardown is identical. */
+  #loseOwnership(): void {
+    this.#ownership = 'lost';
+    this.#terminalDurability = 'uncertain';
+    this.#settleFenced();
+  }
+
+  /**
+   * Reconcile the ownership claim before a durable write. **Never rejects** — `#emitDurable` must stay TOTAL
+   * for non-terminal events or ADR-0077's B1/B2/B3 barrier argument rots.
+   *
+   * Returns `false` only when this process must not write at all.
+   */
+  async #authorizeWrite(): Promise<boolean> {
+    switch (this.#ownership) {
+      case 'held':
+      case 'unclaimed':
+        return true;
+      case 'parked':
+        return await this.#reclaim();
+      case 'lost':
+      case 'done':
+        return false;
+    }
+  }
+
+  /**
+   * Re-take the claim a gate park handed back (§4). Uncontended in the common case — nobody took the run
+   * over, and the user is simply cancelling or the gate simply timed out.
+   *
+   * **Fails CLOSED, unlike `#beat`, and the asymmetry is deliberate.** A beat that cannot reach the store
+   * still HOLDS its row, so silence is not evidence of a takeover and treating it as one would kill a healthy
+   * run. A parked run definitely had a row and deleted it, so a claim it cannot prove is a claim it does not
+   * have.
+   */
+  async #reclaim(): Promise<boolean> {
+    let acquired = false;
+    try {
+      acquired = await this.#acquireLease();
+    } catch {
+      acquired = false;
+    }
+    if (acquired) return true;
+    this.#loseOwnership();
+    return false;
+  }
+
+  #stopHeartbeat(): void {
+    this.#heartbeatDisarm?.();
+    this.#heartbeatDisarm = undefined;
   }
 
   async #settle(type: 'run:completed' | 'run:failed' | 'run:cancelled'): Promise<void> {
@@ -1941,6 +2434,14 @@ class RunExecution {
       return; // exactly-one-terminal-event: idempotent
     }
     this.#settled = true;
+    // **A fenced run settles LOCALLY and emits nothing (ADR-0079 §5).** It still disarms its timers, closes
+    // its stream and reports `uncertain` — the consumer's `for await` must complete rather than hang — but
+    // the terminal is the new owner's to write. Placed before the timer sweep so the state is identical
+    // either way; the only difference is that no event leaves this process.
+    if (this.#ownership === 'lost') {
+      this.#settleFenced();
+      return;
+    }
     this.#abort.abort(); // make sure any straggler executor sees cancellation
     // The run is closing — no gate or media-poll timer may fire afterwards (1.Q / ADR-0045 §4). Disarm each,
     // then clear in one shot. The #abort.abort() above also aborts any in-flight pollMediaJob (the signal is
@@ -2009,8 +2510,99 @@ class RunExecution {
       // is transient). run:completed carries the same figure as totalCostMicrocents.
       draft = { type, runId: this.runId, cumulativeCostMicrocents: this.#cumulativeCostMicrocents };
     }
+    // **Re-take ownership before claiming an outcome, if a park gave it up (ADR-0079 §4/§5).** A gate
+    // deadline, the run-level `timeout_ms` and a cooperative cancel all stay armed across a park and all end
+    // here, so this is the one place a parked process can still speak for the run. Usually nobody took it
+    // over and the re-acquire is uncontended — a user Ctrl-C-ing their own parked run must still record the
+    // cancellation. When somebody DID take it over, the acquire fails and this process stops without
     await this.#emitDurable(draft);
+    // The terminal was REFUSED (§5) — `#emitDurable` reconciled ownership, found it gone, and `#settleFenced`
+    // already tore the run down without writing or delivering anything. Returning stops a loser from freeing
+    // the winner's lease row and from firing `#onSettled` a second time.
+    if (this.#lostOwnership()) return;
+    // **Ownership ends with the run, and only AFTER the terminal is written** (ADR-0079 §4). The order is
+    // forced: the terminal is itself fence-checked, so releasing first would make this run's own last write
+    // fail its own guard.
+    //
+    // Both halves are load-bearing. An un-disarmed beat re-arms itself forever, so a finished run would keep
+    // writing a lease renewal every 20s for the life of the process; an unreleased lease leaves a
+    // `run_leases` row per run, growing without bound in `history.db`. Released even when the terminal write
+    // FAILED (the run is `uncertain` and its terminal is in the outbox): letting another process take the run
+    // over is exactly what should happen next, and the generation only moves forward, so this process stays
+    // fenced if it ever wakes.
+    await this.#releaseOwnership();
     this.#onSettled(this.runId);
+  }
+
+  /**
+   * Tear the run down as a FENCED loser: disarm everything, close the stream, emit nothing (ADR-0079 §5).
+   *
+   * **Called directly at each point the loss is discovered, never left to the scheduler.** Handing the job to
+   * `#schedule()` looked equivalent and is not: `#step()` returns early only on `#settled`, so a fenced run
+   * with nothing runnable — one parked at a gate, or between nodes — simply finds no work, never reaches
+   * `#settle`, and leaves the consumer's `for await` hanging forever. §5 promises the opposite in terms.
+   *
+   * Idempotent, because the two discovery points can overlap: a beat can lose the lease while a write is
+   * already failing its fence check, and `#settle` may reach the fenced branch afterwards.
+   *
+   * The lease is deliberately NOT released here — it belongs to the new owner now, and `release` is scoped to
+   * (owner, generation) precisely so a loser on its way down can never free the winner's claim.
+   */
+  #settleFenced(): void {
+    if (this.#fencedSettled) return;
+    this.#fencedSettled = true;
+    this.#settled = true; // no terminal may be emitted after this point, by any path
+    this.#stopHeartbeat();
+    this.#abort.abort();
+    for (const disarm of this.#gateTimers.values()) disarm();
+    this.#gateTimers.clear();
+    for (const disarm of this.#mediaJobTimers.values()) disarm();
+    this.#mediaJobTimers.clear();
+    // The same ADR-0074 §3 obligation `#settle` discharges: a `checkPreEgress` awaiting a job that will now
+    // never settle would hang forever. This teardown exists to leave nothing behind, and a fenced run is
+    // exactly as final as a settled one for anything waiting on it.
+    for (const nodeId of this.#pendingMediaJobs.keys()) {
+      this.#budgetGovernor?.clearLegacyMediaJob(nodeId);
+    }
+    this.#pendingMediaJobs.clear();
+    this.#disarmRunTimeout();
+    this.#closeStream?.();
+    this.#onSettled(this.runId);
+  }
+
+  /** Stop beating and give the lease back — the run is over, one way or another (ADR-0079 §4). */
+  async #releaseOwnership(): Promise<void> {
+    const fence = this.#ownership === 'held' ? this.#fence : undefined;
+    this.#stopHeartbeat();
+    // `done` is terminal, and it is load-bearing: without it a post-terminal write would re-acquire the row
+    // this just released (`acquire` computes `(current?.generation ?? 0) + 1` over a deleted row), inserting
+    // a `run_leases` row nothing will ever release.
+    this.#ownership = 'done';
+    if (fence !== undefined) await this.#releaseLeaseRow(fence);
+  }
+
+  /**
+   * Drop the ownership CLAIM synchronously, returning the fence whose row still needs deleting.
+   *
+   * Split from the row delete so the two can straddle an await — see `#emitPausedOnce`, where dropping the
+   * claim must happen before the pause is observable while the delete must happen after the pause is
+   * durable. `#fence` is deliberately KEPT: clearing it would make a subsequent write unguarded (an absent
+   * fence is a pass, not a refusal), which is the failure this pair of fields exists to close.
+   */
+  #park(): RunFence | undefined {
+    if (this.#ownership !== 'held') return undefined;
+    this.#stopHeartbeat();
+    this.#ownership = 'parked';
+    return this.#fence; // deliberately retained — see the `#fence` docblock
+  }
+
+  /** Delete the lease row for `fence`. Scoped to `(ownerId, generation)`, so it can never steal a successor. */
+  async #releaseLeaseRow(fence: RunFence): Promise<void> {
+    try {
+      await this.#host.runLeases.release(this.runId, fence);
+    } catch {
+      // A release that cannot be written leaves the lease to expire on its own TTL — slower, never wrong.
+    }
   }
 
   // --- readiness, skip-propagation, edges -----------------------------------------------------
@@ -2185,7 +2777,10 @@ class RunExecution {
    * still in flight, and a crash in that window loses money the provider may have billed.
    *
    * The catch below is a BACKSTOP, and on the run path it is deliberately unreachable: `#emitDurable` is total for
-   * store faults, so a failed non-terminal write sets `#failure` and aborts there rather than rejecting. It
+   * store faults, so a failed non-terminal write sets `#failure` and aborts there rather than rejecting. **That
+   * still holds under ADR-0078's ordered append** — §2's `AppendConflictError` is a non-terminal store
+   * rejection like any other, absorbed by the same catch, so the write path still resolves and this argument
+   * is unchanged rather than merely un-revisited. It
    * matters for a HOST-wired governor whose sink can reject — the chat path, once §4 gives it a real durable
    * write. Kept here so the two surfaces cannot diverge in what a durability failure means: never a released
    * reservation, always a loud failure.
@@ -2239,7 +2834,8 @@ class RunExecution {
     this.#abort.abort();
   }
 
-  async #emitDurable(draft: RunEventDraft): Promise<void> {
+  async #emitDurable(draft: RunEventDraft, opts?: { readonly handOff?: boolean }): Promise<void> {
+    const handOff = opts?.handOff === true;
     // Persist the boundary/terminal event, then deliver (ADR-0036 persist-before-deliver, so a crash
     // can never re-run a completed node or lose its output). This method is **total for store faults** (the
     // media de-inline below is the one deliberate exception — a NON-terminal de-inline failure re-throws to
@@ -2256,7 +2852,9 @@ class RunExecution {
     // first (the `await` below), THEN `#bus.next` assigns the seq and the per-run `#deliveryTail` capture
     // happens — with NO `await` between them, so seq-assignment-and-delivery-chaining stays atomic per
     // event; chaining each deliver onto the single tail makes a higher-seq event wait for the lower-seq
-    // event's deliver. Persists stay concurrent; only delivery is serialized. (The de-inline `await`
+    // event's deliver. **The tail now serializes the ASK, the WRITE and the DELIVERY** (ADR-0078 §1) — it
+    // once serialized delivery only, with each `persistEvent` started before the previous was joined, and
+    // "persists stay concurrent" is the sentence ADR-0078's Context quotes as the defect. (The de-inline `await`
     // moves WHEN the seq is assigned relative to other emits — gap-free + monotonic still hold, since the
     // counter only advances on a successful `next`, and concurrent events have no canonical order.)
     // Without the tail, two concurrent leaf nodes under an ASYNC store (1.R SQLite, cloud) could resolve
@@ -2296,15 +2894,103 @@ class RunExecution {
     // run's references at its terminal event (D11 sweep). Best-effort + synchronous-to-the-stream: a
     // retention failure never touches the I3 / gap-free / exactly-one-terminal guarantees below.
     this.#recordProducedMedia(durable);
-    if (TERMINAL_TYPES.has(event.type)) {
-      this.#reclaimRunMedia();
-    }
+    // NOTE: the terminal media reclaim used to sit here, before the write. It now runs only after the
+    // terminal's persist SUCCEEDS — see the write below (ADR-0078 §1 re-timing ADR-0042 §4).
     const prior = this.#deliveryTail;
+    // **The ordered append (ADR-0078 §1), and it is one line.** `expectedLastSequenceNumber` is read HERE,
+    // synchronously, before the region is entered — reading it inside would race with a concurrent emitter
+    // that has already advanced it, which is the very interleaving the tail exists to remove.
+    //
+    // **The terminal stays exempt, and CR-92 is where that was DECIDED rather than deferred.** The original
+    // reason — "a terminal the store will not take has nowhere to go" — is gone: §4's outbox now gives it a
+    // home, so a guarded terminal that conflicted would report `uncertain` and be re-appended by the drain
+    // with a fresh belief. It is exempt on a different ground. Guarding it would convert the COMMON case —
+    // a non-terminal write was lost, so `#lastAskedSequenceNumber` no longer matches the log — into a run
+    // whose terminal is refused, reported `uncertain`, and only lands at the next `reconcile()`. That trades
+    // a run that ends correctly-but-with-a-hole for one that does not durably end at all, on the failure
+    // path, which is the wrong direction. Exactly-one-terminal (ADR-0036) also outranks the guard.
+    //
+    // The residual is stated rather than hidden: a terminal can still land past a hole left by a lost
+    // non-terminal write. `checkDurableTruth` reports that log as ordered and `createAppendAudit` reports it
+    // as holed — which is the honest pair, since the run really did end and really did lose an event.
+    const expectedLastSequenceNumber = this.#lastAskedSequenceNumber;
+    const guarded = !TERMINAL_TYPES.has(event.type);
+    if (guarded) {
+      this.#lastAskedSequenceNumber = event.sequenceNumber;
+    }
+    // This closure's branch count is NOT extractable, and the reason is written throughout it:
+    // every branch below is an ORDERING guarantee relative to `await prior` and the persist. Moving any of
+    // them into a helper inserts a microtask hop at exactly the point the comments below record as having
+    // reordered the log once already, and the `held`/`unclaimed` fast path exists specifically to AVOID that
+    // hop. A metric is not worth re-opening the race this function was written to close (CR-10, CR-92).
     const settled = (async (): Promise<void> => {
+      // `await prior` moved ABOVE the persist. Below it, the previous event's write had already been
+      // STARTED but not joined, so two events for one run overlapped — nothing but the store's timing kept
+      // the log a prefix. The same single tail now serializes the ask, the write and the delivery.
+      await prior;
       try {
-        await this.#host.store.persistEvent(event);
-      } catch {
-        if (!TERMINAL_TYPES.has(event.type) && this.#failure === undefined && !this.#cancelling) {
+        // **Ownership is reconciled HERE, and only here.** `#emitDurable` is the run's single durable
+        // writer, so every path that can write after a gate park — a cooperative cancel, a gate deadline,
+        // the run-level `timeout_ms`, the skip-propagation sweep — is covered by one check instead of a
+        // guard per call site that the next path added would silently miss. It sits after `await prior`
+        // and inside the region deliberately: it must read the state the previous write left, and two
+        // concurrent emits must not both acquire, since a same-owner acquire is a RENEWAL that bumps the
+        // generation and the loser would then persist under a fence the winner had already moved.
+        // The `held`/`unclaimed` fast path is taken WITHOUT awaiting, and that is not a micro-optimisation.
+        // Awaiting unconditionally inserts a microtask between `await prior` and the persist, which reordered
+        // ADR-0077's money-durability barrier: the emit's own catch began winning the race to set `#failure`,
+        // so a rejected ledger write was attributed to "a durable run-event write failed" instead of the
+        // cancellation that actually stopped the run. Only the states that genuinely need I/O suspend.
+        const settledClaim = this.#ownership === 'held' || this.#ownership === 'unclaimed';
+        if (!settledClaim && !(await this.#authorizeWrite())) {
+          // Refused. A TERMINAL is not delivered either: `handle.subscribe` observers outlive the stream
+          // close, and telling them the run ended is §5's "durable lie" in delivered form.
+          if (!TERMINAL_TYPES.has(event.type)) this.#bus.deliver(event);
+          return;
+        }
+        // A terminal is exempt from the APPEND guard (ADR-0078 §2) but NOT from the fence: a process that
+        // has been taken over must not write the run's terminal either — that is the whole of ADR-0079 §5.
+        // The two claims are independent fields precisely so this asymmetry is expressible.
+        await this.#host.store.persistEvent(event, {
+          ...(guarded ? { expectedLastSequenceNumber } : {}),
+          ...(this.#fence === undefined ? {} : { fence: this.#fence }),
+        });
+        if (handOff && !TERMINAL_TYPES.has(event.type)) {
+          // The pause is now durable and was written AS THE OWNER; hand the claim back only after that.
+          // Entering `parked` here rather than before the write means the write that creates the state can
+          // never observe it, and a pause that fails for an ordinary store fault KEEPS ownership instead of
+          // stranding a dropped claim.
+          this.#park();
+        }
+        if (TERMINAL_TYPES.has(event.type)) {
+          this.#terminalDurability = 'durable';
+          // **The media reclaim happens HERE, not before the write** (ADR-0078 §1, re-timing ADR-0042 §4).
+          // It used to run at the emit, so a terminal whose write then failed had already released the run's
+          // media references — the outbox could retry the terminal into a log whose media was gone.
+          this.#reclaimRunMedia();
+        }
+      } catch (writeError) {
+        // **A FENCE rejection is not a store fault, and must not be treated as one (ADR-0079 §5).** Another
+        // process owns the run now. This one stops: it does not fail the run, does not write a terminal, and
+        // does not hand the terminal to the outbox — the run's real outcome belongs to the new owner, and
+        // recording anything here would be a durable lie about somebody else's run.
+        if (isLeaseFencedError(writeError)) {
+          this.#loseOwnership();
+          if (TERMINAL_TYPES.has(event.type)) return; // §5 again, on the race path: deliver nothing
+        } else if (TERMINAL_TYPES.has(event.type)) {
+          // **The terminal outbox** (ADR-0078 §4). The run is settling and the caller is about to be handed
+          // this terminal in-process; the durable record does not have it. Hold the intended payload OUTSIDE
+          // the store — the store is the thing that just failed — so a later start can retry it under the
+          // same identity, and report `uncertain` so no surface says `completed` on a record that disagrees.
+          this.#terminalDurability = 'uncertain';
+          await this.#bestEffortOutbox(event);
+        }
+        if (
+          this.#ownership !== 'lost' &&
+          !TERMINAL_TYPES.has(event.type) &&
+          this.#failure === undefined &&
+          !this.#cancelling
+        ) {
           this.#failure = {
             // Attribute it when the event names a node. This is the failure a user ACTUALLY sees for a failed
             // durable write — including a `budget:estimate_committed`, whose typed
@@ -2328,8 +3014,7 @@ class RunExecution {
           this.#schedule();
         }
       }
-      await prior; // deliver in seq order: the lower-seq event's deliver must land first
-      this.#bus.deliver(event);
+      this.#bus.deliver(event); // still in seq order — `prior` is now awaited above, before the write
     })();
     this.#deliveryTail = settled.catch(() => undefined);
     await settled;
@@ -2497,6 +3182,22 @@ class RunExecution {
   }
 
   /**
+   * Hand a terminal the store refused to the host's outbox (ADR-0078 §4), swallowing its own failure.
+   *
+   * Best-effort by necessity, and the ADR says so: a host whose outbox write ALSO fails has no further
+   * recourse — the run already reports `uncertain`, which is the honest floor. Throwing here would break
+   * exactly-one-terminal on the way out of a path that exists to protect it, and `#emitDurable` must stay
+   * total for the fire-and-forget `#loop`.
+   */
+  async #bestEffortOutbox(event: RunEvent): Promise<void> {
+    try {
+      await this.#host.terminalOutbox.put(event);
+    } catch {
+      // Nothing left to do. `#terminalDurability` is already `'uncertain'`, which is the report.
+    }
+  }
+
+  /**
    * D11 terminal-state sweep: reclaim the run's `run`-kind media references at its terminal event (ADR-0042
    * §4), best-effort like {@link #recordProducedMedia}. A `session`/`workspace` reference (a read-grant)
    * survives the sweep, keeping shared media alive past the run.
@@ -2554,6 +3255,19 @@ export class WorkflowEngine {
    */
   readonly #onLegacyMediaJobHold: ((nodeIds: readonly string[]) => void) | undefined;
   readonly #runs = new Map<string, RunExecution>();
+  /**
+   * This engine instance's opaque identity as a lease holder (ADR-0079 §1).
+   *
+   * From `host.ids.newId()` rather than a process id: the engine is platform-free and has no notion of a
+   * process, and two engines in ONE process must still be distinguishable — otherwise a second engine would
+   * silently "renew" the first one's lease instead of being refused, which is the whole failure this closes.
+   */
+  readonly #ownerId: string;
+  /** ADR-0080's per-node journal factory, threaded into every `RunExecution` this engine builds. */
+  readonly #effectResume: EffectResumePort | undefined;
+  readonly #effectJournalFactory:
+    | ((correlation: EffectCorrelation) => EffectDispatchPort)
+    | undefined;
 
   constructor(deps: WorkflowEngineDeps) {
     this.#host = deps.host;
@@ -2566,6 +3280,9 @@ export class WorkflowEngine {
     this.#resolveEndpoint = deps.resolveEndpoint;
     this.#onUnpriced = deps.onUnpriced;
     this.#onLegacyMediaJobHold = deps.onLegacyMediaJobHold;
+    this.#ownerId = deps.host.ids.newId();
+    this.#effectJournalFactory = deps.effectJournal;
+    this.#effectResume = deps.effectResume;
   }
 
   /**
@@ -2576,13 +3293,35 @@ export class WorkflowEngine {
    */
   start(input: StartInput): RunHandle {
     const plan = buildRunPlan(input.workflow, input.planOptions);
+    // **Admission runs BEFORE the run id and before the first event** (ADR-0083 §1). That ordering is the
+    // decision, not an implementation detail: a rejected run must leave no `runId`, no `run:started` and no
+    // row, so a caller retrying with corrected inputs is not reasoning about a half-created run. It sits
+    // after `buildRunPlan` because a graph fault is the more fundamental refusal and already throws here.
+    const admitted = resolveAndValidateWorkflowInputs(input.workflow, input.inputs);
+    if (!admitted.ok) {
+      // The issues travel STRUCTURED on the error, and the message names only what admission guarantees is
+      // echo-safe. An earlier version joined every `issue.name` into the message — but an unknown key is
+      // caller-supplied and constrained by nothing, so that reintroduced one layer down the terminal-escape
+      // path `workflow.ts` had just removed from the parser, with a strictly less trusted source.
+      throw new EngineStateError(
+        'input_admission_failed',
+        `the supplied inputs do not satisfy this workflow's contract: ${admitted.issues
+          .map((issue) =>
+            issue.name === undefined ? issue.message : `${issue.name} — ${issue.message}`,
+          )
+          .join('; ')}`,
+        { issues: admitted.issues },
+      );
+    }
     const runId = this.#host.ids.newId();
     const bus = new RunEventBus({ now: this.#host.clock.now, validate: this.#validateEvents });
     const execution = new RunExecution({
       runId,
       plan,
       workflow: input.workflow,
-      inputs: input.inputs ?? {},
+      // The ADMITTED map — defaults applied, validated, and built fresh rather than taken from the caller
+      // (§7). Mutating the caller's object after `start()` returns cannot reach the run.
+      inputs: admitted.inputs,
       executionMode: input.executionMode ?? 'local',
       host: this.#host,
       executor: this.#executor,
@@ -2592,6 +3331,11 @@ export class WorkflowEngine {
         /* settled runs are retained so resume/cancel can report run_already_terminal; a long-lived
            host may prune them on a TTL — out of 1.N scope. */
       },
+      ownerId: this.#ownerId,
+      ...(this.#effectJournalFactory === undefined
+        ? {}
+        : { effectJournal: this.#effectJournalFactory }),
+      ...(this.#effectResume === undefined ? {} : { effectResume: this.#effectResume }),
       resolverCapabilities: this.#resolverCapabilities,
       maxTokensEstimate: this.#maxTokensEstimate,
       ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
@@ -2641,6 +3385,27 @@ export class WorkflowEngine {
    * concurrent double-resolve (two processes loading the same pending gate before either persists) is
    * closed by a Phase-2 store-level uniqueness constraint, not the in-memory reference (checkpoint.ts).
    */
+  /**
+   * Why the lease could not be taken — naming the holder and WHEN, not just "shortly".
+   *
+   * `RunLeaseInfo` already carries `expiresAt`, so the bound on the wait is free, and it is the difference
+   * between a caller that can back off intelligently and one that guesses. The holder id is opaque by design
+   * ([ADR-0079](../../../../docs/decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §1 —
+   * an owner is a process, not a name), so the deadline is the only concrete thing this message can offer.
+   */
+  async #ownedElsewhereMessage(runId: string): Promise<string> {
+    const holder = await this.#host.runLeases.read(runId);
+    if (holder === undefined) return 'another process owns this run';
+    const seconds = Math.max(0, Math.ceil((holder.expiresAt - this.#nowMs()) / 1000));
+    return `another process owns this run (held by ${holder.ownerId}) — retry once it finishes, or in at most ${String(seconds)}s when its lease expires`;
+  }
+
+  // One point over the threshold, and the branches ARE the ordering: the lease before any read,
+  // the identity guard before the checkpoint, the checkpoint before the workflow. Each comment below states
+  // which line it must precede, and a helper that hid one of those steps would make the sequence the reader
+  // has to reconstruct rather than the one they can see (ADR-0079 §4, ADR-0083 §5).
+  //
+  // What CAN move out is a message the ordering does not depend on — see `#ownedElsewhereMessage`.
   async resumeFromCheckpoint(input: ResumeFromCheckpointInput): Promise<RunHandle> {
     // A gate resume supplies gateId + decision; a media-ONLY resume (1.AG Section D) supplies neither.
     const isGateResume = input.gateId !== undefined && input.decision !== undefined;
@@ -2652,8 +3417,34 @@ export class WorkflowEngine {
         { runId: input.runId },
       );
     }
-    const checkpoint = await this.#host.checkpointer.load(input.runId);
+    // **The lease is acquired BEFORE anything is read (ADR-0079 §4).** Not after the checkpoint, not after
+    // the identity guard: a loser must never become a second producer even briefly, and every line below
+    // this one is work only the owner is entitled to do. The refusal names the current holder, so the
+    // message is actionable rather than "something else has it".
+    const fence = await this.#host.runLeases.acquire(input.runId, this.#ownerId, RUN_LEASE_TTL_MS);
+    if (fence === undefined) {
+      throw new EngineStateError(
+        'run_owned_elsewhere',
+        await this.#ownedElsewhereMessage(input.runId),
+        { runId: input.runId },
+      );
+    }
+    // Every CALL between the acquire and `adoptLease` is wrapped — not just the awaits, and not just the ones
+    // that refuse deliberately (ADR-0079 §4). A review measured two live leaks here: `checkpointer.load`
+    // rejecting with ADR-0075's `UnreadableRunEventLogError` — which `createHistoryCheckpointer` is `async`
+    // precisely to deliver — and `resolveWorkflowId` failing on any store fault. A second review then found a
+    // third: a SYNCHRONOUS `RangeError` out of the content check, which the first version of this comment
+    // invited by saying "every await" and counting only the async sites. Wrapped individually rather than by
+    // one span around the whole preparation: the terminal branch below exits by RETURNING a closed handle, so
+    // a single catch would have to model a non-throw exit, and a wrap at each site says that this line owns
+    // the obligation.
+    const checkpoint = await this.#releaseFenceOnThrow(input.runId, fence, () =>
+      this.#host.checkpointer.load(input.runId),
+    );
     if (checkpoint === undefined) {
+      // Release what we just took: the run does not exist, so holding its lease would lock a runId nobody
+      // can use. Every refusal below this point does the same — an acquire that leads nowhere must not leak.
+      await this.#host.runLeases.release(input.runId, fence);
       throw new EngineStateError('unknown_run', 'no checkpoint exists for the supplied runId', {
         runId: input.runId,
       });
@@ -2665,8 +3456,11 @@ export class WorkflowEngine {
     // `workflows.id` UUID catches resuming the wrong workflow entirely (a different slug). A subtler
     // same-slug-edited-content drift needs a content hash on `run:started` — deferred (a canonical event
     // contract change; checkpoint.ts), so resuming an edited-but-same-slug workflow is the caller's risk.
-    const expectedWorkflowId = await this.#host.store.resolveWorkflowId(input.workflow.workflow.id);
+    const expectedWorkflowId = await this.#releaseFenceOnThrow(input.runId, fence, () =>
+      this.#host.store.resolveWorkflowId(input.workflow.workflow.id),
+    );
     if (expectedWorkflowId !== checkpoint.workflowId) {
+      await this.#host.runLeases.release(input.runId, fence);
       throw new EngineStateError(
         'workflow_mismatch',
         'the supplied workflow is not the one this run started on',
@@ -2676,38 +3470,124 @@ export class WorkflowEngine {
     if (TERMINAL_RUN_STATUSES.has(checkpoint.runStatus)) {
       // The run already settled in the prior process — re-delivery is a safe no-op (the terminal event
       // is in the persisted log). Returning a closed handle avoids re-emitting/re-persisting a terminal.
+      //
+      // **Release first.** This is a refusal like the ones above, and §4's rule covers it: an acquire that
+      // leads nowhere must not leak. Holding it would convert the documented idempotent no-op into a
+      // transient refusal (exit 6) for a full TTL, over a run that has been over for hours, and leave a
+      // `run_leases` row per re-delivery that nothing ever deletes.
+      await this.#host.runLeases.release(input.runId, fence);
       return createClosedRunHandle(input.runId);
     }
-    const plan = buildRunPlan(input.workflow, input.planOptions);
+    // **The graph's CONTENT, not just its id (ADR-0083 §5).** The surrogate-id guard above catches resuming
+    // the wrong workflow entirely; it cannot catch the same slug with edited content, which its own comment
+    // named and deferred to a content hash. The frozen definition answers it — it lives in `runs`, not in the
+    // event log, which is why `RunStore` grew one read method for it. A store that holds no snapshot answers
+    // `undefined`, and content verification is skipped with that fact stated rather than silently absent.
+    const frozenWorkflow = await this.#releaseFenceOnThrow(input.runId, fence, () =>
+      this.#host.store.readWorkflowSnapshot(input.runId),
+    );
+    if (frozenWorkflow !== undefined) {
+      // Wrapped like every other call in this region — not because it is async (it is not) but because the
+      // region's obligation is about THROWS, and a synchronous one leaks exactly as thoroughly. This was the
+      // one bare call between `acquire` and `adoptLease`, and it was the one processing untrusted durable
+      // data; the guard inside it is the primary fix and this is the belt.
+      const contentRefusal = await this.#releaseFenceOnThrow(input.runId, fence, () =>
+        verifyFrozenWorkflowContent(frozenWorkflow, input.workflow),
+      );
+      if (contentRefusal !== undefined) {
+        await this.#host.runLeases.release(input.runId, fence);
+        throw new EngineStateError(contentRefusal.code, contentRefusal.message, {
+          runId: input.runId,
+        });
+      }
+    }
+    // **Identity, verified rather than assumed (ADR-0083 §5/§6/§8).** The caller's `inputs` and
+    // `executionMode` used to be taken on trust, under an interface note that called it "the caller's
+    // responsibility" — so a `relavium gate` in a fresh process that reconstructed either one differently,
+    // or simply passed `{}`, continued the run under a state its own `run:started` never had. The record
+    // folded from that event is the authority; the caller's copy is checked against it and then discarded.
+    // Wrapped too: it is documented to RETURN every refusal, but it walks a caller-supplied map, and an
+    // exotic value's trap can throw out of `deepStructuralEquals` no matter how carefully the entry guards.
+    const identity = await this.#releaseFenceOnThrow(input.runId, fence, () =>
+      verifyResumeIdentity({
+        workflow: input.workflow,
+        recordedInputs: checkpoint.admittedInputs,
+        recordedExecutionMode: checkpoint.executionMode,
+        suppliedInputs: input.inputs,
+        suppliedExecutionMode: input.executionMode,
+      }),
+    );
+    if (!identity.ok) {
+      // §5: a refusal releases the lease. Every identity check sits after ownership was acquired, and
+      // ADR-0079 §4's rule — an acquire that leads nowhere must not leak — covers these exactly as it
+      // covers `workflow_mismatch` above.
+      await this.#host.runLeases.release(input.runId, fence);
+      throw new EngineStateError(identity.refusal.code, identity.refusal.message, {
+        runId: input.runId,
+      });
+    }
+    // From here to `adoptLease`, ANY throw must release the claim — `buildRunPlan` on an edited workflow and
+    // the `RunExecution` constructor's checkpoint rehydration both throw outside the try below, and both
+    // used to strand the lease for a TTL. The claim about the CONSTRUCTOR was false until now: only
+    // `buildRunPlan` was wrapped, while `new RunExecution(...)` — which runs `#seedFromCheckpoint`, including
+    // `#restoreParkedMediaJob` — sat bare. The comment and the code had disagreed since `cf93e32`.
+    const plan = await this.#releaseFenceOnThrow(input.runId, fence, () =>
+      buildRunPlan(input.workflow, input.planOptions),
+    );
     const bus = new RunEventBus({ now: this.#host.clock.now, validate: this.#validateEvents });
-    const execution = new RunExecution({
-      runId: input.runId,
-      plan,
-      workflow: input.workflow,
-      inputs: input.inputs ?? {},
-      executionMode: input.executionMode ?? 'local',
-      host: this.#host,
-      executor: this.#executor,
-      bus,
-      capacity: this.#capacity,
-      onSettled: () => {
-        /* retained like a started run (see start) */
-      },
-      resolverCapabilities: this.#resolverCapabilities,
-      maxTokensEstimate: this.#maxTokensEstimate,
-      ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
-      ...(this.#resolveEndpoint === undefined ? {} : { resolveEndpoint: this.#resolveEndpoint }),
-      ...(this.#onUnpriced === undefined ? {} : { onUnpriced: this.#onUnpriced }),
-      ...(this.#onLegacyMediaJobHold === undefined
-        ? {}
-        : { onLegacyMediaJobHold: this.#onLegacyMediaJobHold }),
-      checkpoint,
-    });
+    const execution = await this.#releaseFenceOnThrow(
+      input.runId,
+      fence,
+      () =>
+        new RunExecution({
+          runId: input.runId,
+          plan,
+          workflow: input.workflow,
+          // The VERIFIED record, not the caller's map — built fresh with a null prototype by the same §7
+          // discipline `start()` uses, so a resume and a start hand `RunExecution` the same shape.
+          inputs: identity.inputs,
+          // **Inert on this path today, and said out loud rather than assumed pinned.** `#executionMode` is read
+          // in exactly one place — the `run:started` emit — which a resume does not repeat, so no engine-level
+          // test can distinguish this line from the `?? 'local'` default it replaces; a review measured the whole
+          // suite staying green under that revert. What IS pinned is the DECISION (`verifyResumeIdentity`'s unit
+          // tests) and the REFUSAL (`execution_mode_mismatch`, end to end). The moment anything downstream reads
+          // the mode, this is the line that has to be right, which is why it is the recorded value and not a
+          // default.
+          executionMode: identity.executionMode,
+          ownerId: this.#ownerId,
+          ...(this.#effectJournalFactory === undefined
+            ? {}
+            : { effectJournal: this.#effectJournalFactory }),
+          ...(this.#effectResume === undefined ? {} : { effectResume: this.#effectResume }),
+          host: this.#host,
+          executor: this.#executor,
+          bus,
+          capacity: this.#capacity,
+          onSettled: () => {
+            /* retained like a started run (see start) */
+          },
+          resolverCapabilities: this.#resolverCapabilities,
+          maxTokensEstimate: this.#maxTokensEstimate,
+          ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
+          ...(this.#resolveEndpoint === undefined
+            ? {}
+            : { resolveEndpoint: this.#resolveEndpoint }),
+          ...(this.#onUnpriced === undefined ? {} : { onUnpriced: this.#onUnpriced }),
+          ...(this.#onLegacyMediaJobHold === undefined
+            ? {}
+            : { onLegacyMediaJobHold: this.#onLegacyMediaJobHold }),
+          checkpoint,
+        }),
+    );
     this.#runs.set(input.runId, execution);
     try {
       // beginResume re-resolves the workflow context (not checkpointed) then drives: kick if the gate was
       // already resolved in the prior process (no re-apply), else apply the decision. A media-ONLY resume
       // (no gate) re-attaches + re-polls the parked job(s). The events buffer on the returned handle.
+      // The engine acquired this fence before the checkpoint was read (§4); the execution adopts it rather
+      // than acquiring again — a second acquire would bump the generation and fence the engine's own
+      // in-flight claim, which is the subtlest way to get this wrong.
+      execution.adoptLease(fence);
       if (isGateResume && input.gateId !== undefined && input.decision !== undefined) {
         await execution.beginResume(
           input.gateId,
@@ -2726,8 +3606,21 @@ export class WorkflowEngine {
       // provider for a run the caller saw rejected (and a natural retry could double-attach the same jobId).
       execution.abandon();
       this.#runs.delete(input.runId);
+      await this.#host.runLeases.release(input.runId, fence);
       throw error;
     }
+    // **No release here — the resumed execution owns its own lease lifetime now.**
+    //
+    // This is where a `#releaseIfIdle(input.runId, fence)` used to sit, and it was wrong in a way worth
+    // recording: `beginResume` returns as soon as the resume has been KICKED, not when the run has finished
+    // or re-parked. Releasing on that return handed the lease back while the run was still executing, so the
+    // resumed leg's very next durable write was fenced out by its own release — every cross-process gate
+    // resume stopped dead with no terminal and hung its caller.
+    //
+    // Ownership is given up at the two moments the process actually stops working on the run, both inside
+    // the execution where that is observable: `#emitPausedOnce` releases on a gate park (§4), and `#settle`
+    // releases after the terminal is durable. A run abandoned without reaching either is covered by the TTL,
+    // which is what the TTL is for.
     return execution.handle;
   }
 
@@ -2747,8 +3640,13 @@ export class WorkflowEngine {
    * Returns the reconciled events. Resumable runs (parked at a gate) are left for `resume`.
    */
   async reconcile(): Promise<readonly RunEvent[]> {
+    // **Drain the outbox FIRST (ADR-0078 §4), and the order is load-bearing.** A crashed process leaves its
+    // terminal here; if reconciliation ran first it would see a run with no durable terminal, conclude it
+    // needs repair, and write `run:failed{internal}` for a run that actually COMPLETED — the exact
+    // divergence the outbox exists to close, reintroduced by ordering. §3's "no terminal present" condition
+    // makes the two writers safe within one process; across processes only this order does.
     const interrupted = await this.#host.store.listInterruptedRuns();
-    const reconciled: RunEvent[] = [];
+    const reconciled: RunEvent[] = [...(await this.#drainTerminalOutbox(interrupted))];
     for (const run of interrupted) {
       if (run.resumable) {
         // A run parked at a gate is intentionally left for the checkpoint/resume path (1.R):
@@ -2758,6 +3656,16 @@ export class WorkflowEngine {
         // unknown_run by design — never silently, and never a corrupted half-run.
         continue;
       }
+      // **Never terminate a run another process is working on (ADR-0079 §7).** `reconcile()` writes a
+      // terminal for every non-resumable interrupted run, and it runs from a process that may not own any of
+      // them. A run holding a LIVE lease is mid-execution somewhere else — leaving it interrupted is correct,
+      // because whoever owns it will settle it.
+      //
+      // An EXPIRED lease is taken over rather than ignored, and the takeover is what makes this safe: the
+      // acquire bumps the generation, so if the dead owner ever wakes, its every write is fenced. Reconciling
+      // under the old generation would leave a zombie able to append past the terminal written here.
+      const fence = await this.#claimForReconcile(run.runId);
+      if (fence === undefined) continue;
       const event = RunEventSchema.parse({
         type: 'run:failed',
         runId: run.runId,
@@ -2772,7 +3680,15 @@ export class WorkflowEngine {
         partialOutputs: {},
       });
       try {
-        await this.#host.store.persistEvent(event);
+        // **`reconcile()` is a SECOND durable write path** — it bypasses `#emitDurable` entirely, so every
+        // property established at that choke point has to be re-established here or it holds for one of two
+        // writers (ADR-0078 §3). It passes the guard with the belief it actually has: `listInterruptedRuns`
+        // read `lastSequenceNumber` from the durable rows, so a run another process has since advanced —
+        // or settled — makes this append fail closed instead of appending a second terminal past it.
+        await this.#host.store.persistEvent(event, {
+          expectedLastSequenceNumber: run.lastSequenceNumber,
+          fence,
+        });
         reconciled.push(event);
         // Reclaim the crashed run's media references at this terminal (1.AF/D11, ADR-0042 §4): a
         // non-resumable run never ran its in-process #reclaimRunMedia (the process died), and reconcile()
@@ -2784,9 +3700,168 @@ export class WorkflowEngine {
       } catch {
         // A store fault reconciling one run must not abandon the rest: skip it (it stays interrupted
         // and is retried on the next reconcile). Reconciliation is best-effort and idempotent.
+      } finally {
+        // Give the takeover claim back either way. The run is settled (nothing left to own) or the write
+        // failed (the next reconcile re-claims, bumping the generation again) — holding it would only block
+        // the retry for a TTL. The generation still only moves forward, so nothing is un-fenced by this.
+        await this.#releaseReconcileClaim(run.runId, fence);
       }
     }
     return reconciled;
+  }
+
+  /**
+   * Take ownership of an interrupted run so it can be reconciled, or decline it (ADR-0079 §7).
+   *
+   * Returns `undefined` — "leave this run alone" — whenever the takeover does not succeed, which is exactly
+   * when another process holds a LIVE lease on the run. That is `acquire`'s own rule ("a different owner
+   * holding a live lease is the only refusal"), so the acquire IS the check; an expired lease is a takeover
+   * that bumps the generation, which is what fences the dead owner if it ever wakes.
+   *
+   * Deliberately not a `read` followed by an `acquire`. The read would be redundant with the refusal and,
+   * worse, not atomic with it — the lease can expire or change hands between the two, so the pair can decide
+   * on a state that no longer holds while the acquire alone decides inside one transaction.
+   */
+  /** Epoch-ms now, derived from the host's ISO clock — core has no second notion of time (ADR-0079 §6). */
+  #nowMs(): number {
+    return Date.parse(this.#host.clock.now());
+  }
+
+  async #claimForReconcile(runId: string): Promise<RunFence | undefined> {
+    // **Never claim a run THIS engine is executing.** `acquire`'s refusal rule is "a different owner holding
+    // a live lease", so for our OWN runs it is not a refusal at all — it is a renewal that bumps the
+    // generation, which would fence our live execution out at its next write and then delete its row in the
+    // caller's `finally`. The lease cannot express this because the two claimants share an `ownerId`; the
+    // in-memory run table can, and it is the authority on what this process is running.
+    if (this.#runs.has(runId)) return undefined;
+    try {
+      return await this.#host.runLeases.acquire(runId, this.#ownerId, RUN_LEASE_TTL_MS);
+    } catch {
+      // A lease port that cannot be reached is not licence to reconcile blind — the whole point is to avoid
+      // terminating somebody else's run, and an unreachable lease means we cannot tell. Fail closed.
+      return undefined;
+    }
+  }
+
+  /**
+   * Run `body`, releasing the resume-path lease if it throws (ADR-0079 §4: "every refusal path also releases
+   * what it just took"). The claim was taken before the checkpoint was read, so every exit between there and
+   * `adoptLease` owns that obligation — including the ones that throw rather than return.
+   *
+   * **`return await`, not `return`.** The signature already returned a `Promise`, but the body was returned
+   * un-awaited — so a REJECTING async body skipped the catch entirely and stranded the claim for a full TTL.
+   * Latent while the only caller was the synchronous `buildRunPlan`; the store read this now also guards is
+   * genuinely async, and a helper whose whole job is "release on throw" must not have a class of throw it
+   * cannot see.
+   */
+  async #releaseFenceOnThrow<T>(
+    runId: string,
+    fence: RunFence,
+    body: () => T | Promise<T>,
+  ): Promise<T> {
+    try {
+      return await body();
+    } catch (error) {
+      await this.#releaseReconcileClaim(runId, fence);
+      throw error;
+    }
+  }
+
+  /** Hand back a reconcile takeover claim; a failure only costs a TTL, never correctness. */
+  async #releaseReconcileClaim(runId: string, fence: RunFence): Promise<void> {
+    try {
+      await this.#host.runLeases.release(runId, fence);
+    } catch {
+      // Left to expire on its own TTL — slower, never wrong.
+    }
+  }
+
+  /**
+   * Retry every terminal a prior process could not write, and forget the ones that no longer need retrying.
+   *
+   * **A drained entry is reconciled against the log, not replayed blindly.** An entry whose run already
+   * carries a durable terminal is DROPPED rather than appended — the original write may have committed and
+   * only its acknowledgement been lost, and appending would break exactly-one-terminal in the other
+   * direction. That check is why this reads the run's events before writing anything.
+   *
+   * Best-effort throughout: a store still refusing, or an outbox that cannot be read, leaves the entry for
+   * the next start. Nothing here may throw, because `reconcile()` must repair every OTHER run even when one
+   * of them cannot be repaired.
+   */
+  /**
+   * Retry every terminal a prior process could not write — the PUBLIC entry point, and it exists because
+   * without one the mechanism was unreachable.
+   *
+   * `reconcile()` drains as its first step, but `reconcile()` has no shipping caller: it also REPAIRS every
+   * interrupted run, which is a much larger behaviour to switch on, so no surface has ever called it. That
+   * left `CR-92`'s outbox written, tested, certified — and dead. A user who saw the `uncertain` exit code had
+   * no command that would ever move their run to `durable`, while the exit code's own documentation said one
+   * would. Draining is the narrow half a surface can call at start with no other consequence: it writes only
+   * terminals the engine itself already produced, and only for runs whose log still lacks one.
+   */
+  async drainTerminalOutbox(): Promise<readonly RunEvent[]> {
+    const interrupted = await this.#host.store.listInterruptedRuns();
+    return this.#drainTerminalOutbox(interrupted);
+  }
+
+  async #drainTerminalOutbox(interrupted: readonly InterruptedRun[]): Promise<readonly RunEvent[]> {
+    let held: readonly RunEvent[];
+    try {
+      held = await this.#host.terminalOutbox.list();
+    } catch {
+      return [];
+    }
+    // `listInterruptedRuns` is the port's own answer to "does this run still lack a terminal" — a run that
+    // has one is not in it. Using it rather than adding a read method keeps the drain inside the three
+    // methods `RunStore` already declares, which is what lets a Phase-2 cloud store implement this at all.
+    const stillOpen = new Map(interrupted.map((r) => [r.runId, r]));
+    const written: RunEvent[] = [];
+    for (const event of held) {
+      const runId = event.runId;
+      if (runId === undefined) continue;
+      const open = stillOpen.get(runId);
+      if (open === undefined) {
+        // Either the terminal DID land and only its acknowledgement was lost, or the run has no durable
+        // `run:started` at all. Both mean appending would make things worse — a second terminal in the first
+        // case, a headless log in the second — so the entry is dropped, never replayed.
+        await this.#forgetOutbox(runId);
+        continue;
+      }
+      // **A run another process is actively running must not receive a DEAD process's terminal.** The same
+      // §7 hazard `reconcile()` has, and it is sharper here: the held event is a terminal a crashed process
+      // built from ITS view of the run. If a live owner has since resumed that run — a gate resume, say —
+      // writing this would durably contradict the run it is finishing right now. Left in the outbox and
+      // re-evaluated on the next start, when it will almost always be dropped as already-terminal.
+      const fence = await this.#claimForReconcile(runId);
+      if (fence === undefined) continue;
+      try {
+        await this.#host.store.persistEvent(event, {
+          expectedLastSequenceNumber: open.lastSequenceNumber,
+          fence,
+        });
+        await this.#forgetOutbox(runId);
+        // The D11 terminal sweep, exactly as `reconcile()`'s own repair arm does it (ADR-0042 §4). The
+        // crashed process never ran its in-process reclaim — that is why the terminal is here — so without
+        // this the run's media references survive forever and its partial media is never GC-eligible.
+        this.#bestEffortReclaim(runId);
+        written.push(event);
+      } catch {
+        // Still unwritable, or another process moved the log first. The entry stays for the next start; the
+        // run keeps reporting `uncertain`.
+      } finally {
+        await this.#releaseReconcileClaim(runId, fence);
+      }
+    }
+    return written;
+  }
+
+  /** Drop an outbox entry, swallowing a failure — a stale entry costs one read next start, never a wrong terminal. */
+  async #forgetOutbox(runId: string): Promise<void> {
+    try {
+      await this.#host.terminalOutbox.remove(runId);
+    } catch {
+      // Nothing to do; the next drain re-evaluates it against the log and drops it again.
+    }
   }
 
   /** Best-effort terminal media-ref reclaim for a reconciled run — swallows a sync throw + an async

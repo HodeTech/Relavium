@@ -1,27 +1,44 @@
 import {
+  type AgentRunnerDeps,
   BUILTIN_TOOLS,
-  WorkflowEngine,
   createExpressionSandbox,
   createStandardNodeExecutor,
   createToolRegistry,
-  type AgentRunnerDeps,
+  type EffectCorrelation,
+  type EffectDispatchPort,
+  type EffectResumePort,
   type EffortGateResult,
   type ExecutionHost,
   type FsScopeTier,
   type McpCapability,
   type ToolDef,
   type ToolHost,
+  WorkflowEngine,
 } from '@relavium/core';
 import { effortTiersFor, type PricingOverlay } from '@relavium/llm';
 import type { MediaCostEstimate, MediaSurface } from '@relavium/shared';
 
 import { effortWithheldNote, reasoningWithheldByCapFor } from '../chat/effort-notice.js';
-import { hostSleep } from '../process/sleep.js';
+import { hostAbortController, hostAttemptTimer, hostSleep } from '../process/sleep.js';
 import { createCliHost } from './host.js';
 import { createProviderResolver, type ProviderResolver } from './providers.js';
 import { assembleToolEnv } from './tool-host/assemble.js';
 
 export interface BuildEngineOptions {
+  /**
+   * The durable effect journal factory (ADR-0080) — built per node from the run correlation the engine
+   * supplies. Absent ⇒ a dispatch gets `unwiredEffectJournal()` and an effect is REFUSED rather than
+   * silently unrecorded, which is the fail-closed direction.
+   */
+  readonly effectJournal?: (correlation: EffectCorrelation) => EffectDispatchPort;
+  /**
+   * The journal's READ half — the resume gate
+   * ([effect-journal.md](../../../../docs/reference/shared-core/effect-journal.md) §4). Wired wherever
+   * `effectJournal` is: a surface that records effects and cannot read them back on resume has the write
+   * half of a guarantee and none of the enforcement.
+   */
+  readonly effectResume?: EffectResumePort;
+
   /** Override the execution host (tests use the in-memory reference). */
   readonly host?: ExecutionHost;
   /** Override the provider seam (tests inject a stub provider + dummy key). */
@@ -145,6 +162,11 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
     registry,
     tools,
     sleep: hostSleep,
+    // ADR-0082 §6's per-attempt deadline. Both primitives together — a chain given only one keeps the
+    // pre-ADR-0082 unbounded behaviour, and an unbounded wait on a provider that ignores its abort signal
+    // is precisely the hang the deadline removes.
+    newAbortController: hostAbortController,
+    setTimer: hostAttemptTimer,
     now: () => Date.now(),
     // Keep the dispatch-context `fsScope` consistent with the tier the fs host jails to (ADR-0055's
     // "three concepts, three channels"); absent ⇒ the engine default `sandboxed`.
@@ -171,6 +193,10 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
   return new WorkflowEngine({
     host,
     executor: createStandardNodeExecutor({ sandbox, agent, humanGate: {} }),
+    // ADR-0080: forwarded, not defaulted. A caller that omits it gets a run whose effectful dispatches are
+    // REFUSED — loudly — rather than one that silently dispatches unrecorded effects.
+    ...(options.effectJournal === undefined ? {} : { effectJournal: options.effectJournal }),
+    ...(options.effectResume === undefined ? {} : { effectResume: options.effectResume }),
     // The same overlay for the workflow PRE-EGRESS budget governor (2.5.G S10) — so `budget.max_cost_microcents`
     // is enforced on a user-priced model, closing the ADR-0064 §6 cost-cap gap for the run path.
     ...(options.resolvePrice === undefined ? {} : { resolvePrice: options.resolvePrice }),

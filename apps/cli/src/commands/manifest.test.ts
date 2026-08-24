@@ -105,6 +105,21 @@ describe('command manifest (ADR-0056)', () => {
         ).toBeDefined();
         if (argument.description) expect(arg?.description).toBe(argument.description);
       }
+      // REVERSE, for args as well as ids. The two loops above are FORWARD only — commander → manifest — so a
+      // manifest arg with no commander option or positional was invisible. A review measured it: deleting the
+      // `--secret-stdin` registration from `specs.ts` left the whole suite green while
+      // `relavium gate <id> --secret-stdin` died at commander with "unknown option", because the flag's
+      // manifest entry and its `buildGateArgs` extractor were both tested and its only argv link was not.
+      const optionKeys = new Set(node.command.options.map((option) => option.attributeName()));
+      const positionals = new Set(
+        node.command.registeredArguments.map((argument) => argument.name()),
+      );
+      for (const arg of entry?.args ?? []) {
+        expect(
+          optionKeys.has(arg.name) || positionals.has(arg.name),
+          `manifest ${node.id} advertises '${arg.name}' with no commander option or positional`,
+        ).toBe(true);
+      }
     }
   });
 

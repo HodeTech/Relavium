@@ -1,3 +1,4 @@
+import { unwiredEffectJournal } from '@relavium/core';
 import type { McpCapability, ToolDispatchContext, ToolHost } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
@@ -14,6 +15,10 @@ function ctx(signal?: ToolDispatchContext['signal']): ToolDispatchContext {
     toolPolicy: {},
     fsScope: 'sandboxed',
     gateApproved: false,
+    // The LOUD unwired journal (ADR-0080): an MCP tool is permanently tier 3, so a fixture that did
+    // dispatch one must journal it — a silent no-op here would hide exactly that.
+    effects: unwiredEffectJournal(),
+    effectSlot: 0,
     ...(signal === undefined ? {} : { signal }),
   };
 }
@@ -138,5 +143,22 @@ describe('buildServerToolDefs', () => {
     expect(a.defs.map((d) => d.id)).toEqual(['mcp_a_b_x']);
     expect(b.defs).toHaveLength(0);
     expect(b.skipped[0]!.reason).toMatch(/collides with another tool/);
+  });
+});
+
+describe('every discovered MCP tool is permanently tier 3 (ADR-0080 §5)', () => {
+  it('declares effect 3 and never claims its duplicates are benign', () => {
+    // The claim is that tier 3 is TERMINAL for MCP, not a placeholder pending richer metadata: a server's
+    // own annotations are attacker-controlled bytes from the very party the hostile-MCP class defends
+    // against, so they may never RAISE trust. `effect` is optional on `ToolDef`, so dropping this
+    // declaration is both type-legal and — until this test — invisible: every dispatch to a hostile or
+    // buggy MCP server would silently stop being journaled.
+    const { defs } = buildServerToolDefs('fs', [
+      { name: 'read', inputSchema: { type: 'object', properties: {} } },
+    ]);
+    const def = defs[0];
+    expect(def?.effect?.({})).toBe(3);
+    // …and `duplicationBenign` is first-party-only. A server that could set it would journal nothing.
+    expect(def?.duplicationBenign).toBeUndefined();
   });
 });

@@ -10,7 +10,9 @@
  * the public surface is the named domain schemas and their inferred types below.
  */
 
+export * from './canonical.js';
 export * from './constants.js';
+export * from './declared-env.js';
 export * from './content.js';
 export * from './media-deinline.js';
 export * from './agent.js';

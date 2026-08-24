@@ -61,6 +61,62 @@ const seamSyntaxRules = /** @type {const} */ ([
 ]);
 
 /**
+ * The authored-system-prompt fence (`CR-13`, [ADR-0081](docs/decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md) §1).
+ *
+ * `AuthoredSystemPrompt` is a branded string, and a brand is nominal to the type-checker but not to a
+ * deliberate `as`: `dynamicString as AuthoredSystemPrompt` compiles cleanly, and this repo has no assertion
+ * ban to stop it. Without this rule the ADR's "the compiler, not a convention, enforces the boundary" would
+ * itself rest on a convention — the exact class of claim CR-13 exists to remove.
+ *
+ * The one legitimate mint lives in `authored-system-prompt.ts` (unexported, one line, beside its reasoning),
+ * which is why that file is the fence's only exception. Everything else must go through the constructor.
+ */
+const AUTHORED_PROMPT_MESSAGE =
+  'Never assert a value into `AuthoredSystemPrompt` — build it with `authoredSystemPrompt()`. The `system` ' +
+  'role carries authored instruction only; a dynamic string reaching it is the ADR-0081 defect (a model-written ' +
+  'summary of untrusted input concatenated into `system`).';
+const authoredPromptSyntaxRule = /** @type {const} */ ({
+  selector:
+    "TSAsExpression > TSTypeReference > Identifier[name='AuthoredSystemPrompt'], " +
+    "TSTypeAssertion > TSTypeReference > Identifier[name='AuthoredSystemPrompt']",
+  message: AUTHORED_PROMPT_MESSAGE,
+});
+/**
+ * …and the one-hop evasion, closed at its root.
+ *
+ * `type Alias = AuthoredSystemPrompt; x as Alias` defeats a NAME-based selector, because by the time the
+ * assertion is written the brand's name is nowhere in it. Flagging the alias DECLARATION closes the chain
+ * where it starts: making the alias requires writing the name. (A local re-export — `export type { … }` — is
+ * an export specifier, not a type alias, so it is unaffected.)
+ *
+ * Two evasions remain and are named rather than papered over: a generic `as T` cast helper launders any
+ * brand, and so does an interface field typed as the brand plus an object assertion. Neither is reachable by
+ * accident — each takes writing a construct whose only purpose is to defeat the type — which is exactly the
+ * bound ADR-0081 claims: **a forgery is visible, not impossible.**
+ */
+const authoredPromptAliasRule = /** @type {const} */ ({
+  selector: "TSTypeAliasDeclaration TSTypeReference > Identifier[name='AuthoredSystemPrompt']",
+  message: AUTHORED_PROMPT_MESSAGE,
+});
+/**
+ * …and the evasion that needs no assertion at all: a user-defined type predicate.
+ *
+ * `function isAuthored(v: string): v is AuthoredSystemPrompt { return true }` narrows a plain string into the
+ * brand with no `as`, no `<T>`, and no alias anywhere in the file. A review verified it type-checks cleanly
+ * and produced zero fence hits.
+ *
+ * It is the WORST of the residuals precisely because it is the most legible: `value is AuthoredSystemPrompt`
+ * is the same shape as the legitimate `isBilledModality` guard already in `agent-runner.ts`, so a reviewer
+ * scanning for `as AuthoredSystemPrompt` has no differential signal. The other two residuals at least keep
+ * the brand's name next to an assertion. The predicate's return annotation is where the name must appear, so
+ * that is where it is caught.
+ */
+const authoredPromptPredicateRule = /** @type {const} */ ({
+  selector: "TSTypePredicate TSTypeReference > Identifier[name='AuthoredSystemPrompt']",
+  message: AUTHORED_PROMPT_MESSAGE,
+});
+
+/**
  * The machine-output fence (`CR-03`) — every `--json` record leaves through `stringifyJsonLine`.
  *
  * `JSON.stringify` escapes `ESC` and stops there: `U+007F` (DEL), the whole C1 block including `U+009B`
@@ -240,6 +296,20 @@ export default tseslint.config(
       // The seam fence (0.F): static specifiers (incl. `import type`) + the
       // dynamic/import-type/require forms that evade the first.
       '@typescript-eslint/no-restricted-imports': seamImportEntry,
+      'no-restricted-syntax': [
+        ...seamSyntaxRules,
+        authoredPromptSyntaxRule,
+        authoredPromptAliasRule,
+        authoredPromptPredicateRule,
+      ],
+    },
+  },
+  {
+    // The one legitimate mint of `AuthoredSystemPrompt` (ADR-0081 §1) — a brand has no runtime
+    // representation, so a single unexported expression has to create it. Keeping that expression here is
+    // what makes every other assertion in the tree a lint error rather than a judgement call.
+    files: ['packages/core/src/engine/authored-system-prompt.ts'],
+    rules: {
       'no-restricted-syntax': seamSyntaxRules,
     },
   },
@@ -255,7 +325,13 @@ export default tseslint.config(
     // entry is currently inert rather than wrong.
     ignores: ['apps/cli/src/process/render-error.ts', 'apps/cli/src/render/sanitize.ts'],
     rules: {
-      'no-restricted-syntax': [...seamSyntaxRules, jsonLineSyntaxRule],
+      'no-restricted-syntax': [
+        ...seamSyntaxRules,
+        authoredPromptSyntaxRule,
+        authoredPromptAliasRule,
+        authoredPromptPredicateRule,
+        jsonLineSyntaxRule,
+      ],
     },
   },
   {

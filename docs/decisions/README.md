@@ -121,6 +121,13 @@ flowchart TD
 | 0075 | [A resume fails closed on an unreadable event log (amends ADR-0074 §5)](0075-fail-closed-resume-on-an-unreadable-event-log.md) | Accepted | 2026-08-09 |
 | 0076 | [A durable per-attempt realized-cost ledger (amends ADR-0070, extends ADR-0074)](0076-durable-per-attempt-realized-cost-ledger.md) | Accepted | 2026-08-09 |
 | 0077 | [The realized-cost ledger uses ADR-0074 §2's barrier mechanism (amends ADR-0076 §1)](0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md) | Accepted | 2026-08-10 |
+| 0078 | [The durable event log is an ordered append, and a terminal that cannot be made durable says so (amends ADR-0036 and ADR-0042 §4)](0078-ordered-durable-append-and-the-terminal-outbox.md) | Accepted | 2026-08-11 |
+| 0079 | [Cross-process run ownership — a durable run lease with a monotonic fencing token (amends ADR-0036)](0079-cross-process-run-ownership-lease-and-fencing-token.md) | Accepted | 2026-08-12 |
+| 0080 | [A durable effect journal, and a tiered effect contract that says what it can keep (amends ADR-0027, ADR-0037, ADR-0040, ADR-0041)](0080-durable-effect-journal-and-the-tiered-effect-contract.md) | Accepted | 2026-08-17 |
+| 0081 | [The compaction summary is untrusted content, and the system prompt becomes a branded type (supersedes ADR-0062 §1)](0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md) | Accepted | 2026-08-18 |
+| 0082 | [The stream grammar is a seam obligation the chain verifies, and every chain attempt has a hard deadline](0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) | Accepted | 2026-08-18 |
+| 0083 | [One input-admission gate in the engine, and a resume that verifies its own identity](0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | Accepted | 2026-08-19 |
+| 0084 | [Consent before a local MCP spawn](0084-consent-before-a-local-mcp-spawn.md) | Accepted | 2026-08-20 |
 
 ## Creating a new ADR
 

@@ -12,6 +12,9 @@ import type {
   AbortSignalLike,
   ByteRange,
   ContentPart,
+  EffectDispatchPort,
+  EffectSlot,
+  EffectTier,
   FsScopeTier,
   MediaSource,
   Scope,
@@ -381,6 +384,23 @@ export interface ToolDispatchContext {
   readonly mediaRead?: MediaReadAccess;
   /** The model-facing result-bounding ceilings. */
   readonly limits?: ToolResultLimits;
+  /**
+   * The durable effect journal for this dispatch (ADR-0080 §7), with the correlation already closed over.
+   *
+   * Required rather than optional: an optional port would mean a caller that forgets it silently has no
+   * guarantee, which is a fail-open default inside a fail-closed item. A fixture that dispatches no effects
+   * passes `unwiredEffectJournal()`, which THROWS if anything tries to journal through it — so a wiring
+   * mistake is loud at the moment an effect would have gone unrecorded, rather than indistinguishable from a
+   * test that never had one.
+   */
+  readonly effects: EffectDispatchPort;
+  /**
+   * Which effect this dispatch is within its correlation — the ordinal over one model response's tool calls.
+   *
+   * Per-CALL, unlike the port above, which is per-turn. It is what lets two effects in one turn be told
+   * apart; keying on the correlation alone would make the second legitimate effect collide with the first.
+   */
+  readonly effectSlot: EffectSlot;
   readonly signal?: AbortSignalLike;
 }
 
@@ -407,6 +427,38 @@ export interface ToolDef<Args = unknown, Result = unknown> {
    * the generic allowlist check is skipped. Omitted ⇒ no target (e.g. `os` / delegate tools).
    */
   readonly policyTarget?: (args: Args) => PolicyTarget;
+  /**
+   * Whether THIS call mutates state outside the process, and what the engine can honestly promise about it
+   * ([ADR-0080](../../../../docs/decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md);
+   * canonical contract in [effect-journal.md](../../../../docs/reference/shared-core/effect-journal.md)).
+   *
+   * `undefined` ⇒ this call mutates nothing external and is never journaled. Declared per TOOL, and decided
+   * per CALL, because two tools answer differently depending on their args: `http_request` is an effect for
+   * a non-GET method and not for a GET, and `write_file` is one when appending (appends compose) and not
+   * when overwriting (the whole-file write is naturally idempotent — the file IS the receipt).
+   *
+   * A function on the def rather than a central switch, mirroring {@link policyTarget}: a central predicate
+   * would have to reach into arg shapes it does not own and guess, which is how it drifts from the tool.
+   *
+   * **Deliberately NOT derived from {@link policy}.** `ToolPolicyClass` is a SECURITY classification and is
+   * correctly wider — a read-only egress and a clipboard read are governed but mutate nothing. Journaling
+   * those would put two durable writes on every web search and halt a run on a crashed GET.
+   */
+  readonly effect?: (args: Args) => EffectTier | undefined;
+  /**
+   * This tool's effects are harmless when duplicated, so they are not journaled even though {@link effect}
+   * says they mutate — `notify` is the only member today (a duplicate desktop toast is not an incident, and
+   * halting a run for one would discredit the mechanism).
+   *
+   * A DECLARED property rather than a one-line exception in a predicate, because an exception is the shape
+   * that decays: the next tool with the same property earns a second exception somewhere else. This forces
+   * the next author to state the claim.
+   *
+   * **Trust-bearing: first-party built-ins only.** It may never be set from MCP tool metadata, a discovered
+   * tool descriptor, or any other bytes originating outside this repository — the same rule that keeps an
+   * MCP annotation from raising a tier, and for the same reason.
+   */
+  readonly duplicationBenign?: boolean;
   /**
    * Pure dispatcher: validated+merged effective args in, the FULL result out. Side effects ONLY via
    * `host`; never imports `node:*`/`fetch`. Threads `ctx.signal`. Bounding/taint/mapping are applied

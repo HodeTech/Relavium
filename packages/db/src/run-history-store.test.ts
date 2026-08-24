@@ -1,4 +1,9 @@
-import { RunEventSchema, type RunEvent } from '@relavium/shared';
+import {
+  isAppendConflictError,
+  isLeaseFencedError,
+  RunEventSchema,
+  type RunEvent,
+} from '@relavium/shared';
 import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -75,6 +80,416 @@ describe('createRunHistoryStore', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     client.sqlite.close();
+  });
+
+  // --- the compare-and-append guard (CR-10, ADR-0078 §2) ----------------------------------------------
+
+  it('REFUSES an event whose own sequence is not AHEAD of the log, even when the belief matches', async () => {
+    // The equality check alone does NOT order the log. Sequence gaps are legitimate — a transient event
+    // consumes a number without becoming a row — so `(run_id, seq)` uniqueness cannot establish order
+    // either: a stale event's number is unique AND lower. A review reproduced the consequence here: a
+    // terminal at 3 appended behind durable work at 5, `applyDerived` marked the run finished, and
+    // `listInterruptedRuns()` stopped reporting it — with the terminal-outbox drain deleting its recovery
+    // entry on that false success.
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      {
+        expectedLastSequenceNumber: -1,
+      },
+    );
+    await store.persistEvent(ev('node:started', 5, { nodeId: 'a', nodeType: 'agent' }), {
+      expectedLastSequenceNumber: 0,
+    });
+
+    // BEHIND the maximum — the stale terminal that started this.
+    await expect(
+      store.persistEvent(
+        ev('run:failed', 3, {
+          error: { code: 'internal', message: 'stale', retryable: false },
+          partialOutputs: {},
+        }),
+        { expectedLastSequenceNumber: 5 },
+      ),
+    ).rejects.toSatisfy(isAppendConflictError);
+
+    // EQUAL to the maximum — a replayed append, which the unique index would catch as a duplicate but only
+    // after `applyDerived` had already run inside the same transaction.
+    await expect(
+      store.persistEvent(
+        ev('node:completed', 5, {
+          nodeId: 'a',
+          output: {},
+          tokensUsed: { input: 1, output: 2, model: 'm' },
+          durationMs: 1,
+        }),
+        {
+          expectedLastSequenceNumber: 5,
+        },
+      ),
+    ).rejects.toSatisfy(isAppendConflictError);
+
+    // The refusal carries the incoming sequence, so a caller tells "your belief is stale" from "your event
+    // is behind" without parsing a message.
+    await store
+      .persistEvent(
+        ev('node:completed', 2, {
+          nodeId: 'a',
+          output: {},
+          tokensUsed: { input: 1, output: 2, model: 'm' },
+          durationMs: 1,
+        }),
+        {
+          expectedLastSequenceNumber: 5,
+        },
+      )
+      .catch((error: unknown) => {
+        expect(isAppendConflictError(error) && error.incomingSequenceNumber).toBe(2);
+      });
+
+    // …and nothing landed: the run is still open and the log is untouched.
+    expect(await store.listInterruptedRuns()).toHaveLength(1);
+    const seqs = client.db
+      .select({ seq: runEvents.seq })
+      .from(runEvents)
+      .where(eq(runEvents.runId, 'run-1'))
+      .all()
+      .map((r) => r.seq);
+    expect(seqs).toEqual([0, 5]);
+  });
+
+  it('still ALLOWS a legitimate gap — the guard orders the log, it does not make it dense', async () => {
+    // The half that must not regress: transient events consume sequence numbers without becoming rows, so
+    // an append at 9 over a log ending at 5 is ordinary, not a hole.
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      {
+        expectedLastSequenceNumber: -1,
+      },
+    );
+    await store.persistEvent(ev('node:started', 5, { nodeId: 'a', nodeType: 'agent' }), {
+      expectedLastSequenceNumber: 0,
+    });
+    await expect(
+      store.persistEvent(
+        ev('node:completed', 9, {
+          nodeId: 'a',
+          output: {},
+          tokensUsed: { input: 1, output: 2, model: 'm' },
+          durationMs: 1,
+        }),
+        {
+          expectedLastSequenceNumber: 5,
+        },
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it('REFUSES an append whose expected last sequence does not match the log', async () => {
+    // Driven at the store because that is where the OTHER writers live — a second process, a replay, a
+    // cloud store whose commits are genuinely concurrent. An earlier version of this comment claimed the
+    // guard was "unreachable through the engine once the ordered tail is in place", and measurement says
+    // otherwise: the engine keeps emitting after a lost non-terminal write (ADR-0078 §6 totality), so its
+    // very next guarded ask is a holed one and the guard refuses it on the run path. That case has its own
+    // end-to-end test in `m2-e2e-harness.e2e.test.ts`.
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      { expectedLastSequenceNumber: -1 },
+    );
+
+    // Sequence 1 was never written, so a writer claiming the log ends at 1 is describing a log that does not
+    // exist — appending 2 here is exactly the hole a reader could not tell from a streamed event.
+    await expect(
+      store.persistEvent(ev('node:skipped', 2, { nodeId: 'n', reason: 'branch_not_taken' }), {
+        expectedLastSequenceNumber: 1,
+      }),
+    ).rejects.toSatisfy(isAppendConflictError);
+
+    // …and it is a REFUSAL, not a partial write: the derived rows must not have landed either, which is what
+    // putting the check inside the same IMMEDIATE transaction buys.
+    expect(store.loadRunEvents('run-1').map((e) => e.sequenceNumber)).toEqual([0]);
+  });
+
+  it('the refusal carries what the writer believed and what the log actually holds', async () => {
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      { expectedLastSequenceNumber: -1 },
+    );
+
+    await store.persistEvent(ev('node:skipped', 1, { nodeId: 'n', reason: 'branch_not_taken' }), {
+      expectedLastSequenceNumber: 0,
+    });
+
+    // A stale writer — it still believes the log ends where it did before someone else appended.
+    await store
+      .persistEvent(ev('node:skipped', 2, { nodeId: 'm', reason: 'branch_not_taken' }), {
+        expectedLastSequenceNumber: 0,
+      })
+      .then(
+        () => expect.unreachable('the stale append must be refused'),
+        (error: unknown) => {
+          if (!isAppendConflictError(error)) expect.unreachable('wrong error class');
+          expect(error.expectedLastSequenceNumber).toBe(0);
+          expect(error.actualLastSequenceNumber).toBe(1);
+          expect(error.runId).toBe('run-1');
+        },
+      );
+  });
+
+  it('an append with NO context is unguarded — a direct-seeding caller holds no belief to check', async () => {
+    // The compromise ADR-0078 §2 records: `ctx` is optional so a test double that seeds rows directly does
+    // not have to fabricate a belief. Pinned so the optionality is a decision, not an accident someone
+    // later "tightens" into a broken test suite.
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+    );
+    await store.persistEvent(ev('node:skipped', 7, { nodeId: 'n', reason: 'branch_not_taken' }));
+    expect(store.loadRunEvents('run-1').map((e) => e.sequenceNumber)).toEqual([0, 7]);
+  });
+
+  it('scopes the guard PER RUN — another run`s appends do not move this one`s maximum', async () => {
+    // Measured gap: dropping the `where(eq(runEvents.runId, runId))` from the guard's `max(seq)` passed all
+    // 307 tests in this package, while its in-memory twin had exactly this case. Two concurrent runs sharing
+    // one history.db is the ordinary CLI situation, so an unscoped guard would refuse every second run.
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      { expectedLastSequenceNumber: -1 },
+    );
+    await store.persistEvent(ev('node:skipped', 5, { nodeId: 'n', reason: 'branch_not_taken' }), {
+      expectedLastSequenceNumber: 0,
+    });
+
+    const other = createRunHistoryStore(client.db, {
+      uuid: () => counterUuid(++next),
+      now: () => TS_MS,
+      workflow: { ...WORKFLOW, slug: 'other' },
+    });
+    const otherWorkflowId = await other.resolveWorkflowId('other');
+    // `run-2`'s first append believes ITS log is empty. With an unscoped `max(seq)` the store would see 5.
+    await expect(
+      other.persistEvent(
+        {
+          type: 'run:started',
+          runId: 'run-2',
+          timestamp: TS,
+          sequenceNumber: 0,
+          workflowId: otherWorkflowId,
+          inputs: {},
+          executionMode: 'local',
+        },
+        { expectedLastSequenceNumber: -1 },
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  // --- the fence on the durable write (CR-11, ADR-0079 §2) --------------------------------------------
+
+  it('ACCEPTS a write carrying the lease the store actually holds', async () => {
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      { expectedLastSequenceNumber: -1 },
+    );
+    const lease = store.leases.acquire('run-1', 'proc-a', 60_000);
+    await expect(
+      store.persistEvent(ev('node:skipped', 1, { nodeId: 'n', reason: 'branch_not_taken' }), {
+        expectedLastSequenceNumber: 0,
+        fence: { ownerId: 'proc-a', generation: lease?.generation ?? 0 },
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('REFUSES a write from a FENCED-OUT owner, and writes nothing', async () => {
+    // THE property. The old owner is still running and still trying to record progress; every write from
+    // here on must fail, which is what stops it acting on a run it no longer owns.
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      { expectedLastSequenceNumber: -1 },
+    );
+    const stale = store.leases.acquire('run-1', 'proc-a', 0); // expires immediately
+    store.leases.acquire('run-1', 'proc-b', 60_000); // takeover bumps the generation
+
+    await expect(
+      store.persistEvent(ev('node:skipped', 1, { nodeId: 'n', reason: 'branch_not_taken' }), {
+        expectedLastSequenceNumber: 0,
+        fence: { ownerId: 'proc-a', generation: stale?.generation ?? 0 },
+      }),
+    ).rejects.toSatisfy(isLeaseFencedError);
+    // The refusal is atomic with the append — no derived row survives it either.
+    expect(store.loadRunEvents('run-1').map((e) => e.sequenceNumber)).toEqual([0]);
+  });
+
+  it('the fence refusal names the generation the store actually holds', async () => {
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      { expectedLastSequenceNumber: -1 },
+    );
+    const stale = store.leases.acquire('run-1', 'proc-a', 0);
+    store.leases.acquire('run-1', 'proc-b', 60_000);
+
+    await store
+      .persistEvent(ev('node:skipped', 1, { nodeId: 'n', reason: 'branch_not_taken' }), {
+        expectedLastSequenceNumber: 0,
+        fence: { ownerId: 'proc-a', generation: stale?.generation ?? 0 },
+      })
+      .then(
+        () => expect.unreachable('the fenced write must be refused'),
+        (error: unknown) => {
+          if (!isLeaseFencedError(error)) expect.unreachable('wrong error class');
+          expect(error.ownerId).toBe('proc-a');
+          expect(error.currentGeneration).toBe(2);
+          expect(error.runId).toBe('run-1');
+        },
+      );
+  });
+
+  it('REFUSES when the lease row is GONE — a writer that cannot prove ownership fails closed', async () => {
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      { expectedLastSequenceNumber: -1 },
+    );
+    const lease = store.leases.acquire('run-1', 'proc-a', 60_000);
+    store.leases.release('run-1', 'proc-a', lease?.generation ?? 0);
+
+    await expect(
+      store.persistEvent(ev('node:skipped', 1, { nodeId: 'n', reason: 'branch_not_taken' }), {
+        expectedLastSequenceNumber: 0,
+        fence: { ownerId: 'proc-a', generation: lease?.generation ?? 0 },
+      }),
+    ).rejects.toSatisfy(isLeaseFencedError);
+  });
+
+  it('a write with NO fence is unguarded — the two halves of the context are independent', async () => {
+    // ADR-0078's append guard and ADR-0079's fence ride the same object but neither implies the other: a
+    // caller holding no lease still gets its ordering checked, and vice versa.
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      { expectedLastSequenceNumber: -1 },
+    );
+    store.leases.acquire('run-1', 'proc-a', 60_000);
+    await expect(
+      store.persistEvent(ev('node:skipped', 1, { nodeId: 'n', reason: 'branch_not_taken' }), {
+        expectedLastSequenceNumber: 0,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  // --- the run lease (CR-11, ADR-0079 §1/§6) ----------------------------------------------------------
+
+  /** Seed a `runs` row — `run_leases.run_id` is an FK, so a lease needs its run to exist. */
+  async function seedRun(runId: string): Promise<void> {
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent({
+      type: 'run:started',
+      runId,
+      timestamp: TS,
+      sequenceNumber: 0,
+      workflowId,
+      inputs: {},
+      executionMode: 'local',
+    });
+  }
+
+  it('acquires an unheld lease and hands back generation 1', async () => {
+    await seedRun('run-1');
+    const lease = store.leases.acquire('run-1', 'proc-a', 60_000);
+    expect(lease?.generation).toBe(1);
+    expect(lease?.ownerId).toBe('proc-a');
+    expect(store.leases.read('run-1')?.live).toBe(true);
+  });
+
+  it('REFUSES a different owner while the lease is live', async () => {
+    await seedRun('run-1');
+    store.leases.acquire('run-1', 'proc-a', 60_000);
+    expect(store.leases.acquire('run-1', 'proc-b', 60_000)).toBeUndefined();
+    // …and the incumbent is untouched: a refused acquire must not disturb the holder's generation.
+    expect(store.leases.read('run-1')?.ownerId).toBe('proc-a');
+    expect(store.leases.read('run-1')?.generation).toBe(1);
+  });
+
+  it('a re-acquire by the SAME owner is a renewal, not a takeover', async () => {
+    await seedRun('run-1');
+    store.leases.acquire('run-1', 'proc-a', 60_000);
+    const again = store.leases.acquire('run-1', 'proc-a', 60_000);
+    expect(again?.ownerId).toBe('proc-a');
+    // The generation still moves — every successful acquire bumps it (ADR-0079 §1), which keeps the fence
+    // strictly monotonic and means a caller must carry the token it was just handed, not a remembered one.
+    expect(again?.generation).toBe(2);
+  });
+
+  it('allows a TAKEOVER once the lease has expired, and BUMPS the fence', async () => {
+    // The property that makes a stale owner harmless: the new generation is strictly greater, so the old
+    // owner's token is recognisably OLD rather than merely different.
+    await seedRun('run-1');
+    const first = store.leases.acquire('run-1', 'proc-a', 0); // expires immediately
+    const second = store.leases.acquire('run-1', 'proc-b', 60_000);
+    expect(second?.ownerId).toBe('proc-b');
+    expect(second?.generation).toBeGreaterThan(first?.generation ?? 0);
+  });
+
+  it('evaluates expiry against the STORE`s clock, not the caller`s', async () => {
+    // ADR-0079 §6: one clock per machine. A caller cannot widen its own lease by lying about `now`, because
+    // it never supplies one — only a TTL.
+    let clock = 1_000;
+    const clocked = createRunHistoryStore(client.db, {
+      uuid: () => counterUuid(++next),
+      now: () => clock,
+      workflow: WORKFLOW,
+    });
+    await seedRun('run-1');
+    clocked.leases.acquire('run-1', 'proc-a', 500);
+    expect(clocked.leases.read('run-1')?.live).toBe(true);
+    clock = 2_000; // the store's clock moves past the expiry
+    expect(clocked.leases.read('run-1')?.live).toBe(false);
+    expect(clocked.leases.acquire('run-1', 'proc-b', 500)?.ownerId).toBe('proc-b');
+  });
+
+  it('heartbeat pushes the expiry forward for the holder', async () => {
+    let clock = 1_000;
+    const clocked = createRunHistoryStore(client.db, {
+      uuid: () => counterUuid(++next),
+      now: () => clock,
+      workflow: WORKFLOW,
+    });
+    await seedRun('run-1');
+    const lease = clocked.leases.acquire('run-1', 'proc-a', 500);
+    clock = 1_400;
+    expect(clocked.leases.heartbeat('run-1', 'proc-a', lease?.generation ?? 0, 500)).toBe(true);
+    clock = 1_800; // past the ORIGINAL expiry, inside the renewed one
+    expect(clocked.leases.read('run-1')?.live).toBe(true);
+  });
+
+  it('heartbeat REPORTS the takeover — a fenced owner learns it lost without a second query', async () => {
+    await seedRun('run-1');
+    const stale = store.leases.acquire('run-1', 'proc-a', 0);
+    store.leases.acquire('run-1', 'proc-b', 60_000); // takeover bumps the generation
+    expect(store.leases.heartbeat('run-1', 'proc-a', stale?.generation ?? 0, 60_000)).toBe(false);
+  });
+
+  it('release NEVER steals — a fenced owner cannot drop the new holder`s lease on its way down', async () => {
+    // The failure this prevents is quiet and bad: a losing process shutting down would otherwise free a
+    // lease it no longer owns, letting a THIRD process in while the real owner is mid-run.
+    await seedRun('run-1');
+    const stale = store.leases.acquire('run-1', 'proc-a', 0);
+    store.leases.acquire('run-1', 'proc-b', 60_000);
+    store.leases.release('run-1', 'proc-a', stale?.generation ?? 0);
+    expect(store.leases.read('run-1')?.ownerId).toBe('proc-b');
+  });
+
+  it('release drops the holder`s own lease', async () => {
+    await seedRun('run-1');
+    const lease = store.leases.acquire('run-1', 'proc-a', 60_000);
+    store.leases.release('run-1', 'proc-a', lease?.generation ?? 0);
+    expect(store.leases.read('run-1')).toBeUndefined();
   });
 
   it('persistEvent YIELDS the event loop between retries — it is on the async twin (#226)', async () => {
@@ -476,6 +891,23 @@ describe('createRunHistoryStore', () => {
 
     it('returns undefined for an unknown runId', () => {
       expect(loadRunSnapshot(client.db, 'nope')).toBeUndefined();
+    });
+
+    it('is what `RunStore.readWorkflowSnapshot` answers — the engine reads the column through it', async () => {
+      // The ONLY production implementation of ADR-0083 §5's content verification, and a review measured it
+      // replaceable with `() => Promise.resolve(undefined)` while the whole monorepo stayed green. That
+      // answer takes the documented "this store holds no snapshot" branch, so content verification would be
+      // skipped on every `relavium gate` resume — silently, forever. Exactly the failure §5's amendment says
+      // a REQUIRED method was chosen to prevent.
+      const wf = await store.resolveWorkflowId('demo');
+      await store.persistEvent({
+        ...ev('run:started', 0, { workflowId: wf, inputs: {}, executionMode: 'local' }),
+        runId: 'run-readsnap',
+      });
+      await expect(store.readWorkflowSnapshot('run-readsnap')).resolves.toBe(
+        WORKFLOW.definitionJson,
+      );
+      await expect(store.readWorkflowSnapshot('nope')).resolves.toBeUndefined();
     });
 
     it('returns undefined for a soft-deleted run (a deleted run is not resumable)', async () => {

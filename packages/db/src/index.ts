@@ -83,6 +83,7 @@ export {
 // platform-free engine never imports this — a host wires it over history.db (unencrypted on the CLI, ADR-0050).
 export {
   createRunHistoryStore,
+  createRunLeasePort,
   createRunHistoryReader,
   loadRunSnapshot,
   CorruptRunEventError,
@@ -101,6 +102,15 @@ export {
   type WorkflowRunSummary,
   type RunResumeSnapshot,
 } from './run-history-store.js';
+
+// The durable effect journal (ADR-0080) — its own store, following ADR-0079's lease precedent rather than
+// growing `RunStore`, because a journal row is not a run event and has no `runId` on the session path.
+export {
+  createEffectJournalStore,
+  createEffectJournalPort,
+  createEffectResumePort,
+} from './effect-journal-store.js';
+export type { EffectJournalStore, EffectJournalStoreDeps } from './effect-journal-store.js';
 
 // Provider registry (2.C) — CRUD over the non-secret `llm_providers` catalog the CLI's `relavium provider`
 // commands manage. The key VALUE never lives here — only the OS-keychain `account` ref (ADR-0006/0019).

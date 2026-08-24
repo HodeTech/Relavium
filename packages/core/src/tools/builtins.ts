@@ -9,10 +9,11 @@
  */
 
 import {
+  type EffectTier,
   MEDIA_HANDLE_PATTERN,
+  type MediaPart,
   scopeSetIncludes,
   validateByteRange,
-  type MediaPart,
 } from '@relavium/shared';
 import { z } from 'zod';
 
@@ -46,6 +47,10 @@ interface BuiltinSpec<A> {
   readonly configOnlyParams?: readonly string[];
   readonly policy: ToolPolicyClass;
   readonly policyTarget?: (args: A) => PolicyTarget;
+  /** Whether this call mutates externally, and at what tier — ADR-0080; see `ToolDef.effect`. */
+  readonly effect?: (args: A) => EffectTier | undefined;
+  /** Duplicates of this tool's effect are harmless — first-party built-ins only; see `ToolDef`. */
+  readonly duplicationBenign?: boolean;
   readonly dispatch: (args: A, host: ToolHost, ctx: ToolDispatchContext) => Promise<unknown>;
 }
 
@@ -61,6 +66,8 @@ function defineBuiltin<A>(spec: BuiltinSpec<A>): ToolDef<A> {
     policy: spec.policy,
     ...(spec.configOnlyParams === undefined ? {} : { configOnlyParams: spec.configOnlyParams }),
     ...(spec.policyTarget === undefined ? {} : { policyTarget: spec.policyTarget }),
+    ...(spec.effect === undefined ? {} : { effect: spec.effect }),
+    ...(spec.duplicationBenign === undefined ? {} : { duplicationBenign: spec.duplicationBenign }),
     dispatch: spec.dispatch,
   };
   return def;
@@ -201,6 +208,10 @@ const writeFileTool = defineBuiltin({
   // (ADR-0057 EA3). NOT a guardrail target — `enforcePolicy` reads only `command`/`url`, so this changes no
   // allowlist behavior; it is display-only.
   policyTarget: (args) => ({ path: args.path }),
+  // An APPEND is an effect: appends compose, so a replay doubles the content. A whole-file overwrite is
+  // naturally idempotent — writing the same bytes twice leaves the same file, and the file IS the receipt,
+  // so it needs no journal row (ADR-0080 §3). Local, but "external" means outside this PROCESS.
+  effect: (args) => (args.append === true ? 3 : undefined),
   dispatch: (args, host, ctx) =>
     requireFs(host, 'write_file').writeFile(
       args.path,
@@ -267,6 +278,9 @@ const runCommandTool = defineBuiltin({
   policy: { fsScoped: false, spawnsProcess: true, requiresGateApproval: false },
   // The resolved command the exact-match allowedCommands allowlist inspects (ADR-0029(a)).
   policyTarget: (args) => ({ command: [args.command, ...(args.args ?? [])].join(' ') }),
+  // Tier 3 and unpromotable: `allowedCommands` is free-form, so the engine cannot know whether a given
+  // command is idempotent — `terraform apply` and `ls` are the same shape to it (ADR-0080 §3).
+  effect: () => 3,
   dispatch: (args, host, ctx) =>
     requireProcess(host, 'run_command').spawn(
       args.command,
@@ -339,6 +353,9 @@ const gitCommitTool = defineBuiltin({
     additionalProperties: false,
   },
   policy: { fsScoped: false, spawnsProcess: true, requiresGateApproval: true },
+  // Tier 3. Unreachable today (`gateApproved` is hard-coded false at both producers), but the declaration
+  // belongs with the tool rather than being remembered when the gate is finally wired.
+  effect: () => 3,
   dispatch: (args, host, ctx) =>
     // `--` terminates option parsing so every `files` entry is an operand (pathspec), never an option.
     requireProcess(host, 'git_commit').spawn(
@@ -379,6 +396,10 @@ const httpRequestTool = defineBuiltin({
   },
   policy: { fsScoped: false, spawnsProcess: false, egress: 'http', requiresGateApproval: false },
   policyTarget: (args) => ({ url: args.url }),
+  // A GET mutates nothing and is NOT journaled — journaling it would put two durable writes on every read
+  // and halt a run on a crashed fetch. Any other method is tier 3 today: tier 1 needs a target that honours
+  // an idempotency key, and nothing declares one yet (ADR-0080 §3, and the promotion's trigger in §6).
+  effect: (args) => ((args.method ?? 'GET') === 'GET' ? undefined : 3),
   dispatch: (args, host, ctx) =>
     requireEgress(host, 'http_request').fetch(
       { method: args.method ?? 'GET', url: args.url, headers: args.headers, body: args.body },
@@ -436,6 +457,10 @@ const mcpCallTool = defineBuiltin({
     additionalProperties: false,
   },
   policy: { fsScoped: false, spawnsProcess: false, egress: 'mcp', requiresGateApproval: false },
+  // Permanently tier 3, and not for want of metadata: an MCP server's own annotations are attacker-controlled
+  // bytes from the very party the hostile-MCP class defends against, so they may never RAISE trust
+  // (ADR-0080 §5).
+  effect: () => 3,
   dispatch: (args, host, ctx) =>
     requireMcp(host, 'mcp_call').call(
       { server: args.server, tool: args.tool, args: args.args },
@@ -467,6 +492,11 @@ const notifyTool = defineBuiltin({
     additionalProperties: false,
   },
   policy: OS_POLICY,
+  // An effect by the letter of the contract, and benign under duplication — a duplicate desktop toast is not
+  // an incident, and halting a run for one would discredit the mechanism. Declared rather than excepted, so
+  // the next tool with this property has to state it too (ADR-0080 §5 / effect-journal.md §3.3).
+  effect: () => 3,
+  duplicationBenign: true,
   dispatch: async (args, host, ctx) => {
     await requireOs(host, 'notify').notify({ title: args.title, body: args.body }, ctx.signal);
     return { delivered: true };

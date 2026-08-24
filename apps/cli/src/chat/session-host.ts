@@ -1,21 +1,24 @@
 import {
+  type AgentDefinition,
   AgentSession,
-  BUILTIN_TOOLS,
   BudgetGovernor,
-  DEFAULT_AGENT_TURN_LIMITS,
-  RunEventBus,
+  BUILTIN_TOOLS,
   createSessionEventSink,
   createSessionHandle,
   createToolRegistry,
+  DEFAULT_AGENT_TURN_LIMITS,
+  type EffectCorrelation,
+  type EffectDispatchPort,
+  type EffortGateResult,
   reconstructSessionState,
-  type AgentDefinition,
+  RunEventBus,
   type SessionDeps,
   type SessionEventSink,
   type SessionHandle,
-  type EffortGateResult,
   type SessionResumeState,
   type ToolDef,
   type ToolHost,
+  unwiredEffectJournal,
 } from '@relavium/core';
 import {
   effortTiersFor,
@@ -35,7 +38,11 @@ import type {
 } from '@relavium/shared';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
-import { connectAgentMcp } from '../engine/mcp-servers.js';
+import {
+  connectAgentMcp,
+  type ConnectAgentMcpOptions,
+  type StdioConsentGate,
+} from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { assembleToolEnv, clampChatTier, wiredToolIds } from '../engine/tool-host/assemble.js';
 import { CliError } from '../process/errors.js';
@@ -45,9 +52,9 @@ import {
   reasoningWithheldByCapFor,
   unpricedModelNote,
 } from './effort-notice.js';
-import { resolveChatAgent } from './agent-source.js';
+import { resolveChatAgentSource, type ResolvedChatAgent } from './agent-source.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
-import { hostSleep } from '../process/sleep.js';
+import { hostAttemptTimer, hostSleep } from '../process/sleep.js';
 
 /**
  * Assemble a ready-to-run `relavium chat` session over `@relavium/core`'s {@link AgentSession} (2.M — the
@@ -90,6 +97,15 @@ export interface BuildChatSessionOptions {
    * `mcp_servers` discover their tools without a live server in the unit path.
    */
   readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  /**
+   * The consent gate ([ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §1) —
+   * threaded to {@link connectAgentMcp} so a chat session's declared stdio server is not spawned until the
+   * user has agreed to it. §1 names BOTH connect paths; only `relavium run` wired it at first, which left
+   * `chat`, `chat-resume`, the Home and `agent run` spawning ungated.
+   */
+  readonly consentGate?: StdioConsentGate;
+  /** The agent artifact these servers were declared in — shown at the consent prompt (ADR-0084 §7). */
+  readonly mcpArtifact?: string;
   /**
    * Resolve a `{{secrets.<name>}}` placeholder in an MCP server `env` value (2.R Step 4, ADR-0052 §6). The
    * command wires the isolated `mcp-secret:*` keychain → `RELAVIUM_MCP_*` env chain; absent ⇒ a `{{` env value
@@ -201,6 +217,16 @@ export interface BuiltChatSession {
    * so `preEgress`'s gate cannot take it as an argument. Same shape as `attachConservativeWriter`, and the
    * persister self-attaches through it exactly as it does for the commitment writer.
    */
+  /**
+   * Attach the durable effect journal (ADR-0080), late-bound because the journal is owned by the persister,
+   * which is built AFTER the session — the same constraint `attachConservativeWriter` has for money.
+   *
+   * An effect dispatched before attachment is REFUSED loudly rather than going unrecorded, which is the
+   * fail-closed direction: a silently unjournaled effect is exactly what CR-12 exists to prevent.
+   */
+  readonly attachEffectJournal: (
+    factory: (correlation: EffectCorrelation) => EffectDispatchPort,
+  ) => void;
   readonly attachDurabilityProbe: (probe: () => Error | undefined) => void;
   /**
    * Tools dropped at MCP discovery (allowlist / unsupported schema / collision / unsafe id) — a non-fatal
@@ -255,6 +281,14 @@ function buildSessionRuntime(
    * `attachConservativeWriter` is late-bound. Until it is attached the probe reports healthy, which is
    * correct: nothing has been persisted yet either.
    */
+  /**
+   * Attach the durable effect journal (ADR-0080), late-bound because the journal is owned by the persister,
+   * which is built AFTER the session — the same constraint `attachConservativeWriter` has for money.
+   *
+   * An effect dispatched before attachment is REFUSED loudly rather than going unrecorded, which is the
+   * fail-closed direction: a silently unjournaled effect is exactly what CR-12 exists to prevent.
+   */
+  attachEffectJournal: (factory: (correlation: EffectCorrelation) => EffectDispatchPort) => void;
   attachDurabilityProbe: (probe: () => Error | undefined) => void;
 } {
   let durabilityProbe: () => Error | undefined = () => undefined;
@@ -326,9 +360,33 @@ function buildSessionRuntime(
   // event (the in-REPL `/export`'s `session:exported`, 2.Q) can ride the same monotonic per-session counter.
   const emit = createSessionEventSink(bus, sessionId);
 
+  // Late-bound by `attachEffectJournal`: the journal is owned by the persister, which is built AFTER the
+  // session — the same constraint the commitment writer has.
+  let effectJournal: ((correlation: EffectCorrelation) => EffectDispatchPort) | undefined;
+
   const deps: SessionDeps = {
     resolveProvider: providers.resolveProvider,
     keyFor: providers.keyFor,
+    // The durable effect journal (ADR-0080), FORWARDED rather than captured: it is attached later by the
+    // persister, which owns `history.db`, so resolving at call time is what lets the session be built first.
+    // Before attachment the forward hits `unwiredEffectJournal()` and REFUSES — the fail-closed direction,
+    // and the same posture the commitment writer takes for money.
+    effects: (correlation: EffectCorrelation): EffectDispatchPort => {
+      const port = effectJournal?.(correlation);
+      return {
+        prepare: (slot, toolId, tier, redactedArgs, targetIdempotencyKey) =>
+          (port ?? unwiredEffectJournal()).prepare(
+            slot,
+            toolId,
+            tier,
+            redactedArgs,
+            targetIdempotencyKey,
+          ),
+        settle: (slot, toolId, state, result) =>
+          (port ?? unwiredEffectJournal()).settle(slot, toolId, state, result),
+        discard: (slot, toolId) => (port ?? unwiredEffectJournal()).discard(slot, toolId),
+      };
+    },
     // ADR-0071 §6: the host projects WHICH TIERS the model accepts, not merely whether it reasons. `gpt-5.4-pro`
     // reasons and rejects `low`; the boolean this replaced said `true` and let that straight through to a 400.
     // The seam's `effortTiersFor` IS the projection — passed by reference, not re-derived, so this host cannot
@@ -350,6 +408,9 @@ function buildSessionRuntime(
     registry,
     tools,
     sleep: hostSleep,
+    // ADR-0082 §6's per-attempt deadline. The controller this host already supplies for the per-turn cancel
+    // doubles as the deadline's merged signal; the TIMER is what arms it.
+    setTimer: hostAttemptTimer,
     now: opts.now,
     // Node's AbortController satisfies the engine's structural AbortControllerLike (abort() + signal).
     newAbortController: () => new AbortController(),
@@ -418,30 +479,71 @@ function buildSessionRuntime(
     attachDurabilityProbe: (probe) => {
       durabilityProbe = probe;
     },
+    attachEffectJournal: (factory: (correlation: EffectCorrelation) => EffectDispatchPort) => {
+      effectJournal = factory;
+    },
+  };
+}
+
+/**
+ * The agent this session binds for its whole lifetime, and the FILE it came from.
+ *
+ * A `/clear` rebuild ([ADR-0062](../../../../docs/decisions/0062-context-compaction-and-cli-history-commands.md) §7)
+ * passes the CURRENT bound agent to rebind verbatim; otherwise the ref is resolved from disk, or the built-in
+ * default is built. Reusing the agent avoids a disk re-read — and its failure modes — on `/clear`.
+ *
+ * The artifact path travels with the agent for the consent prompt
+ * ([ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §7):
+ * `chat --agent ./downloaded.agent.yaml` is the imported-artifact case the gate exists for, and naming the
+ * word the user typed instead of the path it resolved to answers a different question than the one asked. A
+ * rebind has no file — the agent is already in memory — so it reports none rather than a stale one.
+ */
+function bindChatAgent(opts: BuildChatSessionOptions): ResolvedChatAgent {
+  if (opts.agent !== undefined) return { agent: opts.agent, artifact: undefined };
+  return resolveChatAgentSource(opts.agentRef, {
+    cwd: opts.cwd,
+    projectConfigDir: opts.projectConfigDir,
+    defaultModel: opts.chat.defaultModel,
+    // ADR-0059: the persisted `[chat].default_provider` is used verbatim for the DEFAULT agent so a
+    // live-discovered id whose prefix the inference cannot place still resolves; absent ⇒ inference.
+    ...(opts.chat.defaultProvider === undefined
+      ? {}
+      : { defaultProvider: opts.chat.defaultProvider }),
+    // ADR-0066: the `[chat].reasoning_effort` default is baked onto the DEFAULT agent only (an authored
+    // agent owns its own). Threaded here so a config default lights up a default-agent chat.
+    ...(opts.chat.reasoningEffort === undefined
+      ? {}
+      : { reasoningEffort: opts.chat.reasoningEffort }),
+  });
+}
+
+/**
+ * The MCP connect options, with every absent one OMITTED rather than passed as an explicit `undefined`.
+ *
+ * `exactOptionalPropertyTypes` is on, so `{ startMcpClient: undefined }` and `{}` are different types — the
+ * spread-or-nothing shape is what keeps a caller that did not wire a dependency from asserting it wired one
+ * to `undefined`.
+ */
+function mcpOptionsFor(
+  opts: BuildChatSessionOptions,
+  mcpArtifact: string | undefined,
+): ConnectAgentMcpOptions {
+  return {
+    cwd: opts.cwd,
+    ...(opts.consentGate === undefined ? {} : { consentGate: opts.consentGate }),
+    // The caller's label wins (`agent run` names the ref the user typed); otherwise the path the agent was
+    // actually read from — §7's "declared in <file>" for the imported-artifact case.
+    ...(mcpArtifact === undefined ? {} : { artifact: mcpArtifact }),
+    ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
+    ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
+    ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
   };
 }
 
 export async function buildChatSession(opts: BuildChatSessionOptions): Promise<BuiltChatSession> {
   const sessionId = opts.uuid();
-  // A `/clear` rebuild (ADR-0062 §7) passes the CURRENT bound agent to rebind verbatim; otherwise resolve `agentRef`
-  // from disk / the built-in default. Reusing the agent avoids a disk re-read (and its failure modes) on `/clear`.
-  const agent =
-    opts.agent ??
-    resolveChatAgent(opts.agentRef, {
-      cwd: opts.cwd,
-      projectConfigDir: opts.projectConfigDir,
-      defaultModel: opts.chat.defaultModel,
-      // ADR-0059: the persisted `[chat].default_provider` is used verbatim for the DEFAULT agent so a live-discovered
-      // id whose prefix the inference cannot place still resolves; absent ⇒ inference from the id.
-      ...(opts.chat.defaultProvider === undefined
-        ? {}
-        : { defaultProvider: opts.chat.defaultProvider }),
-      // ADR-0066: the `[chat].reasoning_effort` default is baked onto the DEFAULT agent only (an authored agent
-      // owns its own). Threaded here so a config default lights up a default-agent chat without a picker step.
-      ...(opts.chat.reasoningEffort === undefined
-        ? {}
-        : { reasoningEffort: opts.chat.reasoningEffort }),
-    });
+  const { agent, artifact } = bindChatAgent(opts);
+  const mcpArtifact = opts.mcpArtifact ?? artifact;
   const context: SessionContext = {
     workingDir: opts.cwd,
     // The EFFECTIVE tier (full→project clamped for the chat surface — a chat READ can exfiltrate) — the SAME value the factory
@@ -457,20 +559,11 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
   // (fixture/offline replay) bypasses the path entirely — no config build, no spawn, no dial.
   const mcp = opts.disableMcp
     ? undefined
-    : await connectAgentMcp(agent.mcp_servers, {
-        cwd: opts.cwd,
-        ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
-        ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
-        ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
-      });
+    : await connectAgentMcp(agent.mcp_servers, mcpOptionsFor(opts, mcpArtifact));
 
   try {
-    const { bus, deps, emit, host, governor, attachDurabilityProbe } = buildSessionRuntime(
-      opts,
-      sessionId,
-      mcp,
-      context,
-    );
+    const { bus, deps, emit, host, governor, attachDurabilityProbe, attachEffectJournal } =
+      buildSessionRuntime(opts, sessionId, mcp, context);
     // The session runs against the EFFECTIVE agent: its grant unioned with the discovered MCP tool ids (2.R)
     // and then narrowed by the 2.5.A advertise-filter to the tools whose ToolHost arm is actually wired (an
     // unwired tool is never offered). The ORIGINAL `agent` is what we return + persist (see {@link BuiltChatSession.agent}).
@@ -493,6 +586,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       mcpSkipped: mcp?.skipped ?? [],
       ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
       attachDurabilityProbe,
+      attachEffectJournal,
       ...(governor === undefined ? {} : { governor }),
     };
   } catch (err) {
@@ -606,6 +700,15 @@ export interface BuildResumedChatSessionOptions {
   readonly toolHost?: ToolHost;
   /** Injectable MCP connect-all (2.R; see {@link BuildChatSessionOptions.startMcpClient}). */
   readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  /**
+   * The consent gate ([ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §1) —
+   * threaded to {@link connectAgentMcp} so a chat session's declared stdio server is not spawned until the
+   * user has agreed to it. §1 names BOTH connect paths; only `relavium run` wired it at first, which left
+   * `chat`, `chat-resume`, the Home and `agent run` spawning ungated.
+   */
+  readonly consentGate?: StdioConsentGate;
+  /** The agent artifact these servers were declared in — shown at the consent prompt (ADR-0084 §7). */
+  readonly mcpArtifact?: string;
   /** Resolve `{{secrets.<name>}}` in an MCP server `env` (2.R Step 4; see {@link BuildChatSessionOptions.mcpSecretResolver}). */
   readonly mcpSecretResolver?: McpSecretResolver;
   /** Config `[[mcp_servers]]` registrations for by-name `ref` resolution (2.R Step 4b; see {@link BuildChatSessionOptions.mcpRegistrations}). */
@@ -651,18 +754,19 @@ export async function buildResumedChatSession(
   // never leaks an opened connection.
   const mcp = await connectAgentMcp(agent.mcp_servers, {
     cwd: context.workingDir,
+    ...(opts.consentGate === undefined ? {} : { consentGate: opts.consentGate }),
+    // The SESSION, not a file. A resume runs the agent SNAPSHOT frozen at session start, so the file the
+    // agent originally came from may have changed or be gone — naming it would tell the user to go review
+    // bytes that are not what is about to run (ADR-0084 §7).
+    artifact: opts.mcpArtifact ?? `resumed session ${record.id}`,
     ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
     ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
     ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
   });
 
   try {
-    const { bus, deps, emit, host, governor, attachDurabilityProbe } = buildSessionRuntime(
-      opts,
-      record.id,
-      mcp,
-      context,
-    );
+    const { bus, deps, emit, host, governor, attachDurabilityProbe, attachEffectJournal } =
+      buildSessionRuntime(opts, record.id, mcp, context);
     const session = AgentSession.resume(
       {
         sessionId: record.id,
@@ -693,6 +797,7 @@ export async function buildResumedChatSession(
       mcpSkipped: mcp?.skipped ?? [],
       ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
       attachDurabilityProbe,
+      attachEffectJournal,
       ...(governor === undefined ? {} : { governor }),
     };
   } catch (err) {

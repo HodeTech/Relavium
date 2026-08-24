@@ -4,6 +4,22 @@
 - **Date**: 2026-06-03
 - **Related**: [0004-vercel-ai-sdk-multi-llm.md](0004-vercel-ai-sdk-multi-llm.md) (supersedes), [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0018-desktop-execution-and-rust-egress.md](0018-desktop-execution-and-rust-egress.md) (per-host egress + key handling), [0024-agent-first-entry-point-agentsession.md](0024-agent-first-entry-point-agentsession.md) (seam reused by chat-mode agents), [0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md](0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md) (amends the seam shape), [tech-stack.md](../tech-stack.md)
 
+> **Amended 2026-08-18 by [ADR-0082](0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md).**
+> The seam gains three things, none of which changes what crosses it. **Two have landed:** a new
+> `LlmErrorKind` **`protocol`** for a grammar violation, deliberately NOT retryable; and an optional
+> **`LlmError.contentCommitted`**, set by the chain — and stripped from anything a provider claims — when a
+> failure is surfaced past the first content chunk, so the node-retry budget above the chain refuses to
+> re-dispatch a call that already produced output and already billed.
+>
+> **And the third:** a stated **stream grammar** (exactly one terminal, last, nothing after it) that
+> `FallbackChain` verifies on every provider — including the foreign ones this seam exists to admit — plus a
+> per-attempt **hard deadline** and the `advance` verdict that lets a pre-content grammar violation try the
+> next entry. All three are wired as of 2026-08-18; the normative text is in
+> [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md).
+>
+> The contract's defining rule is untouched throughout: no vendor SDK type crosses the seam, and
+> `LlmRequest` is unchanged.
+
 ## Context
 
 This ADR supersedes [ADR-0004](0004-vercel-ai-sdk-multi-llm.md), which selected the **Vercel AI SDK** as the multi-LLM layer. That choice is withdrawn: the project will not adopt Vercel-stewarded products. The objection is a hard product input, not a defect claim — the Vercel AI SDK is MIT and runtime-agnostic — but it removes it from consideration, and the alternatives were re-evaluated from scratch.

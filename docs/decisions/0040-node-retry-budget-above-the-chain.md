@@ -26,6 +26,9 @@
 
 > **Amended 2026-06-20 by [ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md).** A scoped exception, not a reversal: for the async-media node only, ADR-0045 **re-attaches** to a persisted provider job on crash-resume instead of re-running from pending (the default A.6 quotes), and **carves the wall-clock media-poll cadence out of the A.3 deterministic-replay invariant** (an external job result is non-deterministic state already). The node-retry budget + classification rules are otherwise unchanged.
 
+
+> **Amended 2026-08-17 by [ADR-0080](0080-durable-effect-journal-and-the-tiered-effect-contract.md).** The idempotency key this ADR describes — a stable key derived from `runId + nodeId + retryCount` — **does not exist in the code and never did**; it appeared only in prose and comments. It also could not have worked: `retryCount` resets to 1 on a crash-resume and again on a budget approval, so the key repeats rather than distinguishing occurrences. Any sentence here implying that a re-run of a non-idempotent step is a no-op at the target is false for tier 3.
+
 ## Context
 
 Reliability in the engine has **two distinct retry concerns**, and only one is built:

@@ -14,7 +14,7 @@
  * persisted `run_events` — 1.R; the in-process replay path is out of 1.N scope and noted here.)
  */
 
-import type { RunEvent, RunOrSessionEvent } from '@relavium/shared';
+import type { ErrorCode, RunDurability, RunEvent, RunOrSessionEvent } from '@relavium/shared';
 
 import type { RunEventBus, RunEventListener } from './event-bus.js';
 import { BoundedEventStream, DEFAULT_STREAM_CAPACITY } from './event-stream.js';
@@ -47,6 +47,30 @@ export interface RunHandle {
   cancel: () => void;
   /** Resolves when the primary consumer's buffer has drained below capacity — the engine awaits it to throttle. */
   whenConsumersReady: () => Promise<void>;
+  /**
+   * Whether the run's terminal reached the durable log (ADR-0078 §5). `'pending'` until a terminal is
+   * delivered; then `'durable'`, or `'uncertain'` when the write did not land and the terminal was handed to
+   * the host's {@link TerminalOutbox} instead.
+   *
+   * **Read it after the stream completes**, not during. A caller that only drains `events` and acts on the
+   * terminal type is doing what every surface did before this existed, and is exactly the caller CR-92 is
+   * about: it can be told a run completed while the durable record says otherwise.
+   */
+  durability: () => RunDurability;
+  /**
+   * The `ErrorCode` on this run's `run:failed`, or `undefined` if it did not fail.
+   *
+   * **Read it after the stream completes**, like {@link RunHandle.durability}, and for the same reason —
+   * and never re-derive it from your own `subscribe()`. That is a live bus subscription with no replay, so
+   * a terminal emitted before the caller receives the handle is invisible to it; `resumeFromCheckpoint`
+   * does exactly that when the resume gate refuses.
+   *
+   * Distinct from the disposition on purpose: `durability()` answers "did the terminal's write land"
+   * ([ADR-0078](../../../docs/decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §5), and a
+   * run can fail for a reason that needs its own remedy while its terminal lands perfectly
+   * ([effect-journal.md](../../../docs/reference/shared-core/effect-journal.md) §8).
+   */
+  terminalError: () => ErrorCode | undefined;
 }
 
 /**
@@ -63,18 +87,41 @@ export function createRunHandle(
   runId: string,
   cancel: () => void,
   capacity: number = DEFAULT_STREAM_CAPACITY,
+  /** Read by {@link RunHandle.durability}; the engine sets it as the terminal's write settles (ADR-0078 §5). */
+  readDurability: () => RunDurability = () => 'pending',
+  /**
+   * Handed the stream's closer, so the engine can end the iteration WITHOUT a terminal event.
+   *
+   * The one caller is ADR-0079 §5's fenced run: it must not write a terminal (the run belongs to another
+   * process now) but its consumer's `for await` must still complete rather than hang forever. Every other
+   * close is terminal-driven, which is why this is a deliberate escape hatch rather than a general API.
+   */
+  onCloser: (close: () => void) => void = () => undefined,
 ): RunHandle {
   // `onClose: unsubscribe` detaches the bus subscription on ANY close — the terminal event below OR an early
   // consumer abandon (`break`/`return` → BoundedEventStream.return() → close()) — not only on a terminal.
   const primary = new BoundedEventStream<RunEvent>(capacity, () => unsubscribe());
+  // Captured HERE, on the subscription registered at construction, and read after the stream completes —
+  // exactly like `durability`. It cannot be captured by a caller's own `subscribe()`: that is a LIVE bus
+  // subscription with no replay, and a terminal can be emitted before the caller ever receives the handle
+  // (`resumeFromCheckpoint` awaits `beginResume`, which settles the resume gate's refusal inline). A review
+  // measured that: `relavium gate`'s late subscriber saw `undefined` and the run reported exit 1 for a run
+  // that had stopped for an unresolved external effect — the one code that must never be retried.
+  let terminalError: ErrorCode | undefined;
   const unsubscribe = bus.subscribe((event) => {
     if (!isForRun(event, runId)) {
       return; // not this run's event (another run, or a session event with no runId)
+    }
+    if (event.type === 'run:failed') {
+      terminalError = event.error.code;
     }
     primary.push(event);
     if (TERMINAL_TYPES.has(event.type)) {
       primary.close(); // close() fires onClose -> unsubscribe()
     }
+  });
+  onCloser(() => {
+    primary.close();
   });
   return {
     runId,
@@ -87,6 +134,8 @@ export function createRunHandle(
       }),
     cancel,
     whenConsumersReady: () => primary.whenDrained(),
+    durability: readDurability,
+    terminalError: () => terminalError,
   };
 }
 
@@ -106,5 +155,11 @@ export function createClosedRunHandle(runId: string): RunHandle {
     subscribe: () => () => undefined,
     cancel: () => undefined,
     whenConsumersReady: () => Promise.resolve(),
+    // The run terminated in a PRIOR process and its terminal is in the persisted log — that is what makes
+    // this handle closed at all. Reporting anything else would be a guess about a write we did not make.
+    durability: () => 'durable',
+    // The terminal is in the PERSISTED log, not in this process — re-delivering a closed handle re-emits
+    // nothing, so there is no code to report. A caller that needs it reads `relavium logs <runId>`.
+    terminalError: () => undefined,
   };
 }

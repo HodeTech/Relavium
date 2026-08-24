@@ -85,7 +85,12 @@ function linesDriver(lines: readonly string[]): ChatDriver {
   };
 }
 
-/** An --agent file declaring one stdio MCP server (the injected startMcpClient never spawns `command: x`). */
+/**
+ * An --agent file declaring one stdio MCP server. The injected `startMcpClient` never spawns it — but the
+ * ADR-0084 consent gate RESOLVES the declared command against the ambient PATH before deciding, so the
+ * command names a real binary and each test injects a gate that decides nothing. The gate's own behaviour
+ * is pinned in `mcp-consent-gate.test.ts`; these are about routing and teardown.
+ */
 const MCP_AGENT_YAML = [
   'id: mcpcoder',
   'provider: anthropic',
@@ -94,7 +99,7 @@ const MCP_AGENT_YAML = [
   'mcp_servers:',
   '  - id: fs',
   '    transport: stdio',
-  '    command: x',
+  '    command: node',
 ].join('\n');
 
 /** A fake MCP connection whose `close` counts teardowns; `read` is allowed, `danger` is dropped (skip note). */
@@ -1272,6 +1277,7 @@ describe('chatCommand', () => {
     const buildSession: typeof buildChatSession = (o) =>
       buildChatSession({
         ...o,
+        consentGate: () => Promise.resolve(new Map()),
         startMcpClient: () =>
           realStartMcpClient([
             { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
@@ -1293,6 +1299,7 @@ describe('chatCommand', () => {
     const buildSession: typeof buildChatSession = (o) =>
       buildChatSession({
         ...o,
+        consentGate: () => Promise.resolve(new Map()),
         startMcpClient: () =>
           realStartMcpClient([
             { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
@@ -1748,6 +1755,7 @@ describe('chatResumeCommand (2.N)', () => {
     const seedBuild: typeof buildChatSession = (o) =>
       buildChatSession({
         ...o,
+        consentGate: () => Promise.resolve(new Map()),
         startMcpClient: () =>
           realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(seed.conn) }]),
       });
@@ -1762,6 +1770,7 @@ describe('chatResumeCommand (2.N)', () => {
     const resumeBuild: typeof buildResumedChatSession = (o) =>
       buildResumedChatSession({
         ...o,
+        consentGate: () => Promise.resolve(new Map()),
         startMcpClient: () =>
           realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(resume.conn) }]),
       });

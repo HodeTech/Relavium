@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 
 import type { WorkflowDefinition } from '@relavium/core';
 import { createRunHistoryStore, type Db, type RunHistoryStore } from '@relavium/db';
@@ -14,6 +15,12 @@ export interface OpenedHistory {
    * connection with run history, closed once by {@link close}.
    */
   readonly db: Db;
+  /**
+   * Where a terminal the store refused is held (ADR-0078 §4) — `~/.relavium/terminal-outbox.ndjson`, beside
+   * `history.db` and deliberately NOT inside it. The store that must hold a refused terminal is the store
+   * that just refused it, so the outbox has to be a different file to survive the fault class it exists for.
+   */
+  readonly terminalOutboxPath: string;
   readonly close: () => void;
 }
 
@@ -26,6 +33,17 @@ export interface OpenedHistory {
  * `runs.project_root` so a cross-process `relavium gate` resume re-jails `save_to` under the original run's
  * root, not the resumer's cwd.
  */
+/**
+ * Where a terminal the store refused is held (ADR-0078 §4), for one `~/.relavium` home.
+ *
+ * Exported so `run` and `gate` cannot drift onto DIFFERENT files — which they briefly did, because `gate`
+ * opens the database through `openLocalDb` rather than this module and so repeated the literal. Two commands
+ * writing two outboxes would mean a terminal held by one is never retried by the other.
+ */
+export function terminalOutboxPath(homeDir: string): string {
+  return join(homeDir, '.relavium', 'terminal-outbox.ndjson');
+}
+
 export function openHistoryStore(
   workflow: WorkflowDefinition,
   homeDir: string,
@@ -42,5 +60,10 @@ export function openHistoryStore(
       definitionJson: JSON.stringify(workflow),
     },
   });
-  return { store, db, close };
+  return {
+    store,
+    db,
+    terminalOutboxPath: terminalOutboxPath(homeDir),
+    close,
+  };
 }

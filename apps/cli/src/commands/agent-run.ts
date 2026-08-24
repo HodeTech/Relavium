@@ -8,6 +8,9 @@ import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
 import { cassetteResolver, loadCassette } from '../chat/fixture.js';
 import { onceEffortNotice } from '../chat/effort-notice.js';
 import { buildChatSession, type BuiltChatSession } from '../chat/session-host.js';
+import { createConsentGate } from '../engine/mcp-consent-gate.js';
+import type { StdioConsentGate } from '../engine/mcp-servers.js';
+import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
 import { loadUserPricingOverlay } from '../engine/pricing-overlay.js';
@@ -19,6 +22,8 @@ import type { GlobalOptions } from '../process/options.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { makePlainPrinter } from './chat.js';
 import { stringifyJsonLine } from '../render/sanitize.js';
+import { createEffectJournalPort, createEffectJournalStore } from '@relavium/db';
+import { openSessionStore } from '../history/session-open.js';
 
 /**
  * `relavium agent run <agent>` (2.Q) — invoke a single agent **one-shot** (non-interactive) on the same
@@ -37,6 +42,13 @@ export interface AgentRunCommandArgs {
   readonly input: readonly string[];
   /** `--fixture <path>` — replay a recorded LLM cassette (deterministic, offline). */
   readonly fixture?: string;
+  /**
+   * `--allow-mcp-stdio <digest>`, repeatable
+   * ([ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §6) — authorizes a
+   * stdio MCP server for THIS invocation and writes no grant. On `agent run` for the same reason as on
+   * `run`: both are the invocations a CI definition drives, where there is no one to ask.
+   */
+  readonly allowMcpStdio: readonly string[];
 }
 
 export interface AgentRunCommandDeps {
@@ -46,6 +58,11 @@ export interface AgentRunCommandDeps {
   readonly providers?: ProviderResolver;
   /** Injectable session builder (tests). Default {@link buildChatSession}. */
   readonly buildSession?: typeof buildChatSession;
+  /**
+   * Injectable consent gate (ADR-0084 §1) — the DEFAULT is the real one, so an un-wired production path is
+   * a deliberate choice rather than an omission. A fixture supplies one that never prompts.
+   */
+  readonly consentGate?: StdioConsentGate;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one; default env-only. */
   readonly mcpSecretResolver?: McpSecretResolver;
   readonly now?: () => number;
@@ -84,6 +101,19 @@ export async function agentRunCommand(
   // FULLY offline: no `[[mcp_servers]]` registrations and an env-only secret resolver (never the keychain).
   const built = await (deps.buildSession ?? buildChatSession)({
     chat: config.chat,
+    // **Consent before any stdio MCP spawn** (ADR-0084 §1). A one-shot `agent run` opens an agent artifact
+    // — often an imported one — which is exactly the case the gate exists for; `--fixture` replays offline
+    // and declares no servers, so the gate never fires there.
+    mcpArtifact: args.agent,
+    consentGate:
+      deps.consentGate ??
+      createConsentGate({
+        io: deps.io,
+        global: deps.global,
+        homeDir,
+        allowedDigests: args.allowMcpStdio,
+        prompt: createConsentPrompter(),
+      }),
     // ADR-0071 §6: a one-shot invoke has no transcript and no picker, so a withheld tier would otherwise vanish
     // completely — the turn runs, the authored knob does nothing, and the bill arrives at the provider's default.
     // STDERR, never stdout: `--json` owns stdout, and a warning line mid-stream is a parse error downstream.
@@ -115,9 +145,41 @@ export async function agentRunCommand(
   // in-memory debit still consumes cap capacity for this process, which is the whole of what a one-shot needs.
   built.governor?.attachConservativeWriter(() => Promise.resolve());
 
-  // Render the live stream + run the single turn + tear down — a classified turn failure maps to exit 1.
-  const turnErrorCode = await runOneShotTurn(built, message, deps);
-  return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;
+  // **ADR-0074 §4's no-op precedent does NOT transfer to effects, and the difference is the whole point.**
+  // A conservative commitment has nowhere to go because nothing will ever resume this invocation. An external
+  // effect is carried forward by the TARGET, not by the run — a ticket filed here still exists tomorrow — so a
+  // no-op journal would be fail-open on exactly the guarantee CR-12 exists to give, and leaving it unattached
+  // would refuse every effectful tool on this surface.
+  //
+  // So it opens the store it otherwise would not, under an EPHEMERAL session correlation. Its rows are never
+  // read back (nothing resumes an `agent run`), which is why this buys the audit trail and the
+  // concurrent-dedup for free and costs no new correlation kind: a one-shot invocation IS a session that does
+  // not persist its transcript.
+  // Opened INSIDE a guard that owns `built`: from `buildChatSession` onward the process may hold live MCP
+  // child processes, and `closeMcp` is otherwise only reachable through `runOneShotTurn`'s `finally`. A store
+  // open that throws here (a locked or unwritable `history.db`) would take the one path that skips it,
+  // orphaning those children for the lifetime of the shell.
+  let journalStore: ReturnType<typeof openSessionStore>;
+  try {
+    journalStore = openSessionStore(homeDir);
+  } catch (cause) {
+    await built.closeMcp?.().catch(() => undefined);
+    throw cause;
+  }
+  try {
+    built.attachEffectJournal((correlation) =>
+      createEffectJournalPort(
+        createEffectJournalStore(journalStore.db, { uuid: randomUUID, now: Date.now }),
+        correlation,
+        { providerAttempt: 1, toolCallId: 'agent-run' },
+      ),
+    );
+    // Render the live stream + run the single turn + tear down — a classified turn failure maps to exit 1.
+    const turnErrorCode = await runOneShotTurn(built, message, deps);
+    return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;
+  } finally {
+    journalStore.close();
+  }
 }
 
 /** Validate the one-shot invocation and read the prompt from stdin — the two pre-run faults (exit-2 CliError). */

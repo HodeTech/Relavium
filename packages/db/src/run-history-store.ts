@@ -1,22 +1,28 @@
 import {
+  AppendConflictError,
+  LeaseFencedError,
   parseStoredRunEvent,
   RunEventSchema,
+  type DurableWriteContext,
   type ExecutionMode,
   type RunEvent,
+  type RunLeasePort,
   type RunStatus,
 } from '@relavium/shared';
 import { and, asc, desc, eq, getTableColumns, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 
 import type { Db, TxDb } from './client.js';
-import { withBusyRetryAsync } from './retry.js';
+import { withBusyRetry, withBusyRetryAsync } from './retry.js';
 import {
   runCosts,
   runEvents,
+  runLeases,
   runs,
   stepExecutions,
   workflows,
   type NewRunCostRow,
   type NewRunEventRow,
+  type NewRunLeaseRow,
   type NewRunRow,
   type NewStepExecutionRow,
   type RunRow,
@@ -51,6 +57,44 @@ import { epochMsToIso, isoToEpochMs } from './time.js';
  * `0600`/`0700` OS permissions ([ADR-0050](../../../docs/decisions/0050-cli-history-db-at-rest-posture.md)).
  * That is the host's open-path concern (`apps/cli/src/history`), not this store's.
  */
+
+/**
+ * Adapt the store's SYNCHRONOUS lease operations to the engine's async `RunLeasePort` (ADR-0079).
+ *
+ * The store is synchronous because `better-sqlite3` is; the port is `Promise`-typed because the seam has to
+ * admit a genuinely async store (the Phase-2 cloud one). Wrapping here rather than making the store async
+ * keeps the two shapes honest: nothing in this file pretends to await.
+ */
+export function createRunLeasePort(store: RunHistoryStore): RunLeasePort {
+  return {
+    acquire: (runId, ownerId, ttlMs) => {
+      const lease = store.leases.acquire(runId, ownerId, ttlMs);
+      return Promise.resolve(
+        lease === undefined ? undefined : { ownerId: lease.ownerId, generation: lease.generation },
+      );
+    },
+    heartbeat: (runId, fence, ttlMs) =>
+      Promise.resolve(store.leases.heartbeat(runId, fence.ownerId, fence.generation, ttlMs)),
+    release: (runId, fence) => {
+      store.leases.release(runId, fence.ownerId, fence.generation);
+      return Promise.resolve();
+    },
+    read: (runId) => {
+      const lease = store.leases.read(runId);
+      return Promise.resolve(
+        lease === undefined
+          ? undefined
+          : {
+              runId: lease.runId,
+              ownerId: lease.ownerId,
+              generation: lease.generation,
+              expiresAt: lease.expiresAt,
+              live: lease.live,
+            },
+      );
+    },
+  };
+}
 
 /** A run with a `run:started` but no terminal event — for startup crash reconciliation (core `InterruptedRun`). */
 export interface InterruptedRunInfo {
@@ -310,8 +354,61 @@ export interface RunHistoryStore extends Pick<
   'listRuns' | 'loadRun' | 'loadRunEvents' | 'loadRunEventLog' | 'loadRunEventLogForReplay'
 > {
   resolveWorkflowId: (slug: string) => Promise<string>;
-  persistEvent: (event: RunEvent) => Promise<void>;
+  /** Structurally the core `RunStore.persistEvent`; `ctx` carries ADR-0078 §2's compare-and-append guard. */
+  persistEvent: (event: RunEvent, ctx?: DurableWriteContext) => Promise<void>;
   listInterruptedRuns: () => Promise<readonly InterruptedRunInfo[]>;
+  /**
+   * One run's frozen `runs.workflow_definition_snapshot`, or `undefined` for an unknown / soft-deleted run.
+   * Structurally the core `RunStore.readWorkflowSnapshot` (ADR-0083 §5) — the engine compares it against the
+   * workflow a resume was handed, so a same-slug-but-edited graph is refused instead of silently resumed.
+   *
+   * A thin wrapper over {@link loadRunSnapshot}, which stays standalone because `relavium gate` needs the
+   * snapshot BEFORE it can construct a workflow-scoped store. This method exists so a store that already has
+   * a connection does not have to reach past its own seam for the same row.
+   */
+  readWorkflowSnapshot: (runId: string) => Promise<string | undefined>;
+  /** Cross-process run ownership (ADR-0079). Structurally the core `RunLeasePort`. */
+  readonly leases: RunLeaseStore;
+}
+
+/**
+ * The run-lease operations (ADR-0079 §1, §6). Every one evaluates expiry against the store's OWN injected
+ * epoch-ms clock, never a caller-supplied time — so every process on the machine compares against one clock
+ * and a caller cannot widen its own lease by lying about `now`.
+ */
+export interface RunLeaseStore {
+  /**
+   * Take or renew ownership of `runId`, returning the fence to carry on every durable write.
+   *
+   * Succeeds when there is no lease, when the existing one has EXPIRED, or when `ownerId` already holds it
+   * (a re-acquire by the same process is a renewal, not a takeover). Fails — returns `undefined` — when a
+   * DIFFERENT owner holds a live lease. Every success bumps `generation`, including a takeover, which is
+   * what fences the previous owner out.
+   */
+  acquire: (runId: string, ownerId: string, ttlMs: number) => RunLease | undefined;
+  /**
+   * Push the expiry forward for a lease this owner still holds at this generation. Returns `false` when the
+   * lease has been taken over — which is how a heartbeat discovers it lost, without a second query.
+   */
+  heartbeat: (runId: string, ownerId: string, generation: number, ttlMs: number) => boolean;
+  /** Drop a lease this owner holds. A no-op when someone else has taken it — never steals it back. */
+  release: (runId: string, ownerId: string, generation: number) => void;
+  /** The current lease and whether it is live, for `reconcile()`'s skip and for diagnosis. */
+  read: (runId: string) => RunLeaseState | undefined;
+}
+
+/** The fence a caller carries after a successful acquire. */
+export interface RunLease {
+  readonly runId: string;
+  readonly ownerId: string;
+  readonly generation: number;
+  readonly expiresAt: number;
+}
+
+/** A lease as READ, with the store's own verdict on whether it is still live. */
+export interface RunLeaseState extends RunLease {
+  /** Evaluated against the store's injected clock at read time — never re-derived by the caller. */
+  readonly live: boolean;
 }
 
 const NON_TERMINAL_STATUSES = ['pending', 'running', 'paused'] as const;
@@ -670,17 +767,26 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         // **The row is a TELESCOPING delta off the event's cumulative — NOT the raw `costMicrocents`.** The
         // raw value is this attempt's true charge and the event keeps carrying it (that is what a reader and
         // the checkpoint fold sum); what goes in `run_costs` is `max(0, cumulative - currentRunCost)`, the same
-        // arithmetic every other money arm here uses. The reason is ordering, and it is not hypothetical:
-        // `#emitDurable` starts each `persistEvent` immediately and only serializes DELIVERY — its own comment
-        // says "persists stay concurrent". So a later event's write can commit FIRST. Writing the raw delta
-        // then DOUBLE-COUNTS: a sibling's `node:completed` lands with a cumulative that already includes this
-        // attempt, and this row adds it a second time. Telescoping cannot — every money event carries an
-        // ABSOLUTE cumulative, so the running total converges on the largest one seen regardless of the order
-        // the rows commit in, and `SUM(run_costs) == runs.total_cost_microcents` holds by construction.
+        // arithmetic every other money arm here uses.
         //
-        // In the ordered case (the normal one) the two are identical: `cumulative - prev == costMicrocents`
-        // exactly. The divergence is a `fan_out`/out-of-order case, where per-ATTEMPT attribution degrades to
-        // an approximation — precisely the caveat `node:completed`'s per-node delta already carries and
+        // **The reason, CORRECTED (ADR-0078 §8).** An earlier version of this comment blamed out-of-order
+        // COMMIT — "`#emitDurable` starts each `persistEvent` immediately … so a later event's write can
+        // commit FIRST". ADR-0078 §1 has since made the append ordered per run, so that reason no longer
+        // exists, and leaving it here would invite the next reader to delete the telescoping along with it.
+        //
+        // The real reason survives the ordered tail untouched, because it is about STAMP time, not commit
+        // time. `MoneyDurability` chains its writes and captures the run-wide cumulative at `record()` time
+        // (ADR-0077), while `#bus.next` assigns the sequence number later, after the media de-inline await.
+        // So under a `fan_out` a LATER-sequenced money event can legitimately carry an EARLIER, staler
+        // absolute cumulative — perfectly ordered commits and all. Writing the raw per-attempt delta would
+        // then DOUBLE-COUNT: a sibling's `node:completed` lands with a cumulative that already includes this
+        // attempt, and this row adds it again. Telescoping cannot — every money event carries an ABSOLUTE
+        // cumulative, so the running total converges on the largest one seen whatever order the stamps came
+        // in, and `SUM(run_costs) == runs.total_cost_microcents` holds by construction.
+        //
+        // In the sequential case (the normal one) the two are identical: `cumulative - prev == costMicrocents`
+        // exactly. The divergence is the `fan_out` case, where per-ATTEMPT attribution degrades to an
+        // approximation — precisely the caveat `node:completed`'s per-node delta already carries and
         // documents. The event remains the exact per-attempt record; this row is the money of record.
         //
         // **The two writes are a pair.** ADR-0076 property 3 says the terminal's fold telescopes to zero
@@ -805,7 +911,73 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
    * transaction and survive a rollback — on the run's highest-volume money write. The handle is a parameter
    * rather than a closure so the compiler, not a reviewer, is what keeps this true.
    */
-  const fold = (tx: TxDb, event: RunEvent, runId: string, ts: number): void => {
+  const fold = (
+    tx: TxDb,
+    event: RunEvent,
+    runId: string,
+    ts: number,
+    ctx: DurableWriteContext | undefined,
+  ): void => {
+    // **The compare-and-append (ADR-0078 §2), INSIDE this transaction and through `tx`.** Outside it the
+    // read and the insert would be two statements a concurrent writer could interleave, which is the exact
+    // race the guard exists to close; through the outer `db` it would, on a pooled Postgres driver, be a
+    // different client whose read is not part of the transaction it is guarding. `UNIQUE(run_id, seq)` bars
+    // a duplicate and says nothing about order or holes — this is what says the rest.
+    //
+    // `max(seq)` rather than a denormalized `runs.last_event_seq`: the unique index on (run_id, seq) already
+    // serves it, so there is no migration, no drizzle snapshot regeneration, and no second source of truth
+    // that can drift from the rows it describes.
+    if (ctx?.expectedLastSequenceNumber !== undefined) {
+      const actual =
+        tx
+          .select({ max: sql<number | null>`max(${runEvents.seq})` })
+          .from(runEvents)
+          .where(eq(runEvents.runId, runId))
+          .get()?.max ?? -1;
+      if (actual !== ctx.expectedLastSequenceNumber) {
+        throw new AppendConflictError(runId, ctx.expectedLastSequenceNumber, actual);
+      }
+      // **…and the event must be AHEAD of the log, which the equality above does not say.** Sequence gaps
+      // are legitimate — a transient event consumes a number without becoming a row — so the `(run_id, seq)`
+      // unique index cannot establish order either: a stale event's number is unique AND lower. A review
+      // reproduced the consequence against this store: a terminal at sequence 3 appended behind durable work
+      // at 5, `applyDerived` marked the run finished, and `listInterruptedRuns()` stopped reporting it. The
+      // terminal-outbox drain is the reachable path, and it deletes its recovery entry on that false success.
+      if (event.sequenceNumber <= actual) {
+        throw new AppendConflictError(
+          runId,
+          ctx.expectedLastSequenceNumber,
+          actual,
+          event.sequenceNumber,
+        );
+      }
+    }
+    // **The fence (ADR-0079 §2), beside the append guard and inside the SAME transaction.** Checked here
+    // rather than before it because both are refusals of the same write and both must be atomic with it;
+    // checked AFTER the append guard because a stale belief about the log is the more specific diagnosis
+    // when a writer has both problems, and a fenced writer's belief is stale precisely BECAUSE it was fenced.
+    //
+    // A missing lease row is a rejection too, not a pass: the run was taken over and released, or the row was
+    // never created. Either way this writer cannot prove ownership, and ADR-0079 fails closed.
+    if (ctx?.fence !== undefined) {
+      const lease = tx
+        .select({ ownerId: runLeases.ownerId, generation: runLeases.generation })
+        .from(runLeases)
+        .where(eq(runLeases.runId, runId))
+        .get();
+      if (
+        lease === undefined ||
+        lease.ownerId !== ctx.fence.ownerId ||
+        lease.generation !== ctx.fence.generation
+      ) {
+        throw new LeaseFencedError(
+          runId,
+          ctx.fence.ownerId,
+          ctx.fence.generation,
+          lease?.generation,
+        );
+      }
+    }
     applyDerived(tx, event, runId, ts);
     const eventRow: NewRunEventRow = {
       id: deps.uuid(),
@@ -851,7 +1023,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
       return Promise.resolve(find() ?? id);
     },
 
-    persistEvent: async (event) => {
+    persistEvent: async (event, ctx) => {
       // The DB work is synchronous (better-sqlite3) but this honors the async RunStore port — a fault (bad
       // event, UNIQUE(run_id, seq), FK, disk) becomes a REJECTED promise, never a synchronous throw, so the
       // engine's `await persistEvent(...)` (durability-first: ADR-0050 fatal posture) and any `.catch` see it.
@@ -877,13 +1049,119 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         // before we sleep. Within a single branch the engine awaits these sequentially, so no event can
         // overtake its own predecessor.
         await withBusyRetryAsync(() =>
-          db.transaction((tx) => fold(tx, parsed, runId, ts), { behavior: 'immediate' }),
+          db.transaction((tx) => fold(tx, parsed, runId, ts, ctx), { behavior: 'immediate' }),
         );
       } catch (error) {
         // Preserve the root cause (error-handling.md): never swallow it to rethrow a vaguer one.
         throw error instanceof Error ? error : new Error(String(error), { cause: error });
       }
     },
+
+    leases: {
+      // Every operation is ONE `BEGIN IMMEDIATE` transaction: acquire reads the current row and writes the
+      // new generation atomically, so two processes racing cannot both read "expired" and both win. A
+      // DEFERRED read-then-write would take a read lock first and lose the upgrade race under exactly the
+      // contention this exists for (database-schema.md §"Concurrency & transaction behavior").
+      acquire: (runId, ownerId, ttlMs) =>
+        withBusyRetry(() =>
+          db.transaction(
+            (tx) => {
+              const now = deps.now();
+              const current = tx.select().from(runLeases).where(eq(runLeases.runId, runId)).get();
+              // A DIFFERENT owner holding a LIVE lease is the only refusal. Same owner ⇒ renewal; expired ⇒
+              // takeover. Expiry is `deps.now()`, the store's clock, never the caller's.
+              if (current !== undefined && current.ownerId !== ownerId && current.expiresAt > now) {
+                return undefined;
+              }
+              const generation = (current?.generation ?? 0) + 1;
+              const row: NewRunLeaseRow = {
+                runId,
+                ownerId,
+                generation,
+                expiresAt: now + ttlMs,
+                createdAt: current?.createdAt ?? now,
+                updatedAt: now,
+              };
+              if (current === undefined) {
+                tx.insert(runLeases).values(row).run();
+              } else {
+                tx.update(runLeases)
+                  .set({ ownerId, generation, expiresAt: row.expiresAt, updatedAt: now })
+                  .where(eq(runLeases.runId, runId))
+                  .run();
+              }
+              return {
+                runId,
+                ownerId,
+                generation,
+                expiresAt: row.expiresAt,
+              } satisfies RunLease;
+            },
+            { behavior: 'immediate' },
+          ),
+        ),
+
+      heartbeat: (runId, ownerId, generation, ttlMs) =>
+        withBusyRetry(() =>
+          db.transaction(
+            (tx) => {
+              const now = deps.now();
+              // Matching on (owner, generation) is what makes this discover a takeover without a second
+              // query: a newer generation means someone fenced us out, and the update matches nothing.
+              const updated = tx
+                .update(runLeases)
+                .set({ expiresAt: now + ttlMs, updatedAt: now })
+                .where(
+                  and(
+                    eq(runLeases.runId, runId),
+                    eq(runLeases.ownerId, ownerId),
+                    eq(runLeases.generation, generation),
+                  ),
+                )
+                .run();
+              return updated.changes > 0;
+            },
+            { behavior: 'immediate' },
+          ),
+        ),
+
+      release: (runId, ownerId, generation) => {
+        withBusyRetry(() =>
+          db.transaction(
+            (tx) => {
+              // Scoped to (owner, generation) so a process that has ALREADY been fenced out cannot delete
+              // the new owner's lease on its way down — a release must never steal.
+              tx.delete(runLeases)
+                .where(
+                  and(
+                    eq(runLeases.runId, runId),
+                    eq(runLeases.ownerId, ownerId),
+                    eq(runLeases.generation, generation),
+                  ),
+                )
+                .run();
+            },
+            { behavior: 'immediate' },
+          ),
+        );
+      },
+
+      read: (runId) => {
+        const row = db.select().from(runLeases).where(eq(runLeases.runId, runId)).get();
+        if (row === undefined) return undefined;
+        return {
+          runId: row.runId,
+          ownerId: row.ownerId,
+          generation: row.generation,
+          expiresAt: row.expiresAt,
+          // The store decides liveness, not the caller — one clock, one verdict.
+          live: row.expiresAt > deps.now(),
+        };
+      },
+    },
+
+    readWorkflowSnapshot: (runId: string) =>
+      Promise.resolve(loadRunSnapshot(db, runId)?.workflowDefinitionSnapshot),
 
     listInterruptedRuns: () => {
       // One pass: a LEFT JOIN + coalesce(max(seq),0), grouped by the run PK. No second round-trip and no

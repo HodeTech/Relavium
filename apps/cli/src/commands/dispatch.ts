@@ -125,6 +125,9 @@ export function buildRunArgs(input: CommandInput): RunCommandArgs {
   return {
     workflow: reqPositional(input, 0, 'workflow'),
     input: stringList(input.options['input']),
+    // ADR-0084 §6: authorizes THIS invocation and writes no grant. A definite list like `input`, so a
+    // consumer never distinguishes "not asked for" from "asked for and empty".
+    allowMcpStdio: stringList(input.options['allowMcpStdio']),
   };
 }
 
@@ -159,6 +162,7 @@ export function buildAgentRunArgs(input: CommandInput): AgentRunCommandArgs {
   return {
     agent: reqPositional(input, 0, 'agent'),
     input: stringList(input.options['input']),
+    allowMcpStdio: stringList(input.options['allowMcpStdio']),
     ...(fixture === undefined ? {} : { fixture }),
   };
 }
@@ -179,6 +183,7 @@ export function buildGateArgs(input: CommandInput): GateCommandArgs {
     runId,
     approve: boolFlag(input.options['approve']),
     reject: boolFlag(input.options['reject']),
+    secretStdin: boolFlag(input.options['secretStdin']),
     ...(comment === undefined ? {} : { comment }),
     ...(inputValue === undefined ? {} : { input: inputValue }),
     ...(gate === undefined ? {} : { gate }),
@@ -398,7 +403,7 @@ const executeLogs: CommandExecutor = (input, ctx) =>
   );
 
 const executeStatus: CommandExecutor = (_input, ctx) =>
-  Promise.resolve(statusCommand({ io: ctx.io, global: ctx.global }));
+  statusCommand({ io: ctx.io, global: ctx.global });
 
 /**
  * The lazy `llm_providers`-UUID → provider-slug (e.g. `anthropic`) resolver the `models` list path uses for its

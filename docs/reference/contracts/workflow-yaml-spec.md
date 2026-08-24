@@ -92,7 +92,7 @@ An input `name` must be a **referenceable identifier** — `[A-Za-z0-9_-]+` (let
 the same charset the `{{inputs.<name>}}` head accepts — so a name like `my name` or `a.b` that could never
 be referenced is rejected at parse (ADR-0023).
 
-`secret`-typed inputs are resolved through the secret store, never written into run logs or the workflow file. They are also **masked in event payloads**: a `secret` input's value is redacted from the `run:started.inputs` payload (and any other event that echoes inputs), so a secret never reaches a surface, an IPC channel, or a persisted run log — see the masking rule in [sse-event-schema.md](sse-event-schema.md). See also [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
+A `secret`-typed input is **caller-supplied at run time** — it is not resolved from a secret store, and it may not declare a `default` (see below), so there is nothing for the engine to look up. It is never written into run logs or the workflow file. They are also **masked in event payloads**: a `secret` input's value is redacted from the `run:started.inputs` payload (and any other event that echoes inputs), so a secret never reaches a surface, an IPC channel, or a persisted run log — see the masking rule in [sse-event-schema.md](sse-event-schema.md). See also [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
 
 An input may carry an optional **`validation`** object the engine checks before a run starts; a violating input fails fast and the run never begins:
 
@@ -112,16 +112,61 @@ inputs:
 | `type` | allowed `validation` keys |
 |--------|---------------------------|
 | `number` | `min`, `max`, `enum` |
-| `string` / `file_path` / `code_diff` / `secret` | `format`, `pattern`, `enum`, `min_length`, `max_length` |
+| `string` / `file_path` / `code_diff` | `format`, `pattern`, `enum`, `min_length`, `max_length` |
+| `secret` | `format`, `pattern`, `min_length`, `max_length` — **no `enum`** |
 | `boolean` | _(none)_ |
 
+A `secret` loses `enum` for the same reason it may not declare a `default`: an `enum` of allowed secret
+values writes the credential verbatim into the unmasked `workflow_definition_snapshot` through a
+neighbouring key. `pattern` survives because a *shape* is not a value. Decided by
+[ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §6.
+
 (Bound-ordering — `min ≤ max`, `min_length ≤ max_length` — is also enforced at parse.)
+
+**What each key MEANS**, decided by
+[ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §4 because a
+contract every surface shares cannot leave them to interpretation.
+
+> **Where each rule is enforced TODAY.** Every half is wired, by one pure `violatesInputContract` shared
+> between them. An authored `default`, an `enum` member and a `pattern` are checked when the workflow is
+> **read**. A caller-supplied value is checked by ADR-0083 §1's **admission gate**, which runs before the run
+> id exists — so a refused run leaves no `runId`, no `run:started` and no row. And a **resume** is checked by
+> §5: `resumeFromCheckpoint` verifies a caller's `inputs` and `executionMode` against the record the run was
+> admitted with, and the supplied workflow's content against the frozen definition, rather than taking either
+> on trust. Resume enforces a value's declared **type** but not its `validation` block — §8's legacy rule, so
+> a run admitted before those rules existed still resumes; value-versus-workflow drift is the content check's
+> to catch. Stated because this file is the canonical contract, and a reader must not take a decided rule for
+> a shipped one — nor a shipped one for a pending one.
+
+
+| key | semantics |
+|-----|-----------|
+| `format` | A **closed** vocabulary: `email`, `uri`, `uuid`, `date-time`. An unrecognised format is an authoring error at parse. |
+| `pattern` | Compiled at **parse**, so an invalid regex fails loudly rather than at run. **Anchored** (a full match, not a search) and **flagless**. Its source is length-capped, and must be a complete regex on its own: a source that leaves a parenthesis unmatched would close the anchoring group early (`x)|(?:.*` anchors to a pattern matching *every* string) and is rejected at parse. |
+| `enum` | Every member must satisfy the declared `type` at parse. A supplied value matches by `Object.is` — so `NaN` matches `NaN`, and `0` does not match `-0`. |
+| `min` / `max` | Numeric bounds, inclusive. A `number` must additionally be **finite**: `NaN` and `±Infinity` are rejected, because no bound can express them. |
+| `min_length` / `max_length` | Inclusive string-length bounds, applied **before** `pattern` — which is what bounds the input a catastrophic authored regex can chew on. |
+
+**Absent means absent.** A missing key and an own property whose value is `undefined` are both *omitted* and
+take the declared `default`. **`null` is a value**, not an omission, and fails type validation for every
+declared type. A `required` input with a `default` is satisfied by that default.
+
+**A `default` is validated against its own `validation` block at parse** — an authored default that violates
+its own rules fails when the workflow is read, not the first time someone omits that input.
+
+**A `secret` input may not declare a `default`.** Such a value is written verbatim into the durable workflow
+snapshot, which nothing masks.
+
+**Where each is enforced.** A surface may **coerce** its transport's representation into the declared type —
+a CLI has only strings, so `--input count=3` becomes the number `3` before the engine sees it. The **engine
+is strict**: it applies defaults, rejects unknown keys, and enforces every rule above against the value it
+receives, rejecting `"3"` for a `number`. That split is what makes two surfaces behave identically.
 
 > **Secrets are never interpolated into agent text.** A `secret`-typed input may feed a tool credential/header field, but the parser **rejects** a `secret` input interpolated into a `prompt_template` or any agent/tool text — masking only covers *event* payloads, so an interpolated secret would otherwise reach the model and be persisted in the message store. The rejection is **transitive** (taint-tracked through `context` entries and any derived value — a secret cannot be laundered through an intermediate variable). This is a security tightening; see [ADR-0029](../../decisions/0029-tool-policy-hardening.md).
 
 ## Context and interpolation
 
-`context` declares named values available throughout the workflow as `{{ctx.key}}`. `{{ ... }}` interpolation is for **template fields only** — `inputs` defaults, `context` values, agent `prompt_template` / `system_prompt_append`, and human-gate `assignee` / `message_template`. The **expression fields** are **bare sandboxed JavaScript** ([ADR-0027](../../decisions/0027-expression-sandbox.md)), *not* interpolation: they read the same run scope directly as `run.outputs["x"]` / `inputs.y` / `ctx.z` with no `{{ }}` wrapper. The three sandboxed kinds (the 1.AB `ExpressionKind`) are a `condition` node's `expression`, a `transform`, and a `merge_fn` — each `js` (a `condition`/`transform` carries `expression_type: js`; `jmespath`/`jsonlogic` are reserved and rejected at parse; a `merge_fn` is always `js`). An **edge `condition`** is the same JS-expression family but has **no `expression_type` field** (always `js`) and is evaluated by the run loop (1.N), not a named 1.AB sandbox kind. A context `key`, like an input `name`, must be a referenceable identifier (`[A-Za-z0-9_-]+`).
+`context` declares named values available throughout the workflow as `{{ctx.key}}`. `{{ ... }}` interpolation is for **template fields only** — `context` values, agent `prompt_template` / `system_prompt_append`, and human-gate `assignee` / `message_template`. An **`inputs` default is NOT a template field** ([ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §3): it is resolved at admission, before a run exists, so `inputs`, `ctx` and `secrets` are all unavailable to it — a `{{ }}` there is an authoring error. It never resolved before either; the engine applied no defaults at all, so what changes is that the mistake is now loud. The **expression fields** are **bare sandboxed JavaScript** ([ADR-0027](../../decisions/0027-expression-sandbox.md)), *not* interpolation: they read the same run scope directly as `run.outputs["x"]` / `inputs.y` / `ctx.z` with no `{{ }}` wrapper. The three sandboxed kinds (the 1.AB `ExpressionKind`) are a `condition` node's `expression`, a `transform`, and a `merge_fn` — each `js` (a `condition`/`transform` carries `expression_type: js`; `jmespath`/`jsonlogic` are reserved and rejected at parse; a `merge_fn` is always `js`). An **edge `condition`** is the same JS-expression family but has **no `expression_type` field** (always `js`) and is evaluated by the run loop (1.N), not a named 1.AB sandbox kind. A context `key`, like an input `name`, must be a referenceable identifier (`[A-Za-z0-9_-]+`).
 
 ```yaml
 context:

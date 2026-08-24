@@ -4,6 +4,22 @@
 - **Date**: 2026-06-26
 - **Related**: [0034-mcp-client-sdk-dependency.md](0034-mcp-client-sdk-dependency.md) (**this ADR implements it** — ADR-0034 decided the SDK dependency, the 2.R slot, and the 5 guardrails but explicitly left the implementation *shape* open; this records that shape), [0053-mcp-network-transport-egress-security.md](0053-mcp-network-transport-egress-security.md) (the sibling network-transport SSRF + local-endpoint opt-in decision — stdio carries no `url`, so all egress security lives there), [0011-internal-llm-abstraction.md](0011-internal-llm-abstraction.md) (the seam-confinement precedent — a vendor SDK is fenced in a dedicated package and never crosses into the engine), [0037-engine-tool-execution-boundary.md](0037-engine-tool-execution-boundary.md) (already promises "MCP ToolDefs register dynamically (2.R)" as additive — this realizes it as host-side assembly, not a registry-mutation reversal), [0029-tool-policy-hardening.md](0029-tool-policy-hardening.md) (narrow-only tool policy + schema-validate-before-dispatch + the one shared SSRF primitive), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md) + [0019-cli-node-keychain-library.md](0019-cli-node-keychain-library.md) (the keychain seam the named-secret resolution extends), [0036-run-loop-substrate-event-bus-and-execution-host.md](0036-run-loop-substrate-event-bus-and-execution-host.md) + [0018-desktop-execution-and-rust-egress.md](0018-desktop-execution-and-rust-egress.md) (the host-injected I/O pattern the `McpClientManager` follows), [0047-cli-framework-commander-ink-clack.md](0047-cli-framework-commander-ink-clack.md) (the apps-confinement discipline), [mcp-integration.md](../reference/shared-core/mcp-integration.md), [tool-registry.md](../reference/shared-core/tool-registry.md), [../contracts/agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md), [../contracts/config-spec.md](../reference/contracts/config-spec.md), [keychain-and-secrets.md](../reference/desktop/keychain-and-secrets.md), [../tech-stack.md](../tech-stack.md)
 
+> **Amended 2026-08-20 by [ADR-0084](0084-consent-before-a-local-mcp-spawn.md).** Three clarifications, none
+> reversing a decision here.
+>
+> - §2's host-delegated connect gains a **gate**: the CLI host will not build a stdio `McpServerConfig` until
+>   the user has consented to that declaration, so `open()` is never constructed for an unapproved server.
+>   The gate sits on the resolved **inline** ref, because an agent may declare a server with no
+>   `[[mcp_servers]]` registration at all — which is exactly the imported-artifact case.
+> - §3's **immutable tool registry is what blocks lazy connect**, and that is now recorded rather than
+>   rediscovered: an MCP `ToolDef` exists only because `listTools()` ran at connect, so deferring the spawn
+>   deletes the agent's grant. A registry mutation API would reverse §3 and needs a supersession, not an
+>   implementation PR.
+> - §1 assigns the desktop's stdio lifecycle to its **Rust backend**, which never imports `@relavium/mcp` —
+>   so ADR-0084's gate is structurally incapable of covering it. That surface owes its own gate before it
+>   ships a stdio spawn; ADR-0084 §3/§5 define the digest and grant file as a language-agnostic contract so
+>   the second implementation satisfies the same rule.
+
 ## Context
 
 [ADR-0034](0034-mcp-client-sdk-dependency.md) settled **which** MCP client (the official `@modelcontextprotocol/sdk`) and **when** (workstream 2.R, off the M3 critical path), with five binding guardrails — but it deliberately did **not** settle the implementation *shape*. A pre-implementation documentation review (2026-06-26, a five-dimension verified sweep) confirmed the registration/dispatch/event **spine already exists** — the `mcp_call` built-in + its `McpCapability` host seam ([`builtins.ts`](../../packages/core/src/tools/builtins.ts), [`types.ts`](../../packages/core/src/tools/types.ts)), the config `[[mcp_servers]]` global→project merge ([`resolve.ts`](../../apps/cli/src/config/resolve.ts)), the `ToolDef` contract, and the `agent:tool_call`/`agent:tool_result` events reused verbatim — but surfaced a cluster of **unowned decisions** that, guessed ad hoc inside a feature PR, would violate a non-negotiable (engine purity, SDK-confinement, no-new-dependency-without-an-ADR) or leave the canonical spec promising a behavior no schema implements.

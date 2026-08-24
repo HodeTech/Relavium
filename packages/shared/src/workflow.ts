@@ -105,9 +105,366 @@ const VALIDATION_KEYS_BY_TYPE: Record<
   string: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
   file_path: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
   code_diff: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
-  secret: ['format', 'pattern', 'enum', 'min_length', 'max_length'], // same keys as `string` — a `secret` is a string-typed value at rest
+  // A `secret` deliberately loses `enum` (ADR-0083 §6, as amended 2026-08-19). The ban on a `secret` `default` exists because such
+  // a value is written verbatim into `runs.workflow_definition_snapshot`; an `enum` of allowed secret values
+  // writes it into the same unmasked column through a neighbouring key, and "the credential is one of these
+  // three" is not a contract worth expressing. `pattern` survives because a SHAPE is not a value — the spec
+  // says so, and an author who writes a literal there has written the secret down either way.
+  secret: ['format', 'pattern', 'min_length', 'max_length'],
   boolean: [],
 };
+
+/**
+ * The closed `format` vocabulary
+ * ([ADR-0083](../../../docs/decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §4).
+ *
+ * Closed, because an open one means each surface inventing its own semantics for `email` — which is the
+ * "one engine, every surface" failure this whole item is about. An unrecognised format is an authored error.
+ */
+export const INPUT_FORMATS = ['email', 'uri', 'uuid', 'date-time'] as const;
+export type InputFormat = (typeof INPUT_FORMATS)[number];
+
+/**
+ * The ceiling on an authored `pattern`'s SOURCE length (ADR-0083 §4).
+ *
+ * Not a ReDoS defence on its own — that is `max_length` bounding the input a catastrophic pattern can chew
+ * on — but a bound on how baroque an authored regex can get before someone notices they are writing a
+ * parser in a validation field.
+ */
+const PATTERN_MAX_SOURCE = 512;
+
+/**
+ * `{{ … }}` — mirroring `packages/core`'s lexer, which `packages/shared` cannot import (the dependency runs
+ * the other way).
+ *
+ * **A terminated pair, not a bare `{{`.** Core treats an unterminated `{{` as ordinary literal text, and a
+ * first version of this rule used `includes('{{')` — which rejected `default: 'use {{ to open a mustache'`,
+ * a string core would never read a reference in, with no escape available anywhere to express it.
+ */
+function hasInterpolationPair(text: string): boolean {
+  // **`indexOf`, not a regex.** `/\{\{[\s\S]*?\}\}/` is quadratic on an artifact that opens many pairs
+  // and closes none: the engine retries the lazy scan from every `{{`, each time running to the end of the
+  // string. Measured at 1033ms for a 120KB `default` of `'{{'` repeated, against 0.011ms here — and the cost
+  // grows with the square, so a larger file is worse. Authored YAML is not trusted input any more
+  // ([ADR-0084](../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) settled that an artifact
+  // is often not the user's), which turns a parse-time stall into something a shared file can cause.
+  //
+  // Exactly equivalent: a terminated pair exists iff some `}}` follows the FIRST `{{`. If the only `}}`
+  // sits before it (`}}{{`), neither form matches.
+  const open = text.indexOf('{{');
+  return open !== -1 && text.includes('}}', open + 2);
+}
+
+/** How deep {@link containsInterpolation} walks a `default` before it stops looking. */
+const MAX_DEFAULT_DEPTH = 32;
+
+/**
+ * Does any string ANYWHERE in this value carry an interpolation pair?
+ *
+ * Recursive, because a `default` is `unknown`: `{ token: '{{secrets.token}}' }` and
+ * `['{{secrets.token}}']` are both legal shapes, and a string-only check never looked inside them. Not
+ * reachable today — nothing applies a default — but §1's admission gate will, and a parse gate that never
+ * looked inside the value it admits is the wrong thing to build under.
+ */
+function containsInterpolation(
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet<object>(),
+  depth = 0,
+): boolean {
+  if (typeof value === 'string') return hasInterpolationPair(value);
+  if (typeof value !== 'object' || value === null) return false;
+  // **Bounded, and giving up is SAFE here** — the reasoning matters more than the number. A `default`
+  // nested deeper than this is a non-primitive, and `matchesDeclaredType` rejects a non-primitive default
+  // for every declared type, so the value is refused by step 4 of the same refine whatever this answers.
+  // What the cap buys is that a pathological authored document cannot exhaust the stack inside a Zod
+  // refine, where a `RangeError` would escape `safeParse` rather than becoming a typed authoring error.
+  if (depth > MAX_DEFAULT_DEPTH) return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value))
+    return value.some((item) => containsInterpolation(item, seen, depth + 1));
+  return Object.values(value).some((item) => containsInterpolation(item, seen, depth + 1));
+}
+
+/**
+ * An authored `pattern` in the EXACT form validation runs it: anchored, flagless.
+ *
+ * A full match, not a search — "does this value match" is the only question the field can honestly answer
+ * across surfaces. Wrapped in a non-capturing group so an alternation cannot escape the anchors: `a|b`
+ * becomes `^(?:a|b)$`, not `^a|b$`.
+ *
+ * The group is not self-defending: a source carrying an unmatched `)` closes it early, and `x)|(?:.*`
+ * anchors to `^(?:x)|(?:.*)$` — a pattern that matches EVERY string while the spec promises a full match.
+ * {@link patternEscapesItsAnchors} is what rejects that, at parse.
+ */
+export function anchoredPattern(source: string): RegExp {
+  return new RegExp(`^(?:${source})$`);
+}
+
+/**
+ * Does this authored `pattern` break OUT of the anchors {@link anchoredPattern} wraps it in?
+ *
+ * The test is compiling it BARE. Escaping `^(?:…)$` requires a `)` that closes the wrapper — which is a
+ * `)` unmatched within the source itself, and an unmatched `)` is a `SyntaxError` in a bare regex in every
+ * mode. So a source that compiles bare has balanced parentheses and cannot reach the anchors; one that
+ * compiles only wrapped is escaping them, measured: `a)|(b` and `x)|(?:.*` both throw bare and both compile
+ * wrapped. Checking balance by hand would mean tracking escapes and character classes — a scanner, to answer
+ * a question the engine already answers exactly.
+ */
+function patternEscapesItsAnchors(source: string): boolean {
+  try {
+    new RegExp(source);
+    return false;
+  } catch {
+    // Does not compile bare. That is either a genuinely malformed pattern — which the wrapped compile below
+    // also rejects — or an anchor escape. Either way it is not a pattern this contract can run.
+    return true;
+  }
+}
+
+/**
+ * Pragmatic `format` checks (ADR-0083 §4).
+ *
+ * **Pragmatic, and saying so is the point.** These are not RFC-complete — a complete `email` grammar is a
+ * parser, and one that disagrees with the mail server's is worse than a shape check. They reject what is
+ * obviously not the thing, which is what an authored contract can honestly promise. Two limits are named
+ * rather than fixed: a `date-time` is range-checked per component but not against a calendar, so
+ * `2026-02-31` passes; and an `email` local part is shape-checked, not parsed.
+ *
+ * **A `Map`, not an object literal.** `v.format` is a `string` until it is checked, and a plain literal
+ * answers `FORMAT_CHECKS['constructor']` with a function — whose `.test` is `undefined`, so the lookup
+ * guard passed and `check.test(value)` threw a raw `TypeError` out of `safeParse`, breaking Zod's own
+ * contract on any workflow authored with `format: constructor`. A `Map` has no prototype keys to reach,
+ * and typing it by `string` removes the narrowing `as` that made the hazard invisible.
+ *
+ * **No control characters, in every string-shaped format.** These values are echoed by surfaces and
+ * written to log sinks; a `uri` of `http://x/\u001b[2J` is not a shape this contract should call valid.
+ */
+// `String.raw`, so these read as the regex SOURCE they are: one backslash means one backslash. The
+// doubled form was a step of mental arithmetic on every read, in a file where getting a character class
+// wrong silently WIDENS what `format:` accepts. `format-source.test.ts` pins the exclusions through the
+// admission entry point, so a drift in this escaping fails a test rather than quietly relaxing a gate.
+const NO_CTRL = String.raw`[^\s\u0000-\u001f\u007f]`;
+const NO_CTRL_NO_AT = String.raw`[^\s\u0000-\u001f\u007f@]`;
+const NO_CTRL_LABEL = String.raw`[^\s\u0000-\u001f\u007f@.]`;
+/**
+ * RFC 3339, with PER-COMPONENT ranges.
+ *
+ * Unbounded `\d{2}` groups accepted `0000-99-99T99:99:99Z` as a valid instant, which is not a shape check
+ * failing gracefully — it is the check being absent. `60` seconds is a leap second (RFC 3339 permits it).
+ *
+ * Its complexity IS those ranges: every alternation in it is one calendar or clock bound, so "simplifying"
+ * it means deleting bounds and reinstating the defect above, and splitting it into several regexes would
+ * move the same branch count into code that no longer reads as one grammar.
+ */
+const RFC_3339 =
+  /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])[Tt](?:[01]\d|2[0-3]):[0-5]\d:(?:[0-5]\d|60)(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/; // NOSONAR — the branches ARE the bounds; see above
+
+const FORMAT_CHECKS: ReadonlyMap<string, RegExp> = new Map<string, RegExp>([
+  ['email', new RegExp(String.raw`^${NO_CTRL_NO_AT}+@${NO_CTRL_LABEL}+(?:\.${NO_CTRL_LABEL}+)+$`)],
+  // Any ABSOLUTE URI, not only a hierarchical one. The vocabulary key is `uri`: the previous `://`
+  // requirement rejected `mailto:`, `urn:` and `data:`, which are URIs by every definition the word has.
+  ['uri', new RegExp(String.raw`^[a-z][a-z\d+.-]*:${NO_CTRL}+$`, 'i')],
+  ['uuid', /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i],
+  ['date-time', RFC_3339],
+]);
+
+/**
+ * What each declared type is CALLED in a refusal message.
+ *
+ * `number` says "finite" because that is the part a caller gets wrong — `NaN` and `Infinity` are numbers to
+ * `typeof` and are not values a run can carry. Every other type falls back to `string`, which is what the
+ * remaining ones (`string`, `secret`) are.
+ */
+const DECLARED_TYPE_NOUN: Partial<Record<z.infer<typeof InputTypeSchema>, string>> = {
+  number: 'finite number',
+  boolean: 'boolean',
+};
+
+/**
+ * Why a value fails its declared `type` alone, or `undefined` if it satisfies it.
+ *
+ * Exported because ADR-0083 §8's `verify` mode enforces the TYPE and not the `validation` block — a run
+ * admitted before those rules existed must still resume — and a second copy of this message in the engine
+ * would drift from this one the first time either changed.
+ */
+export function violatesDeclaredType(
+  value: unknown,
+  type: z.infer<typeof InputTypeSchema>,
+): string | undefined {
+  if (matchesDeclaredType(value, type)) return undefined;
+  return `expected a ${DECLARED_TYPE_NOUN[type] ?? 'string'}`;
+}
+
+/**
+ * Why a VALUE fails its declared input contract, or `undefined` if it passes (ADR-0083 §4).
+ *
+ * **The single source of truth for both halves.** Parse uses it on a declared `default`; §1's admission gate
+ * uses it on a caller-supplied value. Two implementations of one contract is the failure this whole item is
+ * about, so there is one — and it is pure, which is what lets admission stay synchronous.
+ *
+ * Reasons are structural and value-free: they cross into a `WorkflowValidationError` whose messages the CLI
+ * re-throws.
+ */
+export function violatesInputContract(
+  value: unknown,
+  type: z.infer<typeof InputTypeSchema>,
+  validation: InputValidation | undefined,
+): string | undefined {
+  const typeReason = violatesDeclaredType(value, type);
+  if (typeReason !== undefined) return typeReason;
+  const v = validation;
+  if (v === undefined) return undefined;
+
+  if (v.enum !== undefined && !v.enum.some((member) => Object.is(member, value))) {
+    // `Object.is`, decided: `===` makes `NaN` unmatchable and conflates `0` with `-0`; deep equality would
+    // promise structural comparison for a field whose members must be primitives anyway.
+    return 'value is not one of the allowed enum members';
+  }
+  if (typeof value === 'number') return violatesNumericBounds(value, v);
+  if (typeof value === 'string') return violatesStringRules(value, v);
+  return undefined;
+}
+
+/** The declared `min`/`max`, or `undefined` when the value sits inside them. */
+function violatesNumericBounds(value: number, v: InputValidation): string | undefined {
+  if (v.min !== undefined && value < v.min) return 'value is below the declared minimum';
+  if (v.max !== undefined && value > v.max) return 'value is above the declared maximum';
+  return undefined;
+}
+
+/**
+ * The declared length, format and pattern rules, in that ORDER.
+ *
+ * Length BEFORE pattern — the ordering is what bounds the input a catastrophic authored regex can chew on,
+ * and it is the only ReDoS mitigation this contract honestly offers.
+ */
+function violatesStringRules(value: string, v: InputValidation): string | undefined {
+  if (v.min_length !== undefined && value.length < v.min_length)
+    return 'value is shorter than min_length';
+  if (v.max_length !== undefined && value.length > v.max_length)
+    return 'value is longer than max_length';
+  if (v.format !== undefined) {
+    const check = FORMAT_CHECKS.get(v.format);
+    if (check !== undefined && !check.test(value)) return `value is not a valid ${v.format}`;
+  }
+  if (v.pattern !== undefined && !anchoredPattern(v.pattern).test(value)) {
+    return 'value does not match the declared pattern';
+  }
+  return undefined;
+}
+
+/**
+ * The authored `pattern`: bounded, compilable, and complete on its own.
+ *
+ * COMPILED at parse in the EXACT form admission will run, so this proves the anchored semantics and not
+ * merely bare well-formedness. Compiling `a|b` bare succeeds while `^a|b$` means "starts with a OR ends with
+ * b" — a silent change of meaning the author would never see; and `\p{L}+` compiles bare but means the
+ * literal `p{L}` without the `u` flag.
+ */
+function validatePattern(pattern: string, ctx: z.RefinementCtx): void {
+  const issue = (message: string): void => {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message, path: ['validation', 'pattern'] });
+  };
+  if (pattern.length > PATTERN_MAX_SOURCE) {
+    issue(`pattern is longer than ${String(PATTERN_MAX_SOURCE)} characters`);
+    return;
+  }
+  try {
+    anchoredPattern(pattern);
+  } catch {
+    issue('pattern is not a valid regular expression');
+    return;
+  }
+  if (patternEscapesItsAnchors(pattern)) {
+    issue(
+      'pattern must be a complete regular expression on its own — this one leaves a parenthesis unmatched, which escapes the anchors validation applies',
+    );
+  }
+}
+
+/**
+ * The `validation` block's own authored semantics (ADR-0083 §4).
+ *
+ * Separate from `InputValidationSchema`'s bound-ordering refine because these need the declared `type`, and
+ * separate from the per-type KEY table because that says which keys are legal, not whether their VALUES are.
+ */
+function validateValidationBlock(
+  input: {
+    readonly type: z.infer<typeof InputTypeSchema>;
+    readonly validation?: InputValidation | undefined;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  const v = input.validation;
+  if (v === undefined) return;
+
+  if (v.format !== undefined && !(INPUT_FORMATS as readonly string[]).includes(v.format)) {
+    // **Value-free.** `parser.ts`'s own comment says every shared `superRefine` emits a structural-only
+    // message, and `errors.ts` calls these errors "field-named and secret-free" — the CLI re-throws the
+    // first one as a `CliError` message, and YAML double-quoted escapes decode control characters, so an
+    // echoed authored value is a terminal-escape path into stdout and every log sink. The issue `path`
+    // already names the offending field.
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `unknown format — the vocabulary is ${INPUT_FORMATS.join(', ')}`,
+      path: ['validation', 'format'],
+    });
+  }
+
+  if (v.pattern !== undefined) validatePattern(v.pattern, ctx);
+
+  if (v.enum !== undefined) {
+    // An `enum` member of the wrong type can never match, so it is an authored mistake rather than a value
+    // that simply never occurs — and catching it at parse is what stops a silently unsatisfiable input.
+    v.enum.forEach((member, index) => {
+      if (!matchesDeclaredType(member, input.type)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `enum member does not match the declared type '${input.type}'`,
+          path: ['validation', 'enum', index],
+        });
+      }
+    });
+  }
+}
+
+/**
+ * Is this string a name a declared input could legally have?
+ *
+ * Exported because "is this name safe to echo" has one honest answer — the grammar `WorkflowInput.name` is
+ * parsed by — and admission needs it for a key the CALLER supplied, which is constrained by nothing. Stated
+ * as a domain predicate rather than by exporting `interpolationNameSchema`: `index.ts` keeps `common.ts`'s
+ * Zod primitives deliberately private, and a second copy of the character class is exactly the drift this
+ * function exists to prevent.
+ */
+export function isReferenceableInputName(value: string): boolean {
+  return interpolationNameSchema.safeParse(value).success;
+}
+
+/**
+ * Does a value satisfy a declared input `type`? The one place the mapping lives, so parse-time enum checking
+ * and run-time admission cannot disagree about what a `number` is.
+ *
+ * A `number` must be FINITE: `min`/`max` cannot express `NaN` or `±Infinity`, so admitting them would mean
+ * a bound that silently does not apply.
+ */
+export function matchesDeclaredType(
+  value: unknown,
+  type: z.infer<typeof InputTypeSchema>,
+): boolean {
+  switch (type) {
+    case 'number':
+      return typeof value === 'number' && Number.isFinite(value);
+    case 'boolean':
+      return typeof value === 'boolean';
+    case 'string':
+    case 'file_path':
+    case 'code_diff':
+    case 'secret':
+      return typeof value === 'string';
+  }
+}
 
 export const WorkflowInputSchema = z
   .object({
@@ -119,6 +476,50 @@ export const WorkflowInputSchema = z
     validation: InputValidationSchema.optional(),
   })
   .strict()
+  // ADR-0083 §3/§6 — the three parse-time tightenings, each an authored mistake failing loudly (ADR-0023).
+  .superRefine((input, ctx) => {
+    // 1. **No interpolation in a `default`.** At admission — which must precede run creation — none of the
+    //    three referenceable scopes exists: `{{inputs.*}}` is what admission is resolving, `{{ctx.*}}` is
+    //    resolved at run start, and `{{secrets.*}}` may never enter a default at all. It breaks nothing that
+    //    works: the engine applied no defaults, so a templated one was already dead.
+    if (containsInterpolation(input.default)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'an input `default` may not use `{{ }}` interpolation — it is resolved before any run exists, ' +
+          'so `inputs`, `ctx` and `secrets` are all unavailable to it',
+        path: ['default'],
+      });
+    }
+    // 2. **No `default` on a `secret`.** Such a value is written verbatim into the durable
+    //    `workflow_definition_snapshot` — a plaintext credential at rest.
+    if (input.type === 'secret' && input.default !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'a `secret` input may not declare a `default` — it would be persisted verbatim in the workflow ' +
+          'snapshot; supply the value at run time instead',
+        path: ['default'],
+      });
+    }
+    // 3. The `validation` block's own semantics (§4), checked here because they need the declared `type`.
+    validateValidationBlock(input, ctx);
+    // 4. **A declared `default` must satisfy its own declared contract.** The ADR and the spec both said so
+    //    and the first implementation did not do it — a review measured a `number` input defaulting to
+    //    `'not a number'`, and a `string` default outside its own `enum`, both accepted. That default is the
+    //    value §1's admission will hand to a run, and it is unsatisfiable in exactly the way a mistyped
+    //    `enum` member is, which this same refine already rejects.
+    if (input.default !== undefined) {
+      const reason = violatesInputContract(input.default, input.type, input.validation);
+      if (reason !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `the declared default violates this input's own contract: ${reason}`,
+          path: ['default'],
+        });
+      }
+    }
+  })
   // Per-type validation-key compatibility (workflow-yaml-spec.md): a numeric bound on a string, or a
   // *_length on a number, is an authored mistake — reject it. (Bound-ordering is on InputValidationSchema.)
   .superRefine((input, ctx) => {

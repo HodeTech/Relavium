@@ -2,7 +2,15 @@ import type { AbortSignalLike, BackoffStrategy, ContentPart, MediaSource } from 
 
 import type { CostTracker, CostUpdate } from './cost-tracker.js';
 import { UnknownModelError } from './errors.js';
+import {
+  DEFAULT_ATTEMPT_TIMEOUT_MS,
+  openDeadline,
+  type AbortControllerLike,
+  type DeadlineScope,
+  type SetAttemptTimer,
+} from './attempt-deadline.js';
 import { isRetryable, LlmProviderError, makeLlmError } from './llm-error.js';
+import { verifyStreamGrammar } from './stream-grammar.js';
 import type {
   LlmError,
   LlmMessage,
@@ -164,6 +172,20 @@ export interface FallbackChainOptions {
   readonly sleep: (ms: number, signal?: AbortSignalLike) => Promise<void>;
   /** Injectable clock for cooldown bookkeeping (default: `Date.now`, an ECMAScript primitive). */
   readonly now?: () => number;
+  /**
+   * The per-attempt deadline's two host-injected primitives
+   * ([ADR-0082](../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
+   * §6). `sleep`/`now` above are not a disarmable one-shot timer and a merged abort needs a controller, so
+   * the port is its own pair — platform-free, exactly like the others.
+   *
+   * **Both or neither.** Supplying only one leaves the deadline unarmed, and an unbounded wait is the state
+   * this removes — so a chain built without them keeps the old behaviour and says so at construction rather
+   * than half-applying the guarantee.
+   */
+  readonly newAbortController?: () => AbortControllerLike;
+  readonly setTimer?: SetAttemptTimer;
+  /** Per-attempt deadline in ms (default {@link DEFAULT_ATTEMPT_TIMEOUT_MS}). Must be finite and positive. */
+  readonly attemptTimeoutMs?: number;
   /** Base backoff delay in ms before the first retry of an entry (default 250). */
   readonly backoffBaseMs?: number;
   /** Backoff delay ceiling in ms (default 8000). */
@@ -193,8 +215,16 @@ const DEFAULT_BACKOFF_BASE_MS = 250;
 const DEFAULT_BACKOFF_MAX_MS = 8_000;
 const DEFAULT_COOLDOWN_MS = 30_000;
 
-/** What a classified failure means for the chain (a pure function of `LlmError.kind`). */
-type Verdict = 'fatal' | 'retryable' | 'auth-refreshed';
+/**
+ * What a classified failure means for the chain.
+ *
+ * No longer a pure function of `LlmError.kind`: `'advance'` exists because *retry this entry* and *try a
+ * different provider* stopped being one decision (ADR-0082 §9). A `protocol` violation must not be
+ * re-attempted against the same implementation — it will break the grammar again — but before any content
+ * has been shown there is nothing to lose by trying the next entry, and `'retryable'` would first burn this
+ * entry's whole attempt budget on a provider we already know is broken.
+ */
+type Verdict = 'fatal' | 'retryable' | 'auth-refreshed' | 'advance';
 
 /**
  * Strip every `reasoning` content part from a request's messages — a pure transform producing a new
@@ -271,6 +301,47 @@ function backoffDelayMs(
   return Math.min(raw, maxMs);
 }
 
+/**
+ * Strip `contentCommitted` from an error the CHAIN did not set it on.
+ *
+ * The field rides `LlmErrorSchema`, which is the type PROVIDERS construct and put in an `error` chunk — so
+ * a provider could set it on a PRE-content failure and, through the fold above the chain, delete the node's
+ * entire retry budget. A review measured it: adding the flag to a pre-content timeout dropped provider calls
+ * from three to one. Fail-closed, so no money hazard — it silently removes transient-failure recovery.
+ *
+ * This is the trust-boundary class ADR-0082 §3 is written about: a rule enforced only inside implementations
+ * we happen to own is a coincidence. Stripping on ingress makes {@link committed} the field's only writer,
+ * which turns a convention into an invariant.
+ */
+function disown(error: LlmError): LlmError {
+  if (error.contentCommitted === undefined) return error;
+  const rest = { ...error };
+  delete rest.contentCommitted;
+  return rest;
+}
+
+/**
+ * Mark a surfaced failure as having happened PAST the first content chunk
+ * ([ADR-0082](../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) §4).
+ *
+ * A separate field rather than an override of `retryable`, so `makeLlmError`'s invariant — retryability is a
+ * pure function of `kind` — survives. A reader seeing `kind: 'timeout', retryable: false` could not tell a
+ * deliberate suppression from a bug; `contentCommitted: true` says which and why.
+ */
+function committed(error: LlmError): LlmError {
+  return { ...error, contentCommitted: true };
+}
+
+/**
+ * The same request under a different signal — the merged caller-or-deadline one.
+ *
+ * A copy, never a mutation: `entryReq` is reused across retries of the same entry, and rewriting its signal
+ * in place would leave a disposed scope's signal attached to the next attempt.
+ */
+function withSignal(req: LlmRequest, signal: AbortSignalLike): LlmRequest {
+  return { ...req, signal };
+}
+
 /** A content chunk commits a stream — anything other than the terminal `stop`/`error` arms. */
 function isContentChunk(chunk: StreamChunk): boolean {
   return chunk.type !== 'stop' && chunk.type !== 'error';
@@ -292,6 +363,9 @@ export class FallbackChain {
   readonly #plan: readonly FallbackPlanEntry[];
   readonly #options: FallbackChainOptions;
   readonly #sleep: (ms: number, signal?: AbortSignalLike) => Promise<void>;
+  readonly #attemptTimeoutMs: number;
+  readonly #newAbortController: (() => AbortControllerLike) | undefined;
+  readonly #setTimer: SetAttemptTimer | undefined;
   readonly #now: () => number;
   readonly #backoffBaseMs: number;
   readonly #backoffMaxMs: number;
@@ -338,6 +412,19 @@ export class FallbackChain {
     this.#backoffBaseMs = options.backoffBaseMs ?? DEFAULT_BACKOFF_BASE_MS;
     this.#backoffMaxMs = options.backoffMaxMs ?? DEFAULT_BACKOFF_MAX_MS;
     this.#cooldownMs = options.cooldownMs ?? DEFAULT_COOLDOWN_MS;
+    // **Both or neither** (ADR-0082 §6). Half a deadline is not a smaller guarantee, it is none — so a
+    // chain given only one primitive keeps the old unbounded behaviour rather than pretending.
+    const timeoutMs = options.attemptTimeoutMs ?? DEFAULT_ATTEMPT_TIMEOUT_MS;
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      // A configuration error, refused at construction. There is no "disabled" value: unbounded is the
+      // state this removes, and a flag restoring it would restore the defect.
+      throw new Error(
+        `attemptTimeoutMs must be a finite positive number of milliseconds (got ${String(timeoutMs)})`,
+      );
+    }
+    this.#attemptTimeoutMs = timeoutMs;
+    this.#newAbortController = options.newAbortController;
+    this.#setTimer = options.setTimer;
   }
 
   /**
@@ -395,6 +482,9 @@ export class FallbackChain {
       const verdict = await this.#afterFailure(entry, outcome.error);
       if (verdict === 'fatal') {
         throw new LlmProviderError(outcome.error);
+      }
+      if (verdict === 'advance') {
+        return undefined; // this entry is unusable — do not spend its remaining attempts on it
       }
       if (verdict === 'auth-refreshed') {
         bonus += 1; // +1 attempt ON TOP of the configured budget; retry now (a fresh credential)
@@ -475,6 +565,10 @@ export class FallbackChain {
         yield { type: 'error', error: failure };
         return 'done';
       }
+      if (verdict === 'advance') {
+        // `run.lastError` is already set above, so an exhausted chain surfaces the real `protocol` cause.
+        return 'advance'; // …without spending this entry's remaining attempts on a provider we know is broken
+      }
       if (verdict === 'auth-refreshed') {
         bonus += 1; // +1 attempt ON TOP of the configured budget; retry now (a fresh credential)
         continue;
@@ -493,6 +587,12 @@ export class FallbackChain {
     run: ChainRun,
   ): Promise<GenerateAttempt> {
     const record = run.next(entry);
+    // The deadline covers THIS arm too, and a review caught it not doing so. ADR-0082's §5 opens with
+    // `generate(): Promise<LlmResult> { return new Promise(() => {}) }` as its motivating hang, and §12.10
+    // makes it the first acceptance criterion — yet the wiring landed on `stream()` only. The gap was live:
+    // `agent-turn.ts` routes an inline media-out turn (ADR-0046) through `chain.generate()`, so a hung
+    // provider on that path waited forever on every surface.
+    let deadline: DeadlineScope | undefined;
     try {
       const maxTokens = entryReq.maxTokens;
       await this.#options.preAttempt?.({
@@ -501,7 +601,20 @@ export class FallbackChain {
         ...(maxTokens === undefined ? {} : { maxTokens }),
       });
       const key = await this.#resolveKey(entry.provider.id);
-      const result = await entry.provider.generate(entryReq, key);
+      deadline = this.#openDeadline(entryReq);
+      const call = entry.provider.generate(
+        deadline === undefined ? entryReq : withSignal(entryReq, deadline.signal),
+        key,
+      );
+      // A `generate()` has no chunks, so there is nothing to commit: a deadline here is always pre-content
+      // and may fail over, which is rule 7's other half rather than an exception to it.
+      const raced = deadline === undefined ? undefined : await deadline.race(call);
+      if (raced?.outcome === 'deadline') {
+        const error = this.#classifyDeadline(deadline, entry.provider.id);
+        this.#emit({ ...record, outcome: 'failed', error });
+        return { status: 'error', error };
+      }
+      const result = raced === undefined ? await call : raced.value;
       this.#emitSuccess(record, entry.model, result.usage);
       return { status: 'success', result };
     } catch (err) {
@@ -512,6 +625,8 @@ export class FallbackChain {
       );
       this.#emit({ ...record, outcome: 'failed', error });
       return { status: 'error', error };
+    } finally {
+      deadline?.dispose();
     }
   }
 
@@ -521,6 +636,37 @@ export class FallbackChain {
    * to fail over on, or `undefined` if the stream completed (a success was already emitted, or a
    * post-content failure was surfaced).
    */
+  /**
+   * How a failed stream attempt LEAVES — the one decision the three failure sites share.
+   *
+   * Committed means content already reached the caller, so the failure is SURFACED as an `error` chunk and
+   * the chain reports no failover candidate. The `committed()` stamp goes on here, on the way out, because
+   * this is the moment the fact becomes the node layer's problem
+   * ([ADR-0082](../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) §4):
+   * the chain already refuses to fail over, and without the stamp that refusal stopped at the chain and
+   * `#shouldRetry` re-dispatched a call that had already produced output.
+   *
+   * Uncommitted, the error is RETURNED instead, and the caller decides whether to fail over.
+   *
+   * Spliced with `yield*`, so the caller's `return yield* …` both forwards the chunk and adopts the return
+   * value — the three sites were byte-identical, which is how the `committed()` stamp came to be missing
+   * from one of them once already.
+   */
+  // A SYNC generator: nothing here awaits, and an async one would only add a microtask hop between the
+  // emit and the surfaced chunk. An async generator delegates to it with `yield*` unchanged.
+  *#failAttempt(
+    record: AttemptRecord,
+    error: LlmError,
+    state: StreamAttemptState,
+  ): Generator<StreamChunk, LlmError | undefined> {
+    this.#emit({ ...record, outcome: 'failed', error });
+    if (state.committed) {
+      yield { type: 'error', error: committed(error) };
+      return undefined;
+    }
+    return error;
+  }
+
   async *#runStreamAttempt(
     entry: FallbackPlanEntry,
     entryReq: LlmRequest,
@@ -528,6 +674,13 @@ export class FallbackChain {
     state: StreamAttemptState,
   ): AsyncGenerator<StreamChunk, LlmError | undefined> {
     let usage: Usage | undefined;
+    // Declared outside the `try` so the `finally` can dispose it on EVERY exit path — including success,
+    // which is the one most likely to forget. A leaked timer holds the process awake, which on a CLI is a
+    // hang the user cannot explain.
+    let deadline: DeadlineScope | undefined;
+    // Declared beside `deadline`, and for the same reason: the `finally` has to be able to close it on
+    // EVERY exit, and a `let` inside the `try` would not be in scope there.
+    let iterator: AsyncIterator<StreamChunk> | undefined;
     try {
       const maxTokens = entryReq.maxTokens;
       await this.#options.preAttempt?.({
@@ -536,15 +689,38 @@ export class FallbackChain {
         ...(maxTokens === undefined ? {} : { maxTokens }),
       });
       const key = await this.#resolveKey(entry.provider.id);
-      for await (const chunk of entry.provider.stream(entryReq, key)) {
+      // **The grammar is verified HERE, where the seam is crossed** (ADR-0082 §3). The audited adapters
+      // already detect a truncated stream and keep doing so — better-attributed, since an adapter knows it
+      // was reading SSE — but the chain accepts ANY `LLMProvider`: a cassette, a test double, and in Phase 2
+      // a managed gateway. A rule enforced only inside implementations we happen to own is a coincidence.
+      deadline = this.#openDeadline(entryReq);
+      const verified = verifyStreamGrammar(
+        entry.provider.stream(
+          deadline === undefined ? entryReq : withSignal(entryReq, deadline.signal),
+          key,
+        ),
+        entry.provider.id,
+      );
+      // Manual iteration, not `for await`: every `next()` is raced against the ABSOLUTE deadline. A
+      // `for await` can only be bounded by a signal, and a signal is a request the provider may ignore.
+      iterator = verified[Symbol.asyncIterator]();
+      for (;;) {
+        const step = await this.#raceStep(iterator, deadline);
+        if (step.kind === 'timeout') {
+          return yield* this.#failAttempt(
+            record,
+            this.#classifyDeadline(deadline, entry.provider.id),
+            state,
+          );
+        }
+        if (step.kind === 'done') break;
+        const chunk = step.chunk;
         if (chunk.type === 'error') {
-          const error = this.#abortAware(chunk.error, entryReq, entry.provider.id);
-          this.#emit({ ...record, outcome: 'failed', error });
-          if (state.committed) {
-            yield { type: 'error', error }; // surface a mid-stream failure; the node-retry layer (1.S) owns it
-            return undefined;
-          }
-          return error; // pre-content failure → caller decides failover
+          return yield* this.#failAttempt(
+            record,
+            this.#abortAware(chunk.error, entryReq, entry.provider.id),
+            state,
+          );
         }
         if (chunk.type === 'stop') {
           usage = chunk.usage;
@@ -553,29 +729,52 @@ export class FallbackChain {
         yield chunk;
       }
     } catch (err) {
-      const error = this.#abortAware(
-        this.#errorOf(err, entry.provider.id),
-        entryReq,
-        entry.provider.id,
+      return yield* this.#failAttempt(
+        record,
+        this.#abortAware(this.#errorOf(err, entry.provider.id), entryReq, entry.provider.id),
+        state,
       );
-      this.#emit({ ...record, outcome: 'failed', error });
-      if (state.committed) {
-        yield { type: 'error', error };
-        return undefined;
-      }
-      return error; // pre-content throw → caller decides failover
+    } finally {
+      // Every exit path — success, pre-content failure, surfaced failure, an early consumer `break` that
+      // calls this generator's `return()`. Idempotent, so the success path below can be reached having
+      // already disposed nothing.
+      deadline?.dispose();
+      // **And close the source.** Converting `for await` to manual iteration removed the language's own
+      // teardown: `for await` calls `return()` on ANY abrupt completion of the body, while the hand-rolled
+      // loop only did so on the deadline branch. A review measured two live leaks — a grammar VIOLATION
+      // (where the verifier is suspended mid-`yield`, so its own `for await` over the source is still open)
+      // and an early consumer `break` — each leaving the provider's body reader uncancelled, the socket
+      // held, and tokens still arriving on a call we are still billed for.
+      //
+      // In the `finally` rather than per branch so a future exit cannot miss it, and best-effort without an
+      // unbounded await for the same reason `#raceStep`'s teardown is: caller liveness, not resource
+      // termination (ADR-0082 §5). `return()` on an already-completed iterator is a no-op.
+      void Promise.resolve(iterator?.return?.(undefined)).catch(() => undefined);
     }
-    // The success emit sits OUTSIDE the try above, deliberately — but the FOLD inside it needs its own guard
-    // (#W15-9). `#foldUsage` re-throws anything that is not `UnknownModelError` so a money bug is loud: a
-    // provider returning non-integer usage trips `assertAccountableUsage`, a broken overlay or a custom tracker
-    // throws. On the `generate()` path that work sits INSIDE the attempt's try, so the throw reaches the caller
-    // classified. Here it escaped the async generator raw — breaking this method's own contract ("a terminal
-    // failure is surfaced as an `error` chunk, not a throw") and taking down a turn whose content had already
-    // been produced and billed for.
-    //
-    // Only the fold is guarded. A throw from the attempt OBSERVER is the consumer's bug, and it keeps
-    // propagating on both paths exactly as before — narrowing here means this guard cannot quietly become the
-    // handler for someone else's defect.
+    return yield* this.#settleUsage(entry, record, usage, state);
+  }
+
+  /**
+   * The attempt SUCCEEDED — now account for what it cost, and surface a fold failure rather than throw it.
+   *
+   * Sits outside the attempt's `try`/`finally` deliberately, but needs its own guard (#W15-9). `#foldUsage`
+   * re-throws anything that is not `UnknownModelError` so a money bug is loud: a provider returning
+   * non-integer usage trips `assertAccountableUsage`, and a broken overlay or a custom tracker throws. On the
+   * `generate()` path that work sits INSIDE the attempt's try, so the throw reaches the caller classified.
+   * Here it escaped the async generator raw — breaking `#runStreamAttempt`'s own contract ("a terminal
+   * failure is surfaced as an `error` chunk, not a throw") and taking down a turn whose content had already
+   * been produced and billed for.
+   *
+   * Only the FOLD is guarded. A throw from the attempt OBSERVER is the consumer's bug and keeps propagating
+   * on both paths exactly as before — narrowing here means this guard cannot quietly become the handler for
+   * someone else's defect.
+   */
+  *#settleUsage(
+    entry: FallbackPlanEntry,
+    record: AttemptRecord,
+    usage: Usage | undefined,
+    state: StreamAttemptState,
+  ): Generator<StreamChunk, undefined> {
     if (usage === undefined) {
       this.#emitSuccess(record, entry.model, undefined); // nothing to fold
       return undefined;
@@ -600,7 +799,12 @@ export class FallbackChain {
       // SURFACED, not returned. `#runEntryStream` checks `state.committed` before it looks at the returned
       // failure, so on the committed path a returned error is dropped on the floor — silence, in the one
       // place the money path was made loud on purpose.
-      yield { type: 'error', error };
+      //
+      // Stamped like the other two surfaced failures. `kind: 'unknown'` already derives `retryable: false`,
+      // so nothing changes today — but leaving this one bare made "every error the chain surfaces past
+      // content carries `contentCommitted`" untrue, and rested this point's no-retry guarantee on a second,
+      // unrelated mechanism that a future kind change would quietly break.
+      yield { type: 'error', error: state.committed ? committed(error) : error };
       return undefined;
     }
     this.#emitFolded(record, usage, folded);
@@ -628,6 +832,12 @@ export class FallbackChain {
       // Park the saturated provider so a later call on this chain skips it (does not hammer it).
       this.#cooldownUntil.set(entry.provider.id, this.#now() + this.#cooldownMs);
       return 'retryable';
+    }
+    if (error.kind === 'protocol') {
+      // Reached only PRE-content: the committed path returns before `#afterFailure` is consulted. Skip the
+      // rest of this entry's budget — re-attempting an implementation that cannot keep the grammar is
+      // pointless — and give the next provider a turn.
+      return 'advance';
     }
     return isRetryable(error.kind) ? 'retryable' : 'fatal';
   }
@@ -764,8 +974,59 @@ export class FallbackChain {
    * — so the cancelled node would read as a provider outage. Reclassifying here (provider-agnostic) keeps a
    * cancel showing as `cancelled` end-to-end.
    */
+  /**
+   * Open a deadline for one attempt, or `undefined` when the host wired no timer port.
+   *
+   * The window opens HERE — immediately before the seam call, after `preAttempt`, after media
+   * re-materialization, after credential resolution (ADR-0082 §6). Those are Relavium's own work and must
+   * not consume the provider's budget.
+   */
+  #openDeadline(req: LlmRequest): DeadlineScope | undefined {
+    const newController = this.#newAbortController;
+    const setTimer = this.#setTimer;
+    if (newController === undefined || setTimer === undefined) return undefined;
+    return openDeadline(this.#attemptTimeoutMs, newController, setTimer, req.signal);
+  }
+
+  /**
+   * One `next()`, raced against the attempt's absolute deadline.
+   *
+   * Without a deadline scope this is a plain `await` — the pre-ADR-0082 behaviour, kept for a host that
+   * wired no timer port, and the reason the port is optional rather than required.
+   */
+  async #raceStep(
+    iterator: AsyncIterator<StreamChunk>,
+    deadline: DeadlineScope | undefined,
+  ): Promise<{ kind: 'chunk'; chunk: StreamChunk } | { kind: 'done' } | { kind: 'timeout' }> {
+    if (deadline === undefined) {
+      const plain = await iterator.next();
+      return plain.done === true ? { kind: 'done' } : { kind: 'chunk', chunk: plain.value };
+    }
+    const raced = await deadline.race(iterator.next());
+    if (raced.outcome === 'deadline') {
+      // Best-effort teardown, deliberately NOT awaited without bound: a hung iterator must not hang the
+      // cleanup too. The guarantee is caller liveness, not resource termination (ADR-0082 §5).
+      void Promise.resolve(iterator.return?.(undefined)).catch(() => undefined);
+      return { kind: 'timeout' };
+    }
+    return raced.value.done === true
+      ? { kind: 'done' }
+      : { kind: 'chunk', chunk: raced.value.value };
+  }
+
+  /** A deadline abort is `timeout`; a caller abort in the same window stays `cancelled` (ADR-0082 §5). */
+  #classifyDeadline(deadline: DeadlineScope | undefined, provider: ProviderId): LlmError {
+    return deadline?.classify() === 'caller'
+      ? this.#cancelledError(provider)
+      : makeLlmError({
+          provider,
+          kind: 'timeout',
+          message: `the provider did not respond within the ${String(this.#attemptTimeoutMs)}ms attempt deadline`,
+        });
+  }
+
   #abortAware(error: LlmError, req: LlmRequest, provider: ProviderId): LlmError {
-    return this.#aborted(req) ? this.#cancelledError(provider) : error;
+    return this.#aborted(req) ? this.#cancelledError(provider) : disown(error);
   }
 
   #exhaustedError(): LlmError {

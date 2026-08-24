@@ -10,6 +10,7 @@ import {
   temperatureSchema,
 } from './common.js';
 import { LLM_PROVIDERS, REASONING_EFFORTS, RETRYABLE_ERROR_CODES } from './constants.js';
+import { validateDeclaredEnv } from './declared-env.js';
 
 /**
  * Agent schema (agent-yaml-spec.md). An agent is a named, reusable LLM
@@ -103,6 +104,7 @@ function validateRefForm(ref: McpServerRefDraft, ctx: z.RefinementCtx): void {
 
 /** Inline `stdio`: needs a `command`, and rejects the network-only `url` / `allow_local_endpoint` (secure-by-default). */
 function validateStdioFields(ref: McpServerRefDraft, ctx: z.RefinementCtx): void {
+  validateDeclaredEnv(ref.env, ctx);
   if (!ref.command) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,

@@ -143,6 +143,8 @@ describe('generative media-output — end-to-end on the CLI (2.S acceptance)', (
           },
         }),
         db: client.db,
+        // CR-92's outbox lives beside history.db; a temp path keeps the fixture off ~/.relavium (ADR-0078 §4).
+        terminalOutboxPath: join(tmpdir(), 'relavium-test-outbox.ndjson'),
         close: () => {},
       }),
     };
@@ -153,7 +155,7 @@ describe('generative media-output — end-to-end on the CLI (2.S acceptance)', (
     const wfPath = join(cwd, 'gen.relavium.yaml');
     writeFileSync(wfPath, GENERATIVE_WF);
 
-    const code = await runCommand({ workflow: wfPath, input: [] }, deps(io));
+    const code = await runCommand({ workflow: wfPath, input: [], allowMcpStdio: [] }, deps(io));
     expect(code).toBe(EXIT_CODES.success); // the generative run completes end-to-end
 
     const events = parseNdjson(out());

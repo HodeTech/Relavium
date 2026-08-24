@@ -1,10 +1,11 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import { constants } from 'node:fs';
-import { access, realpath } from 'node:fs/promises';
-import { delimiter, isAbsolute, join, resolve, sep } from 'node:path';
+import { realpath } from 'node:fs/promises';
+import { isAbsolute, resolve, sep } from 'node:path';
 
 import type { ProcessCapability, ProcessResult } from '@relavium/core';
-import type { AbortSignalLike } from '@relavium/shared';
+import { isForbiddenDeclaredEnvKey, type AbortSignalLike } from '@relavium/shared';
+
+import { findOnPath } from '../find-on-path.js';
 
 import {
   HostCapabilityError,
@@ -94,53 +95,15 @@ export class ProcessCapabilityError extends HostCapabilityError {}
 export class ProcessDeniedError extends HostDeniedError {}
 
 /**
- * Declared env vars the host **forbids** even from a workflow author: keys that would run attacker code in
- * the child (or a grandchild), or steer a tool's config/identity, regardless of the allowlisted binary —
- * the audit the spec mandates ([built-in-tools.md](../../../../../docs/reference/shared-core/built-in-tools.md)
- * §Subprocess environment names `NODE_OPTIONS` as a hijack vector). Categories: interpreter/loader option
- * injection (`NODE_OPTIONS`/`NODE_PATH`, `PYTHON*`, `PERL5*`, `RUBY*`, `JAVA_*`/`CLASSPATH`, the `LD_`/`DYLD_`
- * dynamic loaders, `BASH_ENV`/`ENV`/`IFS`), the entire `GIT_` namespace (`GIT_DIR`, `GIT_CONFIG_*`,
- * `GIT_SSH*`, `GIT_EXEC_PATH`, hooks via `core.hooksPath` → RCE), and **config-home redirection**
- * (`HOME`/`XDG_CONFIG_HOME`/`USERPROFILE` repoint a tool's `~/.gitconfig`/rc to attacker-controlled files).
- * `PATH` is rejected too — executable resolution deliberately ignores a declared `PATH`. Keys are matched
- * case-insensitively (Windows env names are case-insensitive). A declared var is merged on top of the audited
- * base env; a stricter author-**opt-in allowlist** of permitted keys is the Phase-2.6 refinement (this profile's
- * `git_status` passes an empty `declaredEnv`, so the surface is only a power-user `run_command` `env` config).
+ * The declared-environment rule lives in `@relavium/shared`'s `isForbiddenDeclaredEnvKey` — one predicate,
+ * consumed here and by the two MCP stdio entry points
+ * ([ADR-0084](../../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §4).
+ *
+ * The list is deliberately NOT restated here. It was, in the docblock this replaces, and that copy had
+ * already drifted: it claimed `PERL5*`, `RUBY*` and `JAVA_*` were prefixes when only the exact names are.
+ * A stale restatement of a security control reads as complete and is not, which is why the ADR names the
+ * predicate as the list's one home.
  */
-const FORBIDDEN_DECLARED_ENV: ReadonlySet<string> = new Set([
-  // interpreter / loader option + module-path injection
-  'NODE_OPTIONS',
-  'NODE_PATH',
-  'NODE_V8_COVERAGE',
-  // (every `PYTHON*` var is covered by the `PYTHON` prefix below — listed by name for nothing, so omitted)
-  'PERL5LIB',
-  'PERL5OPT',
-  'RUBYLIB',
-  'RUBYOPT',
-  'JAVA_TOOL_OPTIONS',
-  '_JAVA_OPTIONS',
-  'JDK_JAVA_OPTIONS',
-  'CLASSPATH',
-  'BASH_ENV',
-  'ENV',
-  'IFS',
-  // config-home redirection (repoints ~/.gitconfig, rc files, …; APPDATA/LOCALAPPDATA are the Windows
-  // per-user config roots — git reads %APPDATA%\Git\config, many tools read %APPDATA%\<tool>\)
-  'HOME',
-  'XDG_CONFIG_HOME',
-  'USERPROFILE',
-  'HOMEDRIVE',
-  'HOMEPATH',
-  'APPDATA',
-  'LOCALAPPDATA',
-  // executable resolution ignores a declared PATH — reject it rather than mislead
-  'PATH',
-]);
-/** Forbidden key prefixes: the dynamic loaders (`DYLD_*`, `LD_*`) and the ENTIRE git env namespace (`GIT_*`). */
-// `PYTHON` (no trailing `_`) sweeps the whole interpreter-config namespace — `PYTHONHOME`/`PYTHONPATH`/
-// `PYTHONINSPECT`/`PYTHONEXECUTABLE`/… — none of which carry an underscore after `PYTHON`, so a `PYTHON_`
-// prefix would miss them all.
-const FORBIDDEN_DECLARED_ENV_PREFIX = ['DYLD_', 'LD_', 'GIT_', 'PYTHON'] as const;
 
 /**
  * Build a node-backed {@link ProcessCapability}. The returned object is the value a host wires onto
@@ -324,43 +287,23 @@ async function resolveExecutable(command: string): Promise<string> {
   if (isAbsolute(command) || command.includes('/') || command.includes('\\')) {
     return command; // an explicit path — spawn fails cleanly if it is missing / not executable
   }
-  const pathVar = process.env['PATH'] ?? process.env['Path'] ?? '';
-  const dirs = pathVar.split(delimiter).filter((d) => d !== '');
-  let exts: string[];
-  if (process.platform === 'win32') {
-    const pathExts = (process.env['PATHEXT'] ?? '.EXE;.CMD;.BAT;.COM')
-      .split(';')
-      .filter((e) => e !== '');
-    // If the command ALREADY carries a recognized PATHEXT extension (e.g. `node.exe`), try the bare name first —
-    // otherwise every candidate would be `node.exe.EXE` etc. and the real binary would never be found.
-    const upper = command.toUpperCase();
-    const hasExt = pathExts.some((e) => upper.endsWith(e.toUpperCase()));
-    exts = hasExt ? ['', ...pathExts] : pathExts;
-  } else {
-    exts = [''];
+  // The walk itself moved to `find-on-path.ts` when ADR-0084's consent gate became a second caller; the
+  // POLICY around it stays here, because the two callers differ on it. This one returns an explicit path
+  // unresolved (the spawn resolves it inside the jail) and fails closed on a miss with its own typed error.
+  const found = await findOnPath(command);
+  if (found === undefined) {
+    throw new ProcessDeniedError('the command was not found on PATH'); // deterministic — fatal, never retried
   }
-  for (const dir of dirs) {
-    for (const ext of exts) {
-      const candidate = join(dir, command + ext);
-      try {
-        await access(candidate, constants.X_OK);
-        return candidate;
-      } catch {
-        // not here / not executable — keep searching
-      }
-    }
-  }
-  throw new ProcessDeniedError('the command was not found on PATH'); // deterministic — fatal, never retried
+  return found;
 }
 
 /** Reject a declared env var the host forbids (injection / config-steering) — case-insensitive, fail-closed. */
 function assertSafeDeclaredEnv(declaredEnv: Readonly<Record<string, string>>): void {
   for (const key of Object.keys(declaredEnv)) {
-    const k = key.toUpperCase(); // Windows env names are case-insensitive; normalize so `node_options` can't slip past
-    if (
-      FORBIDDEN_DECLARED_ENV.has(k) ||
-      FORBIDDEN_DECLARED_ENV_PREFIX.some((p) => k.startsWith(p))
-    ) {
+    // The list moved to `@relavium/shared` when ADR-0084 §4 made the MCP stdio path a second consumer. It was
+    // here, and only here, while the other host that spawns a program a shared artifact names passed every
+    // declared variable through untouched — two hosts, one rule, so it lives where both can reach it.
+    if (isForbiddenDeclaredEnvKey(key)) {
       throw new ProcessDeniedError('a declared environment variable is not permitted');
     }
   }

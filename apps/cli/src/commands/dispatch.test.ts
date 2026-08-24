@@ -81,8 +81,9 @@ describe('build*Args (argv → typed core args)', () => {
     expect(buildRunArgs(input(['wf'], { input: ['a=1', 'b=2'] }))).toEqual({
       workflow: 'wf',
       input: ['a=1', 'b=2'],
+      allowMcpStdio: [],
     });
-    expect(buildRunArgs(input(['wf']))).toEqual({ workflow: 'wf', input: [] });
+    expect(buildRunArgs(input(['wf']))).toEqual({ workflow: 'wf', input: [], allowMcpStdio: [] });
   });
 
   it('chat: agent is undefined when absent (the built-in default)', () => {
@@ -118,10 +119,11 @@ describe('build*Args (argv → typed core args)', () => {
     expect(buildAgentRunArgs(input(['a'], { input: ['k=v'], fixture: 'c.json' }))).toEqual({
       agent: 'a',
       input: ['k=v'],
+      allowMcpStdio: [],
       fixture: 'c.json',
     });
     const noFixture = buildAgentRunArgs(input(['a']));
-    expect(noFixture).toEqual({ agent: 'a', input: [] });
+    expect(noFixture).toEqual({ agent: 'a', input: [], allowMcpStdio: [] });
     expect('fixture' in noFixture).toBe(false);
   });
 
@@ -130,10 +132,11 @@ describe('build*Args (argv → typed core args)', () => {
       runId: 'run-1',
       approve: true,
       reject: false,
+      secretStdin: false,
       comment: 'lgtm',
     });
     const bare = buildGateArgs(input(['run-1']));
-    expect(bare).toEqual({ runId: 'run-1', approve: false, reject: false });
+    expect(bare).toEqual({ runId: 'run-1', approve: false, reject: false, secretStdin: false });
     expect('comment' in bare).toBe(false);
     expect('gate' in bare).toBe(false);
   });
@@ -143,14 +146,19 @@ describe('build*Args (argv → typed core args)', () => {
       runId: 'run-1',
       approve: false,
       reject: true,
+      secretStdin: false,
     });
     expect(buildGateArgs(input(['run-1'], { input: '{"ok":true}', gate: 'g-1' }))).toEqual({
       runId: 'run-1',
       approve: false,
       reject: false,
+      secretStdin: false,
       input: '{"ok":true}',
       gate: 'g-1',
     });
+    // `--secret-stdin` is a DEFINITE boolean like its siblings: false when unset, never absent, so a
+    // consumer never has to distinguish "not asked for" from "asked for and off" (ADR-0083 §6).
+    expect(buildGateArgs(input(['run-1'], { secretStdin: true })).secretStdin).toBe(true);
     expect('input' in buildGateArgs(input(['run-1']))).toBe(false);
   });
 

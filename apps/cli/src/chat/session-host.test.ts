@@ -40,6 +40,7 @@ import {
   toolUseTurn,
   unresolvedResolver,
 } from './test-support.js';
+import { createInMemoryEffectJournal } from '@relavium/core';
 
 /** A tool-call turn that carries JSON args (the `toolUseTurn` helper sends none) — for read_file/write_file. */
 const callWithArgs = (id: string, name: string, args: unknown): StreamChunk[] => [
@@ -101,9 +102,9 @@ function deterministicIds() {
   return { now: () => tick++, uuid: () => 'sess-test-1' };
 }
 
-function build(overrides: Partial<Parameters<typeof buildChatSession>[0]> = {}) {
+async function build(overrides: Partial<Parameters<typeof buildChatSession>[0]> = {}) {
   const { now, uuid } = deterministicIds();
-  return buildChatSession({
+  const built = await buildChatSession({
     chat: EMPTY_CHAT,
     agentRef: undefined,
     cwd: '/workspace',
@@ -111,8 +112,18 @@ function build(overrides: Partial<Parameters<typeof buildChatSession>[0]> = {}) 
     now,
     uuid,
     providers: scriptedResolver([textTurn('hello there')]),
+    // `connectAgentMcp` REFUSES a stdio declaration when no gate was wired (ADR-0084 §1) — the optionality
+    // that left four of the five entry points ungated. These cases are about host wiring, not consent, so the
+    // default says so explicitly; a case about the gate itself overrides it.
+    consentGate: () => Promise.resolve(new Map()),
     ...overrides,
   });
+  // In production the persister attaches this once `history.db` is open. Attaching a REAL in-memory journal
+  // here rather than leaving it unwired: MCP tools are tier 3 (ADR-0080), so the MCP tests below genuinely
+  // dispatch effects, and the unwired port correctly refuses those — which would test the refusal instead of
+  // the routing each test is about.
+  built.attachEffectJournal((correlation) => createInMemoryEffectJournal(correlation));
+  return built;
 }
 
 describe('buildChatSession', () => {
@@ -419,6 +430,34 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
     expect(closed).toBe(1);
   });
 
+  it('names the RESOLVED agent file at the consent gate (ADR-0084 §7)', async () => {
+    // The prompt's "declared in <file>" line is what turns a consent decision about an opaque program into
+    // one about an artifact the user can go read — and `chat --agent ./downloaded.agent.yaml` is exactly the
+    // imported-artifact case the gate exists for. It has now died silently TWICE, at two different layers,
+    // because every test called the gate directly and none went through the surface that computes the value.
+    const agentPath = writeMcpAgent();
+    let asked = 0;
+    let seen: string | undefined;
+    await build({
+      agentRef: agentPath,
+      consentGate: (_refs, _cwd, artifact) => {
+        asked += 1;
+        seen = artifact;
+        return Promise.resolve(new Map());
+      },
+      startMcpClient: () =>
+        Promise.resolve({
+          capability: { call: () => Promise.resolve({ content: [], isError: false }) },
+          toolDefs: [],
+          toolIdsByServer: new Map(),
+          skipped: [],
+          close: () => Promise.resolve(),
+        }),
+    });
+    expect(asked).toBe(1); // else `seen === undefined` would pass for a gate that never ran
+    expect(seen).toBe(agentPath);
+  });
+
   it('MERGE-not-replace: a session with MCP keeps the fs arm too — read_file AND an MCP tool both dispatch', async () => {
     // The keystone 2.5.A fix (ADR-0055): the inbound-MCP arm is MERGED onto the factory fs+process host, never
     // REPLACING it. Proven end-to-end: in ONE session, read_file routes via host.fs (real file) AND mcp_fs_read
@@ -585,6 +624,7 @@ describe('buildResumedChatSession (2.N)', () => {
       messages,
       now: () => Date.parse(ISO),
       providers: scriptedResolver([textTurn('continued')]),
+      consentGate: () => Promise.resolve(new Map()), // see `build` above (ADR-0084 §1)
     });
   }
 
@@ -827,7 +867,10 @@ describe('buildResumedChatSession (2.N)', () => {
         now: () => Date.parse(ISO),
         providers: scriptedResolver([toolUseTurn('c1', 'mcp_fs_read'), textTurn('done')]),
         startMcpClient: () => realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(conn) }]),
+        consentGate: () => Promise.resolve(new Map()), // see `build` above (ADR-0084 §1)
       });
+      // A resumed session's MCP tools are tier 3 too (ADR-0080) — same reason as `build()` above.
+      built.attachEffectJournal((correlation) => createInMemoryEffectJournal(correlation));
 
       // The RETURNED agent is the ORIGINAL snapshot — its grant is not baked with the dynamic id, and it still
       // carries mcp_servers so a FUTURE resume re-discovers again (the persistence contract).
@@ -870,6 +913,7 @@ describe('buildResumedChatSession (2.N)', () => {
         now: () => Date.parse(ISO),
         providers: scriptedResolver([textTurn('unused')]),
         startMcpClient: () => Promise.resolve(collidingClient),
+        consentGate: () => Promise.resolve(new Map()), // see `build` above (ADR-0084 §1)
       });
       await expect(building).rejects.toThrow(/duplicate tool id/);
       expect(closed).toBe(1);

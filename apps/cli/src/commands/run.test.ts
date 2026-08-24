@@ -18,6 +18,8 @@ import {
   type Db,
 } from '@relavium/db';
 import { McpError, startMcpClient as realStartMcpClient, type McpConnection } from '@relavium/mcp';
+
+import type { ResolvedStdioSpawn } from '../engine/mcp-consent.js';
 import { RunEventSchema } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -36,6 +38,7 @@ import {
   captureIo,
 } from '../test-support.js';
 import { runCommand, type RunCommandDeps } from './run.js';
+import { createInMemoryEffectJournal } from '@relavium/core';
 
 // A minimal real workflow: input → transform → output. Runs end-to-end through the standard node
 // executor + the expression sandbox with NO provider (no agent node), so the run reaches run:completed.
@@ -227,7 +230,18 @@ function deps(
   global: GlobalOptions,
   over: Partial<RunCommandDeps> = {},
 ): RunCommandDeps {
-  return { io, global, buildEngine: () => buildEngine({ host: createInMemoryHost() }), ...over };
+  return {
+    io,
+    global,
+    buildEngine: () =>
+      buildEngine({
+        host: createInMemoryHost(),
+        // MCP tools are tier 3, so a fixture that dispatches one must journal it (ADR-0080); the unwired
+        // port correctly refuses, which would test the refusal rather than the routing under test.
+        effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+      }),
+    ...over,
+  };
 }
 
 function writeWorkflow(name: string, yaml: string): string {
@@ -235,6 +249,18 @@ function writeWorkflow(name: string, yaml: string): string {
   writeFileSync(path, yaml);
   return path;
 }
+
+/**
+ * A consent gate that approves nothing and refuses nothing — the shape a fixture wants
+ * ([ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §1).
+ *
+ * These tests inject `startMcpClient`, so they never spawn; what they exercise is ROUTING. The real gate
+ * resolves each declared `command` against the ambient `PATH` before deciding, and these fixtures name
+ * `command: x`, which resolves nowhere — a correct refusal, about the wrong thing. The gate's own behaviour
+ * is pinned in `mcp-consent-gate.test.ts`.
+ */
+const PASS_CONSENT = (): Promise<ReadonlyMap<string, ResolvedStdioSpawn>> =>
+  Promise.resolve(new Map<string, ResolvedStdioSpawn>());
 
 /** An `openRunStore` backed by the given in-memory db — the durable-history stub the 2.S wiring tests share. */
 function historyOpenRunStore(db: Db): NonNullable<RunCommandDeps['openRunStore']> {
@@ -252,6 +278,9 @@ function historyOpenRunStore(db: Db): NonNullable<RunCommandDeps['openRunStore']
       },
     }),
     db,
+    // CR-92's outbox lives beside history.db; a fixture points it at a temp path so nothing touches
+    // the developer's ~/.relavium (ADR-0078 §4).
+    terminalOutboxPath: join(tmpdir(), 'relavium-test-outbox.ndjson'),
     close: () => {},
   });
 }
@@ -300,7 +329,10 @@ describe('runCommand', () => {
     const path = writeWorkflow('happy.relavium.yaml', HAPPY);
     const { io, out } = captureIo();
     const global = globalOptions();
-    const code = await runCommand({ workflow: path, input: ['n=3'] }, deps(io, global));
+    const code = await runCommand(
+      { workflow: path, input: ['n=3'], allowMcpStdio: [] },
+      deps(io, global),
+    );
     expect(code).toBe(EXIT_CODES.success);
     expect(out()).toContain('started');
     expect(out()).toContain('run completed');
@@ -328,14 +360,19 @@ describe('runCommand', () => {
     const path = writeWorkflow('happy.relavium.yaml', HAPPY);
     try {
       const code = await runCommand(
-        { workflow: path, input: ['n=3'] },
+        { workflow: path, input: ['n=3'], allowMcpStdio: [] },
         deps(io, globalOptions(), {
           // Durable history open ⇒ run.ts wires the media host + the catalog reader over this same db.
           openRunStore: historyOpenRunStore(client.db),
           // Capture what run.ts assembled, then run a real in-memory engine so the HAPPY workflow completes.
           buildEngine: (opts) => {
             captured = opts;
-            return buildEngine({ host: createInMemoryHost() });
+            return buildEngine({
+              host: createInMemoryHost(),
+              // MCP tools are tier 3, so a fixture that dispatches one must journal it (ADR-0080); the unwired
+              // port correctly refuses, which would test the refusal rather than the routing under test.
+              effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+            });
           },
         }),
       );
@@ -379,12 +416,17 @@ describe('runCommand', () => {
     const path = writeWorkflow('happy.relavium.yaml', HAPPY);
     try {
       const code = await runCommand(
-        { workflow: path, input: ['n=3'] },
+        { workflow: path, input: ['n=3'], allowMcpStdio: [] },
         deps(io, globalOptions(), {
           openRunStore: historyOpenRunStore(client.db),
           buildEngine: (opts) => {
             captured = opts;
-            return buildEngine({ host: createInMemoryHost() });
+            return buildEngine({
+              host: createInMemoryHost(),
+              // MCP tools are tier 3, so a fixture that dispatches one must journal it (ADR-0080); the unwired
+              // port correctly refuses, which would test the refusal rather than the routing under test.
+              effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+            });
           },
         }),
       );
@@ -403,7 +445,7 @@ describe('runCommand', () => {
     let swept: { db: unknown; casRoot: string; currentRunId: string; graceMs?: number } | undefined;
     try {
       const code = await runCommand(
-        { workflow: path, input: ['n=3'] },
+        { workflow: path, input: ['n=3'], allowMcpStdio: [] },
         deps(io, globalOptions(), {
           openRunStore: historyOpenRunStore(client.db),
           sweepMedia: (args) => {
@@ -434,7 +476,7 @@ describe('runCommand', () => {
     let swept: { graceMs?: number } | undefined;
     try {
       const code = await runCommand(
-        { workflow: path, input: ['n=3'] },
+        { workflow: path, input: ['n=3'], allowMcpStdio: [] },
         deps(io, globalOptions(), {
           openRunStore: historyOpenRunStore(client.db),
           sweepMedia: (args) => {
@@ -464,7 +506,7 @@ describe('runCommand', () => {
     };
     try {
       const code = await runCommand(
-        { workflow: path, input: ['n=3'] },
+        { workflow: path, input: ['n=3'], allowMcpStdio: [] },
         deps(io, globalOptions(), { openRunStore: capturing }),
       );
       expect(code).toBe(EXIT_CODES.success);
@@ -480,7 +522,7 @@ describe('runCommand', () => {
     const path = writeWorkflow('happy.relavium.yaml', HAPPY);
     let swept = false;
     const code = await runCommand(
-      { workflow: path, input: ['n=3'] },
+      { workflow: path, input: ['n=3'], allowMcpStdio: [] },
       deps(io, globalOptions(), {
         sweepMedia: () => {
           swept = true;
@@ -500,7 +542,7 @@ describe('runCommand', () => {
     let swept = false;
     try {
       const code = await runCommand(
-        { workflow: path, input: [] },
+        { workflow: path, input: [], allowMcpStdio: [] },
         deps(io, globalOptions(), {
           openRunStore: historyOpenRunStore(client.db),
           sweepMedia: () => {
@@ -523,7 +565,7 @@ describe('runCommand', () => {
     const path = writeWorkflow('happy.relavium.yaml', HAPPY);
     try {
       const code = await runCommand(
-        { workflow: path, input: ['n=3'] },
+        { workflow: path, input: ['n=3'], allowMcpStdio: [] },
         deps(io, globalOptions(), {
           openRunStore: historyOpenRunStore(client.db),
           sweepMedia: () => Promise.reject(new Error('gc boom')),
@@ -558,7 +600,7 @@ describe('runCommand', () => {
     let caught: unknown;
     try {
       await runCommand(
-        { workflow: path, input: [] },
+        { workflow: path, input: [], allowMcpStdio: [] },
         deps(io, globalOptions(), {
           // Key present ⇒ the pre-flight passes; the D15 load-check is what must reject the run.
           providers: createProviderResolver({ RELAVIUM_OPENAI_API_KEY: 'sk-test' }),
@@ -606,7 +648,7 @@ describe('runCommand', () => {
     let caught: unknown;
     try {
       await runCommand(
-        { workflow: path, input: [] },
+        { workflow: path, input: [], allowMcpStdio: [] },
         deps(io, globalOptions(), {
           providers: createProviderResolver({ RELAVIUM_OPENAI_API_KEY: 'sk-test' }),
           openRunStore: historyOpenRunStore(client.db),
@@ -640,7 +682,7 @@ describe('runCommand', () => {
     let caught: unknown;
     try {
       await runCommand(
-        { workflow: path, input: [] },
+        { workflow: path, input: [], allowMcpStdio: [] },
         deps(io, globalOptions(), {
           providers: createProviderResolver({ RELAVIUM_OPENAI_API_KEY: 'sk-test' }),
           openRunStore: historyOpenRunStore(client.db), // catalog open, but `not-in-catalog` is unseeded
@@ -669,7 +711,7 @@ describe('runCommand', () => {
     let caught: unknown;
     try {
       await runCommand(
-        { workflow: path, input: [] },
+        { workflow: path, input: [], allowMcpStdio: [] },
         deps(io, globalOptions(), {
           providers: createProviderResolver({ RELAVIUM_OPENAI_API_KEY: 'sk-test' }),
           buildEngine: () => {
@@ -696,7 +738,7 @@ describe('runCommand', () => {
       },
     };
     const code = await runCommand(
-      { workflow: path, input: ['n=3'] },
+      { workflow: path, input: ['n=3'], allowMcpStdio: [] },
       deps(io, globalOptions(), { selectRenderer: () => renderer }),
     );
     expect(code).toBe(EXIT_CODES.success);
@@ -711,7 +753,7 @@ describe('runCommand', () => {
       finalize: () => Promise.reject(new Error('unmount blew up')),
     };
     const code = await runCommand(
-      { workflow: path, input: ['n=3'] },
+      { workflow: path, input: ['n=3'], allowMcpStdio: [] },
       deps(io, globalOptions(), { selectRenderer: () => renderer }),
     );
     expect(code).toBe(EXIT_CODES.success); // the run outcome is preserved
@@ -723,7 +765,10 @@ describe('runCommand', () => {
     const path = writeWorkflow('happy.relavium.yaml', HAPPY);
     const { io, out } = captureIo();
     const global = globalOptions({ json: true });
-    const code = await runCommand({ workflow: path, input: ['n=3'] }, deps(io, global));
+    const code = await runCommand(
+      { workflow: path, input: ['n=3'], allowMcpStdio: [] },
+      deps(io, global),
+    );
     expect(code).toBe(EXIT_CODES.success);
 
     // Every stdout line is EXACTLY one RunEvent (the 2.F/ADR-0049 acceptance bar). Round-trip
@@ -749,7 +794,7 @@ describe('runCommand', () => {
     const path = writeWorkflow('fail.relavium.yaml', FAILING);
     const { io, out, err } = captureIo();
     const code = await runCommand(
-      { workflow: path, input: [] },
+      { workflow: path, input: [], allowMcpStdio: [] },
       deps(io, globalOptions({ json: true })),
     );
     expect(code).toBe(EXIT_CODES.workflowFailed);
@@ -770,7 +815,10 @@ describe('runCommand', () => {
     const path = writeWorkflow('fail.relavium.yaml', FAILING);
     const { io, out } = captureIo();
     const global = globalOptions();
-    const code = await runCommand({ workflow: path, input: [] }, deps(io, global));
+    const code = await runCommand(
+      { workflow: path, input: [], allowMcpStdio: [] },
+      deps(io, global),
+    );
     expect(code).toBe(EXIT_CODES.workflowFailed);
     expect(out()).toContain('run failed');
   });
@@ -783,11 +831,16 @@ describe('runCommand', () => {
     let caught: unknown;
     try {
       await runCommand(
-        { workflow: path, input: ['bogus=1'] },
+        { workflow: path, input: ['bogus=1'], allowMcpStdio: [] },
         deps(io, global, {
           buildEngine: () => {
             engineBuilt = true;
-            return buildEngine({ host: createInMemoryHost() });
+            return buildEngine({
+              host: createInMemoryHost(),
+              // MCP tools are tier 3, so a fixture that dispatches one must journal it (ADR-0080); the unwired
+              // port correctly refuses, which would test the refusal rather than the routing under test.
+              effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+            });
           },
         }),
       );
@@ -805,7 +858,7 @@ describe('runCommand', () => {
     let caught: unknown;
     try {
       await runCommand(
-        { workflow: join(root, 'missing.relavium.yaml'), input: [] },
+        { workflow: join(root, 'missing.relavium.yaml'), input: [], allowMcpStdio: [] },
         deps(io, global),
       );
     } catch (err) {
@@ -821,7 +874,7 @@ describe('runCommand', () => {
     const global = globalOptions();
     let caught: unknown;
     try {
-      await runCommand({ workflow: path, input: [] }, deps(io, global));
+      await runCommand({ workflow: path, input: [], allowMcpStdio: [] }, deps(io, global));
     } catch (err) {
       caught = err;
     }
@@ -832,7 +885,10 @@ describe('runCommand', () => {
   it('pauses at a human_gate node and exits 3 (gate-paused)', async () => {
     const path = writeWorkflow('gated.relavium.yaml', GATED);
     const { io, out } = captureIo();
-    const code = await runCommand({ workflow: path, input: [] }, deps(io, globalOptions()));
+    const code = await runCommand(
+      { workflow: path, input: [], allowMcpStdio: [] },
+      deps(io, globalOptions()),
+    );
     expect(code).toBe(EXIT_CODES.gatePaused);
     // The rendered gateId is the engine-generated id (not the node id); assert the gate type instead.
     expect(out()).toContain('paused at gate');
@@ -848,7 +904,7 @@ describe('runCommand', () => {
       prompt: () => Promise.resolve({ decision: 'approved', decidedBy: 'cli' }),
     };
     const code = await runCommand(
-      { workflow: path, input: [] },
+      { workflow: path, input: [], allowMcpStdio: [] },
       deps(io, globalOptions(), { selectGatePrompter: () => prompter }),
     );
     expect(code).toBe(EXIT_CODES.success); // the inline prompt resolved the gate; the run continued to completion
@@ -861,7 +917,7 @@ describe('runCommand', () => {
     const { buildEngine: buildStalling, reachedSlow } = makeStallingCancelEngine();
 
     const pending = runCommand(
-      { workflow: path, input: [] },
+      { workflow: path, input: [], allowMcpStdio: [] },
       deps(io, globalOptions(), { buildEngine: buildStalling }),
     );
 
@@ -896,7 +952,7 @@ describe('runCommand', () => {
       const before = process.listeners('SIGINT');
       const { buildEngine: buildStalling, reachedSlow } = makeStallingCancelEngine();
       const pending = runCommand(
-        { workflow: path, input: [] },
+        { workflow: path, input: [], allowMcpStdio: [] },
         deps(io, globalOptions(), { buildEngine: buildStalling }),
       );
       await reachedSlow;
@@ -923,7 +979,7 @@ describe('runCommand', () => {
     // undefined → handle.cancel()) and remove the SIGINT listener, then the error propagates.
     await expect(
       runCommand(
-        { workflow: path, input: [] },
+        { workflow: path, input: [], allowMcpStdio: [] },
         deps(io, globalOptions(), {
           buildEngine: buildStalling,
           selectRenderer: () => {
@@ -942,7 +998,7 @@ describe('runCommand', () => {
     const { buildEngine: buildStalling, reachedSlow } = makeStallingCancelEngine();
 
     const pending = runCommand(
-      { workflow: path, input: [] },
+      { workflow: path, input: [], allowMcpStdio: [] },
       deps(io, globalOptions({ json: true }), { buildEngine: buildStalling }),
     );
 
@@ -975,7 +1031,10 @@ describe('runCommand', () => {
     const baseline = process.listeners('SIGINT').length;
     for (let i = 0; i < 25; i += 1) {
       const { io } = captureIo();
-      await runCommand({ workflow: path, input: ['n=1'] }, deps(io, globalOptions()));
+      await runCommand(
+        { workflow: path, input: ['n=1'], allowMcpStdio: [] },
+        deps(io, globalOptions()),
+      );
     }
     expect(process.listeners('SIGINT')).toHaveLength(baseline);
   });
@@ -987,7 +1046,7 @@ describe('runCommand', () => {
     let caught: unknown;
     try {
       await runCommand(
-        { workflow: path, input: [] },
+        { workflow: path, input: [], allowMcpStdio: [] },
         {
           io,
           global: globalOptions(),
@@ -995,7 +1054,12 @@ describe('runCommand', () => {
           providers: createProviderResolver(io.env),
           buildEngine: () => {
             engineBuilt = true;
-            return buildEngine({ host: createInMemoryHost() });
+            return buildEngine({
+              host: createInMemoryHost(),
+              // MCP tools are tier 3, so a fixture that dispatches one must journal it (ADR-0080); the unwired
+              // port correctly refuses, which would test the refusal rather than the routing under test.
+              effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+            });
           },
         },
       );
@@ -1016,7 +1080,7 @@ describe('runCommand', () => {
     let caught: unknown;
     try {
       await runCommand(
-        { workflow: path, input: [] },
+        { workflow: path, input: [], allowMcpStdio: [] },
         { io, global: globalOptions(), providers: createProviderResolver(io.env) },
       );
     } catch (err) {
@@ -1036,7 +1100,7 @@ describe('runCommand', () => {
       execute: (ctx) => Promise.resolve({ kind: 'completed', output: ctx.vertex.id }),
     };
     const code = await runCommand(
-      { workflow: path, input: [] },
+      { workflow: path, input: [], allowMcpStdio: [] },
       {
         io,
         global: globalOptions(),
@@ -1075,15 +1139,23 @@ describe('runCommand', () => {
       },
     };
     const code = await runCommand(
-      { workflow: path, input: [] },
+      { workflow: path, input: [], allowMcpStdio: [] },
       {
         io,
         global: globalOptions(),
         // The agent turn calls the namespaced MCP tool, then replies — driven by the scripted provider.
         providers: scriptedResolver([toolUseTurn('c1', 'mcp_fs_read'), textTurn('done')]),
         // Forward the engine options (incl. the composed `mcp`) but pin the deterministic in-memory host.
-        buildEngine: (opts) => buildEngine({ ...opts, host: createInMemoryHost() }),
+        buildEngine: (opts) =>
+          buildEngine({
+            ...opts,
+            host: createInMemoryHost(),
+            // MCP tools are tier 3, so this fixture genuinely journals (ADR-0080). Spreading `opts` first
+            // would carry the REAL journal built over a `history.db` this in-memory host does not share.
+            effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+          }),
         // The REAL manager over a FAKE connection — no child spawns, but the real namespacing + routing run.
+        consentGate: PASS_CONSENT,
         startMcpClient: () =>
           realStartMcpClient([
             { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
@@ -1094,6 +1166,112 @@ describe('runCommand', () => {
     expect(calls).toEqual([{ name: 'read', args: {} }]); // the agent's MCP call routed to the connection
     expect(err()).toContain("MCP tool 'danger'"); // the allowlist-dropped tool surfaced on stderr
     expect(closed).toBe(1); // the connection was torn down at the run terminal
+  });
+
+  it('freezes the AUGMENTED graph — the store is opened with the workflow that RUNS (ADR-0083 §5)', async () => {
+    // `runs.workflow_definition_snapshot` is what a cross-process `relavium gate` rebuilds the run from, and
+    // what ADR-0083 §5 verifies a resume against. The store used to be opened with the PRE-augmentation
+    // workflow — before `connectWorkflowMcp` had even run — while the engine started on the augmented one.
+    // On every workflow with `mcp_servers` the durable record of "the exact graph that ran" recorded a graph
+    // that did not run, missing the MCP tool grants that ARE part of workflow identity.
+    const path = writeWorkflow('mcp-snapshot.relavium.yaml', MCP_WF);
+    const { io } = captureIo();
+    const client = createClient(':memory:');
+    runMigrations(client.db);
+    const calls: string[] = [];
+    const conn: McpConnection = {
+      listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
+      callTool: (name) => {
+        calls.push(name);
+        return Promise.resolve({ content: [{ type: 'text', text: 'fs result' }], isError: false });
+      },
+      close: () => Promise.resolve(),
+    };
+    const frozen: Parameters<NonNullable<RunCommandDeps['openRunStore']>>[0][] = [];
+    try {
+      const code = await runCommand(
+        { workflow: path, input: [], allowMcpStdio: [] },
+        {
+          io,
+          global: globalOptions(),
+          // The agent CALLS the namespaced MCP tool, then replies — so the run itself proves the engine was
+          // started on an augmented graph, independently of what the store was handed.
+          providers: scriptedResolver([toolUseTurn('c1', 'mcp_fs_read'), textTurn('done')]),
+          buildEngine: (opts) =>
+            buildEngine({
+              ...opts,
+              host: createInMemoryHost(),
+              effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+            }),
+          consentGate: PASS_CONSENT,
+          startMcpClient: () =>
+            realStartMcpClient([
+              { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
+            ]),
+          openRunStore: (workflow, home, cwd) => {
+            frozen.push(workflow);
+            return historyOpenRunStore(client.db)(workflow, home, cwd);
+          },
+        },
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      expect(calls).toEqual(['read']); // the ENGINE ran the augmented graph
+
+      // …and the STORE was opened with the same one. `historyOpenRunStore` stringifies exactly this argument
+      // into `definitionJson`, which `createRunHistoryStore` writes to the column on `run:started` (pinned in
+      // `@relavium/db`'s own suite) — so naming the argument here names the durable content.
+      expect(frozen).toHaveLength(1);
+      // Asserted on the SERIALISED form, which is literally what `definitionJson` holds.
+      expect(JSON.stringify(frozen[0])).toContain('mcp_fs_read');
+      // …which can only have come from discovery: the authored file never mentions it.
+      expect(MCP_WF).not.toContain('mcp_fs_read');
+    } finally {
+      client.sqlite.close();
+    }
+  });
+
+  it("a history-db fault is exit 2, and still tears the MCP children down (the reorder's new context)", async () => {
+    // The block that maps a history-open failure to an INVOCATION fault carries an explicit contract — "so a
+    // `--json`/CI consumer can tell 'the history db couldn't open' from 'a node failed mid-run'" — and no
+    // test greped for it: a review measured the whole `CliError` replaceable with a bare rethrow while the
+    // suite stayed green. `630c3b6` moved that branch into a materially different context, where the MCP
+    // children are ALREADY SPAWNED when it fires, so the teardown is asserted with it.
+    const path = writeWorkflow('mcp-dbfault.relavium.yaml', MCP_WF);
+    const { io } = captureIo();
+    let closed = 0;
+    const conn: McpConnection = {
+      listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
+      callTool: () => Promise.resolve({ content: [{ type: 'text', text: 'x' }], isError: false }),
+      close: () => {
+        closed += 1;
+        return Promise.resolve();
+      },
+    };
+    let caught: unknown;
+    try {
+      await runCommand(
+        { workflow: path, input: [], allowMcpStdio: [] },
+        {
+          io,
+          global: globalOptions(),
+          providers: scriptedResolver([textTurn('done')]),
+          consentGate: PASS_CONSENT,
+          startMcpClient: () =>
+            realStartMcpClient([
+              { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
+            ]),
+          openRunStore: () => {
+            throw new Error('EACCES: permission denied');
+          },
+        },
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(isCliError(caught) && caught.code).toBe('invalid_invocation');
+    expect(isCliError(caught) && caught.exitCode).toBe(EXIT_CODES.invalidInvocation);
+    expect(isCliError(caught) && caught.message).toContain('run history database');
+    expect(closed).toBe(1); // the spawned connection did not leak past the fault
   });
 
   it('routes an MCP tool RESULT with isError:true through dispatch → engine as a RECOVERABLE error (run still completes)', async () => {
@@ -1115,12 +1293,20 @@ describe('runCommand', () => {
       close: () => Promise.resolve(),
     };
     const code = await runCommand(
-      { workflow: path, input: [] },
+      { workflow: path, input: [], allowMcpStdio: [] },
       {
         io,
         global: globalOptions(),
         providers: scriptedResolver([toolUseTurn('c1', 'mcp_fs_read'), textTurn('recovered')]),
-        buildEngine: (opts) => buildEngine({ ...opts, host: createInMemoryHost() }),
+        buildEngine: (opts) =>
+          buildEngine({
+            ...opts,
+            host: createInMemoryHost(),
+            // MCP tools are tier 3, so this fixture genuinely journals (ADR-0080). Spreading `opts` first
+            // would carry the REAL journal built over a `history.db` this in-memory host does not share.
+            effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+          }),
+        consentGate: PASS_CONSENT,
         startMcpClient: () =>
           realStartMcpClient([
             { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
@@ -1138,16 +1324,22 @@ describe('runCommand', () => {
     let caught: unknown;
     try {
       await runCommand(
-        { workflow: path, input: [] },
+        { workflow: path, input: [], allowMcpStdio: [] },
         {
           io,
           global: globalOptions(),
           providers: scriptedResolver([textTurn('unused')]),
           buildEngine: () => {
             engineBuilt = true;
-            return buildEngine({ host: createInMemoryHost() });
+            return buildEngine({
+              host: createInMemoryHost(),
+              // MCP tools are tier 3, so a fixture that dispatches one must journal it (ADR-0080); the unwired
+              // port correctly refuses, which would test the refusal rather than the routing under test.
+              effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+            });
           },
           // The connect fails — `connectWorkflowMcp` runs BEFORE the engine is built, so this fails loud first.
+          consentGate: PASS_CONSENT,
           startMcpClient: () => Promise.reject(new McpError('spawn failed for "fs"')),
         },
       );
@@ -1177,13 +1369,14 @@ describe('runCommand', () => {
     };
     await expect(
       runCommand(
-        { workflow: path, input: [] },
+        { workflow: path, input: [], allowMcpStdio: [] },
         {
           io,
           global: globalOptions(),
           providers: scriptedResolver([textTurn('unused')]),
           // The connect succeeds, then the engine build fails — the run-terminal finally must still close the MCP child.
           buildEngine: () => Promise.reject(new Error('engine build boom')),
+          consentGate: PASS_CONSENT,
           startMcpClient: () =>
             realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(conn) }]),
         },
@@ -1196,7 +1389,7 @@ describe('runCommand', () => {
     const path = writeWorkflow('gated.relavium.yaml', GATED);
     const { io, out } = captureIo();
     const code = await runCommand(
-      { workflow: path, input: [] },
+      { workflow: path, input: [], allowMcpStdio: [] },
       deps(io, globalOptions({ json: true })),
     );
     expect(code).toBe(EXIT_CODES.gatePaused);

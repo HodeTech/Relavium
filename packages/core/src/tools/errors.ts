@@ -18,6 +18,8 @@ export type ToolErrorCode =
   | 'tool_denied' // a guardrail or grant denial (unlisted command, blocked domain, not granted, missing gate)
   | 'invalid_args' // the effective argument set failed the tool's validator or the secret-taint check
   | 'capability_unavailable' // the required ToolHost capability was not injected (a host/config gap)
+  | 'effect_conflict' // another attempt already holds this effect's journal identity (ADR-0080) — a refusal
+  | 'effect_unrecorded' // the effect LANDED and its journal record could not be completed (ADR-0080 §7)
   | 'execution_failed' // the host capability threw a non-cancel error
   | 'cancelled'; // the run's AbortSignal fired during the tool — the cooperative-cancel path
 
@@ -165,17 +167,91 @@ export class ToolUnavailableError extends ToolDispatchError {
 }
 
 /** The host capability threw a non-cancel error. The cause is kept for logs, off the user message. */
+/**
+ * Another attempt already holds this effect's journal identity
+ * ([ADR-0080](../../../../docs/decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) §7).
+ *
+ * A **refusal, not a fault**: the effect was not dispatched, and it must not be retried — a retry re-collides
+ * on the same identity, burns the whole node budget, and reports the wrong cause. Its siblings
+ * `AppendConflictError` and `LeaseFencedError` are excluded from their retry sets for exactly this reason.
+ *
+ * It carries `effect_needs_attention` rather than `tool_failed` because that is what it is: another attempt
+ * owns this effect and a human, not a retry loop, decides what happened to it.
+ */
+export class ToolEffectConflictError extends ToolDispatchError {
+  readonly code = 'effect_conflict';
+  readonly runErrorCode: ErrorCode = 'effect_needs_attention';
+  readonly retryable = false;
+
+  constructor(toolId: ToolId, cause?: unknown) {
+    super(
+      `effect for tool \`${toolId}\` is already claimed by another attempt — not retried, because a retry could repeat it`,
+      toolId,
+      cause,
+      false,
+    );
+    this.name = 'ToolEffectConflictError';
+  }
+}
+
+/**
+ * A tool's effect landed but its journal record could not be completed
+ * ([ADR-0080](../../../../docs/decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) §7
+ * step 4). The row stays `prepared`, so a resumed run reads it as unresolved and refuses — the conservative
+ * answer, reached by a different route.
+ *
+ * Distinct from `ToolExecutionError` on purpose: here the call SUCCEEDED and only the record failed, so
+ * "fix the target and try again" is the one instruction that could make a human repeat a real effect.
+ */
+export class ToolEffectNeedsAttentionError extends ToolDispatchError {
+  // Its OWN discriminant, not `effect_conflict`. The two map to the same `ErrorCode` and the same
+  // retryability today, so sharing one read fine — until a future `switch (err.code)` needed to tell "another
+  // attempt owns this identity" (nothing happened; a refusal) from "the effect landed and we failed to record
+  // it" (something happened; the record is wrong). Those want different words in front of a human.
+  readonly code = 'effect_unrecorded';
+  readonly runErrorCode: ErrorCode = 'effect_needs_attention';
+  readonly retryable = false;
+
+  constructor(toolId: ToolId, cause?: unknown) {
+    super(
+      `tool \`${toolId}\` completed but its effect record could not be written — the effect may have landed; check the target before repeating it`,
+      toolId,
+      cause,
+      false,
+    );
+    this.name = 'ToolEffectNeedsAttentionError';
+  }
+}
+
 export class ToolExecutionError extends ToolDispatchError {
   readonly code = 'execution_failed';
   readonly runErrorCode: ErrorCode = 'tool_failed';
-  readonly retryable = true;
+  /**
+   * Node-retryable by default, and **not** once the effect has left the process
+   * ([ADR-0080](../../../../docs/decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) §8,
+   * amending [ADR-0037](../../../../docs/decisions/0037-engine-tool-execution-boundary.md)).
+   *
+   * A retryable failure after a target has acted is the duplicate the effect journal exists to prevent —
+   * and the danger is not limited to a dispatch throw: a post-dispatch abort, an `output_mapping` error and
+   * a bounding failure all occur after the effect. The registry stamps this `false` for every one of them.
+   *
+   * Distinct from the inherited `recoverable`, which is a different axis: that gates WITHIN-TURN model
+   * recovery, this gates a fresh node dispatch.
+   */
+  readonly retryable: boolean;
 
-  constructor(toolId: ToolId, message: string, cause?: unknown, opts?: { recoverable?: boolean }) {
+  constructor(
+    toolId: ToolId,
+    message: string,
+    cause?: unknown,
+    opts?: { recoverable?: boolean; retryable?: boolean },
+  ) {
     // `recoverable` (the inherited base flag) is true ONLY for an IDEMPOTENT tool (a read — no
     // `fs_write`/`egress`/`process`/`os` action), stamped by the registry from `governedAction`; a governed /
     // side-effecting failure (a half-run command, a POST that may have reached the server) stays false so it ends
     // the turn rather than risking a re-execution.
     super(message, toolId, cause, opts?.recoverable ?? false);
+    this.retryable = opts?.retryable ?? true;
     this.name = 'ToolExecutionError';
   }
 }

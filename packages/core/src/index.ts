@@ -113,6 +113,11 @@ export {
   InMemoryRunStore,
   createInMemoryHost,
   createInMemoryCheckpointer,
+  createInMemoryRunLeases,
+  createInMemoryEffectJournal,
+  createInMemoryEffectJournalStore,
+  resolveInMemoryLeases,
+  createInMemoryTerminalOutbox,
   createAbortController,
   createManualTimerController,
 } from './engine/execution-host.js';
@@ -136,6 +141,19 @@ export type {
   DurableTruthVerdict,
   TerminalView,
 } from './engine/durable-truth.js';
+// The append-audit harness (CR-10, ADR-0078) — exported for the same reason and on the same terms as the
+// oracle above. It answers the one question the durable log CANNOT: whether the committed events are a prefix
+// of what the engine asked to persist. Streamed events take sequence numbers and are never persisted, so a
+// healthy log reads [0,1,2,3,5,10,…] and a lost event is indistinguishable from one that was never meant to
+// land — the witness has to come from the ask side, which only a store decorator holds.
+export { createAppendAudit, formatAppendAudit } from './engine/append-audit.js';
+export type {
+  AppendAskRecord,
+  AppendAudit,
+  AppendAuditOptions,
+  AppendAuditVerdict,
+  AppendFault,
+} from './engine/append-audit.js';
 export type {
   ExecutionHost,
   RunStore,
@@ -157,8 +175,32 @@ export type {
 } from './engine/node-executor.js';
 
 // Typed run-loop API-boundary errors (1.N) — narrow on `code`, never on `message`.
-export { EngineStateError } from './engine/errors.js';
+export { EngineStateError, isTransientEngineStateError } from './engine/errors.js';
+
+// ADR-0080's dispatch-side journal seam, re-exported so a `ToolDispatchContext` consumer can satisfy the
+// required port from this package alone. The loud unwired variant is what a fixture with no effects passes.
+export { unwiredEffectJournal } from '@relavium/shared';
+export { journaledTier } from './tools/effect-predicate.js';
+export type {
+  EffectDispatchPort,
+  EffectResumePort,
+  EffectSlot,
+  EffectTier,
+  EffectState,
+  EffectCorrelation,
+} from '@relavium/shared';
 export type { EngineStateErrorCode } from './engine/errors.js';
+
+// ADR-0083 §1's admission gate. The TYPE is the reason this is exported: `EngineStateError.issues` is
+// typed by it, so a surface rendering an `input_admission_failed` cannot name what it is holding without
+// it. The function comes with it because it is pure and synchronous — a surface that wants to validate a
+// form before calling `start()` should run the ENGINE's contract, not a second copy of it.
+export { resolveAndValidateWorkflowInputs } from './engine/input-admission.js';
+export type {
+  InputAdmissionIssue,
+  InputAdmissionMode,
+  InputAdmissionResult,
+} from './engine/input-admission.js';
 
 // Typed run-loop substrate INVARIANT breaches (the bus/stream "can never happen" asserts) — surfaced loud
 // so a producer/consumer bug is caught at source rather than silently un-gapping the sequence (ADR-0036).
@@ -214,7 +256,6 @@ export {
   DEFAULT_SESSION_MAX_TURNS,
   // Context compaction (ADR-0062): the auto-compaction default threshold + the summariser system prompt.
   DEFAULT_COMPACT_THRESHOLD,
-  COMPACTION_SYSTEM_PROMPT,
   SessionStateError,
 } from './engine/agent-session.js';
 export type {
@@ -335,6 +376,9 @@ export type {
   SpawnOpts,
   ToolNodeConfig,
   ToolDispatchContext,
+  // ADR-0080: `ToolDispatchContext` REQUIRES an effect-journal port, so a consumer of that type must be
+  // able to satisfy it without taking a dependency on `@relavium/shared` — `packages/mcp` is exactly such a
+  // consumer. Re-exported here because the requirement originates at this seam.
   MediaReadAccess,
   MediaHandleInfo,
   ToolDispatchOutcome,

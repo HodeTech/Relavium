@@ -1,3 +1,4 @@
+import { EngineStateError, isTransientEngineStateError } from '@relavium/core';
 import { isCorruptRunEventError, isUnreadableRunEventLogError } from '@relavium/db';
 
 import { EXIT_CODES, type ExitCode } from './exit-codes.js';
@@ -15,6 +16,12 @@ export type CliErrorCode =
   | 'config_error'
   /** A documented command whose implementing workstream has not landed yet → exit 2. */
   | 'not_implemented'
+  /**
+   * Another process holds a live lease on the run — this invocation refused rather than becoming a second
+   * side-effect producer (ADR-0079 §7) → exit 6. The only TRANSIENT code here: it is worth retrying
+   * unchanged, which is exactly what distinguishes it from `invalid_invocation`.
+   */
+  | 'run_owned_elsewhere'
   /** An unexpected CLI fault → exit 1 (the user-facing message stays generic). */
   | 'internal';
 
@@ -22,6 +29,7 @@ const EXIT_CODE_BY_ERROR: Readonly<Record<CliErrorCode, ExitCode>> = {
   invalid_invocation: EXIT_CODES.invalidInvocation,
   config_error: EXIT_CODES.invalidInvocation,
   not_implemented: EXIT_CODES.invalidInvocation,
+  run_owned_elsewhere: EXIT_CODES.runOwnedElsewhere,
   internal: EXIT_CODES.workflowFailed,
 };
 
@@ -95,6 +103,22 @@ export function toUserFacing(value: unknown): UserFacingError {
       message: `${value.message}. Other runs are still listable.`,
       exitCode: EXIT_CODES.workflowFailed,
     };
+  }
+  // A typed engine API-boundary refusal that reached the process boundary un-wrapped. `gate.ts` wraps its
+  // own `resumeFromCheckpoint` call, but `relavium run` calls `engine.start()` directly — and since ADR-0083
+  // that call throws `input_admission_failed` for an input the CLI's own coercion layer deliberately does not
+  // check (`inputs.ts`: "deep per-field validation stays the engine's"). Without this arm, `--input
+  // severity=99` against `max: 10` printed `An unexpected internal error occurred.` and exited 1 instead of
+  // naming the field and exiting 2. Mapped the same way `gate.ts` maps it: transient keeps its own code and
+  // exit, every other engine-state refusal is a permanent invocation fault.
+  if (value instanceof EngineStateError) {
+    const code: CliErrorCode = isTransientEngineStateError(value)
+      ? 'run_owned_elsewhere'
+      : 'invalid_invocation';
+    // The engine's message is already user-safe by its own contract ("secret-free… never carries run
+    // inputs"), and for an admission refusal it carries the echo-safe half of each issue — so it is
+    // promoted as-is rather than re-flattened from `value.issues` here.
+    return { code, message: value.message, exitCode: EXIT_CODE_BY_ERROR[code] };
   }
   return {
     code: 'internal',

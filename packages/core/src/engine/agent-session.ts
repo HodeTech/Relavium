@@ -33,7 +33,14 @@ import type {
   SessionEvent,
   SessionStopReason,
   ToolPolicy,
+  EffectCorrelation,
+  EffectDispatchPort,
 } from '@relavium/shared';
+import { unwiredEffectJournal } from '@relavium/shared';
+
+import { markUntrusted, unwrapUntrusted, type Untrusted } from '../tools/untrusted.js';
+import { authoredSystemPrompt, type AuthoredSystemPrompt } from './authored-system-prompt.js';
+import { buildTurnMessages } from './turn-messages.js';
 import {
   ToolDefSchema,
   type FallbackPlanEntry,
@@ -94,17 +101,13 @@ export const DEFAULT_COMPACT_THRESHOLD = 0.8;
 export const COMPACTION_MAX_SUMMARY_TOKENS = 4096;
 
 /**
- * The context-compaction summariser system prompt (ADR-0062) — AUTHORED text, never untrusted data (the
- * conversation to summarise rides a user message, per the seam's system-is-authored rule). The invariant it
- * encodes is the product surface of `/compact`: a summary that loses these facts fails the feature. The
- * canonical description of what a summary preserves lives in chat-session.md §compaction; this is the prompt.
+ * The context-compaction summariser system prompt has MOVED to `authored-system-prompt.ts`
+ * ([ADR-0081](../../../../docs/decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md) §1).
+ *
+ * It is authored text, and `AgentTurnParams.system` now accepts only the branded type — so it lives beside
+ * the one constructor that can mint one, reachable as `authoredSystemPrompt({ kind: 'engine', prompt:
+ * 'compaction' })`. It was the engine's third authored producer and the reason that arm exists at all.
  */
-export const COMPACTION_SYSTEM_PROMPT =
-  'You are compacting a conversation to fit a smaller context window. Produce a concise, faithful summary ' +
-  'of the conversation below that PRESERVES: open tasks and their current state; decisions taken and why; ' +
-  'concrete code identifiers, file paths, commands, and values in play; and the user’s stated preferences ' +
-  'and constraints. Omit pleasantries and redundant back-and-forth. Write it as notes for an assistant that ' +
-  'will continue the conversation — not as a message to the user. Output ONLY the summary.';
 
 /**
  * The classified result of a {@link AgentSession.compact} (ADR-0062) — a discriminated union so the host renders
@@ -227,10 +230,38 @@ export interface SessionDeps {
   readonly now?: ChainCapabilities['now'];
   /** Optional single out-of-band credential refresh (host-owned). */
   readonly onAuthError?: ChainCapabilities['onAuthError'];
-  /** Create a fresh abort controller per turn — injected so core never names the ambient global. */
+  /**
+   * ADR-0082 §6's per-attempt deadline primitives. **Both or neither** — a chain given only one keeps the
+   * pre-ADR-0082 unbounded behaviour, and an unbounded wait on a provider that ignores its abort signal is
+   * the hang the deadline exists to remove.
+   */
+  readonly setTimer?: ChainCapabilities['setTimer'];
+  /** Override the per-attempt deadline (default 120s). Must be finite and positive. */
+  readonly attemptTimeoutMs?: ChainCapabilities['attemptTimeoutMs'];
+  /**
+   * Create a fresh abort controller — injected so core never names the ambient global.
+   *
+   * Serves TWO purposes since ADR-0082: the per-turn cancel it was built for, and the per-attempt
+   * deadline's merged signal. One dep rather than two, because a host that can make one can make both and a
+   * second field would only be a way to wire half of it.
+   */
   readonly newAbortController: () => AbortControllerLike;
   /** The emission port — 1.V emits session/in-turn bodies here; 1.W wires it onto the `RunEventBus`. */
   readonly emit: SessionEventSink;
+  /**
+   * Builds this session's effect journal from a correlation (ADR-0080) — a FACTORY, not a port, because the
+   * correlation carries the TURN and only the session knows which turn it is on.
+   *
+   * A port with the correlation frozen at construction was the first shape here, and it was wrong in a way a
+   * review had to RUN to find: every turn shared `session:<id>:0` while the slot ordinal restarts each turn,
+   * so a user's SECOND effectful request in one chat collided with their first on the journal's UNIQUE
+   * identity and was refused — permanently, since nothing sweeps the row. A host that leaves this unset gets
+   * `unwiredEffectJournal()`, which rejects: absence is fail-closed, not fail-open.
+   *
+   * This is where CR-12 EXTENDS `TurnMoneyPort`'s precedent rather than reusing it: the money port is
+   * deliberately run-path-only, while a session's external effects need journaling exactly as a run's do.
+   */
+  readonly effects?: (correlation: EffectCorrelation) => EffectDispatchPort;
   /** The workflow-wide tool policy threaded into dispatch (default `{}` ⇒ deny-all for gated tools). */
   readonly toolPolicy?: ToolPolicy;
   /** Within-turn tool-loop bounds passed to the turn core (default {@link DEFAULT_AGENT_TURN_LIMITS}). */
@@ -462,12 +493,17 @@ export class AgentSession {
   /** Memoized provider fallback plan (the agent binding is fixed for the session). */
   #plan: PlanResult | undefined;
   /**
-   * The context-compaction preamble (ADR-0062) — the summary of the folded-away earlier conversation. When
-   * present, {@link #runTurn} prepends it (XML-wrapped) to the agent's system prompt, so every subsequent turn
-   * carries the compacted context. Set by {@link compact}, restored on {@link resume}, untouched by
-   * {@link trimHistory} (a trim drops older turns without summarising — a prior compact's summary survives).
+   * The compaction summary (ADR-0062, **placed** per [ADR-0081](../../../../docs/decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md))
+   * — the folded-away earlier conversation. Set by {@link compact}, restored on {@link resume}, untouched by
+   * {@link trimHistory} (a trim drops older turns without summarising, so a prior compact's summary survives).
+   *
+   * **`Untrusted<string>`, and named for what it is rather than where it used to go.** It was
+   * `#contextPreamble: string`, prepended to the agent's system prompt — and "preamble" names exactly the
+   * placement ADR-0081 removes, so keeping the name is how the next reader puts it back. It carries the
+   * engine's existing untrusted brand (no new primitive), and exactly one place unwraps it:
+   * {@link buildTurnMessages}, which puts it in a user-role content part.
    */
-  #contextPreamble: string | undefined;
+  #compactionSummary: Untrusted<string> | undefined;
   /**
    * Set on a CLEAN turn success to the settled turn's model + real input tokens, so `sendMessage` can run the
    * after-turn auto-compaction check (ADR-0062) AFTER the turn fully settles (status back to idle). Cleared
@@ -498,11 +534,24 @@ export class AgentSession {
     const session = new AgentSession(params);
     session.#messages.push(...state.messages);
     session.#turnCount = state.turnCount;
+    // **`#userCommandSeq` is deliberately NOT restored, and the reason is a limitation rather than a choice.**
+    //
+    // An earlier attempt seeded it from `state.turnCount`, which is wrong: that counts completed ASSISTANT
+    // turns and has no relationship to how many `!`-commands were issued. A review reproduced the resulting
+    // false refusal — two `!`-commands inside one turn window, then a `/models` reseat, and the next command
+    // reuses a slot and is rejected as "already claimed" for something never run before.
+    //
+    // Reconstructing it honestly needs a durable source, and there is none: `!`-commands never enter the
+    // transcript, and the platform-free engine cannot read `run_effects`. So the counter restarts, and the
+    // consequence is recorded in effect-journal.md §14 rather than papered over: a `!`-command issued after a
+    // resume, in a turn window that already had one, can be refused as a false duplicate. It fails CLOSED —
+    // a refusal, never a repeated effect — which is the safe direction, and it is fixed by persisting the
+    // counter with the session row when a surface makes repeated in-window shell commands worth the schema.
     session.#cumulativeCostMicrocents = state.cumulativeCostMicrocents;
     // ADR-0062: restore the compaction preamble so a compacted session stays compacted across resume AND a
     // model reseat (which reuses this same reconstruct→resume path); without it, resume would silently
     // re-expand the folded history into the (possibly smaller-window) new model.
-    session.#contextPreamble = state.contextPreamble;
+    session.#compactionSummary = state.compactionSummary;
     // Sync a host-wired budget governor with the carried-over spend so the FIRST resumed turn's pre-egress
     // check sees the real cumulative — not 0 — before any cost:updated fires (mirrors #onTurnEmit). Without
     // this, a resumed session's first turn could bypass a near-exhausted budget cap.
@@ -836,6 +885,19 @@ export class AgentSession {
     turnPolicy: SessionTurnPolicy | undefined,
   ): Omit<ToolDispatchContext, 'signal'> {
     return {
+      // The SESSION correlation — `{ kind: 'session', sessionId, turn }`, which this path can supply without
+      // fabricating anything. ADR-0024 gives a session no `runId`, and the discriminated union is exactly why
+      // it never has to invent one. The turn count is the session's own durable counter, restored on resume.
+      // The SESSION correlation, stamped with THIS turn. `#turnCount` is the session's own durable counter,
+      // restored on resume, so a resumed session continues its numbering instead of colliding with the turns
+      // it already ran.
+      effects:
+        this.#deps.effects?.({
+          kind: 'session',
+          sessionId: this.sessionId,
+          turn: this.#turnCount,
+        }) ?? unwiredEffectJournal(),
+      effectSlot: 0, // per-CALL; the dispatch sites override it with the tool call's ordinal
       nodeId: this.#agentRef,
       grantedToolIds,
       config: {}, // an agent-invoked tool carries no per-tool config block in v1.0
@@ -903,6 +965,16 @@ export class AgentSession {
       const grantedToolIds = new Set<ToolId>([...(this.#agent.tools ?? []), 'run_command']);
       const outcome = await this.#deps.registry.dispatch(toolCall, {
         ...this.#buildDispatchContext(grantedToolIds, this.#turnPolicy),
+        // The `!`-command sequence IS the effect slot here (ADR-0080). Slot 0 would be wrong: two `!`
+        // commands within one turn share a correlation, so they would collide on the journal's UNIQUE
+        // identity and the second would be refused as a duplicate of the first. The counter already exists
+        // for the synthetic tool-call id and is exactly the per-command ordinal the slot wants.
+        // **A DISJOINT slot space from the model's, and negative for exactly that reason.** A `!`-command and
+        // a model tool call live in the same correlation, so a shared ordinal collides them: `!`-command 1
+        // and the model's second tool call of that turn would both be slot 1 on the journal's UNIQUE
+        // identity, and the second to arrive would be refused as a duplicate of an unrelated effect.
+        // Negative ordinals cannot meet the model's non-negative ones, whatever either counter does.
+        effectSlot: -this.#userCommandSeq,
         signal: abort.signal,
       });
       const result = outcome.output;
@@ -943,20 +1015,27 @@ export class AgentSession {
   }
 
   /**
-   * The per-turn system prompt: the agent's authored `system_prompt`, plus — when the session has been
-   * compacted (ADR-0062) — the compaction preamble, XML-wrapped for structured attention. The preamble is
-   * re-derived every turn (the system prompt is rebuilt per `sendMessage`), so setting `#contextPreamble` is
-   * reseat-free and applies from the next turn without a new instance.
+   * The per-turn system prompt: the agent's authored `system_prompt`, and nothing else.
+   *
+   * It used to concatenate the compaction summary here, XML-wrapped
+   * ([ADR-0062](../../../../docs/decisions/0062-context-compaction-and-cli-history-commands.md) §1). That is
+   * the defect ADR-0081 removes: the summary is model output over untrusted input, an XML fence is not a
+   * trust boundary, and the bytes survived a restart because the summary is persisted. The summary now goes
+   * through {@link buildTurnMessages} into a user-role part, and the branded return type is what keeps a
+   * dynamic string from reaching this field again.
    */
-  #systemPrompt(): string {
-    const base = this.#agent.system_prompt;
-    if (this.#contextPreamble === undefined) return base;
-    return `${base}\n\n<earlier-conversation-summary>\n${this.#contextPreamble}\n</earlier-conversation-summary>`;
+  #systemPrompt(): AuthoredSystemPrompt {
+    return authoredSystemPrompt({ kind: 'agent', agent: this.#agent });
+  }
+
+  /** The messages for one request — the transcript with the summary projected in (ADR-0081 §3). */
+  #turnMessages(): LlmMessage[] {
+    return buildTurnMessages(this.#compactionSummary, this.#messages);
   }
 
   /**
    * **Compact the working context** (ADR-0062, `/compact` + the auto-threshold path) — summarise the earlier
-   * conversation into the {@link #contextPreamble} via the session's OWN bound model, keep the last complete
+   * conversation into the {@link #compactionSummary} via the session's OWN bound model, keep the last complete
    * `user`+`assistant` exchange verbatim, and emit `session:compacted`. Append-only at the durable layer: the
    * host writes a boundary marker on the event; the engine mutates only in-memory state. Callable only when
    * started + idle. Aborting mid-summary (`cancel`/`abort`) yields `cancelled` and leaves the context
@@ -985,8 +1064,8 @@ export class AgentSession {
       // and leave `#status` wedged at 'running' (the seam method is provider-supplied).
       const tokensBefore = this.#estimateContextTokens();
       const result = await runAgentTurn({
-        system: COMPACTION_SYSTEM_PROMPT,
-        messages: [renderConversationToSummarise(this.#contextPreamble, split.foldable)],
+        system: authoredSystemPrompt({ kind: 'engine', prompt: 'compaction' }),
+        messages: [renderConversationToSummarise(this.#compactionSummary, split.foldable)],
         planEntries: plan.entries,
         chainCapabilities: this.#chainCapabilities(),
         nodeId: this.#agentRef,
@@ -1009,7 +1088,10 @@ export class AgentSession {
         // installing an empty preamble that would silently lose the folded context.
         return { kind: 'failed', message: 'the summarisation produced no summary text' };
       }
-      this.#contextPreamble = summary;
+      // **Marked here, at the moment it leaves the model.** Everything downstream — persistence, resume,
+      // reseat, the request projection — carries the brand, so a future call site cannot put it somewhere
+      // it does not belong without unwrapping it and saying so.
+      this.#compactionSummary = markUntrusted(summary);
       this.#messages.length = 0;
       this.#messages.push(...split.kept);
       const tokensAfter = this.#estimateContextTokens();
@@ -1063,7 +1145,7 @@ export class AgentSession {
   /**
    * **Deterministically trim history** to the last `maxMessages` messages (ADR-0062, `/trim`) — NO LLM call,
    * no cost. The kept slice is snapped to start on a `user` message (an orphan leading `assistant` is dropped)
-   * so the next turn stays protocol-valid. Leaves {@link #contextPreamble} untouched (a trim drops older turns
+   * so the next turn stays protocol-valid. Leaves {@link #compactionSummary} untouched (a trim drops older turns
    * without summarising — a prior `/compact` summary survives). Emits `session:trimmed`; the host writes a
    * summary-less boundary marker. Callable only when started + idle.
    */
@@ -1147,7 +1229,9 @@ export class AgentSession {
   /** A rough token estimate of the current working context (system-with-preamble + messages) — for the
    *  before/after deltas on `session:compacted`. Best-effort; 0 if absent. */
   #estimateContextTokens(): number {
-    return this.#estimateTokens(this.#systemPrompt(), this.#messages);
+    // The same projection the request uses — an estimator measuring a different array than the request is
+    // how a context-window guard drifts from the thing it is guarding.
+    return this.#estimateTokens(this.#systemPrompt(), this.#turnMessages());
   }
 
   /**
@@ -1206,7 +1290,7 @@ export class AgentSession {
     const reasoningEffort = effortToSend(effortGate);
     return runAgentTurn({
       system: this.#systemPrompt(),
-      messages: this.#messages,
+      messages: this.#turnMessages(),
       ...(llmTools.length > 0 ? { tools: llmTools } : {}),
       planEntries: plan.entries,
       chainCapabilities: this.#chainCapabilities(),
@@ -1307,6 +1391,12 @@ export class AgentSession {
       sleep: deps.sleep,
       ...(deps.now === undefined ? {} : { now: deps.now }),
       ...(deps.onAuthError === undefined ? {} : { onAuthError: deps.onAuthError }),
+      // The deadline is armed only when the host supplied a TIMER — the controller is always present (it
+      // serves the per-turn cancel too), so `setTimer` is what expresses "both or neither" here.
+      ...(deps.setTimer === undefined
+        ? {}
+        : { newAbortController: deps.newAbortController, setTimer: deps.setTimer }),
+      ...(deps.attemptTimeoutMs === undefined ? {} : { attemptTimeoutMs: deps.attemptTimeoutMs }),
     };
   }
 }
@@ -1354,13 +1444,15 @@ function messageText(message: LlmMessage): string {
  * fold summary-of-summary (the disclosed, accepted degradation).
  */
 function renderConversationToSummarise(
-  preamble: string | undefined,
+  priorSummary: Untrusted<string> | undefined,
   foldable: readonly LlmMessage[],
 ): LlmMessage {
   const parts: string[] = [];
-  if (preamble !== undefined) {
+  if (priorSummary !== undefined) {
+    // Unwrapped into a USER message — the summariser reads the prior summary as data, exactly as the live
+    // turn does. This is the second and last unwrap point, and it is a data position too.
     parts.push(
-      `Summary of the conversation so far:\n${preamble}`,
+      `Summary of the conversation so far:\n${unwrapUntrusted(priorSummary)}`,
       'The conversation then continued:',
     );
   }

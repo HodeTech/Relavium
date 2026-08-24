@@ -7,7 +7,13 @@ import {
   type WorkflowEngine,
   type WorkflowModelCatalog,
 } from '@relavium/core';
-import type { HumanGatePausedEvent, RunEvent, RunPausedEvent } from '@relavium/shared';
+import type {
+  ErrorCode,
+  HumanGatePausedEvent,
+  RunDurability,
+  RunEvent,
+  RunPausedEvent,
+} from '@relavium/shared';
 
 import type { GatePrompter } from '../gate/prompter.js';
 import { CliError } from '../process/errors.js';
@@ -213,13 +219,60 @@ export function shouldBreakOnPause(
 }
 
 /**
- * Map a {@link RunOutcome} (or `undefined` — the stream ended with no terminal/paused, an abnormal unwind) to
- * its CLI exit code. The single owner of the outcome→exit contract, shared by `run` and `gate` so the two can
+ * Map a {@link RunOutcome} (or `undefined` — the stream ended with no terminal/paused, an abnormal unwind) plus
+ * the handle's durability disposition to a CLI exit code. The single owner of the outcome→exit contract, shared by `run` and `gate` so the two can
  * never drift and a new `RunOutcome` variant has exactly one place to update. (`gate` handles its own
  * `undefined` case — an idempotent closed-handle resume → exit 0 — BEFORE calling this; here `undefined` is the
  * generic abnormal-unwind → failure, which is what `run` wants.)
  */
-export function outcomeToExitCode(outcome: RunOutcome | undefined): ExitCode {
+export function outcomeToExitCode(
+  outcome: RunOutcome | undefined,
+  /**
+   * The handle's durability disposition (ADR-0078 §5). `'uncertain'` OUTRANKS a `completed` outcome: the
+   * terminal was delivered in-process but its durable write did not land, so exiting 0 would tell a script
+   * the run is recorded when it is not — the exact claim `CR-92` exists to stop. Absent ⇒ treated as
+   * durable, which is what every pre-CR-92 caller assumed and what a surface with no handle can honestly say.
+   */
+  durability?: RunDurability,
+  /**
+   * The `ErrorCode` on the run's terminal, when it failed
+   * ([effect-journal.md](../../../../docs/reference/shared-core/effect-journal.md) §8). Read for exactly one
+   * code today: `effect_needs_attention`, whose remedy is unlike every other failure's — do NOT retry, go
+   * look at the target, then resolve the row.
+   *
+   * Read from the TERMINAL rather than from `durability()`, deliberately. The disposition means one thing
+   * (ADR-0078 §5: did the terminal's write land) and it is `'durable'` here — the run recorded its failure
+   * correctly. Overloading `'uncertain'` would send this to exit 5, whose documented remedy ("held in the
+   * outbox and retried on the next start") is false: nothing will drain, because nothing is pending.
+   */
+  terminalErrorCode?: ErrorCode,
+): ExitCode {
+  if (terminalErrorCode === 'effect_needs_attention' && durability !== 'uncertain') {
+    // Outranks an ordinary `failed`, but NOT an uncertain disposition — and that ordering is the point.
+    // The two describe independent uncertainties: `7` says an external effect may be outstanding, `5`/`6`
+    // say this process does not know whether its terminal was recorded (or that another process owns the
+    // run). When both hold, the terminal itself is in doubt, so the code that describes the RECORD wins —
+    // a caller that cannot trust the record cannot act on what the record says the reason was. A review
+    // caught this as an assertion the code made and did not test; it is now the tested behaviour.
+    return EXIT_CODES.effectNeedsAttention;
+  }
+  if (durability === 'uncertain') {
+    // **No TERMINAL + `uncertain` is a FENCED run, not an unwritten terminal** (ADR-0079 §5 vs ADR-0078 §5).
+    // The two share the disposition and need opposite advice. A fenced loser deliberately writes nothing to
+    // the outbox — the run belongs to another process and is being recorded by it right now — so exit 5's
+    // documented remedy ("held in the outbox and retried on the next start") is false for it, and a script
+    // following that advice waits for a drain that will never happen.
+    //
+    // The discriminator is `isTerminalOutcome`, NOT `outcome === undefined`, and the difference is a real
+    // bug this once had: `run:paused` also sets `outcome`, and the engine buffers that event before it
+    // discovers the fence. An inline gate prompt therefore delivers a stale `run:paused` AFTER the run has
+    // been fenced, leaving `outcome === 'paused'` — so the `undefined` test took the wrong branch and
+    // reported exit 5 for the flagship two-terminal race this code exists to classify. A pause is not a
+    // terminal, which is exactly what `isTerminalOutcome` already says.
+    return isTerminalOutcome(outcome)
+      ? EXIT_CODES.durabilityUncertain
+      : EXIT_CODES.runOwnedElsewhere;
+  }
   switch (outcome) {
     case 'completed':
       return EXIT_CODES.success;

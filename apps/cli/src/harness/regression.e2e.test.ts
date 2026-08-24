@@ -220,7 +220,7 @@ async function runFixture(
 ): Promise<{ sigs: string[]; events: RunEvent[]; code: ExitCode }> {
   const { io, out, err } = captureIo();
   const code = await runCommand(
-    { workflow: join(FIXTURES_DIR, scenario.file), input: [...scenario.input] },
+    { workflow: join(FIXTURES_DIR, scenario.file), input: [...scenario.input], allowMcpStdio: [] },
     { io, global: globalOptions() },
   );
   expect(err()).toBe(''); // a clean offline run writes nothing to stderr (stdout-pure contract, ADR-0049)
@@ -363,13 +363,16 @@ describe('engine regression harness (2.K) — offline fixtures over `relavium ru
           },
         }),
         db: runClient.db,
+        // CR-92's outbox lives beside history.db; a fixture points it at a temp path so nothing touches
+        // the developer's ~/.relavium (ADR-0078 §4).
+        terminalOutboxPath: join(tmpdir(), 'relavium-test-outbox.ndjson'),
         close: () => {},
       });
 
       // 1. Run to the gate → exit 3, persisted to the FILE.
       const runIo = captureIo();
       const runCode = await runCommand(
-        { workflow: join(FIXTURES_DIR, 'human-gate.relavium.yaml'), input: [] },
+        { workflow: join(FIXTURES_DIR, 'human-gate.relavium.yaml'), input: [], allowMcpStdio: [] },
         { io: runIo.io, global: globalOptions(), openRunStore },
       );
       expect(runCode).toBe(EXIT_CODES.gatePaused);

@@ -23,6 +23,7 @@ import type {
   ToolDispatchContext,
   ToolHost,
 } from './types.js';
+import { createInMemoryEffectJournal } from '../engine/execution-host.js';
 
 /* --- helpers --- */
 
@@ -85,6 +86,18 @@ function ctx(overrides?: Partial<ToolDispatchContext>): ToolDispatchContext {
     toolPolicy: {} satisfies ToolPolicy,
     fsScope: 'sandboxed',
     gateApproved: false,
+    // No effects are dispatched here, so the journal is deliberately the LOUD unwired one: a silent
+    // no-op would make a real wiring mistake look exactly like a fixture that never had effects.
+    // A REAL in-memory journal: several tests below dispatch `run_command`, which is tier 3 and therefore
+    // must journal. The unwired port correctly refuses those, so using it here would test the refusal
+    // rather than the guardrail each test is about.
+    effects: createInMemoryEffectJournal({
+      kind: 'run',
+      runId: 'r-test',
+      nodeId: 'n1',
+      attempt: 1,
+    }),
+    effectSlot: 0,
     ...overrides,
   };
 }

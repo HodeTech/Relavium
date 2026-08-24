@@ -28,6 +28,7 @@ import {
   type MediaSurface,
   type OutputModality,
   type ReasoningEffort,
+  unwiredEffectJournal,
 } from '@relavium/shared';
 import {
   LlmConfigError,
@@ -53,6 +54,7 @@ import {
 import { resolveTemplate } from '../interpolation/resolve.js';
 import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
 import type { AgentPlanConfig } from '../run-plan.js';
+import { authoredSystemPrompt, type AuthoredSystemPrompt } from './authored-system-prompt.js';
 import type { ToolDef, ToolDispatchContext, ToolRegistry } from '../tools/types.js';
 import {
   AgentTurnError,
@@ -164,6 +166,17 @@ export interface AgentRunnerDeps {
    * the adapter only ever sees a resolved source; absent on a text-only host (a handle is then sent as-is).
    */
   readonly resolveForEgress?: ChainCapabilities['resolveForEgress'];
+  /**
+   * ADR-0082 §6's per-attempt deadline primitives. **Both or neither** — a chain given only one keeps the
+   * pre-ADR-0082 unbounded behaviour, and an unbounded wait on a provider that ignores its abort signal is
+   * the hang the deadline exists to remove. Host-supplied for the same reason `sleep` is: the engine is
+   * platform-free and has no ambient `AbortController` or `setTimeout`.
+   */
+  readonly newAbortController?: ChainCapabilities['newAbortController'];
+  readonly setTimer?: ChainCapabilities['setTimer'];
+  /** Override the per-attempt deadline (default 120s). Must be finite and positive. */
+  readonly attemptTimeoutMs?: ChainCapabilities['attemptTimeoutMs'];
+
   /** Host capability for the `read_file` interpolation filter in a prompt (delegated workspace sandbox). */
   readonly resolverCapabilities?: ResolverCapabilities;
   /** The filesystem scope tier for tool dispatch (default `'sandboxed'` — the safe tier). */
@@ -367,6 +380,11 @@ async function executeAgent(
   const responseFormat = lowerOutputSchema(outputSchema);
 
   const dispatchContext: Omit<ToolDispatchContext, 'signal'> = {
+    // The journal, and the run-path correlation only the run loop can supply — the same reasoning that puts
+    // the money ledger here (ADR-0076): `ctx.attemptNumber` is the NODE-RETRY attempt (ADR-0040), which the
+    // turn has never carried and which the correlation needs for its audit arm.
+    effects: ctx.effects ?? unwiredEffectJournal(),
+    effectSlot: 0, // per-CALL; `dispatchToolCalls` overrides it with the tool call's ordinal
     nodeId: node.id,
     grantedToolIds,
     config: {}, // an agent-invoked tool carries no per-tool config block in v1.0
@@ -382,7 +400,7 @@ async function executeAgent(
   let result: AgentTurnResult;
   try {
     result = await runAgentTurn({
-      ...(messages.system === undefined ? {} : { system: messages.system }),
+      system: messages.system,
       messages: messages.messages,
       ...(llmTools.length > 0 ? { tools: llmTools } : {}),
       planEntries: plan.entries,
@@ -893,20 +911,18 @@ function resolveGrant(
   return { ok: true, ids: nodeTools };
 }
 
-/** System = authored text ONLY (agent.system_prompt + node.system_prompt_append). The prompt → user. */
+/**
+ * System = authored text ONLY, built by the one constructor that can produce the branded type (ADR-0081 §1).
+ * The prompt → user.
+ */
 function assembleMessages(
   agent: Agent,
   node: AgentNode,
   userText: string,
-): { system: string | undefined; messages: LlmMessage[] } {
-  const append = node.system_prompt_append;
-  const system =
-    append === undefined || append.length === 0
-      ? agent.system_prompt
-      : `${agent.system_prompt}\n\n${append}`;
+): { system: AuthoredSystemPrompt; messages: LlmMessage[] } {
   const messages: LlmMessage[] =
     userText.length > 0 ? [{ role: 'user', content: [{ type: 'text', text: userText }] }] : [];
-  return { system, messages };
+  return { system: authoredSystemPrompt({ kind: 'agent', agent, node }), messages };
 }
 
 /** Lower an `output_schema` to the request-side `responseFormat` hint (validation is node-side). */
@@ -984,6 +1000,11 @@ function chainCapabilities(deps: AgentRunnerDeps): ChainCapabilities {
     ...(deps.now === undefined ? {} : { now: deps.now }),
     ...(deps.onAuthError === undefined ? {} : { onAuthError: deps.onAuthError }),
     ...(deps.resolveForEgress === undefined ? {} : { resolveForEgress: deps.resolveForEgress }),
+    ...(deps.newAbortController === undefined
+      ? {}
+      : { newAbortController: deps.newAbortController }),
+    ...(deps.setTimer === undefined ? {} : { setTimer: deps.setTimer }),
+    ...(deps.attemptTimeoutMs === undefined ? {} : { attemptTimeoutMs: deps.attemptTimeoutMs }),
   };
 }
 

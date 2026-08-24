@@ -10,6 +10,15 @@
 > `[[mcp_servers]]` registrations) are now `.strict()` too, reconciling with `config-spec.md`. The
 > authored-YAML decision and the `RunEvent`/`RunSchema` leniency are unchanged.
 
+
+> **Amended 2026-08-19 by [ADR-0083](0083-input-admission-and-a-resume-that-verifies-its-own-identity.md).**
+> Two parse-time tightenings, both in this ADR's own spirit — an authored mistake fails loudly rather than at
+> run time. **Interpolation is no longer legal in an input `default`**: at admission, which must precede run
+> creation, none of `{{inputs.*}}`, `{{ctx.*}}` or `{{secrets.*}}` exists yet, so a templated default could
+> never resolve (and never did — the engine applied no defaults at all). With defaults now literal, **a
+> default that violates its own `validation` block is a parse error.** And **a `secret` input may not declare
+> a `default`**, because such a value is written verbatim into `runs.workflow_definition_snapshot`.
+
 ## Context
 
 Workflow and agent definitions are **git-committed YAML the user authors by hand**

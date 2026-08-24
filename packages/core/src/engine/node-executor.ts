@@ -200,6 +200,16 @@ export interface NodeExecContext {
    * approved re-dispatch. A run with no `budget` still spends real money.
    */
   readonly money?: import('./money-durability.js').TurnMoneyPort;
+  /**
+   * The durable effect journal for this node's dispatches (ADR-0080), with the run-path correlation already
+   * closed over — only the run loop knows the `runId` and the node-retry attempt, exactly as only it knows
+   * the ledger's run.
+   *
+   * Optional HERE and required at `ToolDispatchContext`, which is not a contradiction: a host that leaves it
+   * unset gets `unwiredEffectJournal()`, which THROWS the moment an effect would go unrecorded. Absence is
+   * fail-closed, not fail-open.
+   */
+  readonly effects?: import('@relavium/shared').EffectDispatchPort;
 }
 
 /** The injected per-vertex executor. 1.O (`AgentRunner`) and 1.P (node handlers) implement it. */

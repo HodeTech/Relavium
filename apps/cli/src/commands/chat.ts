@@ -11,6 +11,8 @@ import {
 import type { ProviderId } from '@relavium/llm';
 import { REASONING_EFFORTS, type AgentSessionRecord, type ReasoningEffort } from '@relavium/shared';
 import { exportSession } from '../chat/export.js';
+import { createConsentGate } from '../engine/mcp-consent-gate.js';
+import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import {
@@ -62,6 +64,10 @@ import {
   type ChatBudgetWarning,
 } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
+import {
+  sweepCommittedSessionEffects,
+  unresolvedEffectNotice,
+} from '../engine/effect-retention.js';
 import { createModelCatalogPort, type ModelCatalogPort } from '../engine/model-catalog-port.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import { loadUserPricingOverlay, readUserPricingOverlay } from '../engine/pricing-overlay.js';
@@ -110,6 +116,7 @@ import { createChatStore, type ChatStoreController } from '../render/tui/chat-st
 import { createMentionReader, type MentionReader } from '../render/tui/mention.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { stringifyJsonLine } from '../render/sanitize.js';
+import { createEffectJournalPort, createEffectJournalStore } from '@relavium/db';
 
 /**
  * `relavium chat` (2.M) — the agent-first interactive REPL over `@relavium/core`'s `AgentSession`. It binds
@@ -534,6 +541,16 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   // fail-loud exit-2 CliError, cause stripped) before the session is live.
   const built = await (deps.buildSession ?? buildChatSession)({
     chat: config.chat,
+    // **Consent before any stdio MCP spawn** (ADR-0084 §1). `chat --agent` is the ordinary way an imported
+    // agent is opened, which is the case the gate exists for — and the one the first wiring missed by
+    // covering only `relavium run`. No `--allow-mcp-stdio` here: a chat is interactive by construction, so
+    // the refusal directs a scripted caller at `agent run`, which has the flag.
+    consentGate: createConsentGate({
+      io: deps.io,
+      global: deps.global,
+      homeDir,
+      prompt: createConsentPrompter(),
+    }),
     agentRef: args.agent,
     cwd: deps.global.cwd,
     projectConfigDir,
@@ -569,6 +586,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     persister = createSessionPersister({
       governor: built.governor,
       attachDurabilityProbe: built.attachDurabilityProbe,
+
       store: opened.store,
       handle: built.handle,
       sessionId: built.sessionId,
@@ -580,6 +598,16 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
       // target) over the SAME db, degrading to NULL when uncataloged. Shared across every persister site.
       resolveModelCatalogId: makeCatalogIdResolver(opened.db, { uuid, now }),
     });
+
+    // The durable effect journal (ADR-0080), wired where `history.db` is open. A site that forgets is
+    // NOT silent: the forwarding port refuses the first effect loudly, which is exactly why
+    // `unwiredEffectJournal()` rejects instead of no-opping.
+    built.attachEffectJournal((correlation) =>
+      createEffectJournalPort(createEffectJournalStore(opened.db, { uuid, now }), correlation, {
+        providerAttempt: 1,
+        toolCallId: 'session',
+      }),
+    );
   } catch (err) {
     closeQuietly(deps.io, 'session store', () => opened.close());
     await built.closeMcp?.().catch(() => undefined);
@@ -703,6 +731,13 @@ export async function chatResumeCommand(
     resolvePrice = readUserPricingOverlay(opened.db);
     const resumed = await (deps.buildResumedSession ?? buildResumedChatSession)({
       chat: config.chat,
+      // Consent before any stdio MCP spawn (ADR-0084 §1) — every path that opens an agent, not only `run`.
+      consentGate: createConsentGate({
+        io: deps.io,
+        global: deps.global,
+        homeDir,
+        prompt: createConsentPrompter(),
+      }),
       record: loaded.session,
       messages: loaded.messages,
       now,
@@ -753,6 +788,19 @@ export async function chatResumeCommand(
         `note: this session has ${turns} turns, at or over the ${cap}-turn cap — new turns will be refused (turn_limit). Raise [chat].max_turns to continue it.\n`,
       );
     }
+    // **A session DISCLOSES and does not block** (effect-journal.md §8). A chat has no operator queue and no
+    // run to pause, so refusing to resume it would halt a conversation over a row nobody can act on from
+    // inside the REPL. Tier 3's actual guarantee — never auto-retried, because nothing re-dispatches a
+    // session's prior turns — is unchanged; what changes is that the fact reaches the one person who can go
+    // look at the target. Best-effort by design: a journal read that fails must not cost the user their
+    // session, which is the opposite of the run path's fail-closed answer and for the opposite reason.
+    // §8's disclosure, on stderr so `--json` stdout stays a clean event stream. The sentence is built in
+    // the shared module so the Home surface — which must route it into the transcript instead — cannot drift.
+    const effectNotice = unresolvedEffectNotice(opened.db, resumed.sessionId, sanitizeInline);
+    if (effectNotice !== undefined) deps.io.writeErr(`${effectNotice}\n`);
+    // …and retention (§9): a past turn can never be resumed, so its COMMITTED rows have no reader left.
+    // `turns` is exclusive, so the turn the user is about to take is untouched.
+    sweepCommittedSessionEffects(deps.io, opened.db, resumed.sessionId, turns);
   } catch (err) {
     // A pre-loop fault (not-found, no snapshot, build failure, or a post-build setup throw) must not strand the
     // open db handle NOR the spawned MCP children — tear BOTH down (a reject in one must not skip the other), and
@@ -1531,6 +1579,17 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
         now: deps.now,
       }),
     });
+
+    // The durable effect journal (ADR-0080), wired where `history.db` is open. A site that forgets is
+    // NOT silent: the forwarding port refuses the first effect loudly, which is exactly why
+    // `unwiredEffectJournal()` rejects instead of no-opping.
+    built.attachEffectJournal((correlation) =>
+      createEffectJournalPort(
+        createEffectJournalStore(deps.opened.db, { uuid: deps.uuid, now: deps.now }),
+        correlation,
+        { providerAttempt: 1, toolCallId: 'session' },
+      ),
+    );
   } catch (err) {
     // Acquire-then-guard: the fresh MCP children are already spawned — reclaim them before the failure propagates
     // so a persister-construction throw never orphans a stdio child (best-effort; never mask the primary error).
@@ -1650,6 +1709,7 @@ function seedResumedWiring(
   const persister = createSessionPersister({
     governor: resumed.governor,
     attachDurabilityProbe: resumed.attachDurabilityProbe,
+
     store: opened.store,
     handle: resumed.handle,
     sessionId: resumed.sessionId,
@@ -1662,6 +1722,15 @@ function seedResumedWiring(
     // ADR-0059 attribution — resolved over the SAME db; a reseat's new persister records the switched model.
     resolveModelCatalogId: makeCatalogIdResolver(opened.db, { uuid, now }),
   });
+  // The durable effect journal (ADR-0080), wired where `history.db` is open. A site that forgets is NOT
+  // silent: the forwarding port refuses the first effect loudly, which is exactly why
+  // `unwiredEffectJournal()` rejects instead of no-opping.
+  resumed.attachEffectJournal((correlation) =>
+    createEffectJournalPort(createEffectJournalStore(opened.db, { uuid, now }), correlation, {
+      providerAttempt: 1,
+      toolCallId: 'session',
+    }),
+  );
   return { store, persister };
 }
 

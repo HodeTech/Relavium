@@ -1872,9 +1872,13 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     let armCalls = 0;
     const hostB: typeof baseHostB = {
       ...baseHostB,
-      setTimer: (ms, onFire) => {
-        armCalls += 1;
-        return baseHostB.setTimer(ms, onFire);
+      // `kind` is counted and FORWARDED. Counted, because the claim is about the run's *work* timers — the
+      // ADR-0079 lease heartbeat is armed on every resume by design and is not what this test is about.
+      // Forwarded, because dropping it would silently re-label that heartbeat as a work timer in the inner
+      // host, which is the failure this spy exists to detect.
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'work') armCalls += 1;
+        return baseHostB.setTimer(ms, onFire, kind);
       },
     };
     const engineB = engineWith({}, hostB);
@@ -2665,6 +2669,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
         resolveWorkflowId: () => Promise.reject(new Error('store unavailable')),
         persistEvent: () => Promise.resolve(),
         listInterruptedRuns: () => Promise.resolve([]),
+        readWorkflowSnapshot: () => Promise.resolve(undefined),
       },
     };
     const events = await drain(
@@ -2687,6 +2692,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
             ? Promise.reject(new Error('disk full'))
             : inner.persistEvent(event),
         listInterruptedRuns: () => inner.listInterruptedRuns(),
+        readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       },
     };
     const events = await drain(
@@ -2746,6 +2752,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
         resolveWorkflowId: () => Promise.resolve('00000000-0000-4000-8000-000000000001'),
         persistEvent: () => Promise.reject(new Error('store fully unavailable')),
         listInterruptedRuns: () => Promise.resolve([]),
+        readWorkflowSnapshot: () => Promise.resolve(undefined),
       },
     };
     const events = await drain(
@@ -2770,6 +2777,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
             ? Promise.reject(new Error('terminal write failed'))
             : inner.persistEvent(event),
         listInterruptedRuns: () => inner.listInterruptedRuns(),
+        readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       },
     };
     const events = await drain(
@@ -2803,6 +2811,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
             ? Promise.reject(new Error('paused write failed'))
             : inner.persistEvent(event),
         listInterruptedRuns: () => inner.listInterruptedRuns(),
+        readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       },
     };
     const engine = new WorkflowEngine({
@@ -2850,6 +2859,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
           return inner.persistEvent(event);
         },
         listInterruptedRuns: () => inner.listInterruptedRuns(),
+        readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       },
     };
     const events = await drain(
@@ -2936,6 +2946,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
             ? Promise.reject(new Error('write failed'))
             : store.persistEvent(event),
         listInterruptedRuns: () => store.listInterruptedRuns(),
+        readWorkflowSnapshot: (runId: string) => store.readWorkflowSnapshot(runId),
       },
     };
     const reconciled = await new WorkflowEngine({ host, executor: new StubExecutor() }).reconcile();

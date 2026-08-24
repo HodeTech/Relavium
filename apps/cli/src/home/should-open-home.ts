@@ -1,4 +1,4 @@
-import { isCiEnv } from '../process/output-mode.js';
+import { isInteractiveTerminal } from '../process/output-mode.js';
 
 /**
  * The signals that gate the bare-invocation Home (2.5.B / [ADR-0054](../../../../docs/decisions/0054-cli-bare-invocation-interactive-home.md)).
@@ -24,5 +24,7 @@ export interface HomeGateSignals {
  * `run.ts` — NOT a `commander` default action (which would swallow the unknown-command error).
  */
 export function shouldOpenHome(signals: HomeGateSignals): boolean {
-  return signals.stdoutIsTty && signals.stdinIsTty && !signals.json && !isCiEnv(signals.env);
+  // The four-way check itself lives in `output-mode.ts` now — ADR-0084 §6's consent gate needs the
+  // identical one, and two copies of it is how one of them silently loses a signal.
+  return isInteractiveTerminal(signals);
 }

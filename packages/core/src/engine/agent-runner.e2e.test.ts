@@ -401,6 +401,8 @@ function unpricedBudgetWorkflow(strict: boolean): ReturnType<typeof parseWorkflo
     `schema_version: '1.0'
 workflow:
   id: e2e-budget-unpriced
+  inputs:
+    - { name: text, type: string }
   budget:
     max_cost_microcents: 1000000
     on_exceed: warn${strict ? '\n    strict_cost_cap: true' : ''}
@@ -424,6 +426,8 @@ function budgetWorkflow(onExceed: string): ReturnType<typeof parseWorkflow> {
     `schema_version: '1.0'
 workflow:
   id: e2e-budget
+  inputs:
+    - { name: text, type: string }
   budget:
     max_cost_microcents: 1
     on_exceed: ${onExceed}
@@ -729,6 +733,8 @@ describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
       `schema_version: '1.0'
 workflow:
   id: e2e-budget-retry
+  inputs:
+    - { name: text, type: string }
   budget:
     max_cost_microcents: 1
     on_exceed: pause_for_approval
@@ -796,6 +802,8 @@ workflow:
       `schema_version: '1.0'
 workflow:
   id: e2e-timeout
+  inputs:
+    - { name: text, type: string }
   timeout_ms: 1
   agents:
     - id: a
@@ -815,5 +823,190 @@ workflow:
     expect(events.at(-1)?.type).toBe('run:failed');
     const terminal = events.at(-1);
     expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('run_timeout');
+  });
+});
+
+/**
+ * [ADR-0082](../../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
+ * §4 — rule 7's node-retry half, through the REAL engine.
+ *
+ * **Why the real engine and not a unit stub.** The defect lived in the seam between three layers that each
+ * looked correct alone: the chain refuses to fail over past content, `throwMappedChainError` copies
+ * `error.retryable` onto the turn error, and `#shouldRetry` gates on that boolean. `timeout` and `transport`
+ * are both in `RETRYABLE_KINDS`, so a content-committed transient failure was re-dispatched — a second
+ * answer and a second charge for a call the user had already seen output from. Only a test that spans all
+ * three layers can see it.
+ */
+describe('a content-committed failure is never node-retried (ADR-0082 §4)', () => {
+  const RETRY_WORKFLOW = parseWorkflow(
+    `schema_version: '1.0'
+workflow:
+  id: e2e-agent-retry
+  inputs:
+    - name: text
+      type: string
+  agents:
+    - id: summarizer
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: You summarize.
+  nodes:
+    - id: sum
+      type: agent
+      agent_ref: summarizer
+      prompt_template: 'Summarize: {{inputs.text}}'
+      retry: { max: 3, backoff: linear, backoff_ms: 1 }
+  edges: []
+`,
+  );
+
+  const TIMEOUT: StreamChunk = {
+    type: 'error',
+    error: {
+      kind: 'timeout',
+      retryable: true,
+      provider: 'anthropic',
+      message: 'the provider stopped responding',
+    },
+  };
+
+  /** Run the retrying workflow against a provider that counts its stream calls. */
+  async function runCounting(
+    chunks: StreamChunk[],
+  ): Promise<{ calls: number; events: RunEvent[] }> {
+    let calls = 0;
+    const host = createInMemoryHost();
+    const engine = new WorkflowEngine({
+      host,
+      executor: agentExecutor(() => ({
+        id: 'anthropic',
+        supports: CAPS,
+        generate: () => {
+          throw new Error('unused');
+        },
+        stream: () => {
+          calls += 1;
+          return streamOf(chunks);
+        },
+      })),
+    });
+    const handle = engine.start({ workflow: RETRY_WORKFLOW, inputs: { text: 'the report' } });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'node:retrying') {
+        // The backoff timer is armed asynchronously AFTER the event, so poll rather than fire blind.
+        let waited = 0;
+        while (host.armedCount() === 0) {
+          waited += 1;
+          if (waited > 1000) throw new Error('backoff timer was never armed after node:retrying');
+          await Promise.resolve();
+        }
+        host.fireTimers();
+      }
+    }
+    return { calls, events };
+  }
+
+  it('a timeout AFTER content produces exactly one provider call, despite retry.max = 3', async () => {
+    const { calls, events } = await runCounting([
+      { type: 'text_delta', text: 'the user already saw this' },
+      TIMEOUT,
+    ]);
+
+    expect(calls).toBe(1);
+    expect(events.filter((e) => e.type === 'node:retrying')).toHaveLength(0);
+    expect(events.some((e) => e.type === 'run:failed')).toBe(true);
+  });
+
+  it('a timeout in a LATER TOOL ROUND is not retried either — commitment is a TURN fact', async () => {
+    // The gap a review measured, and the reason the carrier could not stay per-`stream()`-call. A tool-using
+    // turn calls `chain.stream()` once PER ROUND, so round 1's failure carries no chain-level commitment
+    // however much round 0 already streamed. Before the fix: six provider calls, the same assistant text
+    // pushed to the user three times, and `echo` dispatched three times — verbatim the harm ADR-0082 §4
+    // exists to remove, with only ADR-0080's effect journal between it and a duplicated side effect.
+    const toolWf = parseWorkflow(
+      `schema_version: '1.0'
+workflow:
+  id: e2e-agent-retry-tools
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+      tools: [echo]
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: a
+      prompt_template: 'go'
+      retry: { max: 3, backoff: linear, backoff_ms: 1 }
+  edges: []
+`,
+    );
+    let calls = 0;
+    const host = createInMemoryHost();
+    const engine = new WorkflowEngine({
+      host,
+      executor: agentExecutor(
+        () => ({
+          id: 'anthropic',
+          supports: CAPS,
+          generate: () => {
+            throw new Error('unused');
+          },
+          stream: () => {
+            calls += 1;
+            // Round 0 streams text AND a tool call; round 1 times out having produced nothing itself.
+            return streamOf(
+              calls % 2 === 1
+                ? [
+                    { type: 'text_delta', text: 'the user already saw this' },
+                    { type: 'tool_call_start', id: 'c1', name: 'echo' },
+                    { type: 'tool_call_end', id: 'c1' },
+                    {
+                      type: 'stop',
+                      stopReason: 'tool_use',
+                      usage: { inputTokens: 1, outputTokens: 1 },
+                    },
+                  ]
+                : [TIMEOUT],
+            );
+          },
+        }),
+        echoRegistry,
+        [echoToolDef],
+      ),
+    });
+
+    const events: RunEvent[] = [];
+    const handle = engine.start({ workflow: toolWf });
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'node:retrying') {
+        let waited = 0;
+        while (host.armedCount() === 0) {
+          waited += 1;
+          if (waited > 1000) throw new Error('backoff timer was never armed after node:retrying');
+          await Promise.resolve();
+        }
+        host.fireTimers();
+      }
+    }
+
+    expect(calls).toBe(2); // round 0 + the failing round 1 — and then it STOPS
+    expect(events.filter((e) => e.type === 'node:retrying')).toHaveLength(0);
+    // The user saw the assistant's text exactly once, and the tool ran exactly once.
+    expect(events.filter((e) => e.type === 'agent:token')).toHaveLength(1);
+    expect(events.filter((e) => e.type === 'agent:tool_call')).toHaveLength(1);
+  });
+
+  it('…and a timeout BEFORE content IS retried — the negative control', async () => {
+    // Without this the assertion above is satisfied by an implementation that disabled node retry outright,
+    // which would break every transient-failure recovery the budget exists for.
+    const { calls, events } = await runCounting([TIMEOUT]);
+
+    expect(calls).toBe(3); // the full budget
+    expect(events.filter((e) => e.type === 'node:retrying')).toHaveLength(2);
   });
 });

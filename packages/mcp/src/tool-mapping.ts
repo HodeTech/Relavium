@@ -1,4 +1,10 @@
-import type { ToolDef, ToolDispatchContext, ToolHost, ToolPolicyClass } from '@relavium/core';
+import {
+  type EffectTier,
+  type ToolDef,
+  type ToolDispatchContext,
+  type ToolHost,
+  type ToolPolicyClass,
+} from '@relavium/core';
 
 import type { DiscoveredTool } from './connection.js';
 import { McpHostUnavailableError } from './errors.js';
@@ -103,6 +109,12 @@ export function buildServerToolDefs(
       parseArgs: (raw: unknown): unknown => validator.parse(raw) as unknown,
       llmVisibleParams: tool.inputSchema,
       policy: MCP_TOOL_POLICY,
+      // **Every discovered MCP tool is tier 3, unconditionally** (ADR-0080 §5). Not a placeholder pending
+      // richer metadata: an MCP server's own annotations (`readOnlyHint` / `idempotentHint` / …) are
+      // attacker-controlled bytes from the very party the hostile-MCP class defends against, so they may
+      // never RAISE trust. A server cannot talk its way out of being journaled, and it cannot declare its
+      // effects benign either — `duplicationBenign` is first-party-only and is deliberately not set here.
+      effect: (): EffectTier => 3,
       dispatch: (args: unknown, host: ToolHost, ctx: ToolDispatchContext): Promise<unknown> => {
         const mcp = host.mcp;
         if (mcp === undefined) {

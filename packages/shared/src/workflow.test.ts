@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { WorkflowSchema } from './workflow.js';
+import {
+  anchoredPattern,
+  INPUT_FORMATS,
+  matchesDeclaredType,
+  violatesInputContract,
+  WorkflowInputSchema,
+  WorkflowSchema,
+} from './workflow.js';
 
 /**
  * The canonical reference workflow example, modeled on the "Complete example" in
@@ -490,5 +497,320 @@ describe('WorkflowSchema', () => {
         withWorkflow({ inputs: [{ name: 'n', type: 'number', validation: { min: 0, max: 9 } }] }),
       ),
     ).toBe(true);
+  });
+});
+
+/**
+ * ADR-0083's parse-time half (§3, §4, §6) — the authored mistakes that must fail loudly rather than at run
+ * time, which is ADR-0023's own rule applied to the input contract.
+ */
+describe('WorkflowInputSchema — the ADR-0083 tightenings', () => {
+  const input = (over: Record<string, unknown>): ReturnType<typeof WorkflowInputSchema.safeParse> =>
+    WorkflowInputSchema.safeParse({ name: 'thing', type: 'string', ...over });
+
+  it('rejects `{{ }}` interpolation in a default', () => {
+    // At admission — which must precede run creation — none of the three referenceable scopes exists:
+    // `{{inputs.*}}` is what admission resolves, `{{ctx.*}}` is resolved at run start, `{{secrets.*}}` may
+    // never enter a default. It breaks nothing that worked: the engine applied no defaults at all, so a
+    // templated one was already dead, and this turns silent deadness into a loud authoring error.
+    for (const templated of ['{{inputs.other}}', 'prefix {{ctx.k}} suffix', '{{secrets.token}}']) {
+      const parsed = input({ default: templated });
+      expect(parsed.success).toBe(false);
+      expect(!parsed.success && parsed.error.issues[0]?.message).toContain('interpolation');
+    }
+  });
+
+  it('looks INSIDE a structured default, and allows a literal `{{` with no closer', () => {
+    // Two corrections a review measured. A `default` is `unknown`, so a string-only check never looked
+    // inside `{ token: '{{secrets.token}}' }` — unreachable today, but §1's admission will apply defaults on
+    // top of this gate. And core's lexer treats an unterminated `{{` as ordinary text, so `includes('{{')`
+    // rejected a string core would never read a reference in, with no escape available to express it.
+    expect(input({ default: { token: '{{secrets.token}}' } }).success).toBe(false);
+    expect(input({ default: ['{{secrets.token}}'] }).success).toBe(false);
+    expect(input({ default: 'use {{ to open a mustache' }).success).toBe(true);
+    expect(input({ default: 'closing }} only' }).success).toBe(true);
+  });
+
+  it('detects a pair in LINEAR time — a hostile artifact cannot stall the parse', () => {
+    // The detector was `/\{\{[\s\S]*?\}\}/`, which is quadratic on a value that opens many pairs and
+    // closes none: the engine retries the lazy scan from every `{{`, each time running to the end of the
+    // string. Measured at 1033ms for this input, growing with the SQUARE — and authored YAML is not trusted
+    // input any more (ADR-0084 settled that an artifact is often not the user's), so a shared file could
+    // stall a parse. The ceiling is deliberately loose: the point is quadratic-vs-linear, not a stopwatch.
+    const hostile = '{{'.repeat(60_000);
+    const started = performance.now();
+    expect(input({ default: hostile }).success).toBe(true); // no terminated pair — it is ordinary text
+    expect(performance.now() - started).toBeLessThan(250);
+  });
+
+  it('agrees with the regex it replaced on every shape that decides the answer', () => {
+    // A terminated pair exists iff some `}}` follows the FIRST `{{`. The cases that make the two forms
+    // differ if the rewrite is wrong are the ones where a `}}` sits BEFORE the opener, or where the braces
+    // overlap.
+    const pairs: readonly (readonly [string, boolean])[] = [
+      ['', false],
+      ['{{', false],
+      ['}}', false],
+      ['}}{{', false], // the close is before the open — not a pair
+      ['{{}}', true],
+      ['{{{}}', true],
+      ['{{ a }}', true],
+      ['a}}b{{c', false],
+      ['a{{b}}c{{d', true],
+      ['{{\n}}', true],
+      ['use {{ to open a mustache', false],
+    ];
+    for (const [text, expected] of pairs) {
+      expect(input({ default: text }).success, JSON.stringify(text)).toBe(!expected);
+    }
+  });
+
+  it('does not recurse without bound into a nested default', () => {
+    // `containsInterpolation` walks a `default`'s full shape with a cycle guard but had no depth cap, unlike
+    // `pattern`, which is length-capped for exactly this class of concern. A `RangeError` raised inside a
+    // Zod refine is not a validation issue Zod can report — it escapes `safeParse`, past this schema's
+    // promise that an invalid file never yields a definition.
+    //
+    // Giving up at the cap is safe, and that is why the cap can be a plain `false`: a `default` nested this
+    // deep is a non-primitive, and `matchesDeclaredType` refuses a non-primitive default for every declared
+    // type, so the value is rejected by the same refine regardless of what the walk answers.
+    let deep: unknown = '{{secrets.token}}';
+    for (let i = 0; i < 20_000; i += 1) deep = [deep];
+    expect(() => input({ default: deep })).not.toThrow();
+    expect(input({ default: deep }).success).toBe(false);
+  });
+
+  it('rejects a declared default that violates its own contract', () => {
+    // The ADR and the spec both claimed this and the first implementation did not do it. A review measured
+    // a `number` defaulting to `'not a number'` and a `string` default outside its own `enum`, both
+    // accepted — the very value §1's admission will hand to a run.
+    expect(input({ default: 'ccc', validation: { enum: ['a', 'b'] } }).success).toBe(false);
+    expect(input({ default: 'toolong', validation: { max_length: 3 } }).success).toBe(false);
+    expect(input({ default: 'abc', validation: { pattern: '^[0-9]+$' } }).success).toBe(false);
+    expect(input({ default: 'not-an-email', validation: { format: 'email' } }).success).toBe(false);
+    expect(
+      WorkflowInputSchema.safeParse({ name: 'n', type: 'number', default: 'not a number' }).success,
+    ).toBe(false);
+    // …and a conforming default passes, so the rule discriminates.
+    expect(input({ default: 'a@b.co', validation: { format: 'email' } }).success).toBe(true);
+    expect(
+      WorkflowInputSchema.safeParse({
+        name: 'n',
+        type: 'number',
+        default: 3,
+        validation: { min: 0, max: 10 },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('a `secret` may not carry an `enum` either — the same leak through a neighbouring key', () => {
+    // The `default` ban exists because such a value lands verbatim in `workflow_definition_snapshot`. An
+    // `enum` of allowed secret values writes it into the same unmasked column, and "the credential is one
+    // of these three" is not a contract worth expressing.
+    expect(
+      WorkflowInputSchema.safeParse({
+        name: 'k',
+        type: 'secret',
+        validation: { enum: ['hunter2'] },
+      }).success,
+    ).toBe(false);
+    // A SHAPE is not a value, so `pattern` survives.
+    expect(
+      WorkflowInputSchema.safeParse({
+        name: 'k',
+        type: 'secret',
+        validation: { pattern: '^sk-[a-z0-9]+$' },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('an unknown `format` message carries NO authored value', () => {
+    // `parser.ts` documents every shared refine as emitting structural-only messages, and the CLI re-throws
+    // the first one as a `CliError` message. YAML double-quoted escapes decode control characters, so an
+    // echoed authored value is a terminal-escape path into stdout and every log sink.
+    const parsed = input({ validation: { format: '\u001b[2Jboom' } });
+    expect(parsed.success).toBe(false);
+    const message = !parsed.success ? (parsed.error.issues[0]?.message ?? '') : '';
+    expect(message).not.toContain('boom');
+    expect(message).toContain('the vocabulary is');
+  });
+
+  it('`matchesDeclaredType` covers every declared type, not just number', () => {
+    // Four of six arms were untested; the function is exported as the source of truth §1's admission shares.
+    for (const type of ['string', 'file_path', 'code_diff', 'secret'] as const) {
+      expect(matchesDeclaredType('a string', type)).toBe(true);
+      expect(matchesDeclaredType(1, type)).toBe(false);
+    }
+    expect(matchesDeclaredType(true, 'boolean')).toBe(true);
+    expect(matchesDeclaredType('true', 'boolean')).toBe(false);
+    expect(matchesDeclaredType(Number.POSITIVE_INFINITY, 'number')).toBe(false);
+  });
+
+  it('an authored `pattern` is compiled ANCHORED at parse, so its meaning is pinned', () => {
+    // Compiling bare proves well-formedness and nothing else: `a|b` compiles, and under a naive
+    // `'^' + src + '$'` becomes "starts with a OR ends with b" — a silent change of meaning.
+    //
+    // The strings are chosen to DISCRIMINATE. A review measured the first version of this test — `'a'`,
+    // `'xa'`, `'bx'` — passing identically under `^${src}$`, so it pinned nothing: under the naive form
+    // `^a|b$` still rejects `'xa'` (it does not start with `a`) and `'bx'` (it does not end with `b`).
+    // `'ax'` and `'xb'` are the two the naive form ACCEPTS and the grouped form rejects.
+    expect(anchoredPattern('a|b').test('a')).toBe(true);
+    expect(anchoredPattern('a|b').test('ax')).toBe(false); // naive `^a|b$`: "starts with a" — true
+    expect(anchoredPattern('a|b').test('xb')).toBe(false); // naive `^a|b$`: "ends with b" — true
+  });
+
+  it('`enum` matching is `Object.is`, so `-0` is not `0`', () => {
+    // Decided in the docblock and pinned nowhere: mutating `Object.is(member, value)` to `member === value`
+    // left the whole package green. `NaN` — the other half of the decision — is unreachable, because
+    // `matchesDeclaredType` rejects a non-finite `enum` member at parse; `-0` is the honest case.
+    expect(violatesInputContract(-0, 'number', { enum: [0] })).toBeDefined();
+    expect(violatesInputContract(0, 'number', { enum: [0] })).toBeUndefined();
+  });
+
+  it('checks LENGTH before `pattern` — the only ReDoS mitigation this contract offers', () => {
+    // The ordering is what bounds the input a catastrophic authored regex can chew on. A review measured
+    // it unpinned: hoisting the `pattern` check above the length checks left every suite green, because
+    // no test asserted an issue MESSAGE.
+    expect(
+      violatesInputContract('aaaaaaaaaa', 'string', { max_length: 3, pattern: '(?:a+)+b' }),
+    ).toBe('value is longer than max_length');
+    expect(violatesInputContract('a', 'string', { min_length: 3, pattern: '(?:a+)+b' })).toBe(
+      'value is shorter than min_length',
+    );
+  });
+
+  it('rejects a value below `min` and shorter than `min_length` — both bounds, both directions', () => {
+    // Both lower bounds could be deleted with the monorepo green: `min` was only ever exercised through
+    // its `max` sibling, and `min_length` only through `max_length`.
+    expect(violatesInputContract(0, 'number', { min: 1 })).toBe(
+      'value is below the declared minimum',
+    );
+    expect(violatesInputContract(1, 'number', { min: 1 })).toBeUndefined();
+    expect(violatesInputContract('ab', 'string', { min_length: 3 })).toBe(
+      'value is shorter than min_length',
+    );
+    expect(violatesInputContract('abc', 'string', { min_length: 3 })).toBeUndefined();
+  });
+
+  it('the `format` vocabulary means what its key says', () => {
+    // `uri` required `://`, so it rejected `mailto:`, `urn:` and `data:` — URIs by every definition the
+    // word has. `date-time` had unbounded `\\d{2}` groups, so `0000-99-99T99:99:99Z` was a valid instant:
+    // not a shape check failing gracefully, the check being absent.
+    for (const uri of [
+      'mailto:a@b.com',
+      'urn:isbn:0451450523',
+      'data:text/plain,hi',
+      'https://x.dev/p',
+    ]) {
+      expect(violatesInputContract(uri, 'string', { format: 'uri' })).toBeUndefined();
+    }
+    expect(violatesInputContract('not a uri', 'string', { format: 'uri' })).toBeDefined();
+    for (const bad of [
+      '0000-99-99T99:99:99Z',
+      '2026-13-45T25:61:61+99:99',
+      '2026-01-01T00:00:00',
+    ]) {
+      expect(violatesInputContract(bad, 'string', { format: 'date-time' })).toBeDefined();
+    }
+    expect(
+      violatesInputContract('2026-07-19T12:30:00Z', 'string', { format: 'date-time' }),
+    ).toBeUndefined();
+    // …and no string-shaped format admits a control character, because these values are echoed by surfaces
+    // and written to log sinks.
+    expect(
+      violatesInputContract('https://x.dev/\u001b[2J', 'string', { format: 'uri' }),
+    ).toBeDefined();
+    expect(violatesInputContract('\u001b[31ma@b.co', 'string', { format: 'email' })).toBeDefined();
+  });
+
+  it('rejects a `pattern` that ESCAPES the anchors by closing the wrapper early', () => {
+    // The non-capturing group is not self-defending. `x)|(?:.*` anchors to `^(?:x)|(?:.*)$`, which
+    // compiles cleanly and matches EVERY string — a declared `pattern` constraining nothing while the spec
+    // promises a full match. Measured on both halves before the fix: `a)|(b` matched `'aZZZ'`.
+    for (const escaping of ['a)|(b', 'x)|(?:.*']) {
+      const parsed = input({ validation: { pattern: escaping } });
+      expect(parsed.success).toBe(false);
+      expect(!parsed.success && parsed.error.issues[0]?.message).toContain('unmatched');
+    }
+    // …and the balanced patterns an author actually writes still parse, so the rule discriminates.
+    for (const fine of ['a|b', '(?:foo|bar)+', '[0-9]{2,4}', '\\((?:in|out)\\)']) {
+      expect(input({ validation: { pattern: fine } }).success).toBe(true);
+    }
+  });
+
+  it('an unknown `format` is REJECTED, including one that names a prototype member', () => {
+    // The format table was an object literal, so `FORMAT_CHECKS['constructor']` answered with a function
+    // whose `.test` is `undefined`: the lookup guard passed and `check.test(value)` threw a raw
+    // `TypeError` out of `safeParse` — breaking Zod's own contract, on a path `relavium import` and every
+    // `gate` resume (which re-validates the stored snapshot) reach from untrusted YAML.
+    for (const bad of [
+      'constructor',
+      'toString',
+      '__proto__',
+      'valueOf',
+      'hasOwnProperty',
+      'url',
+    ]) {
+      const parsed = input({ default: 'abc', validation: { format: bad } });
+      expect(parsed.success).toBe(false);
+      expect(
+        !parsed.success && parsed.error.issues.some((i) => i.message.includes('unknown format')),
+      ).toBe(true);
+    }
+  });
+
+  it('…and accepts a literal default — the negative control', () => {
+    expect(input({ default: 'a plain value' }).success).toBe(true);
+    expect(WorkflowInputSchema.safeParse({ name: 'n', type: 'number', default: 3 }).success).toBe(
+      true,
+    );
+  });
+
+  it('rejects a `default` on a `secret` input', () => {
+    // Such a value is written verbatim into the durable `workflow_definition_snapshot` — a plaintext
+    // credential at rest, in a column nothing masks.
+    const parsed = WorkflowInputSchema.safeParse({ name: 'k', type: 'secret', default: 'hunter2' });
+    expect(parsed.success).toBe(false);
+    expect(!parsed.success && parsed.error.issues[0]?.message).toContain(
+      'may not declare a `default`',
+    );
+    // …but a `secret` with no default is ordinary.
+    expect(WorkflowInputSchema.safeParse({ name: 'k', type: 'secret' }).success).toBe(true);
+  });
+
+  it('rejects an unknown `format`, and accepts every member of the closed vocabulary', () => {
+    expect(input({ validation: { format: 'phone-number' } }).success).toBe(false);
+    for (const format of INPUT_FORMATS) {
+      expect(input({ validation: { format } }).success).toBe(true);
+    }
+  });
+
+  it('rejects an invalid `pattern` at PARSE, not at run', () => {
+    // An unparseable regex would otherwise throw the first time someone supplied a value for this input —
+    // which may be never, until it is.
+    expect(input({ validation: { pattern: '[' } }).success).toBe(false);
+    expect(input({ validation: { pattern: 'a'.repeat(600) } }).success).toBe(false);
+    expect(input({ validation: { pattern: '^[a-z]+$' } }).success).toBe(true);
+  });
+
+  it('rejects an `enum` member whose type does not match the declared input type', () => {
+    // A member that can never match makes the input silently unsatisfiable, which is an authored mistake
+    // rather than a value that simply never occurs.
+    expect(
+      WorkflowInputSchema.safeParse({ name: 'n', type: 'number', validation: { enum: [1, 'two'] } })
+        .success,
+    ).toBe(false);
+    expect(
+      WorkflowInputSchema.safeParse({ name: 'n', type: 'number', validation: { enum: [1, 2] } })
+        .success,
+    ).toBe(true);
+    // A non-finite number is not a `number` for this contract: `min`/`max` cannot express it.
+    expect(
+      WorkflowInputSchema.safeParse({
+        name: 'n',
+        type: 'number',
+        validation: { enum: [Number.NaN] },
+      }).success,
+    ).toBe(false);
   });
 });

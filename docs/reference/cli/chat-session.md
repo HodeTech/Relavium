@@ -90,7 +90,7 @@ A small, **alias-free**, curated set of slash commands drives the REPL itself (n
 | `/mode [name]` | Switch the chat **mode** — `ask` / `plan` / `accept-edits` / `auto` (**2.5.E**, below); bare `/mode` shows the current mode + explains each. `Shift+Tab` cycles them. Chat-only. |
 | `/thinking` | Show / hide the collapsible **reasoning ("thinking") panel** (**2.5.H**; also `Ctrl+T`). A pure UI-view toggle (no session/engine effect); the panel is only rendered while the model is actually streaming reasoning. Default collapsed. Chat-only. |
 | `/doctor` | Run a setup health check as a **notice** (**2.5.C S5**). Fast tier: OS keychain reachable · config valid · wired tool capabilities. `--deep` adds provider-key validation (a bounded, **redacted** live ping per configured key — the key never reaches the output) + the live session's MCP status (the bound agent's connected servers + any tools the manager dropped). The `--deep` MCP tier is **read-only** — it reports the already-connected session, never a fresh connect/spawn (a security-review decision). Available in **both** the chat and the bare Home (pre-chat diagnostics); the Home palette runs the fast tier, `--deep` is typed in a chat. |
-| `/compact` | **Model-summarise** the conversation so far into a compact preamble to reclaim context — an LLM call ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md), **2.5.F**; see § Context compaction below). Reports the token deltas + spend + the summary as a **notice**. Effect `write` (spends tokens). Chat-only. |
+| `/compact` | **Model-summarise** the conversation so far to reclaim context — an LLM call ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md), **2.5.F**; see § Context compaction below). Reports the token deltas + spend + the summary as a **notice**. Effect `write` (spends tokens). Chat-only. |
 | `/trim [n]` | **Deterministically** drop older messages down to the last `n` (default `[chat].max_messages`), **no LLM call** (ADR-0062, 2.5.F). A bare `/trim` with no config bound prints an actionable notice; a bound larger than the history is a reported no-op. Chat-only. |
 | `/models` | Open the live catalog **picker** ([ADR-0064](../../decisions/0064-live-model-catalog.md)) — **interactive-only**. In a **chat**, picking a *different* model **reseats** the live session onto it; re-picking the model you are already on only sets its effort tier (a per-turn override, **no reseat**). In the **bare Home** it writes the next session's defaults instead. Both paths — and what a reseat does and does not carry — are in § [Model reseat](#model-reseat-models) (**2.5.G**). Opening the picker changes nothing — the effect lands only on an explicit selection. Under `--json` / a plain non-TTY there is no overlay: nothing is reseated and an actionable hint is printed. |
 | `/effort [tier]` | Set the **reasoning-effort** tier — `off` / `low` / `medium` / `high` / `max` ([ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md)); bare `/effort` shows the current tier + the options. A **per-turn session override** on the live session — **no reseat** (unlike `/models`), and it does **not** survive one. Always available in a chat: on a model with no controllable reasoning tier the command says so and the tier is stored but **inert** (gated off at send) — it is the picker's effort sub-step and the footer indicator that are capability-gated, not this command. Chat-only. |
@@ -114,14 +114,14 @@ The session's `ToolHost` is bound **full-capability** for its lifetime (fs read+
 
 **Governed classes** (what the floor gates): a write (`fsWrite`), any egress (`http_request` / `web_search` / `mcp_call` / a discovered MCP tool), an `os` action (`read_clipboard` — an un-jailed read of ambient, secret-bearing OS state — and `notify`), and a `run_command` with a model-chosen command. Read-only fs reads + `git_status` are never gated. **Protected paths** (`.git/`, `.relavium/`, `.ssh/`, shell-startup files) are refused in **every** mode including `auto` (there is no bypass valve), and no mode escapes the `fs` jail / scope tier. An **`Esc`** mid-turn aborts the in-flight turn but **keeps the session alive** (distinct from `/cancel`): it settles one `session:turn_completed` (an `aborted` stop-reason), rolls back the pending message, and returns to idle. The once/always memory is **in-memory** and per-session — a `chat-resume` re-prompts. The one-shot `relavium agent run` (non-interactive) runs `ask` (governed actions denied — no approver). On the interactive surface a host tool EXECUTION failure to an **idempotent read** (e.g. a file-not-found `read_file` — the #1 cause is launching `chat` from a directory that does not contain the path) is **fed back to the model** so it can adapt / explain rather than ending the turn (`recoverToolFailures`, scoped via `ToolExecutionError.recoverable`); a **governed / side-effecting** failure stays fail-fast. When a turn does die on `tool_failed`, its one-line summary shows a **static, secret-free hint** ("a path may be outside this session's workspace, or the target was unavailable") — never the raw error message (which may carry model / MCP context).
 
-## Context compaction (2.5.F, [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md))
+## Context compaction (2.5.F, [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md) · [ADR-0081](../../decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md))
 
 A long conversation grows its transcript every turn until it approaches the model's context window. Three
 mechanisms bound it — all **append-only** (nothing is deleted; the full transcript always survives for
 `/export` and audit) and **resume/reseat-preserving**:
 
-- **`/compact`** — model-summarises the earlier conversation into a **session-level preamble** (prepended to
-  the agent's system prompt each turn) and keeps the **last exchange verbatim**. An LLM call: it reports the
+- **`/compact`** — model-summarises the earlier conversation into a **session-level summary** and keeps the
+  **last exchange verbatim**. An LLM call: it reports the
   token deltas + spend and shows the summary (a lossy, paid operation is inspectable). The summary is produced
   by the session's **own bound model** (no second binding — [ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)).
 - **Automatic compaction** — after a turn whose **real** input tokens exceed `[chat].compact_threshold`
@@ -130,12 +130,41 @@ mechanisms bound it — all **append-only** (nothing is deleted; the full transc
   below the budget) and its cost is accounted + surfaced as an inline `⟳ Context auto-compacted …` notice —
   never a silent context swap. A model with no known window (a custom base-URL id) skips auto-compaction; a
   summarisation failure degrades to a deterministic `/trim`.
+
+### Where the summary goes, and why it is not an instruction
+
+The summary is **model output over untrusted input** — the conversation handed to the summariser contains
+user messages, tool results, and the contents of every document the session read. It is therefore carried as
+**data in the first `user` turn**, never concatenated into the system prompt
+([ADR-0081](../../decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md),
+superseding [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md) §1, which wrapped
+it in an `<earlier-conversation-summary>` fence and put it in `system`). An XML fence is a formatting
+convention the untrusted text can close, not a trust boundary — and the bytes survived a restart, because the
+summary is persisted.
+
+Three properties follow, and each is enforced rather than documented:
+
+- **`system` carries authored text only.** `AgentTurnParams.system` is a branded type built solely by
+  `authoredSystemPrompt()` from the agent's `system_prompt`, a node's `system_prompt_append`, or a named
+  engine-owned prompt. A lint fence reports any assertion that would forge the brand.
+- **The summary is `Untrusted<string>`** from the moment the summariser returns it, is re-marked at the
+  reconstruction boundary on resume, and is unwrapped in exactly two places — both `user`-role positions.
+  The persisted marker row's `role: 'system'` is a **storage encoding only**; no consumer may read it as
+  model-facing system authority.
+- **The block is separated in-band.** It opens by stating that what follows is generated transcript data
+  rather than an instruction, and closes by naming the user's message as what comes next. In-band because
+  the OpenAI adapter joins content parts on the wire, so a part boundary would be invisible there — the
+  guarantee available on every adapter is the role plus prose. The exact wording is derived from
+  `packages/core/src/engine/turn-messages.ts`; it is not restated here.
+
+The summary carries less weight with the model than a system instruction would. That is the deliberate
+trade: instruction-adjacent context loses authority so that untrusted bytes cannot gain it.
 - **`/trim [n]`** — a deterministic drop to the last `n` messages (default `[chat].max_messages`), **no LLM
   call, no cost**. Also the auto-compaction failure fallback.
 
 **The durable boundary.** Each compaction/trim appends one `role: 'system'` **marker** row carrying the summary
 (empty for a trim) + a `compaction_dropped_through_sequence`; original rows are never edited or deleted. On
-resume, the preamble is the summary of the **newest marker that carries one** (a `/compact` — a summary-less
+resume, the summary is the one on the **newest marker that carries one** (a `/compact` — a summary-less
 `/trim` marker advances the boundary but never blanks a prior summary), and only rows past the boundary re-enter
 the working context — so a compacted session stays compacted across `chat-resume` and a model reseat.
 

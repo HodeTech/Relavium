@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { nonEmptyString, nonNegativeInt, positiveInt } from './common.js';
+import { nonEmptyString, nonNegativeInt, positiveInt, preservingUnknownRecord } from './common.js';
 import {
   ENGINE_NODE_TYPES,
   ERROR_CODES,
@@ -71,9 +71,15 @@ export const TokensUsedSchema = z.object({
 export type TokensUsed = z.infer<typeof TokensUsedSchema>;
 
 /**
- * A secret-typed `run:started` input, masked at emit time — the raw value is replaced with a
- * keychain/env `ref` (sse-event-schema.md §Security). Never carries the secret itself. The named
- * contract every surface renders for a masked input value.
+ * A secret-typed `run:started` input, masked at emit time (sse-event-schema.md §Security). Never carries the
+ * secret itself. The named contract every surface renders for a masked input value.
+ *
+ * **`ref` is a SELF-reference — `inputs.<name>` — not a keychain or env reference.** This docblock said
+ * "keychain/env", which promised something the value never carried: it names the SLOT the value came from,
+ * and nothing can resolve it back to a credential. The distinction is load-bearing on resume, where
+ * [ADR-0083](../../../docs/decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §6
+ * verifies that the same named `secret` input was re-supplied and states plainly that it cannot prove the
+ * value is the same credential.
  */
 export const MaskedSecretSchema = z
   .object({ secret: z.literal(true), ref: nonEmptyString })
@@ -141,7 +147,11 @@ export const RunStartedEventSchema = z.object({
   type: z.literal('run:started'),
   ...runBase,
   workflowId: z.string().uuid(), // FK to workflows.id (surrogate UUID), matching RunSchema — ADR-0022
-  inputs: z.record(z.string(), z.unknown()), // a secret-typed input is masked at emit time as MaskedSecret ({ secret: true, ref }); a non-secret keeps its raw value
+  // `preservingUnknownRecord`, not `z.record`: an input name may legitimately be `__proto__`, and Zod's
+  // record rebuild drops it — which made the durable ADMISSION RECORD differ from what the run ran with.
+  // A secret-typed input is masked at emit time as MaskedSecret ({ secret: true, ref }); a non-secret
+  // keeps its raw value.
+  inputs: preservingUnknownRecord,
   executionMode: z.enum(EXECUTION_MODES),
 });
 
@@ -984,8 +994,13 @@ export const SessionCompactingEventSchema = z.object({
 
 /**
  * Context compaction applied ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md)) —
- * the engine summarised the earlier working context into `summary` and now feeds it as a system-prompt
- * preamble; the host writes the append-only boundary marker row on this event. `keptMessageCount` is how many
+ * the engine summarised the earlier working context into `summary` and now carries it as UNTRUSTED content
+ * in the first user-role turn ([ADR-0081](../../decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md),
+ * superseding ADR-0062 §1 — it used to be concatenated into the system prompt, which is the defect that ADR
+ * removes). `summary` is a plain string here because the event crosses to the HOST, which persists it and
+ * renders it; it is re-marked untrusted at the reconstruction boundary on the way back in, and the marker
+ * row's `role: 'system'` is a storage encoding, never model-facing system authority. The host writes the
+ * append-only boundary marker row on this event. `keptMessageCount` is how many
  * trailing in-memory messages the engine RETAINED verbatim (the host maps it to the durable
  * `droppedThroughSequence`). `tokensUsed` is the summarization call's REAL usage — accounted to the session
  * budget (ADR-0028); it is NOT a user turn and does not count against `max_turns`.

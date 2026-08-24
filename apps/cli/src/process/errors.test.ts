@@ -1,3 +1,4 @@
+import { EngineStateError } from '@relavium/core';
 import { CorruptRunEventError, UnreadableRunEventLogError } from '@relavium/db';
 import { describe, expect, it } from 'vitest';
 
@@ -12,6 +13,13 @@ describe('EXIT_CODES', () => {
       invalidInvocation: 2,
       gatePaused: 3,
       chatEnded: 4,
+      // ADR-0078 §5 — the run produced a terminal whose durable write is not known to have landed.
+      // Deliberately neither 0 nor 1: reporting success would be as wrong as reporting failure.
+      durabilityUncertain: 5,
+      runOwnedElsewhere: 6,
+      // ADR-0080 §2b / effect-journal.md §4, §8 — an external effect from a prior attempt is unresolved.
+      // The only code whose remedy is "do NOT retry": go look at the target, then resolve the row.
+      effectNeedsAttention: 7,
     });
   });
 });
@@ -24,6 +32,10 @@ describe('CliError', () => {
 
   it('maps internal to exit 1', () => {
     expect(new CliError('internal', 'oops').exitCode).toBe(EXIT_CODES.workflowFailed);
+    // The one TRANSIENT refusal gets its own code, distinct from every other invocation fault (ADR-0079 §7):
+    // a caller must be able to tell "retry shortly" from "never call this again", and exit 2 cannot say it.
+    expect(new CliError('run_owned_elsewhere', 'busy').exitCode).toBe(EXIT_CODES.runOwnedElsewhere);
+    expect(EXIT_CODES.runOwnedElsewhere).not.toBe(EXIT_CODES.invalidInvocation);
   });
 
   it('carries the code discriminant and is identifiable', () => {
@@ -76,6 +88,39 @@ describe('toUserFacing', () => {
     expect(projected.message).toMatch(
       /^run run-9 contains 2 events.*seq 3, 4.*Upgrade.*still readable/,
     );
+  });
+
+  it('maps an engine API refusal to an invocation fault, not a generic internal error (ADR-0083)', () => {
+    // `relavium run` calls `engine.start()` DIRECTLY — unlike `gate`, which wraps its resume in a
+    // `CliError` — and since ADR-0083 that call throws `input_admission_failed` for a field the CLI's own
+    // coercion layer deliberately does not check (`inputs.ts`: "deep per-field validation stays the
+    // engine's"). Measured before this arm existed: `--input severity=99` against `max: 10` printed
+    // `An unexpected internal error occurred.` and exited 1, discarding every issue.
+    const projected = toUserFacing(
+      new EngineStateError(
+        'input_admission_failed',
+        'inputs do not satisfy: severity — value is above the declared maximum',
+        {
+          issues: [{ name: 'severity', message: 'value is above the declared maximum' }],
+        },
+      ),
+    );
+    expect(projected.code).toBe('invalid_invocation');
+    expect(projected.exitCode).toBe(EXIT_CODES.invalidInvocation); // exit 2, not 1
+    expect(projected.message).toContain('severity');
+  });
+
+  it('keeps a TRANSIENT engine refusal on its own code and exit', () => {
+    // `run_owned_elsewhere` resolves on its own when the other process finishes; every other engine-state
+    // code is a permanent invocation fault. Collapsing the two would tell a caller to fix a call that was
+    // never malformed — the same split `gate.ts` already makes on its own resume path (ADR-0079 §7).
+    const projected = toUserFacing(
+      new EngineStateError('run_owned_elsewhere', 'another process holds the lease', {
+        runId: 'run-3',
+      }),
+    );
+    expect(projected.code).toBe('run_owned_elsewhere');
+    expect(projected.exitCode).toBe(EXIT_CODES.runOwnedElsewhere);
   });
 
   it('maps an unknown throw to a generic internal error without leaking detail', () => {

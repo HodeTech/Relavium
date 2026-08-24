@@ -7,6 +7,8 @@ import {
 } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
+import { unwrapUntrusted } from '../tools/untrusted.js';
+
 import { AgentSession, type SessionDeps, type SessionStreamEvent } from './agent-session.js';
 import { createAbortController } from './execution-host.js';
 import {
@@ -411,7 +413,7 @@ describe('reconstructSessionState — context-compaction boundary markers (ADR-0
       { role: 'user', content: [{ type: 'text', text: 'new-q' }] },
       { role: 'assistant', content: [{ type: 'text', text: 'new-a' }] },
     ]);
-    expect(state.contextPreamble).toBe('S1');
+    expect(state.compactionSummary && unwrapUntrusted(state.compactionSummary)).toBe('S1');
     expect(state.turnCount).toBe(2); // two surviving assistant turns
   });
 
@@ -432,7 +434,7 @@ describe('reconstructSessionState — context-compaction boundary markers (ADR-0
       { role: 'user', content: [{ type: 'text', text: 'q6' }] },
       { role: 'assistant', content: [{ type: 'text', text: 'a7' }] },
     ]);
-    expect(state.contextPreamble).toBe('S1');
+    expect(state.compactionSummary && unwrapUntrusted(state.compactionSummary)).toBe('S1');
   });
 
   it('uses the NEWEST summary-bearing marker as the preamble across multiple compactions', () => {
@@ -450,7 +452,7 @@ describe('reconstructSessionState — context-compaction boundary markers (ADR-0
       { role: 'user', content: [{ type: 'text', text: 'q6' }] },
       { role: 'assistant', content: [{ type: 'text', text: 'a7' }] },
     ]);
-    expect(state.contextPreamble).toBe('S2');
+    expect(state.compactionSummary && unwrapUntrusted(state.compactionSummary)).toBe('S2');
   });
 
   it('no markers ⇒ no preamble (backward-compatible with a never-compacted session)', () => {
@@ -458,7 +460,7 @@ describe('reconstructSessionState — context-compaction boundary markers (ADR-0
       msg(0, 'user', [{ type: 'text', text: 'q' }]),
       msg(1, 'assistant', [{ type: 'text', text: 'a' }]),
     ]);
-    expect(state.contextPreamble).toBeUndefined();
+    expect(state.compactionSummary).toBeUndefined();
     expect(state.messages).toHaveLength(2);
   });
 
@@ -471,7 +473,7 @@ describe('reconstructSessionState — context-compaction boundary markers (ADR-0
       msg(3, 'user', [{ type: 'text', text: 'q3' }]),
       msg(4, 'assistant', [{ type: 'text', text: 'a4' }]),
     ]);
-    expect(state.contextPreamble).toBeUndefined();
+    expect(state.compactionSummary).toBeUndefined();
     expect(state.messages).toEqual([
       { role: 'user', content: [{ type: 'text', text: 'q3' }] },
       { role: 'assistant', content: [{ type: 'text', text: 'a4' }] },
@@ -490,7 +492,7 @@ describe('reconstructSessionState — context-compaction boundary markers (ADR-0
       { role: 'user', content: [{ type: 'text', text: 'kept-q' }] },
       { role: 'assistant', content: [{ type: 'text', text: 'kept-a' }] },
     ]);
-    expect(state.contextPreamble).toBe('S');
+    expect(state.compactionSummary && unwrapUntrusted(state.compactionSummary)).toBe('S');
   });
 
   it('takes the MAX boundary across multiple trim markers', () => {
@@ -508,7 +510,7 @@ describe('reconstructSessionState — context-compaction boundary markers (ADR-0
       { role: 'user', content: [{ type: 'text', text: 'q6' }] },
       { role: 'assistant', content: [{ type: 'text', text: 'a7' }] },
     ]);
-    expect(state.contextPreamble).toBeUndefined();
+    expect(state.compactionSummary).toBeUndefined();
   });
 });
 

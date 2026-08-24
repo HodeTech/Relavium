@@ -3,12 +3,20 @@
  * already-validated `Workflow` and the structured references `collectReferences` yields.
  *
  *  - `analyzeSecretTaint` enforces ADR-0029(c): a `secret`-typed input — or anything transitively
- *    derived from one through a `context` entry *or* an `input` default — must never reach agent/human
- *    text. An input's *type* alone seeds the taint, so the whole check runs before any secret value is
- *    fetched.
+ *    derived from one through a `context` entry — must never reach agent/human text. An input's *type*
+ *    alone seeds the taint, so the whole check runs before any secret value is fetched.
  *  - `analyzePreRunReferences` enforces the eager-resolution rule (workflow-yaml-spec.md
- *    §Context-and-interpolation): a value resolved **before any node runs** — a `context` value or an
- *    `input` default — may read `{{inputs.*}}`/`{{ctx.*}}` but not `{{run.outputs[…]}}`.
+ *    §Context-and-interpolation): a value resolved **before any node runs** — a `context` value — may read
+ *    `{{inputs.*}}`/`{{ctx.*}}` but not `{{run.outputs[…]}}`.
+ *
+ * **Both used to cover an `input` default too, and since
+ * [ADR-0083](../../../../docs/decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md)
+ * §3 they cannot reach one**: a default may carry no `{{ }}` at all, so `parseWorkflow` rejects it before
+ * either analysis runs. The walks below are kept for the same reason `collectReferences` keeps its
+ * `input-default` category — these are pure functions over a `Workflow` OBJECT, and a caller that builds
+ * one by hand does not go through the schema — but through the parser they are dead, and a reader should
+ * not take their presence as evidence that a templated default is still a thing. The laundering they
+ * policed is now impossible rather than detected, which is strictly stronger.
  *
  * Both name only fields, input names, and context keys — never an authored value — so their findings
  * are safe to surface and log.

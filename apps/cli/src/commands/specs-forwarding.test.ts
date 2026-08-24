@@ -64,6 +64,34 @@ describe('commander action → executeCommand forwarding (S10)', () => {
     });
   });
 
+  it('run and agent run forward --allow-mcp-stdio (ADR-0084 §6)', () => {
+    // The same dropped-opt regression this file exists for, in a security flag: the option was registered,
+    // parsed by commander, and then never named in the action's destructured `opts`, so it reached
+    // `buildRunArgs` as `undefined`. Every unit test still passed because they call the gate directly —
+    // measured end to end on the built binary, the flag did nothing and the refusal repeated verbatim,
+    // leaving ADR-0084 §6's CI escape hatch inoperative on an ephemeral runner that has no other way in.
+    const run = drive([
+      'run',
+      'wf.relavium.yaml',
+      '--allow-mcp-stdio',
+      'v1:aa',
+      '--allow-mcp-stdio',
+      'v1:bb',
+    ]);
+    expect(run.id).toBe('run');
+    expect(run.input).toMatchObject({
+      positionals: ['wf.relavium.yaml'],
+      options: { allowMcpStdio: ['v1:aa', 'v1:bb'] },
+    });
+
+    const agentRun = drive(['agent', 'run', 'helper', '--allow-mcp-stdio', 'v1:cc']);
+    expect(agentRun.id).toBe('agent.run');
+    expect(agentRun.input).toMatchObject({
+      positionals: ['helper'],
+      options: { allowMcpStdio: ['v1:cc'] },
+    });
+  });
+
   it('provider list forwards --verify (2.5.G S11)', () => {
     const { id, input } = drive(['provider', 'list', '--verify']);
     expect(id).toBe('provider.list');

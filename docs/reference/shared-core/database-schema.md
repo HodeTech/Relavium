@@ -59,7 +59,7 @@ The local schema is the Postgres 13-table design reduced to what a single-user, 
 
 ### Entity relationships
 
-The 16 tables below, trimmed to the columns that define structure (full column lists follow per table). Every edge is a real foreign key in `schema.ts`; two are deliberately absent — see the note beneath the diagram. `model_metadata` and `catalog_meta` ([ADR-0072](../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md)) are **FK-less leaves** (no edges): `model_metadata` is keyed by `model_id`, not the `model_catalog` UUID, on purpose.
+The 18 tables below, trimmed to the columns that define structure (full column lists follow per table). Every edge is a real foreign key in `schema.ts`; two are deliberately absent — see the note beneath the diagram. `model_metadata` and `catalog_meta` ([ADR-0072](../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md)) are **FK-less leaves** (no edges): `model_metadata` is keyed by `model_id`, not the `model_catalog` UUID, on purpose. `run_effects` ([ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md)) is a third, for a different reason: an unresolved effect row is exactly the record an operator needs **after** the run is purged, so a cascade would delete it at the worst moment.
 
 ```mermaid
 erDiagram
@@ -121,6 +121,19 @@ erDiagram
         uuid model_id FK
         text node_id
     }
+    run_leases {
+        uuid run_id PK
+        text owner_id
+        integer generation
+        integer expires_at
+    }
+    run_effects {
+        uuid id PK
+        text scope
+        integer slot
+        text tool_id
+        text state
+    }
     agent_sessions {
         uuid id PK
         uuid agent_id FK
@@ -177,6 +190,7 @@ erDiagram
     runs ||--o{ step_executions : "run_id CASCADE"
     runs ||--o{ run_events : "run_id CASCADE"
     runs ||--o{ run_costs : "run_id CASCADE"
+    runs ||--o| run_leases : "run_id CASCADE"
     step_executions ||--o{ messages : "step_execution_id CASCADE"
     agents |o--o{ step_executions : "agent_id (nullable)"
     agents |o--o{ agent_sessions : "agent_id (nullable)"
@@ -184,6 +198,11 @@ erDiagram
     agent_sessions ||--o{ session_costs : "session_id CASCADE"
     media_objects ||--o{ media_references : "handle CASCADE"
 ```
+
+> **A run has AT MOST one lease, not exactly one** — hence `||--o|`. A lease row exists only while some
+> process owns the run: it is created on acquire and DELETED on release, so most runs have none for most of
+> their lifetime, and a finished run has none at all. The diagram read `||--||` and would have told a
+> future store author to make the row mandatory.
 
 > **Two edges are deliberately missing above.** `messages.run_id` and `run_events.step_execution_id` are denormalized for read-path efficiency — the schema comments say so explicitly ("the reference DDL declares no FK here"). They carry the value but not the constraint, so they're annotated on the entities above, not drawn as relationships.
 
@@ -366,6 +385,8 @@ CREATE INDEX idx_workflows_active      ON workflows (is_active, updated_at DESC)
 
 One row per workflow execution. `workflow_definition_snapshot` freezes the exact graph that ran, so a run can be replayed or inspected even after the YAML file changes. Cost is stored as integer micro-cents.
 
+> **"The exact graph that ran" includes MCP-discovered tool grants.** A surface that augments the parsed workflow before starting the engine — `relavium run` unions each inline agent's `tools` grant with the tools its declared `mcp_servers` discovered — must freeze the **augmented** definition, not the authored one. It did not, until [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §5: on every workflow with `mcp_servers`, the column recorded a graph that never ran, and a cross-process `relavium gate` rebuilt the run from it. The grants are part of workflow identity, so an MCP server returning a different tool set on resume is a divergence — and one that can only be detected if what was frozen is what was executed.
+
 > **Logical `Run` vs persisted `RunRow`.** `@relavium/shared` exports `RunSchema` — the **narrow, engine-/surface-facing** view of a run (status, trigger, inputs/outputs, token + cost totals, timestamps). This `runs` table is the **persistence** shape and carries additional columns that are a database concern, modeled by `@relavium/db` as a distinct `RunRow` mirroring the DDL below: `workflow_definition_snapshot` (the frozen graph for replay/resume), `trigger_metadata`, `workflow_path`/`project_root`, and the `deleted_at` soft-delete cursor. Those are intentionally absent from the logical `RunSchema`; a consumer that needs them reads the `RunRow`. The split keeps the engine view free of storage details while `@relavium/db` owns the row ↔ column mapping.
 
 | Column | Type | Constraints |
@@ -504,6 +525,76 @@ Denormalized per-node cost rows for fast cost-waterfall rendering without re-agg
 ```sql
 CREATE INDEX idx_run_costs_run ON run_costs (run_id);
 ```
+
+#### `run_leases`
+
+Which process currently **owns** a run, and at which fencing generation
+([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md)). Two `relavium`
+processes can otherwise resume one paused run and become two independent side-effect producers for it — both
+dispatching the same nodes and calling the same tools. The compare-and-append guard below stops the second
+one *writing the same row*; it does not stop either of them *doing the work*, because the effect happens
+before anything is written.
+
+Its own table rather than columns on `runs`, because that row is a **derived projection** the event fold
+rewrites (`applyDerived`): mixing authoritative, non-derived ownership state into it invites a fold to
+clobber it. A table is also queryable — by a human diagnosing a stuck run.
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `run_id` | TEXT | PRIMARY KEY REFERENCES `runs(id)` ON DELETE CASCADE |
+| `owner_id` | TEXT | NOT NULL — the owning engine's identity, one per `WorkflowEngine` |
+| `generation` | INTEGER | NOT NULL — the fencing token; bumps on every successful acquire, but **not** monotonic across a run's life (`release` deletes the row, so the next acquire restarts at 1). The fence is `(owner_id, generation)` pair-equality plus fail-closed on a missing row — [ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §1's 2026-08-17 amendment |
+| `expires_at` | INTEGER | NOT NULL — epoch ms, compared **store-side** against the store's injected clock |
+| `created_at` | INTEGER | NOT NULL |
+| `updated_at` | INTEGER | NOT NULL |
+
+The FK is why a fresh run's lease is created just **after** its `run:started` is folded rather than in the
+same transaction as ADR-0079 §3 first described: the `runs` row must exist first. The window is uncontended
+by construction — the `runId` came from `ids.newId()` moments earlier and no other process has seen it.
+
+TTL **60 s**, heartbeat every **20 s** (`RUN_LEASE_TTL_MS` / `RUN_LEASE_HEARTBEAT_MS` in
+`@relavium/shared`): three missed beats permit a takeover — wide enough that a long provider call or disk
+pressure is not mistaken for death, narrow enough that a crashed run is not locked for more than a minute.
+
+#### `run_effects`
+
+The durable **effect journal** ([ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md);
+the contract, identities and state machine live in [effect-journal.md](effect-journal.md)). One row per effect
+OCCURRENCE, written by a `prepare` **before** an effectful tool dispatch leaves the process and updated by a
+`settle` after it returns or fails.
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `id` | TEXT | PRIMARY KEY (UUID) |
+| `scope` | TEXT | NOT NULL — `run:<runId>:<nodeId>` or `session:<sessionId>:<turn>`, the correlation with the **retry attempt dropped** |
+| `slot` | INTEGER | NOT NULL — which effect within the correlation (an ordinal across the turn's tool calls) |
+| `tool_id` | TEXT | NOT NULL |
+| `tier` | INTEGER | NOT NULL — `1` \| `2` \| `3`; everything that ships is `3` |
+| `state` | TEXT | NOT NULL — `prepared` \| `dispatched` \| `committed` \| `ambiguous` \| `needs_attention` |
+| `args_digest` | TEXT | NOT NULL — SHA-256 over canonical JSON of the effective args with every secret-tainted key **removed before hashing** |
+| `target_idempotency_key` | TEXT | NULL — tier 1 only; what a safe retry reuses verbatim |
+| `result_json` | TEXT | NULL — the BOUNDED tool result, retained only when re-delivery is possible |
+| `attempt_json` | TEXT | NOT NULL — the audit occurrence (node attempt, provider attempt, tool-call id, owning fence) |
+| `created_at` | INTEGER | NOT NULL |
+| `updated_at` | INTEGER | NOT NULL |
+
+```sql
+-- THE dedup constraint: two processes preparing the same effect collide here, so one loses and learns
+-- another attempt exists. That is what makes `prepare` a concurrency boundary rather than a log line.
+CREATE UNIQUE INDEX idx_run_effects_identity ON run_effects (scope, slot, tool_id);
+CREATE INDEX idx_run_effects_scope ON run_effects (scope);  -- the resume gate reads one correlation
+```
+
+**No foreign key to `runs`, deliberately** — see the ER note above. The `scope` is an opaque string rather than
+a `run_id` column for the same reason it drops the attempt: a SESSION effect has no run at all, and the
+node-retry attempt resets to 1 on both a crash-resume and a budget approval, so a key containing it would miss
+the row the gate looks for. Retention is stated in [effect-journal.md](effect-journal.md) §9 and is **partly implemented, by design**:
+the `committed` sweeps SHIP — a run's rows go when it reaches a terminal, and a session's when a turn can no
+longer be resumed — while **unresolved rows (`prepared` / `dispatched` / `ambiguous` / `needs_attention`) are
+never swept by age**. That asymmetry is the contract, not a gap: an unresolved row is the record an operator
+needs, and it outlives its run deliberately, which is the same reason the table carries no foreign key to
+`runs`. (This paragraph previously said no sweep touches the table at all, which contradicted both the
+shipped `effect-retention.ts` and §9 of the effect-journal reference.)
 
 ### Agent-session tables
 
@@ -748,6 +839,8 @@ CREATE INDEX idx_media_references_handle ON media_references (handle);
 - **Two retry twins, one policy.** `withBusyRetry` is synchronous, because the driver is. `withBusyRetryAsync` is the twin for the one call site whose caller is genuinely async today — `persistEvent` (run history) — where the backoff **yields the event loop** rather than parking the thread on `Atomics.wait`. Both share the retryable-code set, the attempt budget, the linear schedule and the fail-loud exhaustion; only the sleep differs. Read the scope precisely: this removes the **sub-300 ms** term of the ~25 s worst case above, not the dominant one — for `SQLITE_BUSY`/`SQLITE_LOCKED`, the codes that actually fire, each attempt still blocks inside the synchronous driver for up to `busy_timeout` (~5.2 s measured). `SQLITE_BUSY_SNAPSHOT` returns *immediately*, so for that code the backoff is the whole cost; it cannot reach a synchronous call site today because every one of them is `IMMEDIATE`, single-statement, or read-only. The remaining store methods stay synchronous deliberately: converting them would change five port interfaces and ripple through every CLI consumer without making a single write non-blocking. The async twin's `await` between attempts is an **observable yield**, so a sibling writer may commit during the backoff — the outcome the backoff exists to allow — which makes the "`fn` must be one self-contained, re-runnable transaction" requirement load-bearing rather than incidental.
 - **Single-statement writes** (e.g. `appendMessage`, `setKeychainRef`) go straight for the write lock and need no explicit transaction — `BEGIN IMMEDIATE` would buy nothing, since a lone INSERT/UPDATE takes the write lock directly and cannot hit a read→write upgrade race. They do still route through `withBusyRetry` where a failure is user-visible data loss: the three `agent_sessions` / `session_messages` writers do (#228), because `busy_timeout` waits 5 s and then *fails*, and the chat persister calls them from inside a `RunEventBus` subscriber.
 - **Reads that must be consistent across statements** use a read transaction: `sessionStore.loadFull` reads the session row and its transcript inside one deferred transaction so **both reads observe a single consistent DB snapshot** (never a two-`SELECT` straddle across a concurrent commit). This now composes with **turn atomicity** on the write side: `sessionStore.writeTurn` appends a turn's messages and flushes the session row in ONE `BEGIN IMMEDIATE` transaction (#228), so a snapshot can no longer observe messages ahead of their totals, and a failed write leaves neither a half-written turn nor an unanswered `user` row that resume cannot roll back. This discharges the per-turn-transaction follow-up this section previously tracked.
+- **The durable append is compare-and-append** ([ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §2). `persistEvent` takes an optional `DurableWriteContext` carrying `expectedLastSequenceNumber` — the sequence the caller last *asked* to append, not the last it saw succeed. When present, the store reads `max(run_events.seq)` for that run **inside the same `BEGIN IMMEDIATE` transaction, through the transaction handle**, and refuses the append with a typed `AppendConflictError` when the two differ. `UNIQUE(run_id, seq)` bars a duplicate and says nothing about order or holes; this is what makes the committed log a *prefix* of what was asked rather than merely a set. Three properties are deliberate: the read is `max(seq)` rather than a denormalized `runs.last_event_seq` column, so there is no migration and no second source of truth that can drift from the rows; the check runs **before** the derived `runs`/`step_executions`/`run_costs` writes, so a refusal leaves nothing behind; and `AppendConflictError` is **not** in the retryable-code set above — a conflict is a stale belief, not lock contention, and retrying it five times would waste five transactions and report the wrong cause. The engine exempts the run TERMINAL from the guard, because exactly-one-terminal ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) outranks it; a terminal the store will not take is ADR-0078 §4's outbox to own.
+- **The same write is fenced by run ownership** ([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §2). `DurableWriteContext` carries a second, **independent** claim beside `expectedLastSequenceNumber`: a `fence` of `{ ownerId, generation }`. When present, the store reads the run's `run_leases` row **inside the same `BEGIN IMMEDIATE` transaction, through the transaction handle** — outside it, the read and the write would be two statements another process could interleave, which is the exact race the check exists to close — and refuses with a typed `LeaseFencedError` when the owner or generation differs, **or when the row is absent**: a writer that cannot prove ownership fails closed. It is checked *after* the append guard, because a stale belief about the log is the more specific diagnosis when a writer has both problems. The two fields are independent because the run TERMINAL carries the fence *without* the append guard — exempt from one, not the other. An **absent** `fence` is a pass rather than a refusal: a caller holding no ownership claim has nothing stale to catch. Like `AppendConflictError`, `LeaseFencedError` is **not** in the retryable set — a stale fence is an expected refusal, not lock contention.
 - **Cross-platform:** `BEGIN IMMEDIATE` + the retry behave identically on every OS. The `0600`/`0700` at-rest guard below is a documented Windows no-op, so the concurrency test lane gates POSIX-permission assertions off Windows only.
 
 This realizes the concurrent-process write requirement recorded in the [ADR-0064](../../decisions/0064-live-model-catalog.md) §5 amendment note (2.5.I).

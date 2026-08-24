@@ -95,6 +95,12 @@ const ENTRIES: readonly CommandManifestEntry[] = [
     args: [
       { name: 'workflow', type: 'string', required: true, description: 'workflow path or id' },
       { name: 'input', type: 'string', description: 'a workflow input (repeatable)' },
+      {
+        name: 'allowMcpStdio',
+        type: 'string',
+        description:
+          'authorize a stdio MCP server by its consent digest for this invocation (repeatable)',
+      },
     ],
     effect: 'write',
   },
@@ -216,6 +222,12 @@ const ENTRIES: readonly CommandManifestEntry[] = [
         type: 'string',
         description: 'replay a recorded LLM cassette (deterministic, offline)',
       },
+      {
+        name: 'allowMcpStdio',
+        type: 'string',
+        description:
+          'authorize a stdio MCP server by its consent digest for this invocation (repeatable)',
+      },
     ],
     effect: 'write',
   },
@@ -245,6 +257,12 @@ const ENTRIES: readonly CommandManifestEntry[] = [
         name: 'gate',
         type: 'string',
         description: 'which pending gate to resolve (required when more than one is pending)',
+      },
+      {
+        name: 'secretStdin',
+        type: 'boolean',
+        description:
+          "read the run's secret inputs from stdin as name=value lines (never passed as arguments)",
       },
     ],
     effect: 'write',

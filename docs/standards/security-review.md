@@ -295,6 +295,32 @@ workflow-API tightenings, cheap now because no workflow exists yet, never sold a
   applies. The user's own conversational content in a chat session is the user's data
   (persisted in `history.db` — see the at-rest posture above), **not** a managed secret; the
   leak this rule closes is a `secret`-typed *input* reaching prompt/tool text.
+- **A declared child environment may not redirect the interpreter, the loader, or a tool's
+  configuration — and the rule is one rule, true of BOTH local-process hosts.** A declared
+  `NODE_OPTIONS`, `PATH`, `ZDOTDIR`, `BASH_ENV`, `HOME`, `LD_*`, `DYLD_*`, `GIT_*`, `PYTHON*`,
+  `NPM_CONFIG_*`, `BASH_FUNC_*` (and the rest of the list in `@relavium/shared`) is **rejected**,
+  case-insensitively, on `run_command`'s `declaredEnv` **and** on an MCP `stdio` server's `env`
+  — inline on an agent or registered in config alike. These names turn "run program X" into
+  "run attacker code inside X", so a floor on one host and not the other is a floor an
+  attacker simply walks around; the shared list exists so the two cannot drift
+  ([ADR-0084](../decisions/0084-consent-before-a-local-mcp-spawn.md) §4). The refusal is an
+  **authored error at parse**, not a silent drop at spawn: an author who declared it believed
+  it would take effect. Executable resolution reads the **ambient** `PATH`, never a declared
+  one, so a declared `PATH` cannot select the binary either. `{{secrets.*}}` credential
+  references are unaffected.
+- **Nothing spawns a local MCP server without the user's consent on that machine.** A `stdio`
+  MCP server is a **program the artifact chooses**, so the decision cannot belong to the
+  artifact. Every host path that can open an MCP-bearing artifact passes one chokepoint before
+  any spawn; consent is recorded per machine against a **fingerprint of the resolved
+  executable, its arguments, its environment and its working directory**, so a changed
+  declaration re-prompts rather than inheriting trust. The command is resolved to an absolute
+  path **before** the decision and that same path is spawned **after** it, so a `PATH` change in
+  between cannot substitute a different binary under an approved fingerprint. Where there is no
+  one to ask — no TTY, `--json`, or CI — the invocation **refuses** rather than prompting into a
+  stream nobody reads. No credential enters the fingerprint or the grant record. The
+  cross-surface contract, including the golden vectors a non-TypeScript host is verified
+  against, is [mcp-integration.md](../reference/shared-core/mcp-integration.md#consent-before-a-local-stdio-spawn-cross-surface-contract)
+  ([ADR-0084](../decisions/0084-consent-before-a-local-mcp-spawn.md)).
 
 ### Expression sandbox (`condition` / `transform` / `merge_fn`)
 
@@ -426,7 +452,11 @@ redaction rules live in [logging-and-observability.md](logging-and-observability
 Any change to: key handling or the keychain bridge, IPC commands, the desktop
 Rust-delegated egress path (`llm_stream` / `Channel<StreamChunk>`), provider base-URL
 handling, the `http_request` tool or MCP server-URL handling (the other two SSRF egress
-paths), the `run_command` sandbox, **the host file reader behind the `read_file` interpolation
+paths), the `run_command` sandbox, **the local-spawn floor — the MCP stdio consent gate, its
+fingerprint or canonicalization, the grant store, or the shared declared-environment denylist
+([ADR-0084](../decisions/0084-consent-before-a-local-mcp-spawn.md)); a change here decides
+whether a program runs on a user's machine, and a weakening is invisible from the outside**,
+**the host file reader behind the `read_file` interpolation
 filter (`ResolverCapabilities.readFile`) — which must jail to the workspace root and reject path
 traversal, a duty the pure engine delegates to each host**, **the CLI chat input layer — the `@`-mention
 read path, the `!`-shell `runUserCommand` boundary, the `[chat].allowed_commands` set, or the read-side

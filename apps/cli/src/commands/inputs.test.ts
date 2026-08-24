@@ -151,4 +151,66 @@ describe('resolveInputs', () => {
   it('accepts an empty raw map when the workflow declares no inputs', () => {
     expect(resolveInputs(NO_INPUTS, {})).toEqual({});
   });
+
+  it('carries `__proto__`, `constructor` and `toString` as ordinary inputs (ADR-0083 §9.7, CLI path)', () => {
+    // §9.7 requires these three to round-trip "on the CLI path AND the engine path". The engine half and
+    // `relavium gate`'s secret merge were pinned; this — the PRIMARY `relavium run --input` path — was not,
+    // and it was broken. On a plain `{}` accumulator `out['__proto__'] = 'x'` goes through
+    // `Object.prototype`'s accessor: a string value is a silent no-op, so the input vanished with no own
+    // property and no error; the later read then answered `Object.prototype`, which a `number`-typed input
+    // handed to `coerce`, throwing an untyped `TypeError` that surfaced as "an unexpected internal error".
+    // `constructor` and `toString` are ordinary writable data properties and were never affected — they are
+    // here so the acceptance criterion is covered as written.
+    const raw = parseInputArgs(['__proto__=p', 'constructor=c', 'toString=t']);
+    expect(Object.getOwnPropertyNames(raw).sort()).toEqual([
+      '__proto__',
+      'constructor',
+      'toString',
+    ]);
+    expect(raw['__proto__']).toBe('p');
+
+    const wf = workflowWithInputs(`  inputs:
+    - { name: __proto__, type: string }
+    - { name: constructor, type: string }
+    - { name: toString, type: string }`);
+    const resolved = resolveInputs(wf, raw);
+    expect(Object.getOwnPropertyNames(resolved).sort()).toEqual([
+      '__proto__',
+      'constructor',
+      'toString',
+    ]);
+    expect(resolved['__proto__']).toBe('p');
+    expect(({} as Record<string, unknown>)['p']).toBeUndefined(); // nothing leaked onto the prototype
+  });
+
+  it('treats an OMITTED `__proto__` input as omitted, even from a plain-object raw map', () => {
+    // `resolveInputs` takes `raw` from a caller, and a caller may hand it an ordinary literal. Reading
+    // `raw['__proto__']` off one answers `Object.prototype` — an object, not `undefined` — so an input the
+    // user never supplied looked PRESENT: the "missing required input" refusal never fired and `coerce`
+    // received an object. `Object.hasOwn` before the read is what makes absent mean absent.
+    const wf = workflowWithInputs(`  inputs:
+    - { name: __proto__, type: string, required: true }`);
+    try {
+      resolveInputs(wf, {});
+      expect.unreachable('an omitted required input must be refused');
+    } catch (error) {
+      expect(isCliError(error) && error.code).toBe('invalid_invocation');
+      expect(isCliError(error) && error.message).toContain('missing required input');
+    }
+  });
+
+  it('a `number` input named `__proto__` coerces instead of throwing an untyped TypeError', () => {
+    // The sharpest symptom of the same defect: `coerce` called `.trim()` on `Object.prototype`, and the
+    // resulting `TypeError` was not a `CliError` — it escaped the surface's typed-error contract entirely.
+    const wf = workflowWithInputs(`  inputs:
+    - { name: __proto__, type: number }`);
+    expect(resolveInputs(wf, parseInputArgs(['__proto__=3']))['__proto__']).toBe(3);
+    // …and a genuinely non-numeric value is still the CLEAN exit-2 fault, not a raw throw.
+    try {
+      resolveInputs(wf, parseInputArgs(['__proto__=abc']));
+      expect.unreachable('a non-numeric value must be refused');
+    } catch (error) {
+      expect(isCliError(error) && error.code).toBe('invalid_invocation');
+    }
+  });
 });

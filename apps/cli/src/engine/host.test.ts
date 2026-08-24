@@ -2,9 +2,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { createInMemoryRunLeases } from '@relavium/core';
 import type { Checkpointer, ExecutionHost, RunStore } from '@relavium/core';
 import { createClient, createMediaReferenceStore, runMigrations } from '@relavium/db';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createCliHost, type CliMediaOptions } from './host.js';
 
@@ -13,14 +14,49 @@ const durableStore: RunStore = {
   resolveWorkflowId: () => Promise.resolve('wf'),
   persistEvent: () => Promise.resolve(),
   listInterruptedRuns: () => Promise.resolve([]),
+  readWorkflowSnapshot: () => Promise.resolve(undefined),
 };
 
 describe('createCliHost', () => {
   it('uses an injected checkpointer (the 2.G cross-process gate-resume seam) over the default', async () => {
     const injected: Checkpointer = { load: () => Promise.resolve(undefined) };
-    const host = createCliHost(durableStore, { checkpointer: injected });
+    // A durable store now REQUIRES an explicit lease port (ADR-0079) — pairing it with the in-memory
+    // reference would fence every run, so `createCliHost` rejects that wiring. The reference is correct
+    // HERE because this test asserts the checkpointer seam, not ownership.
+    const host = createCliHost(durableStore, {
+      checkpointer: injected,
+      runLeases: createInMemoryRunLeases(),
+    });
     expect(host.checkpointer).toBe(injected); // resumeFromCheckpoint loads from the durable reconstruction
     expect(await host.checkpointer.load('any')).toBeUndefined();
+  });
+
+  it('unrefs a LIVENESS timer and keeps a WORK timer referenced (ADR-0079 §6)', () => {
+    const host = createCliHost(durableStore, { runLeases: createInMemoryRunLeases() });
+    // The distinction is the difference between a CLI that exits when the work is done and one that hangs.
+    // A WORK timer is something the run is parked ON — a gate deadline, a retry backoff, a media poll — so it
+    // must hold the event loop open or the process would exit out from under a run that is merely waiting.
+    // The lease heartbeat re-arms itself forever and advances nothing, so if it were ever the last handle
+    // standing it would keep the process alive with no work left to do.
+    const work = setTimeoutHandleOf(host, 'work');
+    const liveness = setTimeoutHandleOf(host, 'liveness');
+    try {
+      expect(work.hasRef()).toBe(true);
+      expect(liveness.hasRef()).toBe(false);
+    } finally {
+      work.disarm();
+      liveness.disarm();
+    }
+  });
+
+  it('rejects a durable store with no explicit lease port — that pairing fences every run', () => {
+    // The guard's own docblock says this wiring "silently FENCES every run" and "looks like a hung run":
+    // the engine claims a fence the store has never heard of, so its first guarded write is refused. An
+    // untested throw is a guard that can be deleted in silence — and replacing this condition with `false`
+    // left all 2,396 CLI tests green, which is exactly how a wiring regression would ship.
+    expect(() => createCliHost(durableStore, {})).toThrow(/runLeases/);
+    // The negative control: the in-memory store needs no explicit port, and must not be swept up by it.
+    expect(() => createCliHost()).not.toThrow();
   });
 
   it('rejects a checkpointer over the in-memory store — that split-backend pairing would resume against the wrong store', () => {
@@ -233,3 +269,39 @@ describe('createCliHost', () => {
     });
   });
 });
+
+/**
+ * Arm a timer of `kind` through the host and hand back the underlying Node handle, so a test can ask whether
+ * it holds the event loop open. The host's `setTimer` returns only a disarm closure by design (the engine is
+ * platform-free and must never see a `NodeJS.Timeout`), so the handle is recovered by spying on the one
+ * `setTimeout` call the arm makes — `spyOn` calls through, so the timer is real.
+ */
+/** A structural guard for a Node timer handle — the spy's recorded return value is untyped. */
+function isTimeoutHandle(value: unknown): value is NodeJS.Timeout {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'hasRef' in value &&
+    typeof value.hasRef === 'function'
+  );
+}
+
+function setTimeoutHandleOf(
+  host: ExecutionHost,
+  kind: 'work' | 'liveness',
+): { hasRef: () => boolean; disarm: () => void } {
+  const spy = vi.spyOn(globalThis, 'setTimeout');
+  let disarm: () => void;
+  let handle: NodeJS.Timeout | undefined;
+  try {
+    disarm = host.setTimer(60_000, () => undefined, kind);
+    // Read the recorded call BEFORE restoring: `mockRestore` also resets the mock's recorded data, so a
+    // read afterwards always finds nothing and the helper would throw on a perfectly healthy host.
+    const result: unknown = spy.mock.results[0]?.value;
+    handle = isTimeoutHandle(result) ? result : undefined;
+  } finally {
+    spy.mockRestore();
+  }
+  if (handle === undefined) throw new Error(`no timer was armed for kind=${kind}`);
+  return { hasRef: () => handle.hasRef(), disarm };
+}

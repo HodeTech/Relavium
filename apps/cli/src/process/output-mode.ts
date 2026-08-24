@@ -31,3 +31,31 @@ export function isCiEnv(env: Readonly<Record<string, string | undefined>>): bool
   const ci = env['CI'];
   return ci !== undefined && ci !== '' && ci !== 'false' && ci !== '0';
 }
+
+/** The four signals that decide whether this process may ASK a question and get an answer. */
+export interface InteractiveSignals {
+  /** `process.stdout.isTTY` — a prompt with nowhere to render is not a prompt. */
+  readonly stdoutIsTty: boolean;
+  /** `process.stdin.isTTY` — a prompt reads keystrokes; a piped or drained stdin cannot answer. */
+  readonly stdinIsTty: boolean;
+  /** The resolved `--json` flag — a question in a machine-readable stream breaks ADR-0049's contract. */
+  readonly json: boolean;
+  /** The process env, for the `isCiEnv` floor — a CI runner may allocate a pseudo-TTY and still not answer. */
+  readonly env: Readonly<Record<string, string | undefined>>;
+}
+
+/**
+ * May this process ask an interactive question?
+ *
+ * **All four, and stdout alone is not enough.** `detectOutputMode` answers a RENDERING question and consults
+ * stdout only; a prompt that reads keystrokes needs stdin too, `--json` owns stdout as a machine stream, and
+ * `CI=true` with an attached pseudo-TTY would hang a pipeline on a question nobody answers.
+ *
+ * Extracted from the Home gate when
+ * [ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §6 became a second caller
+ * with the identical requirement. Two copies of a four-way predicate is how one of them silently loses a
+ * signal — and a consent gate that prompted under `--json` would be exactly that.
+ */
+export function isInteractiveTerminal(signals: InteractiveSignals): boolean {
+  return signals.stdoutIsTty && signals.stdinIsTty && !signals.json && !isCiEnv(signals.env);
+}
