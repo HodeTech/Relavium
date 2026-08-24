@@ -454,6 +454,51 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
     expect(store.rows()).toHaveLength(1); // …with no second row invented for the replay
   });
 
+  it('a replay re-delivers a legitimately `undefined` result AS `undefined` (§4)', async () => {
+    // The defect a review reproduced against real SQLite. `JSON.stringify` DELETES a property whose value is
+    // `undefined`, so the stored envelope lost its `value` key, the reader's `'value' in stored` guard
+    // failed, and the compatibility fallback replayed the whole METADATA OBJECT as the tool result. First
+    // run returned `undefined`; resumed run returned `{ truncated, summary, hadMapping }`.
+    //
+    // This file's reference journal used to hold the result BY REFERENCE, which is exactly why every core
+    // test passed while SQLite corrupted the value — it now serializes and parses like the real store, so
+    // the boundary is crossed here too.
+    const store = createInMemoryEffectJournalStore();
+    let dispatched = 0;
+    const returnsNothing: ToolDef = {
+      id: 'fs_write',
+      source: 'builtin',
+      description: 'an effectful tool that genuinely returns nothing',
+      parseArgs: (raw) => raw,
+      llmVisibleParams: { type: 'object' },
+      policy: { fsScoped: true, fsWrite: true, spawnsProcess: false, requiresGateApproval: false },
+      effect: () => 3,
+      dispatch: () => {
+        dispatched += 1;
+        return Promise.resolve(undefined);
+      },
+    };
+    const registry = createToolRegistry({ tools: [returnsNothing], host: hostWith(undefined) });
+    const call = { type: 'tool_call' as const, name: 'fs_write', id: 'c1', args: {} };
+    const correlation = { kind: 'run' as const, runId: 'r1', nodeId: 'n1', attempt: 1 };
+    const ctx: ToolDispatchContext = {
+      ...ctxWith(recordingJournal()),
+      grantedToolIds: new Set(['fs_write']),
+      effects: store.for(correlation),
+    };
+
+    const first = await registry.dispatch(call, ctx);
+    const second = await registry.dispatch(call, {
+      ...ctx,
+      grantedToolIds: new Set(['fs_write']),
+      effects: store.for({ ...correlation, attempt: 2 }),
+    });
+
+    expect(dispatched).toBe(1); // the target ran once
+    expect(first.output).toBeUndefined();
+    expect(second.output).toBeUndefined(); // …and the RESUME agrees, rather than replaying metadata
+  });
+
   it('a replay re-delivers the ORIGINAL output_mapping, even when the result was truncated', async () => {
     // A review's probe, turned into a regression. Settling only `bounded.value` meant the replay re-ran
     // `output_mapping` over the TRUNCATION PREVIEW: the first dispatch put `200` into workflow state and the

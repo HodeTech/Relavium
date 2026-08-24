@@ -74,12 +74,79 @@ interface ReplayEnvelope {
 }
 
 /**
- * Read a retained result back as an envelope, tolerating a row written by an older build that stored the
- * bare bounded value. A stored row crosses a persistence boundary, so it is validated structurally rather
- * than cast — and the fallback is conservative: an unrecognised shape is treated as an untruncated value
- * with an empty summary, never as a mapped projection it is not.
+ * The retained envelope AS IT IS STORED — a JSON-safe encoding, which the in-memory shape is not.
+ *
+ * **`hasValue` exists because `JSON.stringify` DELETES a property whose value is `undefined`.** This file
+ * goes out of its way to treat `undefined` as a legitimate tool result — that is what `NOT_REPLAYED` is for
+ * — and then handed the envelope to a store that dropped exactly that key. A review reproduced the
+ * consequence against real SQLite: `{ value: undefined, truncated: false, summary: '', hadMapping: false }`
+ * came back as `{ truncated, summary, hadMapping }`, the reader's `'value' in stored` guard failed, the
+ * compatibility fallback treated the whole METADATA OBJECT as an old bare result, and the replayed tool
+ * result was that object instead of `undefined`. First run and resumed run produced different values, only
+ * after a crash, and only for a tool that returns nothing.
+ *
+ * `mapped` needs no parallel tag: `hadMapping` already records whether a mapping was CONFIGURED, so a
+ * mapping that legitimately projects to `undefined` reads back as an absent `mapped` with `hadMapping: true`
+ * — which is the right answer. That distinction was already deliberate here; this one was missed.
+ */
+interface StoredReplayEnvelope {
+  /** The encoding version. Absent on rows written before this existed — see {@link asReplayEnvelope}. */
+  readonly v: 1;
+  /** Whether the tool produced a value at all. `false` means it returned `undefined`, deliberately. */
+  readonly hasValue: boolean;
+  readonly value?: unknown;
+  readonly truncated: boolean;
+  readonly summary: string;
+  readonly mapped?: unknown;
+  readonly hadMapping: boolean;
+}
+
+/** Encode for storage: everything JSON keeps, plus the presence bit JSON would otherwise destroy. */
+function toStoredEnvelope(envelope: ReplayEnvelope): StoredReplayEnvelope {
+  return {
+    v: 1,
+    hasValue: envelope.value !== undefined,
+    ...(envelope.value === undefined ? {} : { value: envelope.value }),
+    truncated: envelope.truncated,
+    summary: envelope.summary,
+    ...(envelope.mapped === undefined ? {} : { mapped: envelope.mapped }),
+    hadMapping: envelope.hadMapping,
+  };
+}
+
+/**
+ * Read a retained result back as an envelope, across all three shapes a row can be in.
+ *
+ * A stored row crosses a persistence boundary, so it is validated structurally rather than cast, and each
+ * fallback is conservative — an unrecognised shape becomes an untruncated value with an empty summary, never
+ * a mapped projection it is not.
+ *
+ * The legacy-envelope arm keeps the pre-`v` ambiguity it inherited: a row written before the presence tag
+ * whose value was `undefined` is genuinely indistinguishable from a bare stored value, because the byte that
+ * would tell them apart was never written. New rows carry `v: 1` and are unambiguous.
  */
 function asReplayEnvelope(stored: unknown): ReplayEnvelope {
+  if (typeof stored === 'object' && stored !== null && 'v' in stored) {
+    const versioned = stored as StoredReplayEnvelope;
+    if (
+      versioned.v === 1 &&
+      typeof versioned.hasValue === 'boolean' &&
+      typeof versioned.truncated === 'boolean' &&
+      typeof versioned.summary === 'string' &&
+      typeof versioned.hadMapping === 'boolean'
+    ) {
+      return {
+        value: versioned.hasValue ? versioned.value : undefined,
+        truncated: versioned.truncated,
+        summary: versioned.summary,
+        ...('mapped' in versioned ? { mapped: versioned.mapped } : {}),
+        hadMapping: versioned.hadMapping,
+      };
+    }
+    // A `v` this build does not know, or a malformed one: FAIL CLOSED to "cannot re-deliver". Treating an
+    // unreadable versioned row as a bare value would replay its own metadata, which is the defect above.
+    return { value: undefined, truncated: false, summary: '', hadMapping: false };
+  }
   if (
     typeof stored === 'object' &&
     stored !== null &&
@@ -372,25 +439,32 @@ async function dispatch(
     //    row `prepared`, which resume reads as unresolved and REFUSES. `prepared` is the safe state.
     if (tier !== undefined && replayed === NOT_REPLAYED) {
       try {
-        await ctx.effects.settle(ctx.effectSlot, def.id, 'committed', {
-          // **All four projections the outcome is built from, not just the bounded value.** A review proved
-          // why: storing only `bounded.value` and re-deriving the rest on replay ran `output_mapping` over
-          // the TRUNCATION PREVIEW. Same tool, same args, `output_mapping: { code: 'status' }` — the first
-          // dispatch put `200` into workflow state and the replayed one put `undefined`, silently, and only
-          // when the result had exceeded the bounding ceiling. §4's promise is to RE-DELIVER what the
-          // original produced, so what the original produced is what is kept.
-          value: bounded.value,
-          truncated: bounded.truncated,
-          summary: bounded.summary,
-          // …and the mapped projection ONLY when a mapping is configured. Without one, `outputMapped` IS
-          // the full result, and persisting that would put unbounded `run_command` stdout into
-          // `history.db` — the very thing settling after bounding exists to avoid. With one, the author
-          // chose an extract, and its size is their call.
-          ...(ctx.config.outputMapping === undefined ? {} : { mapped: outputMapped }),
-          // Recorded rather than inferred from `'mapped' in envelope`: a mapping that legitimately projects
-          // to `undefined` would otherwise be indistinguishable from no mapping at all.
-          hadMapping: ctx.config.outputMapping !== undefined,
-        } satisfies ReplayEnvelope);
+        // Encoded for storage on the way out (`toStoredEnvelope`), because the in-memory shape is not
+        // JSON-safe: a `value` of `undefined` is a legitimate result here and a deleted property there.
+        await ctx.effects.settle(
+          ctx.effectSlot,
+          def.id,
+          'committed',
+          toStoredEnvelope({
+            // **All four projections the outcome is built from, not just the bounded value.** A review proved
+            // why: storing only `bounded.value` and re-deriving the rest on replay ran `output_mapping` over
+            // the TRUNCATION PREVIEW. Same tool, same args, `output_mapping: { code: 'status' }` — the first
+            // dispatch put `200` into workflow state and the replayed one put `undefined`, silently, and only
+            // when the result had exceeded the bounding ceiling. §4's promise is to RE-DELIVER what the
+            // original produced, so what the original produced is what is kept.
+            value: bounded.value,
+            truncated: bounded.truncated,
+            summary: bounded.summary,
+            // …and the mapped projection ONLY when a mapping is configured. Without one, `outputMapped` IS
+            // the full result, and persisting that would put unbounded `run_command` stdout into
+            // `history.db` — the very thing settling after bounding exists to avoid. With one, the author
+            // chose an extract, and its size is their call.
+            ...(ctx.config.outputMapping === undefined ? {} : { mapped: outputMapped }),
+            // Recorded rather than inferred from `'mapped' in envelope`: a mapping that legitimately projects
+            // to `undefined` would otherwise be indistinguishable from no mapping at all.
+            hadMapping: ctx.config.outputMapping !== undefined,
+          } satisfies ReplayEnvelope),
+        );
       } catch (cause) {
         // **The one window where the effect PROVABLY happened and the record does not say so.** Spec §7
         // step 4: the row stays `prepared`, the run stops, and it is never retried. Letting this fall into

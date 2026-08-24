@@ -684,7 +684,16 @@ export function createInMemoryEffectJournalStore(): {
     state: EffectState;
     /** A stand-in for the host's SHA-256: only EQUALITY matters, and core cannot hash (engine purity). */
     argsKey: string;
-    result?: unknown;
+    /**
+     * The retained result AS JSON TEXT, exactly as `run_effects.result_json` holds it — never the live
+     * object.
+     *
+     * Holding the object by reference made this reference store strictly more capable than the real one, and
+     * a review found what that hid: `JSON.stringify` DELETES a property whose value is `undefined`, so a
+     * legitimately-`undefined` tool result came back from SQLite as a metadata object and replayed as that
+     * object. Every core test over the replay gate passed, because none of them crossed a JSON boundary.
+     */
+    resultJson?: string;
   }
   const rows = new Map<string, Row>();
   const key = (scope: string, slot: EffectSlot, toolId: string): string =>
@@ -700,8 +709,17 @@ export function createInMemoryEffectJournalStore(): {
             // The SAME three-part test the real store applies (§4's replay row). A reference that accepted
             // what SQLite refuses — or refused what it replays — would make every core test over the gate
             // vacuous; this repo has been bitten by exactly that divergence before.
-            if (held.state === 'committed' && held.argsKey === argsKey && 'result' in held) {
-              return Promise.resolve({ outcome: 'replay', result: held.result });
+            if (
+              held.state === 'committed' &&
+              held.argsKey === argsKey &&
+              held.resultJson !== undefined
+            ) {
+              // Parsed back, exactly as the real store does — so a value that does not survive the round
+              // trip fails HERE, in core, rather than only against SQLite in `apps/cli`.
+              return Promise.resolve({
+                outcome: 'replay',
+                result: JSON.parse(held.resultJson) as unknown,
+              });
             }
             return Promise.reject(new EffectConflictError({ scope, slot, toolId }));
           }
@@ -720,10 +738,12 @@ export function createInMemoryEffectJournalStore(): {
           // Only out of `prepared`, mirroring the store: `committed → ambiguous` would claim we do not know
           // what the target did while retaining the result proving we do.
           if (row?.state === 'prepared') {
+            // Serialized on the way in, as `resultJson: JSON.stringify(result)` does in the SQLite store.
+            const resultJson = result === undefined ? undefined : JSON.stringify(result);
             rows.set(key(scope, slot, toolId), {
               ...row,
               state,
-              ...(result === undefined ? {} : { result }),
+              ...(resultJson === undefined ? {} : { resultJson }),
             });
           }
           return Promise.resolve();
@@ -735,7 +755,19 @@ export function createInMemoryEffectJournalStore(): {
         const prefix = `run:${encodeURIComponent(runId)}:`;
         return Promise.resolve(
           [...rows.values()]
-            .filter((row) => row.scope.startsWith(prefix) && blocksResume(row))
+            // `blocksResume` reads `{ state, result }`, and the row holds the result as JSON TEXT now — so
+            // it is parsed back for the predicate. Passing the row directly made `result` permanently
+            // `undefined`, which read as "every committed row blocks", the opposite of the truth.
+            .filter(
+              (row) =>
+                row.scope.startsWith(prefix) &&
+                blocksResume({
+                  state: row.state,
+                  ...(row.resultJson === undefined
+                    ? {}
+                    : { result: JSON.parse(row.resultJson) as unknown }),
+                }),
+            )
             .map((row) => ({
               identity: { scope: row.scope, slot: row.slot, toolId: row.toolId },
               state: row.state,
@@ -754,7 +786,7 @@ export function createInMemoryEffectJournalStore(): {
         toolId: row.toolId,
         tier: row.tier,
         state: row.state,
-        ...('result' in row ? { result: row.result } : {}),
+        ...(row.resultJson === undefined ? {} : { result: JSON.parse(row.resultJson) as unknown }),
       })),
   };
 }
