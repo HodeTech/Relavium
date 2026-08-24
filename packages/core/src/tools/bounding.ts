@@ -325,13 +325,18 @@ function redactArgVector(items: readonly unknown[], seen: WeakSet<object>): unkn
  * `docker run -p 8080:80`. The value shape settles it: a port is digits, optionally `host:container`, and a
  * password never is. See {@link looksLikePort}.
  */
+/**
+ * The flag names, as one anchored alternation.
+ *
+ * Its "complexity" is the LENGTH OF THE NAME LIST, not structure: no nesting, no backtracking to speak of.
+ * A Set lookup would trade that for hand-expanding `api[_-]?key` into three members apiece, which is exactly
+ * where a real omission would hide.
+ */
+const SECRETISH_FLAG =
+  /^-{1,2}(?:p|pw|password|passwd|secret|token|api[_-]?key|auth|access[_-]?key|private[_-]?key|client[_-]?secret|credential|passphrase|pin)$/i; // NOSONAR — the metric is counting NAMES; see above
+
 function isSecretishFlag(item: string): boolean {
-  // NOSONAR — the "complexity" here is the LENGTH OF THE NAME LIST, not structure: one anchored alternation
-  // of literal flag names, no nesting, no backtracking to speak of. A Set lookup would trade that for
-  // hand-expanding `api[_-]?key` into three members apiece, which is where a real omission would hide.
-  return /^-{1,2}(?:p|pw|password|passwd|secret|token|api[_-]?key|auth|access[_-]?key|private[_-]?key|client[_-]?secret|credential|passphrase|pin)$/i.test(
-    item,
-  );
+  return SECRETISH_FLAG.test(item);
 }
 
 /** `2222`, `8080:80`, `127.0.0.1:8080:80` — a port or a port mapping, never a credential. */

@@ -243,23 +243,26 @@ function patternEscapesItsAnchors(source: string): boolean {
 const NO_CTRL = '[^\\s\\u0000-\\u001f\\u007f]';
 const NO_CTRL_NO_AT = '[^\\s\\u0000-\\u001f\\u007f@]';
 const NO_CTRL_LABEL = '[^\\s\\u0000-\\u001f\\u007f@.]';
+/**
+ * RFC 3339, with PER-COMPONENT ranges.
+ *
+ * Unbounded `\d{2}` groups accepted `0000-99-99T99:99:99Z` as a valid instant, which is not a shape check
+ * failing gracefully — it is the check being absent. `60` seconds is a leap second (RFC 3339 permits it).
+ *
+ * Its complexity IS those ranges: every alternation in it is one calendar or clock bound, so "simplifying"
+ * it means deleting bounds and reinstating the defect above, and splitting it into several regexes would
+ * move the same branch count into code that no longer reads as one grammar.
+ */
+const RFC_3339 =
+  /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])[Tt](?:[01]\d|2[0-3]):[0-5]\d:(?:[0-5]\d|60)(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/; // NOSONAR — the branches ARE the bounds; see above
+
 const FORMAT_CHECKS: ReadonlyMap<string, RegExp> = new Map<string, RegExp>([
   ['email', new RegExp(`^${NO_CTRL_NO_AT}+@${NO_CTRL_LABEL}+(?:\\.${NO_CTRL_LABEL}+)+$`)],
   // Any ABSOLUTE URI, not only a hierarchical one. The vocabulary key is `uri`: the previous `://`
   // requirement rejected `mailto:`, `urn:` and `data:`, which are URIs by every definition the word has.
   ['uri', new RegExp(`^[a-z][a-z\\d+.-]*:${NO_CTRL}+$`, 'i')],
   ['uuid', /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i],
-  [
-    'date-time',
-    // Per-component ranges. Unbounded `\\d{2}` groups accepted `0000-99-99T99:99:99Z` as a valid instant,
-    // which is not a shape check failing gracefully — it is the check being absent. `60` seconds is a leap
-    // second (RFC 3339 permits it).
-    //
-    // NOSONAR — the complexity IS the per-component ranges. Every alternation in it is one calendar or clock
-    // bound, so "simplifying" it means deleting bounds and reinstating the defect above; splitting it into
-    // several regexes would move the same branch count into code that no longer reads as one grammar.
-    /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])[Tt](?:[01]\d|2[0-3]):[0-5]\d:(?:[0-5]\d|60)(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/,
-  ],
+  ['date-time', RFC_3339],
 ]);
 
 /**
