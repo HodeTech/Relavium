@@ -384,6 +384,7 @@ function buildSessionRuntime(
           ),
         settle: (slot, toolId, state, result) =>
           (port ?? unwiredEffectJournal()).settle(slot, toolId, state, result),
+        discard: (slot, toolId) => (port ?? unwiredEffectJournal()).discard(slot, toolId),
       };
     },
     // ADR-0071 §6: the host projects WHICH TIERS the model accepts, not merely whether it reasons. `gpt-5.4-pro`

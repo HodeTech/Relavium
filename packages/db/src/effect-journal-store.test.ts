@@ -124,6 +124,24 @@ describe('the effect journal store', () => {
     }).toThrow(EffectTransitionError);
   });
 
+  it('discard releases a PREPARED claim, and refuses to touch a terminal row', () => {
+    // The narrow companion to settle, for an effect that provably never left the process (a missing host
+    // capability throws before the host is touched). The row it releases was written moments earlier by the
+    // same dispatch, so discarding restores exactly the state that preceded the prepare.
+    store.prepare(ID, RUN, ATTEMPT, 3, 'd');
+    store.discard(ID);
+    expect(store.recordsFor(RUN)).toHaveLength(0);
+    // …and the slot is genuinely free again, which is the point: nothing blocks a resume, and a later
+    // attempt at the same identity is not refused as a duplicate.
+    expect(store.prepare(ID, RUN, ATTEMPT, 3, 'd')).toEqual({ outcome: 'proceed' });
+
+    // A TERMINAL row records something that DID happen and must survive — otherwise this becomes a way to
+    // erase the evidence of a real external effect.
+    store.settle(ID, 'committed', { ticket: 7 });
+    store.discard(ID);
+    expect(store.recordsFor(RUN)[0]).toMatchObject({ state: 'committed', result: { ticket: 7 } });
+  });
+
   it('a replay verdict round-trips the retained result, and a DIFFERENT digest is refused', () => {
     // §4's one forward path, against the store that actually ships. A review neutered the whole replay
     // branch (`held.state === 'committed' &&` → `false &&`) and every one of the 2,406 CLI + 336 db tests

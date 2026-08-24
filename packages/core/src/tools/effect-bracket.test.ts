@@ -42,6 +42,10 @@ function recordingJournal(): {
         order.push(`settle:${state}`);
         await inner.settle(slot, toolId, state, result);
       },
+      discard: async (slot, toolId) => {
+        order.push('discard');
+        await inner.discard(slot, toolId);
+      },
     },
     rows: () => inner.rows(),
     order,
@@ -200,6 +204,7 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
       effects: {
         prepare: () => Promise.reject(new Error('history.db is locked')),
         settle: () => Promise.resolve(),
+        discard: () => Promise.resolve(),
       },
     };
 
@@ -228,15 +233,36 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
     expect(journal.rows().map((r) => r.slot)).toEqual([0, 1]);
   });
 
-  it('a MISSING capability is not ambiguous — it demonstrably never left the process', async () => {
-    // Recording a wiring gap as `ambiguous` would leave a permanently unresolved row for a call that
-    // provably never happened, and (once the gate lands) block the node on a human for a config error.
+  it('a MISSING capability leaves NO unresolved row — it demonstrably never left the process', async () => {
+    // Recording a wiring gap as `ambiguous` would claim we do not know what the target did, about a call
+    // that never reached one — so the code refused to, and that half was right.
+    //
+    // Doing nothing else was the other half, and it was wrong. This test used to assert exactly that: the
+    // row stayed `prepared`, which the state machine reads as UNRESOLVED — it blocks workflow resume, is
+    // disclosed on session resume as an effect that may have landed, and is exempt from every age sweep. So
+    // the assertion pinned a permanent, misleading operator-facing record while the comment above it said
+    // the point was to avoid one. A review caught the contradiction; the claim is released now.
     const journal = recordingJournal();
     const registry = createToolRegistry({ tools: TOOLS, host: hostWith(undefined) });
 
     await expect(registry.dispatch(POST, ctxWith(journal))).rejects.toBeDefined();
-    expect(journal.order).toEqual(['prepare']); // prepared, then NOT settled ambiguous
-    expect(journal.rows()[0]?.state).toBe('prepared');
+    expect(journal.order).toEqual(['prepare', 'discard']); // never `settle:ambiguous`
+    expect(journal.rows()).toEqual([]); // …and nothing is left behind to block a resume
+  });
+
+  it('genuine post-dispatch uncertainty STILL settles ambiguous and still blocks', async () => {
+    // The other side of the same line, so the release above cannot quietly widen into "any dispatch throw
+    // clears the row". A network failure is exactly the case the journal exists for: the target may have
+    // acted, and nothing here can prove otherwise.
+    const journal = recordingJournal();
+    const registry = createToolRegistry({
+      tools: TOOLS,
+      host: hostWith(() => Promise.reject(new Error('connection reset'))),
+    });
+
+    await expect(registry.dispatch(POST, ctxWith(journal))).rejects.toBeDefined();
+    expect(journal.order).toEqual(['prepare', 'settle:ambiguous']);
+    expect(journal.rows()[0]?.state).toBe('ambiguous');
   });
 
   it('two turns of ONE session do not collide — the correlation carries the turn', async () => {
@@ -302,6 +328,7 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
           return Promise.resolve({ outcome: 'proceed' });
         },
         settle: () => Promise.resolve(),
+        discard: () => Promise.resolve(),
       },
     };
 
@@ -354,6 +381,7 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
           return Promise.resolve({ outcome: 'proceed' });
         },
         settle: () => Promise.resolve(),
+        discard: () => Promise.resolve(),
       },
     };
 
@@ -411,6 +439,7 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
       effects: {
         prepare: () => Promise.resolve({ outcome: 'proceed' }),
         settle: () => Promise.reject(new Error('history.db went away')),
+        discard: () => Promise.resolve(),
       },
     };
 

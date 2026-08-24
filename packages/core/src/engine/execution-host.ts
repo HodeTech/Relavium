@@ -757,6 +757,14 @@ export function createInMemoryEffectJournalStore(): {
           }
           return Promise.resolve();
         },
+        // The SAME `prepared`-only constraint the SQLite store applies: a terminal row records something
+        // that DID happen, and releasing a claim must never be able to erase it. A missing row is not an
+        // error — this releases a claim, and a claim that is already gone is the outcome it wanted.
+        discard: (slot, toolId) => {
+          const held = rows.get(key(scope, slot, toolId));
+          if (held?.state === 'prepared') rows.delete(key(scope, slot, toolId));
+          return Promise.resolve();
+        },
       };
     },
     resume: {

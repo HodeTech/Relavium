@@ -69,6 +69,8 @@ export interface EffectJournalStore {
     state: Extract<EffectState, 'committed' | 'ambiguous'>,
     result?: unknown,
   ) => void;
+  /** Release a `prepared` claim for an effect that provably never left the process — see the impl. */
+  discard: (identity: EffectIdentity) => void;
   flagForAttention: (identity: EffectIdentity) => void;
   recordsFor: (correlation: EffectCorrelation) => readonly EffectRecord[];
   /**
@@ -239,6 +241,25 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
         ),
       ),
 
+    /**
+     * Delete a `prepared` claim for an effect that PROVABLY never left the process (ADR-0080 §7).
+     *
+     * Constrained to `prepared`, like `settle`: a terminal row records something that DID happen, and this
+     * must never be able to erase it. Zero rows changed is NOT an error here — unlike `settle`, this is a
+     * best-effort release of a claim, and a claim that is already gone is the outcome it wanted.
+     */
+    discard: (identity) =>
+      withBusyRetry(() =>
+        db.transaction(
+          (tx) => {
+            tx.delete(runEffects)
+              .where(and(whereIdentity(identity), eq(runEffects.state, 'prepared')))
+              .run();
+          },
+          { behavior: 'immediate' },
+        ),
+      ),
+
     flagForAttention: (identity) =>
       withBusyRetry(() =>
         db.transaction(
@@ -385,6 +406,14 @@ export function createEffectJournalPort(
     settle: (slot, toolId, state, result) => {
       try {
         store.settle(identityFor(slot, toolId), state, result);
+        return Promise.resolve();
+      } catch (error) {
+        return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    },
+    discard: (slot, toolId) => {
+      try {
+        store.discard(identityFor(slot, toolId));
         return Promise.resolve();
       } catch (error) {
         return Promise.reject(error instanceof Error ? error : new Error(String(error)));

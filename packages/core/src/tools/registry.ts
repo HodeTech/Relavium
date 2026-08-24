@@ -206,6 +206,22 @@ function neverLeftTheProcess(cause: unknown): boolean {
   return cause instanceof ToolUnavailableError;
 }
 
+/**
+ * Release a `prepared` claim for an effect that provably never left, swallowing a failure.
+ *
+ * Swallowing is not a silent catch here for the same reason it is not in {@link settleQuietly}: a release
+ * that cannot be written leaves the row `prepared`, which a resumed run reads as unresolved and refuses —
+ * the conservative outcome, reached by the longer route. Rethrowing would discard the dispatch error that
+ * actually explains what happened.
+ */
+async function discardQuietly(ctx: ToolDispatchContext, toolId: ToolId): Promise<void> {
+  try {
+    await ctx.effects.discard(ctx.effectSlot, toolId);
+  } catch {
+    // Left `prepared`; resume treats it as unresolved, which is the safe reading.
+  }
+}
+
 async function settleQuietly(
   ctx: ToolDispatchContext,
   toolId: ToolId,
@@ -390,8 +406,21 @@ async function dispatch(
       // takes the other arm of the ternary and cannot throw here today, and the guard is what keeps that
       // true if the arm ever grows. A replay's row is already terminal, and settling out of `committed`
       // would lose the very result the replay re-delivered.
-      if (tier !== undefined && replayed === NOT_REPLAYED && !neverLeftTheProcess(cause)) {
-        await settleQuietly(ctx, def.id, 'ambiguous');
+      if (tier !== undefined && replayed === NOT_REPLAYED) {
+        if (neverLeftTheProcess(cause)) {
+          // **A proven non-dispatch is not an unresolved effect.** Refusing to write `ambiguous` was right —
+          // it would claim we do not know what the target did, about a call that never reached one. But
+          // doing nothing was not: the row stayed `prepared`, which the state machine reads as UNRESOLVED,
+          // so a wiring error blocked workflow resume, was disclosed on session resume as an effect that
+          // may have landed, and was never swept by age. Permanent, misleading, operator-facing work.
+          //
+          // The claim is released instead, restoring exactly the state that preceded the prepare a moment
+          // earlier. Quietly, because the dispatch error below is the one that explains what happened, and a
+          // failed release leaves the row `prepared` — the same conservative answer, reached the long way.
+          await discardQuietly(ctx, def.id);
+        } else {
+          await settleQuietly(ctx, def.id, 'ambiguous');
+        }
       }
       throw cause;
     }

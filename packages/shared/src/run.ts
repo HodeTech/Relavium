@@ -612,6 +612,25 @@ export interface EffectDispatchPort {
     state: Extract<EffectState, 'committed' | 'ambiguous'>,
     result?: unknown,
   ) => Promise<void>;
+  /**
+   * Release a `prepared` claim for an effect that PROVABLY never left the process.
+   *
+   * The narrow companion to {@link settle}, and it exists because the state machine had no honest answer for
+   * one case. A missing host capability throws synchronously inside the dispatch arm before the host is ever
+   * touched, so the effect demonstrably did not happen — `ambiguous` would be a lie, and the code correctly
+   * refused to write it. But nothing else happened either: the row stayed `prepared`, which the machine reads
+   * as UNRESOLVED. That blocks workflow resume, is disclosed on session resume as an effect that may have
+   * landed, and is never swept by age — a permanent operator-facing record of a wiring error.
+   *
+   * Deleting the row rather than adding a terminal state, because the claim describes an effect that did not
+   * occur: there is nothing to retain, and no reader benefits from a tombstone for a call that never left.
+   * The row was written moments earlier by this same dispatch, so discarding it restores exactly the state
+   * that preceded the prepare.
+   *
+   * **Only for a proven non-dispatch.** Genuine post-dispatch uncertainty must still settle `ambiguous` and
+   * block, which is the entire point of the journal.
+   */
+  discard: (slot: EffectSlot, toolId: string) => Promise<void>;
 }
 
 /**
@@ -631,5 +650,5 @@ export function unwiredEffectJournal(): EffectDispatchPort {
         `no effect journal is wired, but ${toolId} (slot ${String(slot)}) is an effect that must be journaled (ADR-0080)`,
       ),
     );
-  return { prepare: fail, settle: fail };
+  return { prepare: fail, settle: fail, discard: fail };
 }
