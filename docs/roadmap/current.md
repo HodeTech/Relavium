@@ -471,7 +471,7 @@ the exit rule and the execution order, and added two items (`CR-17` resume ident
 docs-only); `CR-64` came from the Batch 1 triage and `CR-21b` from ADR-0082 §10, which is why the total has
 moved since the list was first written.
 
-> **Live status — 14 of 47 closed. `W0` and `W1` are both done.**
+> **Live status — 15 of 48 closed. `W0` and `W1` are both done; `W2` is in progress.**
 >
 > - **Batch 1, merged 2026-08-11 (PR #82)** — the prerequisite (`#W15-1`), the oracle (`CR-90`, `CR-91`) and
 >   all of `W0` (`CR-01`–`CR-03`). `CR-64` was added in the same batch and is open.
@@ -479,8 +479,16 @@ moved since the list was first written.
 >   ADR-0078…ADR-0084. A comprehensive review of the assembled PR found seven further defects, six of them in
 >   the W1 code itself; all seven were fixed and mutation-verified before merge.
 >
-> **Next is `W2` — liveness and deadlines.** Per-item history, the seven post-review findings and the
-> carried-forward gaps live in the phase document.
+> - **`W2` — liveness and deadlines — in progress**, behind [ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md).
+>   Its document review moved the count twice: `CR-21` turns out to have shipped **with `CR-14`** in PR #83
+>   (ADR-0082 decides both, and the execution graph above already scheduled them together) and only its
+>   heading was stale, while `CR-21c` — an unbounded individual `pollMediaJob` call — was found during the
+>   same review and added. So `W2` is four open items, not five.
+>
+> **Not to be confused with the 2.5.5 remediation's own `W2`** ("Shut the doors", in the graph above). Same
+> label, different phase: this one is 2.6.5's liveness wave.
+>
+> Per-item history, the seven post-review findings and the carried-forward gaps live in the phase document.
 
 **This is the corrected execution order, and it is what the graph above shows:**
 

@@ -1964,3 +1964,60 @@ describe('AgentSession — a restored compaction summary stays out of `system` (
     expect(JSON.stringify(hostile)).toBe(JSON.stringify(benign)); // byte-identical, order included
   });
 });
+
+describe('AgentSession — the ADR-0082 deadline ports actually reach the chain', () => {
+  it('arms the attempt deadline from `SessionDeps.setTimer`, and a hung provider times out', async () => {
+    // **The hole this closes is a hole in the GUARD, not in the mechanism.** ADR-0082's deadline is wired
+    // host-side (`session-host.ts`) and pinned there by a source-grep in `effect-journal-wiring.test.ts` —
+    // but the engine-side forwarding is a conditional spread (`#chainCapabilities`), and NOTHING executed it.
+    // Delete the `setTimer` key from that spread and: core is green, both CLI grep guards are green (they
+    // read host source text, not the engine), and every session surface silently reverts to unbounded.
+    // That is strictly larger than the gap the grep was written to close — the ports are wired, and dead.
+    //
+    // Measured, not assumed: with that key removed, 1333 of core's 1334 tests still pass and this is the
+    // only red. It reddens by TIMING OUT rather than by failing an assertion, because an unbounded wait is
+    // precisely the defect — the same signal, for the same reason, that ADR-0074 §3's hold-release listener
+    // test produces (see the comment at its registration site in `engine.ts`).
+    //
+    // Asserted through BEHAVIOUR, not by reaching into `#chainCapabilities`: a provider that ignores its
+    // signal and never settles is exactly what a cooperative abort cannot rescue, so a turn that completes
+    // at all proves the hard race ran.
+    const armed: number[] = [];
+    // Built with the same shape as `scriptedProvider` (id + `supports: CAPS`) so the chain's capability
+    // pre-skip admits it — a mis-shaped double is SKIPPED, which arms no timer and would make this test
+    // pass for the wrong reason.
+    const hung: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => new Promise<never>(() => undefined),
+      stream: () => ({
+        [Symbol.asyncIterator]: () => ({ next: () => new Promise<never>(() => undefined) }),
+      }),
+    };
+
+    const { deps, events } = harness([[]], {
+      resolveProvider: () => hung,
+      // Trips every armed deadline on the next microtask. Firing only the FIRST one hangs the test: each
+      // chain attempt opens its own scope (ADR-0082 §5 is per attempt), so a retry arms a fresh timer that
+      // nothing would fire — the 5 s vitest timeout, not a product failure.
+      setTimer: (ms: number, onFire: () => void) => {
+        armed.push(ms);
+        queueMicrotask(onFire);
+        return () => undefined;
+      },
+    });
+    const s = session(deps);
+    s.start();
+
+    await s.sendMessage('hello');
+
+    expect(armed.length).toBeGreaterThan(0); // the port arrived — this is the assertion the guard lacked
+    expect(armed.every((ms) => ms === 120_000)).toBe(true); // …at the ADR-0082 §6 default, forwarded intact
+
+    const terminal = events.find((e) => e.type === 'session:turn_completed');
+    expect(terminal).toBeDefined();
+    expect(terminal?.type === 'session:turn_completed' && terminal.error?.code).toBe(
+      'provider_unavailable',
+    );
+  });
+});

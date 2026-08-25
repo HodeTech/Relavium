@@ -2280,6 +2280,93 @@ describe('FallbackChain — the grammar and the deadline are wired', () => {
     expect(disarmed).toBeGreaterThan(0); // …and the timer was cleaned up
   });
 
+  it('a deadline that trips AFTER content is surfaced, never failed over', async () => {
+    // Rule 7 through the DEADLINE arm, which had no coverage: every other deadline test here times out
+    // pre-content, and the nearest committed test drives a provider that THROWS after a delta — that lands
+    // in `#runEntryStream`'s catch, not in the `step.kind === 'timeout'` branch. Two different lines, and
+    // only one of them was pinned.
+    //
+    // The isolating mutation is passing `{ ...state, committed: false }` to `#failAttempt` in the timeout
+    // branch: exactly this test reddens. (DELETING the `state` argument is NOT the mutation — it is a
+    // required parameter, so the call throws and four tests fail for the wrong reason. Recorded because the
+    // first attempt at break-verifying this made that mistake and read the four reds as coverage.)
+    let fire: (() => void) | undefined;
+    // Set when the iterator is asked for a SECOND chunk — i.e. the delta above is already forwarded and the
+    // attempt is committed. Firing on `fire !== undefined` alone would trip the clock while the deadline was
+    // merely armed, which is the PRE-content case three other tests already cover.
+    let stalled = false;
+    const stalls = makeProvider({
+      id: 'anthropic',
+      stream: () => ({
+        [Symbol.asyncIterator]: () => {
+          let sent = false;
+          return {
+            next: () => {
+              if (sent) {
+                stalled = true;
+                return new Promise<never>(() => undefined);
+              }
+              sent = true;
+              return Promise.resolve({
+                value: { type: 'text_delta', text: 'partial output' } satisfies StreamChunk,
+                done: false,
+              });
+            },
+          };
+        },
+      }),
+    });
+    const fallback = makeProvider({
+      id: 'openai',
+      stream: () => streamFrom([{ type: 'text_delta', text: 'never' }, STOP_CHUNK]),
+    });
+    const { options, trace } = makeOptions();
+    const chain = new FallbackChain(
+      [entry(stalls, 'claude-opus-4-8'), entry(fallback, 'gpt-5.5')],
+      {
+        ...options,
+        newAbortController: () => {
+          let aborted = false;
+          return {
+            signal: {
+              get aborted() {
+                return aborted;
+              },
+              addEventListener: () => undefined,
+              removeEventListener: () => undefined,
+            },
+            abort: () => {
+              aborted = true;
+            },
+          };
+        },
+        setTimer: (_ms, onFire) => {
+          fire = onFire;
+          return () => undefined;
+        },
+      },
+    );
+
+    const streamed = collect(chain.stream(userReq));
+    // Let the first chunk through — commitment is what this test is about — then trip the clock.
+    for (let i = 0; i < 200 && !stalled; i += 1) await Promise.resolve();
+    expect(stalled).toBe(true); // the delta really was forwarded before the deadline tripped
+    fire?.();
+    const chunks = await streamed;
+
+    // Asserted field-by-field rather than through `committedErrChunk`, whose message is a provider's
+    // `'boom'`: this error is minted by the deadline itself, so the helper would be asserting the wrong
+    // author. `contentCommitted` is the load-bearing one — it is what the node-retry budget reads.
+    const surfaced = chunks[1];
+    expect(surfaced?.type).toBe('error');
+    if (surfaced?.type !== 'error') throw new Error('unreachable — narrowed above');
+    expect(surfaced.error.kind).toBe('timeout');
+    expect(surfaced.error.provider).toBe('anthropic');
+    expect(surfaced.error.contentCommitted).toBe(true);
+    expect(fallback.calls).toHaveLength(0); // …no failover past content
+    expect(trace.filter((r) => r.outcome === 'failed')).toHaveLength(1); // …and exactly one attempt record
+  });
+
   it('entry 1 timing out disarms ITS timer before entry 2 arms one', async () => {
     // A subtle multi-attempt interaction with no direct coverage: the deadline is per ATTEMPT, so a fresh
     // scope must open for entry 2 and entry 1's must already be disarmed. Correct today by construction —

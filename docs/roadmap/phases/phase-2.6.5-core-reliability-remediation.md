@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0` and `W1` are closed** (14 of 47 items); `W2` is next
+- **Status**: in progress — **`W0` and `W1` are closed** (15 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25); `W2` is in progress
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -261,10 +261,12 @@ to correct.
 | `CR-15` | made (engine-side admission) | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | yes | — |
 | `CR-16` | made (consent before spawn; **lazy connect split out**, see [deferred-tasks.md](../deferred-tasks.md)) | [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md) | yes | hostile MCP |
 | `CR-17` | made (persist and verify resume identity) | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | yes | — |
-| `CR-20` | made (honour `timeout_ms`) | — | no | — |
-| `CR-21` | made (per-attempt deadline) | with `CR-14`'s | no | — |
+| `CR-20` | made (honour `timeout_ms`; ABSOLUTE per node, `run_timeout`/`retryable: false`) | [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | no | — |
+| `CR-21` | made (per-attempt deadline) | [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) (with `CR-14`'s) | no | — |
+| `CR-21b` | made (apply ADR-0082 §5's hard race to the submission) | — · ADR-0082 §10 **names** it and explicitly declines to decide it; §5 supplies the mechanism | no | — |
+| `CR-21c` | made (bound each poll CALL, not only the loop) | with `CR-21b`'s | no | — |
 | `CR-22` | made (absolute deadlines) | — | no | — |
-| `CR-23` | **open** — grace period length, quarantine policy | new | no | — |
+| `CR-23` | made (10 s grace off the abort signal; per-vertex generation fence; **no quarantine**, risk accepted with a named trigger) | [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | no | — |
 | `CR-30` | made — implement [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s accepted no-drop producer-await | none (already decided) | no | — |
 | `CR-31` | **open** — the cap values | — | no | — |
 | `CR-32` | **open** — the bound values | — | no | — |
@@ -895,6 +897,7 @@ reader shares the author's assumptions. Three of the six were only settled by an
 | `CR-12` | [ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) | `packages/db/src/effect-journal-store.ts` + the tiered effect contract wired through `packages/core/src/engine/effect-*` | `effect-journal-store.test.ts`, `effect-resume-gate.test.ts`, `effect-turn-wiring.test.ts` |
 | `CR-13` | [ADR-0081](../../decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md) | `packages/core/src/engine/turn-messages.ts` — the summary rides as DATA in the first user-role message, wrapped `Untrusted`, never as `system` | `agent-session.test.ts`'s compaction cases + the `Untrusted` type-predicate tests. The delimiter alternative was rejected in the ADR because a formatting convention is one the untrusted text can close. |
 | `CR-14` | [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) | `packages/llm/src/stream-grammar.ts` — the terminal is held until EOF confirms it, and commitment is a TURN fact a provider cannot forge | `stream-grammar.test.ts` + the fallback-chain and agent-turn cases that previously counted a truncated stream as success |
+| `CR-21` | with `CR-14`'s | `packages/llm/src/attempt-deadline.ts` (`openDeadline` — the merged signal, the hard race, the caller-abort latch) + `fallback-chain.ts`'s `#openDeadline` / `#raceStep` / `#classifyDeadline`, forwarded through `agent-turn.ts` → `agent-runner.ts` / `agent-session.ts` and wired by both CLI hosts | `attempt-deadline.test.ts`; `fallback-chain.test.ts`'s deadline block **including the content-committed deadline case**; and the two forwarding tests — `agent-session.test.ts` and `agent-runner.e2e.test.ts` — without which deleting the engine-side `setTimer` key leaves 1333/1334 core tests and both host grep guards green |
 | `CR-15` | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | `packages/core/src/engine/input-admission.ts` — pure, synchronous, `'admit'` \| `'verify'`, typed refusal codes | `input-admission.test.ts` |
 | `CR-16` | [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md) | `apps/cli/src/engine/mcp-consent.ts` (resolve + fingerprint + the append-only grant log), `mcp-consent-gate.ts` (the chokepoint), `apps/cli/src/mcp/consent-prompt.ts`, and `packages/shared/src/{canonical,declared-env}.ts` | `mcp-consent.test.ts`, `mcp-consent-gate.test.ts`, `consent-prompt.test.ts`, and the spawn-counter cases in `mcp-servers.test.ts` — "nothing spawned" is counted at the process boundary, never read off a flag |
 | `CR-17` | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | `packages/core/src/engine/resume-identity.ts` | `resume-identity.test.ts` + `session-resume.test.ts` |
@@ -913,14 +916,43 @@ controller or deadline consumes `node.timeout_ms`. An authored liveness bound is
 **Fix + acceptance.** Honour it as a real deadline; a node exceeding it fails with a classified timeout, proven
 with a fake clock.
 
-### CR-21 — No Relavium-owned deadline for a normal provider attempt · Medium-High
-The chain awaits generate/stream with the caller's signal only; unlike list-models and key validation, it sets
-no per-attempt timeout. Without a node or run timeout, the vendor SDK default becomes the product's liveness
-semantics — which our security standard forbids for outbound requests.
-**Fix + acceptance.** An injected controller/timer factory; merge caller-abort with deadline-abort. A timeout is
-`kind: 'timeout'`, a user cancel stays `cancelled`. A pre-content timeout may fail over; a content-committed one
-must not. Prove timer cleanup with a fake clock. This is a different timer from `CR-20` — both are needed, and
-the pre/post-content split must agree with `CR-14`'s rule 7, so it lands on that ADR.
+### CR-21 — No Relavium-owned deadline for a normal provider attempt · Medium-High · ✅ CLOSED 2026-08-19 ([ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md))
+
+**The problem statement below is the pre-W1 one and is now FALSE against the tree.** It is kept because the
+acceptance it states is what the implementation was scored against, and struck through in prose rather than
+deleted so the history reads honestly.
+
+> ~~The chain awaits generate/stream with the caller's signal only; unlike list-models and key validation, it
+> sets no per-attempt timeout. Without a node or run timeout, the vendor SDK default becomes the product's
+> liveness semantics — which our security standard forbids for outbound requests.~~
+>
+> **Fix + acceptance.** An injected controller/timer factory; merge caller-abort with deadline-abort. A
+> timeout is `kind: 'timeout'`, a user cancel stays `cancelled`. A pre-content timeout may fail over; a
+> content-committed one must not. Prove timer cleanup with a fake clock. This is a different timer from
+> `CR-20` — both are needed, and the pre/post-content split must agree with `CR-14`'s rule 7, so it lands on
+> that ADR.
+
+**Closed with `CR-14`, not after it.** [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
+says *"**Decides** `CR-14` and `CR-21`"* in its own front matter, the execution-order graph above schedules
+them together as `CR-14+CR-21`, and the decision register already recorded `CR-21`'s decision as made. Both
+shipped in PR #83. Only the heading here was never updated — a fifth instance of exactly the drift exit
+criterion 7 exists to catch, and the reason this item is being closed by reading the code rather than by
+trusting the mark.
+
+**What was genuinely missing, and is now closed with it.** Two coverage gaps, both mutation-verified:
+
+- **The content-committed DEADLINE case had no test.** Every deadline test timed out PRE-content, and the
+  nearest committed test drove a provider that *throws* after a delta — which lands in the stream loop's
+  `catch`, not in the `step.kind === 'timeout'` branch. Two different lines; only one was pinned. Rule 7's
+  deadline half is now `fallback-chain.test.ts`'s *"a deadline that trips AFTER content is surfaced, never
+  failed over"*.
+- **Nothing executed the engine-side forwarding of the ports.** The deadline is host-wired and pinned by a
+  source-grep over the host files, but `#chainCapabilities` (session) and `chainCapabilities()` (runner) are
+  conditional spreads that no test ever ran. **Measured: deleting the `setTimer` key leaves 1333 of core's
+  1334 tests green and both CLI grep guards green, while every surface silently reverts to unbounded** — a
+  strictly larger hole than the one the grep was written to close, and the same "wired and still dead" shape
+  the phase has hit before. Both paths now have a behavioural test, separately, because the two express
+  "both or neither" differently.
 
 ### CR-21b — `generateMedia()` submission has no deadline either · Medium
 
@@ -938,6 +970,31 @@ that `CR-21` exists to remove.
 **Fix + acceptance.** The same hard-race treatment `CR-21` lands, applied to the submission call: a
 deadline abort classifies `timeout`, a caller abort stays `cancelled`, cleanup proven with a fake clock. A
 submission that never settles and ignores its signal fails within the deadline rather than hanging the node.
+
+> **Correction, verified 2026-08-25 — the fix is smaller than this item implies, and one premise is wrong.**
+> `MediaGenRequest.signal` already exists (`packages/llm/src/types.ts`) and `executeGenerativeMedia` already
+> passes `ctx.signal`; both wired adapters already thread it into their vendor SDK. **No seam amendment and
+> no ADR-0011 amendment is required** — the gap is purely that the `await` is not raced. What is genuinely
+> new is packaging: `openDeadline` is not exported from `@relavium/llm`'s `index.ts` and that package
+> exposes only `.` and `./adapters`, so [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §9
+> moves the primitive to `@relavium/shared`.
+
+### CR-21c — a single `pollMediaJob` CALL is unbounded, so the job deadline can be outlived · Medium *(found 2026-08-25)*
+
+**Not in the original finding set** — surfaced by the `CR-21b` document review and verified against the tree.
+[ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §7 gives a media job an
+absolute `deadlineAt` (30 min default), and ADR-0082 §11 explicitly leaves the poll LOOP out of scope. Both
+are about the loop. The individual `await this.#executor.pollMediaJob(...)` inside it is raced by nothing,
+and `deadlineAt` is only consulted at the TOP of each poll tick — so a provider whose poll never settles
+strands the run past its own 30-minute deadline indefinitely.
+
+**Why it belongs with `CR-21b` rather than as a separate wave.** It is the same defect on the same seam in
+the same file, closed by the same primitive; splitting them would mean bounding a media job's first call and
+leaving its next hundred unbounded.
+
+**Fix + acceptance.** Race each poll call against a per-call deadline. A poll that never settles fails the
+job within that bound rather than parking the run forever; the loop's own `deadlineAt` is unchanged, and a
+per-call timeout still classifies as ADR-0045 §3's retryable `provider_unavailable`.
 
 ### CR-22 — Gate and run deadlines are not preserved across resume · High
 The checkpoint's pending gate carries gate/node/budget data but not an absolute deadline, and the whole-run

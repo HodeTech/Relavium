@@ -7,7 +7,7 @@ import { createExpressionSandbox, type ExpressionSandbox } from '../expression/s
 import type { ToolDef as CoreToolDef, ToolRegistry, ToolResultPart } from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
 import { WorkflowEngine } from './engine.js';
-import { createInMemoryHost } from './execution-host.js';
+import { createAbortController, createInMemoryHost } from './execution-host.js';
 import { createStandardNodeExecutor } from './node-handlers/dispatcher.js';
 import type { RunHandle } from './run-handle.js';
 
@@ -1008,5 +1008,59 @@ workflow:
 
     expect(calls).toBe(3); // the full budget
     expect(events.filter((e) => e.type === 'node:retrying')).toHaveLength(2);
+  });
+});
+
+describe('AgentRunner — the ADR-0082 deadline ports actually reach the chain (workflow path)', () => {
+  it('arms the attempt deadline from `AgentRunnerDeps.setTimer`, and a hung provider fails the node', async () => {
+    // The workflow twin of `agent-session.test.ts`'s forwarding test, and it is a SEPARATE test because the
+    // two paths express "both or neither" differently: `agent-session.ts` gates BOTH keys on `setTimer`
+    // being present, while `chainCapabilities()` here spreads them INDEPENDENTLY. Same runtime outcome,
+    // two code paths — so one test cannot cover both, and neither was covered at all.
+    //
+    // Drop `setTimer` from `chainCapabilities()` and this hangs: every workflow agent node reverts to an
+    // unbounded provider wait, with the CLI host's source-grep guard still green.
+    const armed: number[] = [];
+    const hung: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => new Promise<never>(() => undefined),
+      stream: () => ({
+        [Symbol.asyncIterator]: () => ({ next: () => new Promise<never>(() => undefined) }),
+      }),
+    };
+
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      executor: createStandardNodeExecutor({
+        sandbox,
+        agent: {
+          resolveProvider: () => hung,
+          registry: noToolRegistry,
+          tools: [],
+          keyFor: () => 'k',
+          sleep: () => Promise.resolve(),
+          now: () => 1,
+          newAbortController: createAbortController,
+          // Trips each attempt's deadline on the next microtask — a chain attempt opens its own scope, so
+          // firing only the first would leave a retry waiting on a timer nothing fires.
+          setTimer: (ms: number, onFire: () => void) => {
+            armed.push(ms);
+            queueMicrotask(onFire);
+            return () => undefined;
+          },
+        },
+      }),
+    });
+
+    const events = await drain(
+      engine.start({ workflow: WORKFLOW, inputs: { text: 'the report' } }),
+    );
+
+    expect(armed.length).toBeGreaterThan(0); // the port arrived — the assertion no guard made
+    expect(armed.every((ms) => ms === 120_000)).toBe(true); // …at the ADR-0082 §6 default
+    const terminal = events.at(-1);
+    expect(terminal?.type).toBe('run:failed');
+    assertGapFreeSeq(events);
   });
 });
