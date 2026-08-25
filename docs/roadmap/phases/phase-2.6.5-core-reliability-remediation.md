@@ -1,7 +1,8 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — the prerequisite and the oracle are closed; the durability spine is next
-- **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82)
+- **Status**: in progress — **`W0` and `W1` are closed** (14 of 47 items); `W2` is next
+- **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
+  **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
   ledger implementation (**complete 2026-08-10**, ADR-0076 + ADR-0077 — see [Prerequisite](#prerequisite))
 - **Successor**: Wave 2 of the 2.5.5 remediation, **reduced** — this phase absorbs Wave 2's hostile-MCP
@@ -120,8 +121,46 @@ shape.
 >
 > `CR-64` was **added** in the same batch (from the YAML/git-native review triage); it is open.
 >
-> **Next: the durability spine**, `CR-10` → `CR-11` → `CR-92` → `CR-12`, in that order and ADR-first. The
-> oracle exists specifically to prove it, and `CR-10` is the item everything else assumes.
+> **Next after Batch 1 was the durability spine**, `CR-10` → `CR-11` → `CR-92` → `CR-12` — a dependency
+> chain, recorded here as the history of why that order was chosen. Batch 2 below is the whole of `W1`: those
+> four plus the independent `CR-13`, `CR-14`, `CR-15`, `CR-16` and `CR-17` lines, and its table is ordered by
+> ADR rather than by the chain.
+>
+> **Batch 2 — `W1`, merged to `main` 2026-08-24 (PR #83).** All eight P0 blockers plus `CR-92` — nine items
+> behind **seven** ADRs, since `CR-92` shares `CR-10`'s and `CR-15`/`CR-17` share one. Each item had an Opus
+> and a Sonnet review round folded before the next one started.
+>
+> | Item | Closed | ADR |
+> |------|--------|-----|
+> | `CR-10` | 2026-08-11 | [ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) |
+> | `CR-92` | 2026-08-11 | with `CR-10`'s |
+> | `CR-11` | 2026-08-17 | [ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) |
+> | `CR-12` | 2026-08-18 | [ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) |
+> | `CR-13` | 2026-08-18 | [ADR-0081](../../decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md) |
+> | `CR-14` | 2026-08-19 | [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) |
+> | `CR-15` · `CR-17` | 2026-08-19 | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) |
+> | `CR-16` | 2026-08-20 | [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md) |
+>
+> **A comprehensive review of the assembled PR found seven further defects, all fixed before merge** — and
+> they are recorded here rather than quietly folded in, because six of the seven were defects in the W1 code
+> *itself*: this batch's own mechanisms failing the guarantees they were written to establish. Three were
+> reproduced with executable counterexamples before any fix was written.
+>
+> | Id | Severity | What was wrong |
+> |----|----------|----------------|
+> | `PR83-01` | High | The compare-and-append guard checked only that the log's max EQUALLED the caller's belief, never that the incoming event was AHEAD of it. Sequence gaps are legitimate, so a stale terminal's number is both unique and lower: one appended behind durable work, `applyDerived` marked the run finished, and the outbox drain deleted its recovery entry on that false success. |
+> | `PR83-02` | High | `JSON.stringify` deletes a property whose value is `undefined`, so a legitimately-`undefined` tool result replayed as the envelope's own metadata object. The in-memory journal held results BY REFERENCE, which is why no core test saw it. |
+> | `PR83-03` | High | A caller cancellation landing before `openDeadline` was forwarded to the provider controller but never latched, so `race()` had nothing to observe and waited out the 120 s deadline against a provider that ignores its signal. |
+> | `PR83-04` | Medium | A proven non-dispatch (missing host capability) left its row `prepared` forever — unresolved, resume-blocking, never swept. The existing test asserted that state directly under a comment saying the point was to avoid it. |
+> | `PR83-05` | Medium | SQLite `settle` discarded the `changes` count, so a missing or already-terminal row reported durable success for an effect that may have landed. |
+> | `PR83-06` | Medium | Exit 5 told users recovery happens "on the next `relavium` start"; only `run` and `gate` drain the outbox, so `status` could never resolve it. |
+> | `PR83-07` | Low | `database-schema.md` said effect retention was unimplemented while this PR ships both sweeps, and drew the run→lease edge as exactly-one for a row that is created on acquire and deleted on release. |
+>
+> The **six code defects** are mutation-verified — each test was confirmed to FAIL with its fix reverted.
+> `PR83-07` is a documentation correction with nothing executable to mutate; it was verified against the
+> shipped `effect-retention.ts` and the lease row's actual lifecycle. Two additional
+> coverage gaps surfaced that way and are now pinned: the fold-failure path's `contentCommitted` stamp, and
+> the guard that omits the `mapped` projection when a node configured no `output_mapping`.
 >
 > **Carried forward, named rather than implied.** ADR-0077's required regression (a ledger write refused while
 > a sibling's `#failure` already suppressed the abort) is unbuilt, and `#runAttempt`'s money-durability arm is
@@ -840,6 +879,13 @@ Exit criterion 7: **per item, the code that closes it — verified by reading th
 mark.** Wave 1's completion claim was wrong twice before this discipline was adopted, and writing this register
 caught it a third time: `CR-14` and `CR-92` were both implemented and both still carried an OPEN heading here
 (*"needs an ADR"*, *"in the durability spine"*), which is precisely the failure the criterion exists to catch.
+
+**And a fourth time, from the outside.** A comprehensive review of the assembled PR found six defects in the
+code this register vouches for — the mechanisms of `CR-10`, `CR-12` and `CR-14` failing the guarantees they
+were written to establish (see `PR83-01`…`PR83-06` in [Progress](#progress)). Every one is fixed and
+mutation-verified, and the register rows below name the tests that now hold them. The lesson is the one the
+criterion already encodes, sharpened: reading the code you wrote is necessary and not sufficient, because the
+reader shares the author's assumptions. Three of the six were only settled by an executable counterexample.
 
 | Item | ADR | The code that closes it | The test that would fail if it were reverted |
 |------|-----|--------------------------|-----------------------------------------------|

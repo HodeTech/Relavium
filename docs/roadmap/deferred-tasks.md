@@ -319,6 +319,54 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   there is concrete surface demand or telemetry showing operators need an earlier signal.
   *(1.AC; ADR-0028; config-spec.md; workflow-yaml-spec.md)*
 
+## Phase 2.6.5 `W1` residuals (PR #83, merged 2026-08-24)
+
+Named rather than left implicit, because every one of them was examined during `W1` and consciously left
+open — an unstated residual reads as an oversight, and the review that found the seven `PR83-*` defects said
+so directly: these "should remain visible rather than disappear behind the green test suite."
+
+- [ ] **Terminal-outbox drain, callable from any surface ([ADR-0078](../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §4/§5).**
+  `drainTerminalOutbox` is a `WorkflowEngine` method, and `run`/`gate` are the only commands that construct
+  one — `chat`, `agent run` and the bare-invocation Home run on `AgentSession` and have no engine to drain
+  with. `PR83-06` corrected the documentation and made `relavium status` NAME a run whose terminal is held
+  (`terminalHeld` in `--json`), but the drain itself is still reachable from two commands only. The real fix
+  lifts it off the engine onto its host ports (`store` + `terminalOutbox` + `runLeases` + `mediaReferences`),
+  so any surface can call it at startup. **Acceptance:** a held terminal is retried before `status` reads the
+  run; a drain failure stays non-fatal and preserves the entry; the entry is removed only once the exact
+  terminal is durably present. Deliberately NOT done inside `status` as a read command — draining claims a run
+  lease, and a status read must not take ownership of a run another process may be finishing.
+  *(packages/core/src/engine/engine.ts; apps/cli/src/commands/status.ts; ADR-0078 §4/§5)*
+
+- [ ] **Check-then-write symlink window on the append-only files.** The MCP grant store and the terminal
+  outbox both `lstat` a path and then append to it by name, and their comments admit the window. On POSIX a
+  descriptor-based open with `O_NOFOLLOW | O_APPEND | O_CREAT` followed by `fstat`/`fchmod` closes it. Recorded
+  as defense-in-depth rather than a blocker: the present threat already requires write access to the user's
+  `~/.relavium` directory. *(apps/cli/src/engine/{mcp-consent,terminal-outbox}.ts)*
+
+- [ ] **Consent overflow can be approved without being read ([ADR-0084](../decisions/0084-consent-before-a-local-mcp-spawn.md) §7).**
+  The prompt shows 12 arguments / environment entries and states how many more exist, asking the user to open
+  the artifact. That bounds terminal abuse well, but a declaration whose dangerous part sits in the hidden tail
+  can still be approved. A premium trust experience would require an explicit view/acknowledge step when
+  overflow exists. *(apps/cli/src/mcp/consent-prompt.ts; ADR-0084 §7)*
+
+- [ ] **The effect audit's occurrence is coarser than its type promises ([ADR-0080](../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md)).**
+  `effect-journal-store.ts` records openly that the provider-attempt and provider tool-call identity are not
+  threaded to dispatch. Nothing load-bearing depends on them — the dedup key is the identity and the resume
+  gate reads the scope — but an operator-facing journal should eventually carry the exact occurrence
+  `EffectAttemptId` describes. *(packages/db/src/effect-journal-store.ts)*
+
+- [ ] **An authored `pattern` with no `max_length` can still stall the process ([ADR-0083](../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §4).**
+  `max_length` bounds the input a catastrophic regex chews on, and it is checked first — but only when the
+  author supplied it. ADR-0083 accepts this floor explicitly. A stronger contract would require `max_length`
+  whenever `pattern` is present, or admit only a demonstrably safe regex subset. *(packages/shared/src/workflow.ts; ADR-0083 §4)*
+
+- [ ] **Two SonarCloud CRITICALs are declines, not debt — mark them Accepted in the UI.**
+  `WorkflowEngine#emitDurable`'s closure (23) and `dispatch` (22) are both over the cognitive-complexity
+  threshold and neither can be split without harm: in both, the branches ARE the ordering the surrounding
+  comments exist to protect. `#emitDurable`'s extraction would reinsert the microtask hop that reordered the
+  log once already. Resolving them requires a maintainer action in SonarCloud, not a code change.
+  *(packages/core/src/engine/engine.ts; packages/core/src/tools/registry.ts)*
+
 ## Interpolation engine (1.L2) follow-ups
 
 > A comprehensive multi-dimensional pre-merge review of **1.L2** (PR #15, merged 2026-06-12) confirmed

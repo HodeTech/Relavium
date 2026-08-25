@@ -24,7 +24,9 @@ gateway; engine stays local, Phase 2) — split across build phase 5 (managed in
 phase 6 (cloud execution + portal); the engine is identical across all three (ADR-0012..0015).
 **Status: Phase 1 is complete; Phase 2 (CLI) is feature-complete (v0.1.1 release cut, publish
 pending); Phase 2.5 (CLI Consolidation) is complete (M2.5-4, 2026-07-08); Phase 2.6
-(Conversational Authoring and the First-Class CLI) is next up.**
+(Conversational Authoring and the First-Class CLI) is in progress, with an interlude —
+Phase 2.6.5 (Core reliability remediation) — running between remediation Waves 1 and 2:
+14 of 47 items closed, including all eight P0 blockers (ADR-0078–ADR-0084, merged 2026-08-24).**
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 
 ## The non-negotiable rules
