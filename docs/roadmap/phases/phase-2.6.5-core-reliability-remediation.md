@@ -121,11 +121,14 @@ shape.
 >
 > `CR-64` was **added** in the same batch (from the YAML/git-native review triage); it is open.
 >
-> **Next after Batch 1 was the durability spine**, `CR-10` → `CR-11` → `CR-92` → `CR-12`, in that order and
-> ADR-first. That is Batch 2 below, and it is closed.
+> **Next after Batch 1 was the durability spine**, `CR-10` → `CR-11` → `CR-92` → `CR-12` — a dependency
+> chain, recorded here as the history of why that order was chosen. Batch 2 below is the whole of `W1`: those
+> four plus the independent `CR-13`, `CR-14`, `CR-15`, `CR-16` and `CR-17` lines, and its table is ordered by
+> ADR rather than by the chain.
 >
-> **Batch 2 — `W1`, merged to `main` 2026-08-24 (PR #83).** All eight P0 blockers plus `CR-92`, each behind
-> its own ADR, each with an Opus and a Sonnet review round folded before the next item started.
+> **Batch 2 — `W1`, merged to `main` 2026-08-24 (PR #83).** All eight P0 blockers plus `CR-92` — nine items
+> behind **seven** ADRs, since `CR-92` shares `CR-10`'s and `CR-15`/`CR-17` share one. Each item had an Opus
+> and a Sonnet review round folded before the next one started.
 >
 > | Item | Closed | ADR |
 > |------|--------|-----|
@@ -151,9 +154,11 @@ shape.
 > | `PR83-04` | Medium | A proven non-dispatch (missing host capability) left its row `prepared` forever — unresolved, resume-blocking, never swept. The existing test asserted that state directly under a comment saying the point was to avoid it. |
 > | `PR83-05` | Medium | SQLite `settle` discarded the `changes` count, so a missing or already-terminal row reported durable success for an effect that may have landed. |
 > | `PR83-06` | Medium | Exit 5 told users recovery happens "on the next `relavium` start"; only `run` and `gate` drain the outbox, so `status` could never resolve it. |
-> | `PR83-07` | Low | `database-schema.md` said effect retention was unimplemented while this PR ships both sweeps, and drew `runs ||--|| run_leases` for an optional row. |
+> | `PR83-07` | Low | `database-schema.md` said effect retention was unimplemented while this PR ships both sweeps, and drew the run→lease edge as exactly-one for a row that is created on acquire and deleted on release. |
 >
-> Every fix is mutation-verified — the test was confirmed to FAIL with the fix reverted. Two additional
+> The **six code defects** are mutation-verified — each test was confirmed to FAIL with its fix reverted.
+> `PR83-07` is a documentation correction with nothing executable to mutate; it was verified against the
+> shipped `effect-retention.ts` and the lease row's actual lifecycle. Two additional
 > coverage gaps surfaced that way and are now pinned: the fold-failure path's `contentCommitted` stamp, and
 > the guard that omits the `mapped` projection when a node configured no `output_mapping`.
 >
