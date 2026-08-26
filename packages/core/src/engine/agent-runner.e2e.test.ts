@@ -1058,9 +1058,12 @@ describe('AgentRunner — the ADR-0082 deadline ports actually reach the chain (
       }),
     });
 
-    const events = await drain(
-      engine.start({ workflow: WORKFLOW, inputs: { text: 'the report' } }),
-    );
+    const handle = engine.start({ workflow: WORKFLOW, inputs: { text: 'the report' } });
+    // Drain bounded microtasks BEFORE draining the run, so a missing timer port reddens on an assertion in
+    // ~0 ms instead of hanging out the 5 s vitest budget. The two failures then read differently: "the port
+    // was not forwarded" (`armed` empty) versus "the run deadlocked for an unrelated reason" (`armed`
+    // populated, the drain never ends) — a bare timeout cannot tell those apart.
+    for (let i = 0; i < 500 && armed.length === 0; i += 1) await Promise.resolve();
 
     // **A NON-DEFAULT value, and that is the whole point.** Asserting 120_000 here would be hollow:
     // `DEFAULT_ATTEMPT_TIMEOUT_MS` is exactly what `FallbackChain` falls back to when `attemptTimeoutMs`
@@ -1069,6 +1072,8 @@ describe('AgentRunner — the ADR-0082 deadline ports actually reach the chain (
     // this test included — stayed green. Asserting a value only the port can deliver break-verifies it.
     expect(armed.length).toBeGreaterThan(0); // the timer port arrived — the assertion no guard made
     expect(armed.every((ms) => ms === 45_000)).toBe(true); // …and so did the timeout port, intact
+
+    const events = await drain(handle);
     const terminal = events.at(-1);
     expect(terminal?.type).toBe('run:failed');
     // …classified, not merely failed. ADR-0082 §5 maps a deadline abort to `timeout`, which

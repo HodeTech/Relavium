@@ -1977,10 +1977,12 @@ describe('AgentSession — the ADR-0082 deadline ports actually reach the chain'
     // Measured, not assumed: with the key removed at BOTH forwarding sites the core suite reports exactly
     // two reds, and they are exactly this test and its workflow twin in `agent-runner.e2e.test.ts`. (An
     // absolute pass-count is deliberately NOT recorded here — it rots on the next added test, and the
-    // durable facts are which mutation and which tests redden.) It reddens by TIMING OUT rather than by
-    // failing an assertion, because an unbounded wait is
-    // precisely the defect — the same signal, for the same reason, that ADR-0074 §3's hold-release listener
-    // test produces (see the comment at its registration site in `engine.ts`).
+    // durable facts are which mutation and which tests redden.) An earlier version reddened by TIMING OUT —
+    // honest, and precedented by ADR-0074 §3's hold-release listener test, whose comment in `engine.ts` says
+    // a hang IS the defect stated exactly. But that precedent has no assertable proxy and this one does:
+    // `armed` is already collected, so draining microtasks first turns a 5 s hang into a 3 ms
+    // `expected 0 to be greater than 0`, and separates "the port was not forwarded" from "the turn
+    // deadlocked for some other reason" — which a bare timeout cannot.
     //
     // Asserted through BEHAVIOUR, not by reaching into `#chainCapabilities`: a provider that ignores its
     // signal and never settles is exactly what a cooperative abort cannot rescue, so a turn that completes
@@ -2019,7 +2021,13 @@ describe('AgentSession — the ADR-0082 deadline ports actually reach the chain'
     const s = session(deps);
     s.start();
 
-    await s.sendMessage('hello');
+    const turn = s.sendMessage('hello');
+    // Drain bounded microtasks BEFORE awaiting the turn, so a missing timer port reddens on an assertion in
+    // ~0 ms instead of hanging out the 5 s vitest budget. The two failures then read differently: "the port
+    // was not forwarded" (`armed` empty) versus "the turn deadlocked for an unrelated reason" (`armed`
+    // populated, the await never settles) — a bare timeout cannot tell those apart. Same technique as the
+    // deadline tests in `fallback-chain.test.ts`.
+    for (let i = 0; i < 500 && armed.length === 0; i += 1) await Promise.resolve();
 
     // **A NON-DEFAULT value, and that is the whole point.** Asserting 120_000 here would be hollow:
     // `DEFAULT_ATTEMPT_TIMEOUT_MS` is exactly what `FallbackChain` falls back to when `attemptTimeoutMs`
@@ -2028,6 +2036,7 @@ describe('AgentSession — the ADR-0082 deadline ports actually reach the chain'
     // this test included — stayed green. Asserting a value only the port can deliver break-verifies it.
     expect(armed.length).toBeGreaterThan(0); // the timer port arrived — the assertion the guard lacked
     expect(armed.every((ms) => ms === 45_000)).toBe(true); // …and so did the timeout port, intact
+    await turn;
 
     const terminal = events.find((e) => e.type === 'session:turn_completed');
     expect(terminal).toBeDefined();
