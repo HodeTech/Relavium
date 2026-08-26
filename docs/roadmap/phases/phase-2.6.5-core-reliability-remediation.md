@@ -897,7 +897,7 @@ reader shares the author's assumptions. Three of the six were only settled by an
 | `CR-12` | [ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) | `packages/db/src/effect-journal-store.ts` + the tiered effect contract wired through `packages/core/src/engine/effect-*` | `effect-journal-store.test.ts`, `effect-resume-gate.test.ts`, `effect-turn-wiring.test.ts` |
 | `CR-13` | [ADR-0081](../../decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md) | `packages/core/src/engine/turn-messages.ts` — the summary rides as DATA in the first user-role message, wrapped `Untrusted`, never as `system` | `agent-session.test.ts`'s compaction cases + the `Untrusted` type-predicate tests. The delimiter alternative was rejected in the ADR because a formatting convention is one the untrusted text can close. |
 | `CR-14` | [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) | `packages/llm/src/stream-grammar.ts` — the terminal is held until EOF confirms it, and commitment is a TURN fact a provider cannot forge | `stream-grammar.test.ts` + the fallback-chain and agent-turn cases that previously counted a truncated stream as success |
-| `CR-21` | with `CR-14`'s | `packages/llm/src/attempt-deadline.ts` (`openDeadline` — the merged signal, the hard race, the caller-abort latch) + `fallback-chain.ts`'s `#openDeadline` / `#raceStep` / `#classifyDeadline`, forwarded through `agent-turn.ts` → `agent-runner.ts` / `agent-session.ts` and wired by both CLI hosts | `attempt-deadline.test.ts`; `fallback-chain.test.ts`'s deadline block **including the content-committed deadline case**; and the two forwarding tests — `agent-session.test.ts` and `agent-runner.e2e.test.ts` — without which deleting the engine-side `setTimer` key leaves 1333/1334 core tests and both host grep guards green |
+| `CR-21` | with `CR-14`'s | `packages/llm/src/attempt-deadline.ts` (`openDeadline` — the merged signal, the hard race, the caller-abort latch) + `fallback-chain.ts`'s `#openDeadline` / `#raceStep` / `#classifyDeadline`, forwarded through `agent-turn.ts` → `agent-runner.ts` / `agent-session.ts` and wired by both CLI hosts | `attempt-deadline.test.ts`; `fallback-chain.test.ts`'s deadline block **including the content-committed deadline case**; and the two forwarding tests — `agent-session.test.ts` and `agent-runner.e2e.test.ts` — without which deleting the engine-side `setTimer` key at both forwarding sites leaves the whole core suite green except these two, and both host grep guards green as well |
 | `CR-15` | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | `packages/core/src/engine/input-admission.ts` — pure, synchronous, `'admit'` \| `'verify'`, typed refusal codes | `input-admission.test.ts` |
 | `CR-16` | [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md) | `apps/cli/src/engine/mcp-consent.ts` (resolve + fingerprint + the append-only grant log), `mcp-consent-gate.ts` (the chokepoint), `apps/cli/src/mcp/consent-prompt.ts`, and `packages/shared/src/{canonical,declared-env}.ts` | `mcp-consent.test.ts`, `mcp-consent-gate.test.ts`, `consent-prompt.test.ts`, and the spawn-counter cases in `mcp-servers.test.ts` — "nothing spawned" is counted at the process boundary, never read off a flag |
 | `CR-17` | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | `packages/core/src/engine/resume-identity.ts` | `resume-identity.test.ts` + `session-resume.test.ts` |
@@ -910,11 +910,22 @@ today's immutable registry would delete the agent's MCP tool grant outright.
 
 ## W2 — Liveness and deadlines
 
-### CR-20 — Agent-node `timeout_ms` is completely inert · High
+### CR-20 — Agent-node `timeout_ms` is completely inert · High · **decided** ([ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md))
 The node schema accepts the field, but the runner passes only the run-level signal to the agent turn; no timer,
 controller or deadline consumes `node.timeout_ms`. An authored liveness bound is silently ignored.
 **Fix + acceptance.** Honour it as a real deadline; a node exceeding it fails with a classified timeout, proven
 with a fake clock.
+
+> **"A classified timeout" was the undecided half, and
+> [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §2 settles
+> it — the register row's "made (honour `timeout_ms`)" skipped past a real question.** There is no
+> `node_timeout` in the closed `ErrorCode` taxonomy, so "classified" had no referent. §2 gives the agent node
+> exactly what `#failGateOnTimeout` already gives the human gate's authored `timeout_ms`:
+> `{ code: 'run_timeout', retryable: false }`. Two further corrections the paragraph above does not carry:
+> the bound is **ABSOLUTE per node** (all attempts, backoffs, `save_to` and the money barrier share one
+> budget — a per-attempt reading multiplies by `retry.max`), and the enforcement is a **hard race** on the
+> dispatch, not an abort passed inward, because `NodeExecutor.execute` returns an arbitrary promise.
+> §8 supersedes the one-line acceptance above with a seven-case list.
 
 ### CR-21 — No Relavium-owned deadline for a normal provider attempt · Medium-High · ✅ CLOSED 2026-08-19 ([ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md))
 
@@ -935,9 +946,11 @@ deleted so the history reads honestly.
 **Closed with `CR-14`, not after it.** [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
 says *"**Decides** `CR-14` and `CR-21`"* in its own front matter, the execution-order graph above schedules
 them together as `CR-14+CR-21`, and the decision register already recorded `CR-21`'s decision as made. Both
-shipped in PR #83. Only the heading here was never updated — a fifth instance of exactly the drift exit
+shipped in PR #83. Only the heading here was never updated — another instance of exactly the drift exit
 criterion 7 exists to catch, and the reason this item is being closed by reading the code rather than by
-trusting the mark.
+trusting the mark. (An earlier draft of this note called it "a fifth instance". There is no register behind
+that ordinal and it was not counted; the review that caught it found a further one in this very commit, which
+is the point rather than the tally.)
 
 **What was genuinely missing, and is now closed with it.** Two coverage gaps, both mutation-verified:
 
@@ -948,11 +961,25 @@ trusting the mark.
   failed over"*.
 - **Nothing executed the engine-side forwarding of the ports.** The deadline is host-wired and pinned by a
   source-grep over the host files, but `#chainCapabilities` (session) and `chainCapabilities()` (runner) are
-  conditional spreads that no test ever ran. **Measured: deleting the `setTimer` key leaves 1333 of core's
-  1334 tests green and both CLI grep guards green, while every surface silently reverts to unbounded** — a
+  conditional spreads that no test ever ran. **Measured on this commit: with the `setTimer` key deleted from
+  BOTH forwarding sites the core suite reports exactly two reds — and they are exactly these two new tests —
+  while both CLI grep guards stay green**, so before them every surface silently reverted to unbounded — a
   strictly larger hole than the one the grep was written to close, and the same "wired and still dead" shape
   the phase has hit before. Both paths now have a behavioural test, separately, because the two express
   "both or neither" differently.
+- **The THIRD port had the same hole, inside the very tests written to close the first two.** A first version
+  asserted the armed duration equalled `120_000` and called it "forwarded intact" — but that is
+  `DEFAULT_ATTEMPT_TIMEOUT_MS`, exactly what the chain falls back to when `attemptTimeoutMs` is ABSENT, so
+  the assertion passed whether or not the port was forwarded. Measured: deleting both `attemptTimeoutMs`
+  forwarding lines left the whole core suite green. Both tests now supply a non-default value and assert it
+  arrives, which break-verifies the third port.
+- **[ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
+  §12 is EIGHTEEN items, not sixteen, and item 18 had no implementation** — the ADR asks for the per-chunk
+  verifier cost to be *"**measured** on a representative token stream, not asserted"*, and its own
+  Consequences add *"the claim should be evidence"*. `packages/llm/src/stream-grammar.perf.test.ts` supplies
+  it (0.543 µs/chunk over a 2 001-chunk turn, logged), shaped after the repo's existing `sandbox.perf.test.ts`
+  precedent. An Accepted ADR carrying an unimplemented acceptance item is the "reads as shipped" failure this
+  phase exists to remove.
 
 ### CR-21b — `generateMedia()` submission has no deadline either · Medium
 
@@ -988,9 +1015,17 @@ are about the loop. The individual `await this.#executor.pollMediaJob(...)` insi
 and `deadlineAt` is only consulted at the TOP of each poll tick — so a provider whose poll never settles
 strands the run past its own 30-minute deadline indefinitely.
 
-**Why it belongs with `CR-21b` rather than as a separate wave.** It is the same defect on the same seam in
-the same file, closed by the same primitive; splitting them would mean bounding a media job's first call and
-leaving its next hundred unbounded.
+**The two sites, named — because "the same seam" is not the same layer, and an implementer who guesses will
+bound the wrong one.** The awaited call is `packages/core/src/engine/engine.ts` (`#pollMediaJob`'s
+`await this.#executor.pollMediaJob(submission, this.#abort.signal)`), and the executor arm beneath it is
+`packages/core/src/engine/agent-runner.ts` (`return provider.pollMediaJob(job.jobId, key, signal)`), which
+passes the signal cooperatively and races nothing. **Bounding either layer bounds the caller's wait, so this
+is ONE liveness hole, not two** — but the race must land at a stated layer rather than wherever the reader
+happened to look first.
+
+**Why it belongs with `CR-21b` rather than as a separate wave.** Same class of defect on the same seam,
+closed by the same primitive — though a different file from `CR-21b`'s `agent-runner.ts` submission site.
+Splitting them would mean bounding a media job's first call and leaving its next hundred unbounded.
 
 **Fix + acceptance.** Race each poll call against a per-call deadline. A poll that never settles fails the
 job within that bound rather than parking the run forever; the loop's own `deadlineAt` is unchanged, and a
@@ -1002,15 +1037,35 @@ timeout is re-armed for its full duration on every resume — so a crash extends
 **Fix + acceptance.** Persist absolute deadlines; resume computes the remaining time. A run crashed and resumed
 repeatedly still times out at its original absolute deadline.
 
-### CR-23 — Exactly-one-terminal is a safety property, not a liveness one · High · **decision open**
+### CR-23 — Exactly-one-terminal is a safety property, not a liveness one · High · **decision settled 2026-08-25** ([ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md))
 Cancel only fires the abort signal, and the terminal waits for the running-node count to reach zero. The node
 executor seam accepts an arbitrary promise; honouring the signal is not guaranteed at the type level. An
 executor that ignores abort and never settles leaves the run without a terminal forever.
-**Open decision.** The grace-period length and whether a quarantined executor is disabled process-wide or per
-run. Settle before starting.
 **Fix + acceptance.** A bounded grace period after cancel/timeout, then a generation token that fences the run
 state from late outcomes, plus executor quarantine. Tests: a never-settling executor and a late-success executor
 both produce exactly one terminal in bounded time, and the late output is not applied.
+
+> **The two open questions are settled, and one of them is settled the other way.**
+> [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §3 fixes the
+> grace period at **10 000 ms**, armed off the abort signal itself rather than per cancel site, and §7
+> **declines executor quarantine** — so the "plus executor quarantine" clause above is NOT delivered, by
+> decision rather than by omission.
+>
+> Three corrections the ADR makes to the paragraph above, recorded here because a later reader will otherwise
+> implement the wrong thing from it:
+>
+> 1. **The window does not bound the terminal, it bounds the wait for the EXECUTOR.** A single
+>    `persistEvent` has a documented ~25 s worst case
+>    ([database-schema.md](../../reference/shared-core/database-schema.md#concurrency--transaction-behavior)),
+>    so "exactly one terminal in bounded time" is not a promise this item can keep on its own; terminal
+>    durability is [ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md)'s.
+> 2. **"A generation token" is under-specified and not implementable as stated.** Under `max_parallel` a
+>    run-wide counter makes one sibling's dispatch stale another's live work. §5 specifies a per-vertex
+>    active-dispatch map instead.
+> 3. **Late-outcome fencing is PARTLY already present** — `#onOutcome` returns early on `#settled`. The
+>    unguarded points are the `cost:updated` fold, `save_to`, the effect journal and the money port, and §5
+>    gives the effect journal a per-method rule so refusing a late `settle` does not strand a row the way
+>    `PR83-04` did.
 
 ---
 

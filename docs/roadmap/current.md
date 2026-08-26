@@ -464,12 +464,12 @@ gaps**: effect journal, stdio MCP consent-before-spawn, run lease, compaction tr
 input admission, event-log ordering. Three separate reviews landing on the same seven points is not opinion.
 
 The full, self-contained work list is
-[phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md) — **47 items**
+[phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md) — **48 items**
 (`CR-01`…`CR-95`) with evidence, fix, acceptance criteria and a decision/ADR/gate register, written so the work
 can be done from that document alone. An adversarial plan review on 2026-08-10 corrected the phase boundary,
 the exit rule and the execution order, and added two items (`CR-17` resume identity, `CR-63` `input_schema`
-docs-only); `CR-64` came from the Batch 1 triage and `CR-21b` from ADR-0082 §10, which is why the total has
-moved since the list was first written.
+docs-only); `CR-64` came from the Batch 1 triage, `CR-21b` from ADR-0082 §10 and `CR-21c` from the `W2`
+document review on 2026-08-25, which is why the total has moved since the list was first written.
 
 > **Live status — 15 of 48 closed. `W0` and `W1` are both done; `W2` is in progress.**
 >
@@ -480,10 +480,11 @@ moved since the list was first written.
 >   the W1 code itself; all seven were fixed and mutation-verified before merge.
 >
 > - **`W2` — liveness and deadlines — in progress**, behind [ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md).
->   Its document review moved the count twice: `CR-21` turns out to have shipped **with `CR-14`** in PR #83
->   (ADR-0082 decides both, and the execution graph above already scheduled them together) and only its
->   heading was stale, while `CR-21c` — an unbounded individual `pollMediaJob` call — was found during the
->   same review and added. So `W2` is four open items, not five.
+>   Its document review moved the count twice, and the two moves **cancel**: `CR-21` turns out to have
+>   shipped **with `CR-14`** in PR #83 (ADR-0082 decides both, and the execution graph above already
+>   scheduled them together) and only its heading was stale, while `CR-21c` — an unbounded individual
+>   `pollMediaJob` call — was found during the same review and added. So `W2` is still **five** open items
+>   (`CR-20`, `CR-21b`, `CR-21c`, `CR-22`, `CR-23`) out of six; the phase total moved 47 → 48, not the wave.
 >
 > **Not to be confused with the 2.5.5 remediation's own `W2`** ("Shut the doors", in the graph above). Same
 > label, different phase: this one is 2.6.5's liveness wave.

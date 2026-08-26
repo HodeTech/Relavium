@@ -1974,8 +1974,11 @@ describe('AgentSession — the ADR-0082 deadline ports actually reach the chain'
     // read host source text, not the engine), and every session surface silently reverts to unbounded.
     // That is strictly larger than the gap the grep was written to close — the ports are wired, and dead.
     //
-    // Measured, not assumed: with that key removed, 1333 of core's 1334 tests still pass and this is the
-    // only red. It reddens by TIMING OUT rather than by failing an assertion, because an unbounded wait is
+    // Measured, not assumed: with the key removed at BOTH forwarding sites the core suite reports exactly
+    // two reds, and they are exactly this test and its workflow twin in `agent-runner.e2e.test.ts`. (An
+    // absolute pass-count is deliberately NOT recorded here — it rots on the next added test, and the
+    // durable facts are which mutation and which tests redden.) It reddens by TIMING OUT rather than by
+    // failing an assertion, because an unbounded wait is
     // precisely the defect — the same signal, for the same reason, that ADR-0074 §3's hold-release listener
     // test produces (see the comment at its registration site in `engine.ts`).
     //
@@ -1989,7 +1992,13 @@ describe('AgentSession — the ADR-0082 deadline ports actually reach the chain'
     const hung: LlmProvider = {
       id: 'anthropic',
       supports: CAPS,
-      generate: () => new Promise<never>(() => undefined),
+      // THROWS rather than hangs, matching this file's convention (`scriptedProvider`). A hanging
+      // `generate` would look like coverage it does not have — this turn only ever calls `stream` — and,
+      // worse, a future change that routed it through `generate` would produce a 5 s timeout
+      // INDISTINGUISHABLE from the "setTimer was not forwarded" red this test documents below.
+      generate: () => {
+        throw new Error('unused — this turn streams');
+      },
       stream: () => ({
         [Symbol.asyncIterator]: () => ({ next: () => new Promise<never>(() => undefined) }),
       }),
@@ -1997,6 +2006,7 @@ describe('AgentSession — the ADR-0082 deadline ports actually reach the chain'
 
     const { deps, events } = harness([[]], {
       resolveProvider: () => hung,
+      attemptTimeoutMs: 45_000,
       // Trips every armed deadline on the next microtask. Firing only the FIRST one hangs the test: each
       // chain attempt opens its own scope (ADR-0082 §5 is per attempt), so a retry arms a fresh timer that
       // nothing would fire — the 5 s vitest timeout, not a product failure.
@@ -2011,8 +2021,13 @@ describe('AgentSession — the ADR-0082 deadline ports actually reach the chain'
 
     await s.sendMessage('hello');
 
-    expect(armed.length).toBeGreaterThan(0); // the port arrived — this is the assertion the guard lacked
-    expect(armed.every((ms) => ms === 120_000)).toBe(true); // …at the ADR-0082 §6 default, forwarded intact
+    // **A NON-DEFAULT value, and that is the whole point.** Asserting 120_000 here would be hollow:
+    // `DEFAULT_ATTEMPT_TIMEOUT_MS` is exactly what `FallbackChain` falls back to when `attemptTimeoutMs`
+    // is ABSENT (`fallback-chain.ts`), so the assertion would pass whether or not the third port is
+    // forwarded. Measured: with both `attemptTimeoutMs` forwarding lines deleted, the whole core suite —
+    // this test included — stayed green. Asserting a value only the port can deliver break-verifies it.
+    expect(armed.length).toBeGreaterThan(0); // the timer port arrived — the assertion the guard lacked
+    expect(armed.every((ms) => ms === 45_000)).toBe(true); // …and so did the timeout port, intact
 
     const terminal = events.find((e) => e.type === 'session:turn_completed');
     expect(terminal).toBeDefined();
