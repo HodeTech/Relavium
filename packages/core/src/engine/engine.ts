@@ -424,6 +424,15 @@ class RunExecution {
   readonly #activeDispatchByVertex = new Map<string, number>();
   /** The dispatch id a vertex's in-flight work was started under — the value `#isLive` is checked against. */
   readonly #dispatchIdForVertex = new Map<string, number>();
+  /**
+   * When each vertex's node deadline started, so `timeout_ms` is absolute across RE-dispatches too
+   * (ADR-0085 §2). Set on a vertex's first dispatch and never reset while the run lives: an approved budget
+   * gate returns the vertex to `pending`, `#claimReady` re-claims it, and a fresh full-length bound would
+   * hand the node a second helping of the patience its author granted once.
+   */
+  readonly #nodeDeadlineStartMs = new Map<string, number>();
+  /** The attempt number a vertex is currently on, so an ABANDONED node logs its real attempt, not 1. */
+  readonly #lastAttemptByVertex = new Map<string, number>();
   /** Monotonic per-run dispatch id — see {@link #activeDispatchByVertex}. */
   #nextDispatchId = 0;
   /** The pre-egress budget governor, when a workflow `budget` is configured (ADR-0028, 1.AC). */
@@ -817,18 +826,17 @@ class RunExecution {
       if (state.status !== 'running') continue;
       const vertex = this.#plan.vertices.get(vertexId);
       if (vertex === undefined) continue;
-      state.status = 'failed';
-      await this.#emitDurable({
-        type: 'node:failed',
-        runId: this.runId,
-        nodeId: vertexId,
-        attemptNumber: 1,
-        error: {
-          code: 'cancelled',
-          message: GRACE_ABANDON_MESSAGE,
-          retryable: false,
-        },
-      });
+      // Through `#settleFailed`, not a hand-rolled draft. A first version wrote the event inline and it
+      // silently lost three things `#settleFailed` stamps: the secret-free `correlationId` that ADR-0036
+      // calls the single producer-side translation point, the `cumulativeCostMicrocents` snapshot whose
+      // schema comment says "the engine always populates it", and the real attempt number — it hard-coded
+      // 1, so a node abandoned on attempt 3 logged attempt 1. An abandoned node's record is the ONLY record
+      // it gets; making it the thinnest one in the log is the wrong place to economise.
+      await this.#settleFailed(
+        vertex,
+        { code: 'cancelled', message: GRACE_ABANDON_MESSAGE, retryable: false },
+        this.#lastAttemptByVertex.get(vertexId) ?? 1,
+      );
     }
     // If nothing set a cause, the run-level `timeout_ms` is what aborted us — say so rather than shipping a
     // terminal with an undefined reason (ADR-0085 §3).
@@ -1700,8 +1708,20 @@ class RunExecution {
     if (timeoutMs === undefined) {
       return undefined;
     }
+    // **Remaining, not full — the bound is absolute across RE-dispatches, not merely across attempts.**
+    // A first version armed the full `timeout_ms` on every `#dispatch`, which made it absolute within one
+    // dispatch (all attempts and backoffs share it) and renewable across dispatches. An approved budget gate
+    // returns the vertex to `pending`, `#claimReady` re-claims it, and the node got a second full helping —
+    // the same shape as `CR-22`'s run cap renewing on every resume, one level down.
+    // ONE clock read. Two would lose a tick between them — the in-memory host's clock advances per read —
+    // so a first dispatch would arm `timeoutMs - 1` and the test asserting the authored value would be
+    // pinning an off-by-one instead of the bound.
+    const nowMs = this.#elapsedMs();
+    const startedAtMs = this.#nodeDeadlineStartMs.get(vertex.id) ?? nowMs;
+    this.#nodeDeadlineStartMs.set(vertex.id, startedAtMs);
+    const remainingMs = Math.max(0, timeoutMs - (nowMs - startedAtMs));
     return openDeadline(
-      timeoutMs,
+      remainingMs,
       this.#host.newAbortController,
       (ms, fire) => this.#host.setTimer(ms, fire, 'deadline'),
       this.#abort.signal,
@@ -1752,6 +1772,7 @@ class RunExecution {
     // approved call does not re-pause the (still-over-budget) node on its very next retry.
     const budgetApproved = this.#budgetApprovedVertices.delete(vertex.id);
     for (;;) {
+      this.#lastAttemptByVertex.set(vertex.id, attempt);
       const outcome = await this.#runAttempt(vertex, attempt, budgetApproved);
       // ADR-0074 §2's other barrier: "the enclosing turn completion waits for the commitment's durability
       // acknowledgement." A commitment made inside this attempt must be durable before the node reaches ANY
@@ -2005,6 +2026,25 @@ class RunExecution {
   ): Promise<void> {
     if (this.#settled) {
       return; // terminal already emitted — ignore a late settle (e.g. an aborted straggler)
+    }
+    // **Fence point 1 (ADR-0085 §5), and the predicate is the vertex's own STATUS, not the dispatch token.**
+    // `#settled` alone does not cover the window this item created: a node whose `timeout_ms` tripped is
+    // settled `failed` by `#dispatchBounded` while `#dispatchLoop` keeps running beside a live sibling, so
+    // its eventual outcome reaches here on a run that has NOT settled and would overwrite the timeout with a
+    // `completed` — a node reporting success for work the engine already told the user had timed out.
+    //
+    // The dispatch token is the wrong test here, and trying it proved so: `#dispatch`'s `finally` releases
+    // the vertex's slot on return, but an async media job PARKS — the node is legitimately still running and
+    // settles later, out of band, from the poll timer. Keying on the token refused every media-job
+    // completion. The honest predicate is that a vertex which already reached a TERMINAL node status has had
+    // its outcome; `paused` and `running` have not.
+    const settledStatus = this.#states.get(vertex.id)?.status;
+    if (
+      settledStatus === 'completed' ||
+      settledStatus === 'failed' ||
+      settledStatus === 'skipped'
+    ) {
+      return;
     }
     try {
       switch (outcome.kind) {

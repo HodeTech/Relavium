@@ -1225,6 +1225,19 @@ guard leaves the straggler test green, because by then the run has settled and t
 only `#dispatch` call site and claims only `pending` vertices — and the test says so rather than implying
 coverage. The mutation that would close it is named there.
 
+**Five gaps the Step 5 review closed, and one it could only correct.** ADR-0085's §1 obligation had never
+been written at the seam it names; §2's "absolute per node" was absolute per DISPATCH, so an approved budget
+gate handed a node a second full helping of its authored bound; §2's claim that the deadline covers
+`save_to` describes a combination the schema forbids (`timeout_ms` is on the agent and gate nodes, `save_to`
+on the output node); §5's first fence point was unimplemented, and keying it on the dispatch token refused
+every media-job completion — the honest predicate is the vertex's own terminal status; and an abandoned
+node's `node:failed` was hand-rolled, silently dropping the `correlationId` ADR-0036 calls the single
+producer-side translation point, the cost snapshot the schema says is always populated, and the real attempt
+number. **The one that could not be fixed is §8.9**, which asked for a terminal even when the `run:timeout`
+persist never settles: ADR-0078 serialises every emit behind one tail, so the writes queue behind the hung
+one. The acceptance item was asking for more than the ADR claims — it is withdrawn against §6 rather than
+worked around.
+
 And `CR-23`'s guarantee is bounded exactly as
 [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §6 states: run
 liveness with respect to the EXECUTOR. A `RunStore.persistEvent` that never settles still hangs the run, and

@@ -2152,6 +2152,11 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     expect(nodeFailed?.type === 'node:failed' && nodeFailed.error.message).toContain(
       'the engine stopped waiting',
     );
+    // An abandoned node's record is the ONLY record it gets, so it must not be the thinnest in the log. A
+    // first version wrote the event inline and silently dropped the `correlationId` ADR-0036 calls the single
+    // producer-side translation point, plus the cost snapshot the schema says the engine always populates.
+    expect(nodeFailed?.type === 'node:failed' && nodeFailed.error.correlationId).toBeDefined();
+    expect(nodeFailed?.type === 'node:failed' && nodeFailed.cumulativeCostMicrocents).toBeDefined();
     expect(host.deadlineCount()).toBe(0); // disarmed on settle, not leaked
   });
 
@@ -2360,6 +2365,161 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     await captured?.settle(1, 'http_request', 'committed');
     await captured?.discard(1, 'http_request');
     expect(calls).toEqual(['settle', 'discard']);
+  });
+
+  it('a timed-out node cannot report success afterwards, while a sibling keeps the run alive (ADR-0085 §5)', async () => {
+    // **The window this item created, and `#settled` does not cover it.** When a node's own `timeout_ms`
+    // trips, `#dispatchBounded` settles it `failed` while `#dispatchLoop` keeps running. With a sibling still
+    // in flight the RUN has not settled — so the timed-out node's eventual outcome reaches `#onOutcome` on a
+    // live run and, unfenced, overwrites the timeout with a `completed`. A node reporting success for work
+    // the engine already told the user had timed out.
+    //
+    // Measured: removing the fence leaves all 1354 tests green, which is why this exists.
+    const TWO = `  id: two-nodes
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: start, type: input }
+    - { id: a, type: agent, agent_ref: ag, prompt_template: 'go', timeout_ms: 3000 }
+    - { id: b, type: transform, transform: 'b' }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: a }
+    - { from: start, to: b }
+    - { from: a, to: out }
+    - { from: b, to: out }`;
+    let releaseA: ((o: NodeOutcome) => void) | undefined;
+    let releaseB: ((o: NodeOutcome) => void) | undefined;
+    const host = createInMemoryHost();
+    const engine = engineWith(
+      {
+        a: () =>
+          new Promise<NodeOutcome>((resolve) => {
+            releaseA = resolve;
+          }),
+        b: () =>
+          new Promise<NodeOutcome>((resolve) => {
+            releaseB = resolve;
+          }),
+      },
+      host,
+    );
+    const handle = engine.start({ workflow: workflow(TWO) });
+    const events: RunEvent[] = [];
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        events.push(event);
+        if (event.type === 'run:completed' || event.type === 'run:failed') settled = true;
+      }
+    })();
+    for (let i = 0; i < 300 && (releaseA === undefined || releaseB === undefined); i += 1) {
+      await Promise.resolve();
+    }
+    expect(releaseA).toBeDefined();
+    expect(releaseB).toBeDefined();
+
+    // `a`'s bound trips. `b` is untouched, so the RUN is still live — which is the whole point.
+    host.fireDeadlines();
+    for (let i = 0; i < 300 && !events.some((e) => e.type === 'node:failed'); i += 1) {
+      await Promise.resolve();
+    }
+    const failedA = events.find((e) => e.type === 'node:failed');
+    expect(failedA?.type === 'node:failed' && failedA.nodeId).toBe('a');
+    expect(failedA?.type === 'node:failed' && failedA.error.code).toBe('run_timeout');
+    expect(settled).toBe(false); // …and the run has NOT ended — the sibling still holds it open
+
+    // Now `a`'s abandoned executor wakes and claims success.
+    releaseA?.({ kind: 'completed', output: 'too late' });
+    for (let i = 0; i < 300; i += 1) await Promise.resolve();
+
+    // It is refused: `a` has exactly one node terminal, and it is the timeout.
+    const aTerminals = events.filter(
+      (e) =>
+        (e.type === 'node:completed' || e.type === 'node:failed' || e.type === 'node:skipped') &&
+        e.nodeId === 'a',
+    );
+    expect(aTerminals).toHaveLength(1);
+    expect(aTerminals[0]?.type).toBe('node:failed');
+
+    releaseB?.({ kind: 'completed', output: 'b done' });
+    for (let i = 0; i < 400 && !settled; i += 1) {
+      await Promise.resolve();
+      if (host.armedCount() > 0) host.fireTimers();
+    }
+    await consume;
+  });
+
+  it("a budget-approved RE-dispatch does not renew the node's `timeout_ms` (ADR-0085 §2)", async () => {
+    // **"Absolute per node" was absolute per DISPATCH, and nothing saw it.** An approved budget gate returns
+    // the vertex to `pending` (`#claimReady` re-claims it), so the node got a second `#dispatch` — and a
+    // second FULL-length bound. A node that pauses for approval and continues could spend 2 × `timeout_ms`,
+    // which is the same shape as `CR-22`'s run cap renewing on every resume, one level down. Reverting to a
+    // fresh bound per dispatch left all 110 tests in this file green.
+    const APPROVED = `  id: budget-redispatch
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: gen, type: agent, agent_ref: a, prompt_template: 'go', timeout_ms: 5000 }
+    - { id: out, type: output }
+  edges:
+    - { from: gen, to: out }
+  budget:
+    max_cost_microcents: 100000000
+    on_exceed: pause_for_approval`;
+    const base = createInMemoryHost();
+    const armed: number[] = [];
+    const host: typeof base = {
+      ...base,
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'deadline') armed.push(ms);
+        return base.setTimer(ms, onFire, kind);
+      },
+    };
+    let dispatches = 0;
+    const engine = engineWith(
+      {
+        gen: () => {
+          dispatches += 1;
+          if (dispatches === 1) {
+            return {
+              kind: 'paused',
+              gate: {
+                gateType: 'approval',
+                message: 'over budget — continue?',
+                isBudgetGate: true,
+                spentMicrocents: 900,
+                limitMicrocents: 1000,
+              },
+            };
+          }
+          return { kind: 'completed', output: 'done' };
+        },
+      },
+      host,
+    );
+    const handle = engine.start({ workflow: workflow(APPROVED) });
+    for await (const event of handle.events) {
+      if (event.type === 'run:paused') {
+        const gateId = event.gateIds[0];
+        if (gateId !== undefined) {
+          await engine.resume(handle.runId, gateId, { decision: 'approved', decidedBy: 'tester' });
+        }
+      }
+    }
+
+    expect(dispatches).toBe(2); // the approval really did re-dispatch — the premise, not the claim
+    expect(armed).toHaveLength(2);
+    // The first arms the authored bound; the second arms what is LEFT of it. A renewing bound would arm
+    // 5000 twice, which is exactly what the mutation produces.
+    expect(armed[0]).toBe(5000);
+    expect(armed[1]).toBeLessThan(5000);
   });
 
   it('a node with no `timeout_ms` arms no node deadline', async () => {
