@@ -58,6 +58,8 @@ import {
   type EffectDispatchPort,
   type EffectResumePort,
   type UnresolvedEffect,
+  openDeadline,
+  type DeadlineScope,
 } from '@relavium/shared';
 import type { EndpointKind, MediaJobStatus, PricingOverlay, ProviderId } from '@relavium/llm';
 
@@ -2085,8 +2087,25 @@ class RunExecution {
         units: job.units,
       };
       let status: MediaJobStatus;
+      // **Bound the individual poll CALL, not only the loop (`CR-21c`).** ADR-0045 §7 gives the job an
+      // absolute `deadlineAt`, and it is consulted at the TOP of each tick — twenty-five lines above this
+      // await. Nothing raced the await itself, so a provider whose poll never settles (and ignores its
+      // signal, which is a request rather than a guarantee — ADR-0082 §5) stranded the run past its own
+      // thirty-minute deadline indefinitely. The loop was bounded; one call inside it was not.
+      //
+      // The bound is `MEDIA_JOB_POLL_DEFAULTS.pollCallTimeoutMs`, CLAMPED to whatever is left of
+      // `deadlineAt`. The clamp is what makes the item's title true: bounding the call alone still lets a
+      // job outlive its deadline by up to one call.
+      //
+      // A deadline abort here falls into the catch below, which already classifies a poll fault as the
+      // retryable `provider_unavailable` that ADR-0045 §3/§6 specify — so this adds a bound, not a new
+      // outcome. The scope is disposed on every exit, success included.
+      const pollDeadline = this.#openPollDeadline(job);
       try {
-        status = await this.#executor.pollMediaJob(submission, this.#abort.signal);
+        status =
+          pollDeadline === undefined
+            ? await this.#executor.pollMediaJob(submission, this.#abort.signal)
+            : await this.#racePoll(pollDeadline, submission);
       } catch {
         // A cancel (the abort surfaced as a throw) / terminal / cleared job → return silently; the #settle
         // path emits run:cancelled. Only a genuine poll fault on a live job settles node:failed.
@@ -2122,6 +2141,55 @@ class RunExecution {
         // — nothing else re-enters the loop, so without this the run would hang at `run:paused` forever (M1).
         this.#schedule();
       }
+    }
+  }
+
+  /**
+   * Open a deadline for ONE poll call, or `undefined` when the host wired no timer port (the same
+   * both-or-neither shape `FallbackChain#openDeadline` uses — half a deadline is not a smaller guarantee,
+   * it is none). Clamped to the job's remaining `deadlineAt`; a job already past it never reaches here,
+   * because `#pollMediaJob` short-circuits at the top of the tick.
+   */
+  #openPollDeadline(job: ParkedMediaJob): DeadlineScope | undefined {
+    const remainingToJobDeadlineMs = Math.max(
+      0,
+      Date.parse(job.deadlineAt) - Date.parse(this.#host.clock.now()),
+    );
+    const boundMs = Math.min(MEDIA_JOB_POLL_DEFAULTS.pollCallTimeoutMs, remainingToJobDeadlineMs);
+    // The KIND is bound here rather than widened into `SetDeadlineTimer`. The shared primitive's signature
+    // stays `(ms, fire) => disarm` — honest about the only two things a deadline needs — and the caller,
+    // which is the only party that knows what role its timer plays, supplies the third argument.
+    return openDeadline(
+      boundMs,
+      this.#host.newAbortController,
+      (ms, fire) => this.#host.setTimer(ms, fire, 'deadline'),
+      this.#abort.signal,
+    );
+  }
+
+  /**
+   * One poll call, raced against its deadline. A trip resolves as a thrown `timeout`, which the caller's
+   * existing catch maps to the retryable `provider_unavailable` — the classification ADR-0045 §3 already
+   * chose for a poll that cannot complete, reached by a new route rather than a new code.
+   */
+  async #racePoll(
+    deadline: DeadlineScope,
+    submission: MediaJobSubmission,
+  ): Promise<MediaJobStatus> {
+    try {
+      const poll = this.#executor.pollMediaJob?.(submission, deadline.signal);
+      if (poll === undefined) {
+        throw new Error('the executor implements no pollMediaJob');
+      }
+      const raced = await deadline.race(poll);
+      if (raced.outcome === 'deadline') {
+        throw new Error(
+          `the media-job poll did not respond within its ${String(MEDIA_JOB_POLL_DEFAULTS.pollCallTimeoutMs)}ms bound`,
+        );
+      }
+      return raced.value;
+    } finally {
+      deadline.dispose();
     }
   }
 

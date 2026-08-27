@@ -29,6 +29,9 @@ import {
   type OutputModality,
   type ReasoningEffort,
   unwiredEffectJournal,
+  openDeadline,
+  type DeadlineScope,
+  MEDIA_GEN_SUBMIT_TIMEOUT_MS,
 } from '@relavium/shared';
 import {
   LlmConfigError,
@@ -630,15 +633,60 @@ async function executeGenerativeMedia(
     }
 
     let result: MediaGenResult;
+    // **The submission gets the same hard race a chain attempt gets (`CR-21b`).** ADR-0082 §10 named this
+    // gap rather than absorbing it: this call is not a poll, so ADR-0045's job deadline does not cover it,
+    // and it is not a `FallbackChain` attempt, so §6's per-attempt deadline does not either. It was awaited
+    // unbounded, which is the exact "the vendor SDK default becomes our liveness semantics" that ADR-0082
+    // exists to remove — and `security-review.md` forbids outright ("a hung provider must not pin a worker
+    // open").
+    //
+    // No seam amendment was needed: `MediaGenRequest.signal` already exists and `ctx.signal` was already
+    // passed. The gap was only that nothing raced the await, and a signal is a request rather than a
+    // guarantee. The scope's merged signal REPLACES `ctx.signal` on the request so a well-behaved adapter
+    // aborts on either cause; the race is what covers one that ignores both.
+    //
+    // The bound is `MEDIA_GEN_SUBMIT_TIMEOUT_MS`, which is its OWN number rather than the chain's. Borrowing
+    // `DEFAULT_ATTEMPT_TIMEOUT_MS` was the first attempt and the packaging refused it: ADR-0085 §9 keeps that
+    // constant inside `@relavium/llm` deliberately, so reaching for it would widen that package's public
+    // surface to let the engine bound a media call — and would couple two budgets answering different
+    // questions. Equal today, independent by construction; the reasoning lives with the constant.
+    const deadline = openGenerativeDeadline(deps);
     try {
       // From this call onward the provider may have accepted/billed the generation even if its SDK throws or omits
       // a terminal payload. Preserve the bounded reservation in those uncertain paths; only credential resolution
       // above is proven pre-egress and may release it.
       egressStarted = true;
-      result = await provider.generateMedia(req, key);
+      const call = provider.generateMedia(
+        deadline === undefined ? req : { ...req, signal: deadline.signal },
+        key,
+      );
+      if (deadline === undefined) {
+        result = await call;
+      } else {
+        const raced = await deadline.race(call);
+        if (raced.outcome === 'deadline') {
+          admission?.settleAtReservedEstimate({ nodeId: node.id });
+          // `classify()` owns the label: a caller cancel that beat the timer stays `cancelled`, which is the
+          // same cancel-wins precedence ADR-0036 gives the run and ADR-0082 §7 gives an attempt.
+          return deadline.classify() === 'caller'
+            ? failed(
+                'cancelled',
+                `agent node '${node.id}': run cancelled during media generation`,
+                false,
+              )
+            : failed(
+                'provider_unavailable',
+                `agent node '${node.id}': the provider did not respond within the ${String(MEDIA_GEN_SUBMIT_TIMEOUT_MS)}ms media-submission deadline`,
+                true,
+              );
+        }
+        result = raced.value;
+      }
     } catch (err) {
       admission?.settleAtReservedEstimate({ nodeId: node.id });
       return mapGenerateMediaError(err);
+    } finally {
+      deadline?.dispose();
     }
 
     // A cancel that landed WHILE generateMedia was in-flight (a non-cooperative adapter that ignored the signal,
@@ -990,6 +1038,18 @@ function resolveGenKnobs(
     ...(maxTokens === undefined ? {} : { maxTokens }),
     ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
   };
+}
+
+/**
+ * Open a deadline for the generative submission, or `undefined` when the host wired no timer port — the same
+ * both-or-neither shape `FallbackChain#openDeadline` uses (ADR-0082 §6): a chain given only one primitive
+ * keeps the old unbounded behaviour rather than pretending to a guarantee it cannot make.
+ */
+function openGenerativeDeadline(deps: AgentRunnerDeps): DeadlineScope | undefined {
+  const newController = deps.newAbortController;
+  const setTimer = deps.setTimer;
+  if (newController === undefined || setTimer === undefined) return undefined;
+  return openDeadline(MEDIA_GEN_SUBMIT_TIMEOUT_MS, newController, setTimer);
 }
 
 /** Forward only the platform-level chain capabilities the host supplies. */

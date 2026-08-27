@@ -180,7 +180,13 @@ export function createCliHost(
       // opposite: it re-arms itself forever and advances nothing, so if it were ever the last handle
       // standing it would hang the process instead of letting it exit. It is disarmed on settle and on
       // fence, but `unref` makes a leak impossible rather than merely unlikely.
-      if (kind === 'liveness') timer.unref();
+      // **A `deadline` is unref'd alongside `liveness`, and for a related but distinct reason.** A work
+      // timer is something the run is parked ON, so it should hold the loop open. A deadline is a backstop
+      // over a call that is ALREADY in flight — that call's own socket holds the loop — so the backstop
+      // never needs to be the reason the process cannot exit, and unref'ing it makes a leak impossible
+      // rather than merely unlikely. The liveness heartbeat is unref'd because it advances nothing; this is
+      // unref'd because something else is already holding the door.
+      if (kind === 'liveness' || kind === 'deadline') timer.unref();
       return () => {
         clearTimeout(timer);
       };

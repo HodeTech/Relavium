@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0` and `W1` are closed** (16 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25); `W2` is in progress
+- **Status**: in progress — **`W0` and `W1` are closed** (18 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25); `W2` is in progress
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -269,8 +269,8 @@ to correct.
 | `CR-17` | made (persist and verify resume identity) | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | yes | — |
 | `CR-20` | made (honour `timeout_ms`; ABSOLUTE per node, `run_timeout`/`retryable: false`) | [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | no | — |
 | `CR-21` | made (per-attempt deadline) | [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) (with `CR-14`'s) | no | — |
-| `CR-21b` | made (apply ADR-0082 §5's hard race to the submission) | — · ADR-0082 §10 **names** it and explicitly declines to decide it; §5 supplies the mechanism | no | — |
-| `CR-21c` | made 2026-08-27 (bound each poll CALL, not only the loop; a new `pollCallTimeoutMs` = 30 000, clamped to the remaining `deadlineAt`) | with `CR-21b`'s | no | — |
+| `CR-21b` | made (apply ADR-0082 §5's hard race to the submission; bound `MEDIA_GEN_SUBMIT_TIMEOUT_MS`) · ✅ closed 2026-08-27 | — · ADR-0082 §10 **names** it and explicitly declines to decide it; §5 supplies the mechanism | no | — |
+| `CR-21c` | made 2026-08-27 (bound each poll CALL, not only the loop; a new `pollCallTimeoutMs` = 30 000, clamped to the remaining `deadlineAt`) · ✅ closed 2026-08-27 | with `CR-21b`'s | no | — |
 | `CR-22` | made (absolute deadlines) · ✅ closed 2026-08-27 | — | no | — |
 | `CR-23` | made (10 s grace off the abort signal; per-vertex generation fence; **no quarantine**, risk accepted with a named trigger) | [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | no | — |
 | `CR-30` | made — implement [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s accepted no-drop producer-await | none (already decided) | no | — |
@@ -987,7 +987,7 @@ is the point rather than the tally.)
   precedent. An Accepted ADR carrying an unimplemented acceptance item is the "reads as shipped" failure this
   phase exists to remove.
 
-### CR-21b — `generateMedia()` submission has no deadline either · Medium
+### CR-21b — `generateMedia()` submission has no deadline either · Medium · ✅ CLOSED 2026-08-27
 
 Named by [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
 §10 rather than folded into `CR-21`, because it is a different call path and folding it in would have made
@@ -1012,7 +1012,7 @@ submission that never settles and ignores its signal fails within the deadline r
 > exposes only `.` and `./adapters`, so [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §9
 > moves the primitive to `@relavium/shared`.
 
-### CR-21c — a single `pollMediaJob` CALL is unbounded, so the job deadline can be outlived · Medium *(found 2026-08-25)*
+### CR-21c — a single `pollMediaJob` CALL is unbounded, so the job deadline can be outlived · Medium *(found 2026-08-25)* · ✅ CLOSED 2026-08-27
 
 **Not in the original finding set** — surfaced by the `CR-21b` document review and verified against the tree.
 [ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §7 gives a media job an
@@ -1065,6 +1065,38 @@ per-call timeout still classifies as ADR-0045 §3's retryable `provider_unavaila
 > own `deadlineAt` by up to one call, because `deadlineAt` is only consulted at the top of the tick. Taking
 > the remaining time as the ceiling closes that tail; the `remaining <= 0` case is already handled by the
 > existing top-of-tick check, so the clamp adds no new branch of its own.
+
+> **Both closed together, and the work turned up a THIRD timer role nobody had named.**
+>
+> Neither needed a seam amendment. `MediaGenRequest.signal` already existed and `ctx.signal` was already
+> passed; `pollMediaJob` already took a signal. In both cases the only gap was that nothing raced the await
+> — and a signal is a request rather than a guarantee (ADR-0082 §5).
+>
+> **`CR-21b` got its OWN bound rather than the chain's.** Borrowing `DEFAULT_ATTEMPT_TIMEOUT_MS` was the
+> first attempt and the packaging refused it: ADR-0085 §9 keeps that constant inside `@relavium/llm`
+> deliberately, so reaching for it would have widened that package's public surface to let the ENGINE bound
+> a media call, and would have coupled two budgets answering different questions. `MEDIA_GEN_SUBMIT_TIMEOUT_MS`
+> is equal today (120 s) and independent by construction.
+>
+> **`CR-21c` lands at the ENGINE layer**, not the executor arm beneath it, because the clamp needs
+> `deadlineAt` — which only the engine holds. The item named both sites precisely so this would be a choice
+> rather than a guess.
+>
+> **The third timer role.** Arming these as `work` broke six existing media tests at once, and the reason is
+> worth keeping: a drive-to-quiescence loop fires every armed `work` timer to advance the run, so a deadline
+> swept into that set trips the instant it is armed and every media test becomes a timeout test. The run is
+> not waiting ON a deadline — it is waiting on the CALL, and the timer matters only if the call does not come
+> back. `TimerKind` gains `'deadline'`, `fireTimers()` no longer sweeps it, and `fireDeadlines()` trips one
+> deliberately. ADR-0085's node deadline and grace window are the same role and inherit it.
+>
+> **And the `CR-21c` test was hollow on its first pass**, caught by its own break-verify: the harness binds
+> the agent timer port to the same `'deadline'` kind, so the first backstop to arm is `CR-21b`'s on the
+> SUBMISSION. The test observed that one, fired it, and passed with the poll bound removed entirely. It now
+> waits for `media_job:submitted` first, which is what makes the observed backstop the poll's.
+>
+> **One propagation gap closed on the way:** the `m2` harness wired neither deadline port into its agent
+> deps, while `build-engine.ts` wires both — so `CR-21b`'s bound armed nothing there. The same "the port is
+> forwarded and the test takes the branch that does not use it" shape `CR-21`'s close-out had to fix twice.
 
 ### CR-22 — Gate and run deadlines are not preserved across resume · High · ✅ CLOSED 2026-08-27
 The checkpoint's pending gate carries gate/node/budget data but not an absolute deadline, and the whole-run
