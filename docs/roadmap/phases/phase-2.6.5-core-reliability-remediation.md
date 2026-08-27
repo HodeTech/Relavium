@@ -1135,6 +1135,27 @@ repeatedly still times out at its original absolute deadline.
 > This also closes the long-standing [deferred item](../deferred-tasks.md) *"Re-arm a still-pending gate's
 > timeout on cross-process rehydration"*, whose deferral note correctly predicted no backfill would be
 > needed.
+>
+> **And the fix shipped a regression its own tests could not see — found by the review round, fixed here.**
+> Rehydration armed a timer for EVERY pending gate, the targeted one included, and a past-deadline gate arms
+> at zero. `beginResume` then awaits context resolution and the effect-resume gate BEFORE `resume()` claims
+> the gate, while `#onGateTimeout` still sees it pending. Measured with a macrotask in that window and
+> `timeout_action: approve`: a caller's explicit `rejected` was recorded as
+> `human_gate:resumed{decision:'approved', decidedBy:'timeout'}` — a human's refusal rewritten as an
+> approval attributed to a timer, contradicting [execution-model.md](../../architecture/execution-model.md)'s
+> own *"a decision that arrives first disarms the timer"*. The targeted gate's timer is now disarmed
+> synchronously, before any await; every other gate keeps its deadline, which is the point of the item.
+>
+> Unreachable on today's synchronous better-sqlite3 CLI (both awaits settle in microtasks), and live the
+> moment any of those `Promise`-typed seams does real I/O — which is what Phase-2's Postgres
+> `EffectResumePort` is. The regression test injects exactly that boundary rather than a contrived one.
+>
+> **A second, bounded exposure closed with it:** `expiresAt` is an instant compared against a different
+> machine's clock, so a resuming process running BEHIND the one that parked the gate computed MORE remaining
+> time than the author granted — measured, an hour of skew re-armed a 1 000 ms gate at 3 601 000 ms.
+> `Math.max(0, …)` only ever guarded the other direction. The authored `timeout_ms` now clamps it from
+> above; it was already on `human_gate:paused` and the fold simply dropped it, exactly like its two
+> siblings.
 
 ### CR-23 — Exactly-one-terminal is a safety property, not a liveness one · High · **decision settled 2026-08-25** ([ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md))
 Cancel only fires the abort signal, and the terminal waits for the running-node count to reach zero. The node

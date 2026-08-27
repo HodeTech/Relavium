@@ -1912,6 +1912,134 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     expect(armedWork).not.toContain(1000);
   });
 
+  it('a resuming clock running BEHIND cannot grant more patience than the author wrote', async () => {
+    // `expiresAt` is an instant written by one process and differenced against another's clock. A resuming
+    // process an hour behind computed `expiresAt − now` = 3 601 000 ms for a 1 000 ms gate — `Math.max(0, …)`
+    // only ever guarded the other direction. The authored `timeout_ms` is now the ceiling, and it rides the
+    // checkpoint for exactly this: it was already on `human_gate:paused` and the fold simply dropped it.
+    const store = new InMemoryRunStore();
+    const engineA = engineWith(
+      {
+        g: () => ({
+          kind: 'paused',
+          gate: { gateType: 'approval', message: 'ok?', timeoutMs: 1000, timeoutAction: 'reject' },
+        }),
+      },
+      createInMemoryHost({ store }),
+    );
+    const handleA = engineA.start({ workflow: workflow(GATED) });
+    let gateId = '';
+    let expiresAt = '';
+    for await (const event of handleA.events) {
+      if (event.type === 'human_gate:paused') expiresAt = event.expiresAt ?? '';
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+
+    const nowB = new Date(Date.parse(expiresAt) - 3_600_000).toISOString(); // an hour BEHIND
+    const baseHostB = createInMemoryHost({ store });
+    const armedWork: number[] = [];
+    const hostB: typeof baseHostB = {
+      ...baseHostB,
+      clock: { now: () => nowB },
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'work') armedWork.push(ms);
+        return baseHostB.setTimer(ms, onFire, kind);
+      },
+    };
+    const engineB = engineWith({}, hostB);
+    const handleB = await engineB.resumeFromCheckpoint({
+      runId: handleA.runId,
+      workflow: workflow(GATED),
+      gateId,
+      decision: { decision: 'approved', decidedBy: 'h' },
+    });
+    await drain(handleB);
+
+    // Never longer than authored, whatever the clocks think.
+    expect(armedWork.every((ms) => ms <= 1000)).toBe(true);
+    expect(armedWork).not.toContain(3_601_000);
+  });
+
+  it('the re-armed timer must not beat the decision this resume was handed', async () => {
+    // **A regression `CR-22` introduced and its own tests could not see.** Rehydration arms a timer for
+    // EVERY pending gate — including the one this resume targets — and a past-deadline gate arms at zero.
+    // `beginResume` then awaits context resolution and the effect-resume gate BEFORE `resume()` claims the
+    // gate, and `#onGateTimeout` guards only on `#settled || !#pendingGates.has(gateId)`, both still
+    // permissive in that window. So a `timeout_action: approve` timer could fire first and record
+    // `human_gate:resumed{decision:'approved', decidedBy:'timeout'}` for a caller who supplied `rejected` —
+    // a human's explicit refusal rewritten as an approval attributed to a timer.
+    //
+    // It needs a REAL timer, not `createInMemoryHost`'s manual controller: a 0 ms manual timer never fires
+    // without `fireTimers()`, which is exactly why the sibling past-deadline test cannot catch this.
+    // `execution-model.md` already states the contract this violates — "a decision that arrives first
+    // disarms the timer" — and on a cross-process resume the decision definitionally arrived first: it was
+    // handed to `resumeFromCheckpoint` before the timer existed.
+    const store = new InMemoryRunStore();
+    const engineA = engineWith(
+      {
+        g: () => ({
+          kind: 'paused',
+          gate: { gateType: 'approval', message: 'ok?', timeoutMs: 1000, timeoutAction: 'approve' },
+        }),
+      },
+      createInMemoryHost({ store }),
+    );
+    const handleA = engineA.start({ workflow: workflow(GATED) });
+    let gateId = '';
+    let expiresAt = '';
+    for await (const event of handleA.events) {
+      if (event.type === 'human_gate:paused') expiresAt = event.expiresAt ?? '';
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+
+    // Past the deadline, so the re-arm lands at zero — the sharpest version of the window.
+    const nowB = new Date(Date.parse(expiresAt) + 60_000).toISOString();
+    const baseHostB = createInMemoryHost({ store });
+    const hostB: typeof baseHostB = {
+      ...baseHostB,
+      clock: { now: () => nowB },
+      // A real macrotask timer, and one awaited boundary inside `beginResume` is enough to let it land.
+      setTimer: (ms, onFire) => {
+        const t = setTimeout(onFire, ms);
+        return () => {
+          clearTimeout(t);
+        };
+      },
+    };
+    // A real MACROTASK boundary inside `beginResume`, which is what opens the window. Not contrived: the
+    // port is `Promise`-typed precisely for a store that does I/O, and Phase-2's Postgres-backed
+    // `EffectResumePort` is exactly this shape. With today's synchronous better-sqlite3 CLI both awaits
+    // settle in microtasks and a `setTimeout(fn, 0)` lands after them — which is why this is unreachable on
+    // the shipping host and reachable the moment any seam becomes genuinely async.
+    const engineB = engineWith({}, hostB, {
+      effectResume: {
+        unresolvedForRun: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          return [];
+        },
+      },
+    });
+    const handleB = await engineB.resumeFromCheckpoint({
+      runId: handleA.runId,
+      workflow: workflow(GATED),
+      gateId,
+      decision: { decision: 'rejected', decidedBy: 'a-real-human' },
+    });
+    const eventsB: RunEvent[] = [];
+    for await (const event of handleB.events) eventsB.push(event);
+
+    // The HUMAN's decision is what the durable log records — not the timer's.
+    const resumed = eventsB.find((e) => e.type === 'human_gate:resumed');
+    expect(resumed?.type === 'human_gate:resumed' && resumed.decidedBy).toBe('a-real-human');
+    expect(resumed?.type === 'human_gate:resumed' && resumed.decision).toBe('rejected');
+  });
+
   it("re-arms the RUN's `timeout_ms` at its remaining time, so a resume cannot renew the cap", async () => {
     // The other half of `CR-22`, and the one nothing held: reverting `#armRunTimeout` to the pre-fix
     // full-duration arm left all 1338 core tests green. ADR-0028 makes `timeout_ms` a bound on the run's

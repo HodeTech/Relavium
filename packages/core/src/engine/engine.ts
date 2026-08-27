@@ -965,9 +965,15 @@ class RunExecution {
       // `#onGateTimeout` path, so a past-deadline resume and a live expiry produce the identical events in
       // the identical order. Resolving it inline would be a second exit for one condition.
       if (gate.expiresAt !== undefined && gate.timeoutAction !== undefined) {
+        // Clamped on BOTH sides. `Math.max` stops a past deadline arming a negative duration; `Math.min`
+        // stops a resuming process whose clock runs BEHIND the one that parked the gate from granting more
+        // patience than the author wrote. `expiresAt` is an instant compared against a different machine's
+        // clock, so the two can disagree — measured at an hour of skew, a 1 000 ms gate re-armed at
+        // 3 601 000 ms. The authored duration is the ceiling; the absolute instant is the target.
+        const untilExpiryMs = Date.parse(gate.expiresAt) - Date.parse(this.#host.clock.now());
         const remainingMs = Math.max(
           0,
-          Date.parse(gate.expiresAt) - Date.parse(this.#host.clock.now()),
+          gate.timeoutMs === undefined ? untilExpiryMs : Math.min(untilExpiryMs, gate.timeoutMs),
         );
         const action = gate.timeoutAction;
         const disarm = this.#host.setTimer(remainingMs, () => {
@@ -1051,6 +1057,24 @@ class RunExecution {
     if (!gateAlreadyResolved) {
       this.#assertGatePending(gateId); // fail fast on a bad gateId, before any context side effect
     }
+    // **Disarm THIS gate's timer synchronously, before any await — the decision has already arrived.**
+    // `CR-22` re-arms a deadline for every rehydrated gate, and that is its point: a run resumed ten times
+    // must not renew the patience its author granted. But the gate this resume TARGETS is different — its
+    // decision was handed to `resumeFromCheckpoint` before the timer existed, which is exactly the case
+    // `execution-model.md` covers with "a decision that arrives first disarms the timer".
+    //
+    // Without this line the two race, and a past-deadline gate arms at zero so the timer is already due.
+    // The window is the two awaits below (`#resolveContextOrFail`, `#effectResumeGateOrFail`), which run
+    // before `resume()` claims the gate, while `#onGateTimeout` still sees it pending. Measured: with a
+    // macrotask inside that window and `timeout_action: approve`, a caller's explicit `rejected` was
+    // recorded as `human_gate:resumed{decision:'approved', decidedBy:'timeout'}` — a human's refusal
+    // rewritten as an approval attributed to a timer. Unreachable on today's synchronous better-sqlite3
+    // CLI, where both awaits settle in microtasks; live the moment any of these `Promise`-typed seams does
+    // real I/O, which is what Phase-2's Postgres `EffectResumePort` is.
+    //
+    // Idempotent, so the `gateAlreadyResolved` kick path takes it harmlessly. Every OTHER pending gate
+    // keeps its re-armed deadline, which is what `CR-22` exists to restore.
+    this.#disarmTimer(gateId);
     if (!(await this.#resolveContextOrFail())) {
       await this.#settle(this.#cancelling ? 'run:cancelled' : 'run:failed');
       return;

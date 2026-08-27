@@ -60,6 +60,16 @@ export interface CheckpointPendingGate {
   readonly expiresAt?: string;
   /** What the engine does when {@link expiresAt} passes — carried with it, since one is inert without the other. */
   readonly timeoutAction?: GateRequest['timeoutAction'];
+  /**
+   * The gate's AUTHORED duration, carried so the re-armed remaining time can be clamped from ABOVE.
+   *
+   * `expiresAt` is an instant written by one process and differenced against another's clock. A resuming
+   * process running BEHIND the one that parked the gate computes a remaining time LONGER than the author
+   * ever granted — measured at an hour of skew, a 1 000 ms gate re-armed at 3 601 000 ms. `Math.max(0, …)`
+   * only guards the other direction. This bounds it: whatever the clocks disagree about, a gate never waits
+   * longer than it was authored to.
+   */
+  readonly timeoutMs?: number;
 }
 
 /**
@@ -220,6 +230,7 @@ interface ReconAccumulator {
       isBudgetGate: boolean;
       expiresAt?: string;
       timeoutAction?: GateRequest['timeoutAction'];
+      timeoutMs?: number;
     }
   >;
   /** Keyed by `nodeId` — one in-flight media job per node; a re-submit replaces the entry (latest wins). */
@@ -367,6 +378,11 @@ function applyGateEvent(acc: ReconAccumulator, event: RunEvent): void {
         : priorGate?.timeoutAction === undefined
           ? {}
           : { timeoutAction: priorGate.timeoutAction }),
+      ...(event.type === 'human_gate:paused' && event.timeoutMs !== undefined
+        ? { timeoutMs: event.timeoutMs }
+        : priorGate?.timeoutMs === undefined
+          ? {}
+          : { timeoutMs: priorGate.timeoutMs }),
       // A budget gate emits BOTH `budget:paused` then a companion `human_gate:paused` with the SAME gateId
       // (engine `#settlePaused`). OR the flag so the later human_gate:paused never downgrades a budget gate
       // to a plain human gate on reconstruction — else a resumed `rejected` budget gate would not fail the
@@ -501,6 +517,7 @@ export function reconstructCheckpointState(
       isBudgetGate: entry.isBudgetGate,
       ...(entry.expiresAt === undefined ? {} : { expiresAt: entry.expiresAt }),
       ...(entry.timeoutAction === undefined ? {} : { timeoutAction: entry.timeoutAction }),
+      ...(entry.timeoutMs === undefined ? {} : { timeoutMs: entry.timeoutMs }),
     })),
     pendingMediaJobs: [...acc.pendingMediaJobs.values()],
     resolvedGateIds: [...acc.resolvedGateIds],
