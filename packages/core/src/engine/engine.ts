@@ -2328,10 +2328,7 @@ class RunExecution {
       // outcome. The scope is disposed on every exit, success included.
       const pollDeadline = this.#openPollDeadline(job);
       try {
-        status =
-          pollDeadline === undefined
-            ? await this.#executor.pollMediaJob(submission, this.#abort.signal)
-            : await this.#racePoll(pollDeadline, submission);
+        status = await this.#racePoll(pollDeadline, submission);
       } catch {
         // A cancel (the abort surfaced as a throw) / terminal / cleared job → return silently; the #settle
         // path emits run:cancelled. Only a genuine poll fault on a live job settles node:failed.
@@ -2371,12 +2368,19 @@ class RunExecution {
   }
 
   /**
-   * Open a deadline for ONE poll call, or `undefined` when the host wired no timer port (the same
-   * both-or-neither shape `FallbackChain#openDeadline` uses — half a deadline is not a smaller guarantee,
-   * it is none). Clamped to the job's remaining `deadlineAt`; a job already past it never reaches here,
-   * because `#pollMediaJob` short-circuits at the top of the tick.
+   * Open a deadline for ONE poll call.
+   *
+   * **It always returns one** — unlike `FallbackChain#openDeadline` and `openGenerativeDeadline`, whose
+   * both-or-neither checks are real because THEIR deps are optional. `ExecutionHost.setTimer` and
+   * `.newAbortController` are required members, so there is no host that can reach this without them. An
+   * earlier version declared `| undefined` and had the caller branch on it; the branch was unreachable and
+   * its docblock described a host that cannot exist.
+   *
+   * Clamped to the job's remaining `deadlineAt`. The top-of-tick short-circuit is a strict `>`, so a job at
+   * EXACTLY its deadline still reaches here and arms zero — harmless (the same retryable terminal either
+   * way), and stated because "a job already past it never reaches here" is off by that boundary.
    */
-  #openPollDeadline(job: ParkedMediaJob): DeadlineScope | undefined {
+  #openPollDeadline(job: ParkedMediaJob): DeadlineScope {
     const remainingToJobDeadlineMs = Math.max(
       0,
       Date.parse(job.deadlineAt) - Date.parse(this.#host.clock.now()),

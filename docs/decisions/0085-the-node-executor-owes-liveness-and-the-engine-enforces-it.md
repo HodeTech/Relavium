@@ -426,7 +426,21 @@ These land with the implementation, not after it:
 - **`run_timeout` now names three things**, so the code is narrower than its meaning. Mitigated by
   `error.nodeId` and by §9's doc obligation, and preferred over widening a closed taxonomy every surface
   switches on.
-- **Two new one-shot `work` timers join the run loop** — the node deadline and the post-abort grace window
+- **Two new one-shot timers join the run loop** — the node deadline and the post-abort grace window
+  — alongside the existing run timeout, gate timeout, retry backoff and media-job poll.
+
+  > **Amended 2026-08-27 during implementation: they land as a THIRD kind, `'deadline'`, not as `work`.**
+  > This paragraph said `work` because when it was written `TimerKind` had two members. Implementing
+  > `CR-21c` produced the third: arming a bound over an in-flight call as `work` broke six media tests at
+  > once, because a drive-to-quiescence loop fires every armed `work` timer, so a backstop swept into that
+  > set trips the instant it is armed and every media test becomes a timeout test. The run is not waiting ON
+  > a deadline — it waits on the CALL, and the timer matters only if the call does not come back.
+  >
+  > The distinction is a TEST-harness one and changes nothing about production ref-counting. A first version
+  > also had the CLI host `unref` the new kind; `hostDeadlineTimer`'s docblock records the measurement that
+  > refutes it, taken against this ADR's own motivating shape — a `new Promise(() => {})` holding no socket:
+  > the loop drained, the process exited with a bare code, and the deadline never fired. A hung executor is
+  > precisely that shape, so these two timers hold the loop open exactly as a `work` timer would.
   — alongside the existing run timeout, gate timeout, retry backoff and media-job poll. Mitigated by
   reusing the one injected `setTimer` port, so they are disarmed and counted by the same harness as the
   rest.

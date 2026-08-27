@@ -198,9 +198,9 @@ export type SetTimer = (ms: number, onFire: () => void, kind?: TimerKind) => () 
  *   times, and something observable happens when it does.
  * - **`liveness`**: firing advances NOTHING. Today this is only the ADR-0079 §6 lease heartbeat: it re-arms
  *   itself for as long as the run lives, and its whole job is to tell another process "still here".
- * - **`deadline`**: a BACKSTOP over work that is already in flight — a bounded `pollMediaJob` call
- *   (`CR-21c`), a bounded `generateMedia` submission (`CR-21b`), and ADR-0085's node deadline and grace
- *   window. Firing one does advance the run, so it is not `liveness`; but the run is not waiting ON it, and
+ * - **`deadline`**: a BACKSTOP over work that is already in flight — the bounded `pollMediaJob` call
+ *   (`CR-21c`) and ADR-0085's node deadline and grace window. Firing one does advance the run, so it is not
+ *   `liveness`; but the run is not waiting ON it, and
  *   that is what separates it from `work`. It is waiting on the CALL, and the timer only matters if the call
  *   does not come back.
  *
@@ -209,6 +209,14 @@ export type SetTimer = (ms: number, onFire: () => void, kind?: TimerKind) => () 
  *   armed, and every media-job test became a timeout test. Firing "what the run is waiting on" must not mean
  *   "assert that the in-flight call timed out". `fireDeadlines()` trips these deliberately, for the tests
  *   whose subject they are.
+ *
+ *   **Two things this kind is NOT.** It is not a production ref-counting decision: a deadline holds the
+ *   event loop open exactly as a `work` timer does, because a hung callee may hold no socket at all and the
+ *   backstop is then the only thing that will ever unblock the run — `hostDeadlineTimer` in the CLI records
+ *   the measurement, taken against a `new Promise(() => {})`. And it does not cover `CR-21b`'s
+ *   `generateMedia` bound, which reaches its timer through `AgentRunnerDeps.setTimer` — a
+ *   `SetDeadlineTimer`, whose signature carries no kind at all. That bound is real and tested; it simply is
+ *   not tagged, because nothing in its path can tag it.
  *
  * Conflating the kinds costs real things in every direction. In a test, `fireTimers()` drives a run forward by
  * firing what it is waiting on — a self-re-arming beat in that set means a drive-to-quiescence loop never

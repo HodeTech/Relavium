@@ -61,11 +61,16 @@ export interface AbortControllerLike {
  * while this signature stays honest about the only two things a deadline needs. The assignability rests
  * specifically on that third parameter being OPTIONAL; making it required breaks it.
  *
- * **The narrowing is a one-way door, recorded rather than discovered later.** Because the kind cannot be
- * passed, `openDeadline` structurally cannot arm a `liveness` timer — one that must not hold the event loop
- * open and must not be swept by a test's `fireTimers()`. That is correct today: both implementations default
- * `kind = 'work'`, and ADR-0085's Consequences say both timers it adds ARE `work`. A future deadline that
- * genuinely needs `liveness` has to widen this signature here, not work around it at a call site.
+ * **The narrowing does not decide the kind — the CALLER does, and that is the resolution.** Because no kind
+ * crosses this signature, a consumer that needs one binds it at the call site:
+ * `(ms, fire) => host.setTimer(ms, fire, 'deadline')`. The engine does exactly that for the media-poll bound
+ * and for ADR-0085's node deadline and grace window, all three of which are the `'deadline'` kind — a
+ * backstop over work already in flight, which a test's `fireTimers()` must not sweep.
+ *
+ * An earlier version of this paragraph called the narrowing "a one-way door" and said a future consumer
+ * needing a different kind would have to widen the signature here. That was wrong twice over: the call-site
+ * binding is a supported shape rather than a workaround, and it also asserted that ADR-0085's two timers are
+ * `work` — which its Consequences said at the time and its 2026-08-27 amendment corrects.
  */
 export type SetDeadlineTimer = (ms: number, fire: () => void) => () => void;
 

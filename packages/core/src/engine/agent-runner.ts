@@ -650,7 +650,7 @@ async function executeGenerativeMedia(
     // constant inside `@relavium/llm` deliberately, so reaching for it would widen that package's public
     // surface to let the engine bound a media call — and would couple two budgets answering different
     // questions. Equal today, independent by construction; the reasoning lives with the constant.
-    const deadline = openGenerativeDeadline(deps);
+    const deadline = openGenerativeDeadline(deps, ctx.signal);
     try {
       // From this call onward the provider may have accepted/billed the generation even if its SDK throws or omits
       // a terminal payload. Preserve the bounded reservation in those uncertain paths; only credential resolution
@@ -1045,11 +1045,26 @@ function resolveGenKnobs(
  * both-or-neither shape `FallbackChain#openDeadline` uses (ADR-0082 §6): a chain given only one primitive
  * keeps the old unbounded behaviour rather than pretending to a guarantee it cannot make.
  */
-function openGenerativeDeadline(deps: AgentRunnerDeps): DeadlineScope | undefined {
+function openGenerativeDeadline(
+  deps: AgentRunnerDeps,
+  callerSignal: AbortSignalLike,
+): DeadlineScope | undefined {
   const newController = deps.newAbortController;
   const setTimer = deps.setTimer;
   if (newController === undefined || setTimer === undefined) return undefined;
-  return openDeadline(MEDIA_GEN_SUBMIT_TIMEOUT_MS, newController, setTimer);
+  // **`callerSignal` is REQUIRED here, not optional, and omitting it shipped a regression.** The scope's
+  // merged signal REPLACES `ctx.signal` on the request, so the merge is the only thing still connecting a
+  // run cancel to the adapter. Opened without it, three things broke at once: a well-behaved adapter never
+  // saw the cancel (it held a controller only the 120 s timer ever aborts), `race()` had no caller waker so
+  // the node waited out the full bound after a Ctrl-C, and `classify()` could never return `'caller'` —
+  // making the `cancelled` arm at the call site dead code that reported a cancel as a retryable
+  // `provider_unavailable`.
+  //
+  // That is `PR83-03`'s defect one call site over, and `deadline.ts`'s own `callerCancelled` docblock
+  // records the measurement from the first time: "120 seconds of a cancel that looks ignored". Both siblings
+  // pass one — `FallbackChain#openDeadline` its `req.signal`, the engine's `#openPollDeadline` its
+  // `#abort.signal` — so this is the parameter, not a parameter.
+  return openDeadline(MEDIA_GEN_SUBMIT_TIMEOUT_MS, newController, setTimer, callerSignal);
 }
 
 /** Forward only the platform-level chain capabilities the host supplies. */

@@ -43,6 +43,8 @@ import {
   type DurableWriteContext,
   type MediaStore,
   type RunEvent,
+  MEDIA_JOB_POLL_DEFAULTS,
+  MEDIA_GEN_SUBMIT_TIMEOUT_MS,
 } from '@relavium/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
 
@@ -954,6 +956,61 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(terminal?.type).toBe('run:failed');
     expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('provider_unavailable');
     expect(host.deadlineCount()).toBe(0); // …and the backstop is disposed, not leaked
+  });
+
+  it("CR-21c: the poll bound is CLAMPED to the job's remaining deadline", async () => {
+    // The clause the commit called "what makes the item's title true" had zero coverage: every other test
+    // runs with ~1 799 997 ms left of the 1 800 000 ms job deadline, so `pollCallTimeoutMs` always wins the
+    // `min` and deleting the clamp entirely leaves them green. Without it a job outlives its own deadline by
+    // up to one full poll call, which is the defect `CR-21c` names.
+    const store = new InMemoryRunStore();
+    const base = createInMemoryHost({ store, mediaStore: stubMediaStore() });
+    let submittedAt = 0;
+    const armedDeadlines: number[] = [];
+    // Advance the clock to 10 s before the job's own deadline once it has been submitted, so the REMAINING
+    // time is the smaller of the two and the clamp is the thing under test.
+    const host: typeof base = {
+      ...base,
+      clock: {
+        now: () =>
+          submittedAt === 0
+            ? base.clock.now()
+            : new Date(submittedAt + MEDIA_JOB_POLL_DEFAULTS.deadlineMs - 10_000).toISOString(),
+      },
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'deadline') armedDeadlines.push(ms);
+        return base.setTimer(ms, onFire, kind);
+      },
+    };
+    const job = asyncMediaProvider([{ state: 'pending' }, { state: 'done', media: IMAGE_PART }]);
+    const engine = buildEngine(
+      host,
+      () => job.provider,
+      () => 'generative',
+    );
+    const handle = engine.start({ workflow: GENERATIVE_OUT, inputs: INPUTS });
+    const events: RunEvent[] = [];
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        events.push(event);
+        if (event.type === 'media_job:submitted' && submittedAt === 0) {
+          submittedAt = Date.parse(event.startedAt);
+        }
+        if (event.type === 'run:completed' || event.type === 'run:failed') settled = true;
+      }
+    })();
+    for (let i = 0; i < 600 && !settled; i += 1) {
+      await Promise.resolve();
+      if (host.armedCount() > 0) host.fireTimers();
+    }
+    await consume;
+
+    // The poll bound came from the REMAINING deadline, not the 30 s constant.
+    const pollBounds = armedDeadlines.filter((ms) => ms !== MEDIA_GEN_SUBMIT_TIMEOUT_MS);
+    expect(pollBounds.length).toBeGreaterThan(0);
+    expect(Math.max(...pollBounds)).toBeLessThan(MEDIA_JOB_POLL_DEFAULTS.pollCallTimeoutMs);
+    expect(Math.max(...pollBounds)).toBeLessThanOrEqual(10_000);
   });
 
   it('CR-21b: a generateMedia submission that never settles is bounded too', async () => {
