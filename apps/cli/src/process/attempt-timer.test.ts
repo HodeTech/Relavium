@@ -1,5 +1,5 @@
 /**
- * `hostAttemptTimer` / `hostAbortController` — the two primitives behind ADR-0082's per-attempt deadline.
+ * `hostDeadlineTimer` / `hostAbortController` — the two primitives behind ADR-0082's per-attempt deadline.
  *
  * They had no tests, and the one property that most needed pinning is invisible in a unit assertion: an
  * `unref`'d timer does not hold the event loop, so with nothing else referenced the process exits and the
@@ -12,19 +12,19 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import { hostAbortController, hostAttemptTimer } from './sleep.js';
+import { hostAbortController, hostDeadlineTimer } from './sleep.js';
 
-describe('hostAttemptTimer', () => {
+describe('hostDeadlineTimer', () => {
   it('fires after the delay, and the disarm stops it', async () => {
     let fired = 0;
-    const disarm = hostAttemptTimer(1, () => {
+    const disarm = hostDeadlineTimer(1, () => {
       fired += 1;
     });
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(fired).toBe(1);
 
     let second = 0;
-    hostAttemptTimer(1, () => {
+    hostDeadlineTimer(1, () => {
       second += 1;
     })();
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -40,7 +40,7 @@ describe('hostAttemptTimer', () => {
     //
     // **The child imports the REAL function.** A first version of this test inlined a hand-written
     // `setTimeout` and merely restated Node's own semantics — a review put `timer.unref()` back into
-    // `hostAttemptTimer` and all three tests here stayed green. It was measuring the runtime, not the code.
+    // `hostDeadlineTimer` and all three tests here stayed green. It was measuring the runtime, not the code.
     // `--experimental-strip-types` EXPLICITLY, because the child imports a `.ts` file. Node unflagged type
     // stripping in 22.18, and this project's floor is 22.13 (ADR-0067) — where the flag exists but is off,
     // so the child died with `ERR_UNKNOWN_FILE_EXTENSION` on the one CI leg that runs the exact floor. The
@@ -51,16 +51,16 @@ describe('hostAttemptTimer', () => {
         ['--experimental-strip-types', '--no-warnings', '--input-type=module', '-e', source],
         { encoding: 'utf8' },
       );
-    const importReal = `import { hostAttemptTimer } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, 'sleep.ts')).href)};`;
+    const importReal = `import { hostDeadlineTimer } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, 'sleep.ts')).href)};`;
 
     const out = child(`
       ${importReal}
-      hostAttemptTimer(40, () => { console.log('FIRED'); });
+      hostDeadlineTimer(40, () => { console.log('FIRED'); });
       new Promise(() => {});   // an uncooperative provider: awaits forever, references nothing
     `);
     expect(out).toContain('FIRED');
 
-    // The negative control — what the first version of `hostAttemptTimer` did — proving the assertion above
+    // The negative control — what the first version of `hostDeadlineTimer` did — proving the assertion above
     // discriminates rather than merely observing that timers fire.
     const unrefd = child(`
       const t = setTimeout(() => { console.log('FIRED'); }, 40);

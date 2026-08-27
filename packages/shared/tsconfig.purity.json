@@ -1,0 +1,22 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // The platform-free GUARD on the schema/type package: it must compile with NO ambient Node/DOM
+    // types, so a stray `process` / `Buffer` / `AbortSignal` in source is a TS error. `@relavium/shared`
+    // is imported by every other package — the engine (which CLAUDE.md rule 5 requires to run in Node,
+    // the Tauri WebView, the extension host and a Bun worker alike), the CLI, and the seam — so a
+    // platform global that leaks in here leaks everywhere.
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["src/**/*.ts"],
+  // Tests are excluded, and this exclusion is the whole point of the file existing. A `*.test.ts`
+  // imports `vitest`, which transitively pulls in `@types/node` ambient globals and silently defeats
+  // the `types: []` gate for EVERY file in the program. Measured 2026-08-27: with the tests included,
+  // appending `process.env["X"]` to `src/deadline.ts` typechecked clean under `tsconfig.json` — while
+  // `tsconfig.build.json` (which excludes tests) reported three `TS2591` errors. So the guard the
+  // sibling config's own comment claimed to be did not hold where it was written. Mirrors
+  // `packages/llm/tsconfig.seam.json` and `packages/core/tsconfig.purity.json`, which already carry
+  // this exclusion for the same reason.
+  "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts"]
+}

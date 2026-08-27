@@ -2,8 +2,12 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     // Typecheck-only config: no emit, so rootDir/outDir live in tsconfig.build.json.
-    // `types: []` is the platform-type boundary — no ambient @types/node here, so a
-    // stray `process`/`Buffer` is a TS error (this, not ESLint globals, is the guard).
+    // `types: []` is stated here too, but it is NOT the guard — this program includes
+    // `*.test.ts`, and a test's `vitest` import transitively pulls in `@types/node`
+    // ambient globals, which defeats `types: []` for every file in the program. The
+    // real guard is tsconfig.purity.json, which excludes tests and is wired into the
+    // `typecheck` script beside this one (mirroring llm's seam config and core's purity
+    // config). This config's job is full coverage — it type-checks the tests too.
     "noEmit": true,
     "types": []
   },

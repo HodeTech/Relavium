@@ -141,14 +141,14 @@ describe('the per-attempt deadline is wired on every chain-building surface (ADR
       // BOTH halves. `AgentRunnerDeps.newAbortController` is OPTIONAL, so deleting it here typechecks,
       // lints, and leaves the whole CLI suite green — while `#openDeadline` returns `undefined` and both
       // commands go back to fully unbounded. A review measured exactly that.
-      needles: [/setTimer:\s*hostAttemptTimer/, /newAbortController:\s*hostAbortController/],
+      needles: [/setTimer:\s*hostDeadlineTimer/, /newAbortController:\s*hostAbortController/],
     },
     {
       file: 'chat/session-host.ts',
       what: 'every session surface — `chat`, `chat-resume`, `agent run`, the Home',
       // `SessionDeps.newAbortController` is REQUIRED, so tsc catches its absence here; the timer is the
       // half that can go missing silently.
-      needles: [/setTimer:\s*hostAttemptTimer/],
+      needles: [/setTimer:\s*hostDeadlineTimer/],
     },
   ];
 

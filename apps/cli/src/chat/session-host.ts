@@ -54,7 +54,7 @@ import {
 } from './effort-notice.js';
 import { resolveChatAgentSource, type ResolvedChatAgent } from './agent-source.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
-import { hostAttemptTimer, hostSleep } from '../process/sleep.js';
+import { hostDeadlineTimer, hostSleep } from '../process/sleep.js';
 
 /**
  * Assemble a ready-to-run `relavium chat` session over `@relavium/core`'s {@link AgentSession} (2.M — the
@@ -410,7 +410,7 @@ function buildSessionRuntime(
     sleep: hostSleep,
     // ADR-0082 §6's per-attempt deadline. The controller this host already supplies for the per-turn cancel
     // doubles as the deadline's merged signal; the TIMER is what arms it.
-    setTimer: hostAttemptTimer,
+    setTimer: hostDeadlineTimer,
     now: opts.now,
     // Node's AbortController satisfies the engine's structural AbortControllerLike (abort() + signal).
     newAbortController: () => new AbortController(),

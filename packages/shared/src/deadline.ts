@@ -27,13 +27,17 @@
  * both already depend on. §9 chose the move. `AbortControllerLike` came with it: `@relavium/llm` and
  * `@relavium/core` had each declared their own byte-identical copy.
  *
- * **Its tests deliberately stay in `@relavium/llm`** (`attempt-deadline.test.ts`), and the reason is a real
- * trade rather than an oversight. This package sets `types: []` so a stray `process`/`Buffer` is a compile
- * error — that boundary is the guard, not a lint rule. The two most load-bearing tests here need
- * `process.on('unhandledRejection')` to prove the abandoned step is discarded HANDLED (a defect a review
- * found by measuring `unhandled= 1`). Relaxing `types: []` to gain file adjacency would trade an
- * architectural guarantee for a filename, and splitting one coherent suite across two packages reads worse
- * than keeping it whole. The tests exercise this code through the re-export.
+ * **Its tests live beside it** (`deadline.test.ts`), except two. The move first left the whole suite in
+ * `@relavium/llm`, reasoning that this package's `types: []` forbids the `process.on('unhandledRejection')`
+ * two cases need. Two measurements retired that reasoning. The tests execute this package from `dist/`, so
+ * V8 attributed **0%** to this file while the 90% floor that had guarded the code (`vitest.config.ts` covers
+ * `packages/llm/src/**`, never `packages/shared/src/**`) was left holding a re-export shell scoring a
+ * perfect 100 — the enforced number rose as the guarantee vanished. And `types: []` was not, at that moment,
+ * doing the work claimed for it: `tsconfig.json` includes `*.test.ts`, whose `vitest` import pulls in
+ * `@types/node` and defeats the gate for the whole program. That is now fixed by `tsconfig.purity.json`,
+ * which excludes tests the way `packages/llm/tsconfig.seam.json` and `packages/core/tsconfig.purity.json`
+ * already did — so the boundary is real, and the two `process`-dependent cases stay in `@relavium/llm`
+ * because of a guard that now actually bites rather than one that merely read well.
  */
 
 import type { AbortSignalLike } from './content.js';
@@ -54,7 +58,14 @@ export interface AbortControllerLike {
  *
  * Deliberately narrower than the engine's own `SetTimer`, which carries a third `TimerKind` argument
  * (ADR-0036). A `SetTimer` is assignable to this, so a host wires one port and both consumers accept it,
- * while this signature stays honest about the only two things a deadline needs.
+ * while this signature stays honest about the only two things a deadline needs. The assignability rests
+ * specifically on that third parameter being OPTIONAL; making it required breaks it.
+ *
+ * **The narrowing is a one-way door, recorded rather than discovered later.** Because the kind cannot be
+ * passed, `openDeadline` structurally cannot arm a `liveness` timer — one that must not hold the event loop
+ * open and must not be swept by a test's `fireTimers()`. That is correct today: both implementations default
+ * `kind = 'work'`, and ADR-0085's Consequences say both timers it adds ARE `work`. A future deadline that
+ * genuinely needs `liveness` has to widen this signature here, not work around it at a call site.
  */
 export type SetDeadlineTimer = (ms: number, fire: () => void) => () => void;
 
