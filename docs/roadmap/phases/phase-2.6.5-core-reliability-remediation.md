@@ -270,7 +270,7 @@ to correct.
 | `CR-20` | made (honour `timeout_ms`; ABSOLUTE per node, `run_timeout`/`retryable: false`) | [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | no | — |
 | `CR-21` | made (per-attempt deadline) | [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) (with `CR-14`'s) | no | — |
 | `CR-21b` | made (apply ADR-0082 §5's hard race to the submission) | — · ADR-0082 §10 **names** it and explicitly declines to decide it; §5 supplies the mechanism | no | — |
-| `CR-21c` | shape made (bound each poll CALL, not only the loop); **the bound VALUE is open** — see the item | with `CR-21b`'s | no | — |
+| `CR-21c` | made 2026-08-27 (bound each poll CALL, not only the loop; a new `pollCallTimeoutMs` = 30 000, clamped to the remaining `deadlineAt`) | with `CR-21b`'s | no | — |
 | `CR-22` | made (absolute deadlines) | — | no | — |
 | `CR-23` | made (10 s grace off the abort signal; per-vertex generation fence; **no quarantine**, risk accepted with a named trigger) | [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | no | — |
 | `CR-30` | made — implement [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s accepted no-drop producer-await | none (already decided) | no | — |
@@ -1037,17 +1037,34 @@ Splitting them would mean bounding a media job's first call and leaving its next
 job within that bound rather than parking the run forever; the loop's own `deadlineAt` is unchanged, and a
 per-call timeout still classifies as ADR-0045 §3's retryable `provider_unavailable`.
 
-> **The bound VALUE is an open decision, and saying so is the point.** The SHAPE is settled — bound the call,
-> not only the loop. The number is not, and `CR-21b` cannot lend it one: `CR-21b` inherits ADR-0082 §6's
-> 120 s because it bounds a *generation*, while this bounds a *status poll*, and no ADR names a figure for
-> that. Held open the way `CR-31`/`CR-32` hold their cap values, rather than chosen in passing during
-> implementation — which is the failure mode discipline rule 1 exists to prevent.
+> **The bound value — settled 2026-08-27, and the measurement inverted the reasoning that produced the first
+> proposal.** A new `pollCallTimeoutMs: 30_000` joins `MEDIA_JOB_POLL_DEFAULTS`
+> (`packages/shared/src/constants.ts`), and every call is additionally clamped to
+> `min(pollCallTimeoutMs, deadlineAt − now)`.
 >
-> **The proposal to settle it against**, recorded so the decision is a yes/no rather than a blank page:
-> ADR-0045 §7 already configures `media_job_poll_max_ms` (30 000). A single poll that outlives the maximum
-> interval between polls is, by that config's own logic, no longer polling — so deriving the per-call bound
-> from the existing key costs no new configuration surface and no new default to justify. The alternative is
-> a fresh `media_job_poll_call_timeout_ms`, which is more precise and one more knob nobody has asked for.
+> **Why generous rather than tight, which is the opposite of the instinct.** A single failed poll settles the
+> whole job: `#pollMediaJob`'s catch calls `#settleMediaJobFailed` with a retryable `provider_unavailable`,
+> and a parked media node does **not** re-enter the node-retry wrapper — the automatic re-submit is a
+> [deferred item](../deferred-tasks.md), not shipped. So a bound that is too tight converts one slow status
+> check into a dead, already-paid thirty-minute job with no resubmit, while a bound that is too loose only
+> makes the run wait longer before failing. The defect is *unboundedness*; tightness is lost money. The two
+> directions are not symmetric, so the value leans long.
+>
+> **Why a new constant rather than reusing `media_job_poll_max_ms`**, which this document proposed first and
+> which measurement did not support: `pollMaxMs` is the maximum *interval between* polls, not the duration
+> *of* one. The number it yields happens to be right, but the derivation locks together two quantities that
+> may legitimately diverge, and a later change to the polling cadence would silently move a liveness bound.
+> Naming the quantity costs one constant — and not a user-facing knob, since the three `[defaults].*`
+> overrides that already validate are **not read by the engine at all** yet (1.AH host-wiring).
+>
+> **Why not 15 000, matching `LIST_MODELS_TIMEOUT_MS`** — the closest precedent by *shape* (a bounded
+> provider GET on the same seam) and the wrong one by *stake*: a failed `listModels` degrades to the static
+> catalog, a failed poll destroys paid work.
+>
+> **The clamp is what makes this item's title true.** Bounding the call alone still lets a job outlive its
+> own `deadlineAt` by up to one call, because `deadlineAt` is only consulted at the top of the tick. Taking
+> the remaining time as the ceiling closes that tail; the `remaining <= 0` case is already handled by the
+> existing top-of-tick check, so the clamp adds no new branch of its own.
 
 ### CR-22 — Gate and run deadlines are not preserved across resume · High
 The checkpoint's pending gate carries gate/node/budget data but not an absolute deadline, and the whole-run
