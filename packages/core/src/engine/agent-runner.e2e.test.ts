@@ -89,6 +89,35 @@ const echoToolDef: CoreToolDef = {
   dispatch: () => Promise.reject(new Error('echoToolDef dispatch is not used directly')),
 };
 
+// **The budgeted twin, and it exists for one reason.** `agent-turn.ts` REBUILDS its `ChainCapabilities`
+// when `preEgress` is defined, and the deadline ports survive that rebuild only by an object spread. A
+// workflow with no `budget:` block gets no governor, so `ctx.preEgress` is `undefined` and the turn takes
+// the pass-through branch instead. Measured: dropping the ports inside the rebuild left all 1335 core tests
+// green — every budgeted run silently reverted to unbounded and nothing noticed.
+const BUDGETED_WORKFLOW = parseWorkflow(
+  `schema_version: '1.0'
+workflow:
+  id: e2e-agent-budgeted
+  budget:
+    max_cost_microcents: 5000000
+    on_exceed: warn
+  inputs:
+    - name: text
+      type: string
+  agents:
+    - id: summarizer
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: You summarize.
+  nodes:
+    - id: sum
+      type: agent
+      agent_ref: summarizer
+      prompt_template: 'Summarize: {{inputs.text}}'
+  edges: []
+`,
+);
+
 const WORKFLOW = parseWorkflow(
   `schema_version: '1.0'
 workflow:
@@ -1012,75 +1041,80 @@ workflow:
 });
 
 describe('AgentRunner — the ADR-0082 deadline ports actually reach the chain (workflow path)', () => {
-  it('arms the attempt deadline from `AgentRunnerDeps.setTimer`, and a hung provider fails the node', async () => {
-    // The workflow twin of `agent-session.test.ts`'s forwarding test, and it is a SEPARATE test because the
-    // two paths express "both or neither" differently: `agent-session.ts` gates BOTH keys on `setTimer`
-    // being present, while `chainCapabilities()` here spreads them INDEPENDENTLY. Same runtime outcome,
-    // two code paths — so one test cannot cover both, and neither was covered at all.
-    //
-    // Drop `setTimer` from `chainCapabilities()` and this hangs: every workflow agent node reverts to an
-    // unbounded provider wait, with the CLI host's source-grep guard still green.
-    const armed: number[] = [];
-    const hung: LlmProvider = {
-      id: 'anthropic',
-      supports: CAPS,
-      // THROWS rather than hangs — this node streams, and the file's other doubles all throw here. A
-      // hanging `generate` would read as coverage of a path this test never takes.
-      generate: () => {
-        throw new Error('unused — this node streams');
-      },
-      stream: () => ({
-        [Symbol.asyncIterator]: () => ({ next: () => new Promise<never>(() => undefined) }),
-      }),
-    };
-
-    const engine = new WorkflowEngine({
-      host: createInMemoryHost(),
-      executor: createStandardNodeExecutor({
-        sandbox,
-        agent: {
-          resolveProvider: () => hung,
-          registry: noToolRegistry,
-          tools: [],
-          keyFor: () => 'k',
-          sleep: () => Promise.resolve(),
-          now: () => 1,
-          newAbortController: createAbortController,
-          attemptTimeoutMs: 45_000,
-          // Trips each attempt's deadline on the next microtask — a chain attempt opens its own scope, so
-          // firing only the first would leave a retry waiting on a timer nothing fires.
-          setTimer: (ms: number, onFire: () => void) => {
-            armed.push(ms);
-            queueMicrotask(onFire);
-            return () => undefined;
-          },
+  for (const variant of [
+    { label: 'no budget block (the pass-through branch)', workflow: WORKFLOW },
+    { label: 'a budget block (the rebuild branch)', workflow: BUDGETED_WORKFLOW },
+  ] as const) {
+    it(`arms the attempt deadline from \`AgentRunnerDeps.setTimer\` — ${variant.label}`, async () => {
+      // The workflow twin of `agent-session.test.ts`'s forwarding test, and it is a SEPARATE test because the
+      // two paths express "both or neither" differently: `agent-session.ts` gates BOTH keys on `setTimer`
+      // being present, while `chainCapabilities()` here spreads them INDEPENDENTLY. Same runtime outcome,
+      // two code paths — so one test cannot cover both, and neither was covered at all.
+      //
+      // Drop `setTimer` from `chainCapabilities()` and this hangs: every workflow agent node reverts to an
+      // unbounded provider wait, with the CLI host's source-grep guard still green.
+      const armed: number[] = [];
+      const hung: LlmProvider = {
+        id: 'anthropic',
+        supports: CAPS,
+        // THROWS rather than hangs — this node streams, and the file's other doubles all throw here. A
+        // hanging `generate` would read as coverage of a path this test never takes.
+        generate: () => {
+          throw new Error('unused — this node streams');
         },
-      }),
+        stream: () => ({
+          [Symbol.asyncIterator]: () => ({ next: () => new Promise<never>(() => undefined) }),
+        }),
+      };
+
+      const engine = new WorkflowEngine({
+        host: createInMemoryHost(),
+        executor: createStandardNodeExecutor({
+          sandbox,
+          agent: {
+            resolveProvider: () => hung,
+            registry: noToolRegistry,
+            tools: [],
+            keyFor: () => 'k',
+            sleep: () => Promise.resolve(),
+            now: () => 1,
+            newAbortController: createAbortController,
+            attemptTimeoutMs: 45_000,
+            // Trips each attempt's deadline on the next microtask — a chain attempt opens its own scope, so
+            // firing only the first would leave a retry waiting on a timer nothing fires.
+            setTimer: (ms: number, onFire: () => void) => {
+              armed.push(ms);
+              queueMicrotask(onFire);
+              return () => undefined;
+            },
+          },
+        }),
+      });
+
+      const handle = engine.start({ workflow: variant.workflow, inputs: { text: 'the report' } });
+      // Drain bounded microtasks BEFORE draining the run, so a missing timer port reddens on an assertion in
+      // ~0 ms instead of hanging out the 5 s vitest budget. The two failures then read differently: "the port
+      // was not forwarded" (`armed` empty) versus "the run deadlocked for an unrelated reason" (`armed`
+      // populated, the drain never ends) — a bare timeout cannot tell those apart.
+      for (let i = 0; i < 500 && armed.length === 0; i += 1) await Promise.resolve();
+
+      // **A NON-DEFAULT value, and that is the whole point.** Asserting 120_000 here would be hollow:
+      // `DEFAULT_ATTEMPT_TIMEOUT_MS` is exactly what `FallbackChain` falls back to when `attemptTimeoutMs`
+      // is ABSENT (`fallback-chain.ts`), so the assertion would pass whether or not the third port is
+      // forwarded. Measured: with both `attemptTimeoutMs` forwarding lines deleted, the whole core suite —
+      // this test included — stayed green. Asserting a value only the port can deliver break-verifies it.
+      expect(armed.length).toBeGreaterThan(0); // the timer port arrived — the assertion no guard made
+      expect(armed.every((ms) => ms === 45_000)).toBe(true); // …and so did the timeout port, intact
+
+      const events = await drain(handle);
+      const terminal = events.at(-1);
+      expect(terminal?.type).toBe('run:failed');
+      // …classified, not merely failed. ADR-0082 §5 maps a deadline abort to `timeout`, which
+      // `codeForLlmError` maps to the retryable `provider_unavailable`. Asserting only `run:failed` would stay
+      // green if a regression reclassified the deadline as a non-retryable `internal` — the exact property
+      // CR-21's acceptance names. The session twin asserts the code; this one did not.
+      expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('provider_unavailable');
+      assertGapFreeSeq(events);
     });
-
-    const handle = engine.start({ workflow: WORKFLOW, inputs: { text: 'the report' } });
-    // Drain bounded microtasks BEFORE draining the run, so a missing timer port reddens on an assertion in
-    // ~0 ms instead of hanging out the 5 s vitest budget. The two failures then read differently: "the port
-    // was not forwarded" (`armed` empty) versus "the run deadlocked for an unrelated reason" (`armed`
-    // populated, the drain never ends) — a bare timeout cannot tell those apart.
-    for (let i = 0; i < 500 && armed.length === 0; i += 1) await Promise.resolve();
-
-    // **A NON-DEFAULT value, and that is the whole point.** Asserting 120_000 here would be hollow:
-    // `DEFAULT_ATTEMPT_TIMEOUT_MS` is exactly what `FallbackChain` falls back to when `attemptTimeoutMs`
-    // is ABSENT (`fallback-chain.ts`), so the assertion would pass whether or not the third port is
-    // forwarded. Measured: with both `attemptTimeoutMs` forwarding lines deleted, the whole core suite —
-    // this test included — stayed green. Asserting a value only the port can deliver break-verifies it.
-    expect(armed.length).toBeGreaterThan(0); // the timer port arrived — the assertion no guard made
-    expect(armed.every((ms) => ms === 45_000)).toBe(true); // …and so did the timeout port, intact
-
-    const events = await drain(handle);
-    const terminal = events.at(-1);
-    expect(terminal?.type).toBe('run:failed');
-    // …classified, not merely failed. ADR-0082 §5 maps a deadline abort to `timeout`, which
-    // `codeForLlmError` maps to the retryable `provider_unavailable`. Asserting only `run:failed` would stay
-    // green if a regression reclassified the deadline as a non-retryable `internal` — the exact property
-    // CR-21's acceptance names. The session twin asserts the code; this one did not.
-    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('provider_unavailable');
-    assertGapFreeSeq(events);
-  });
+  }
 });

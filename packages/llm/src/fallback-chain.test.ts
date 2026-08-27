@@ -2506,6 +2506,85 @@ describe('FallbackChain — the grammar and the deadline are wired', () => {
     expect(pending.size).toBe(0); // …and disarmed on the way out
   });
 
+  it('disarms the deadline on the SUCCESS path too — both `stream` and `generate` (ADR-0082 §12.13)', async () => {
+    // §12.13 says "timer cleanup proven with a fake clock on every path, **including success**". It was
+    // proven for `openDeadline` in isolation (`attempt-deadline.test.ts`) and, at chain level, only on
+    // FAILURE paths — every existing assertion here follows a timeout or an error. Nothing proved the chain
+    // calls `dispose()` when the attempt simply works.
+    //
+    // Measured before writing this: making the stream's success exit leak its scope
+    // (`if (step.kind === 'done') { deadline = undefined; break; }`) left all 107 tests in this file and
+    // `attempt-deadline.test.ts` green. The docblock ten lines above the leak already names the cost — "a
+    // leaked timer holds the process awake, which on a CLI is a hang the user cannot explain" — so the risk
+    // was identified and simply unguarded.
+    //
+    // **And the first break-verify of the `generate` arm was a NO-OP, which is worth recording.** Guarding
+    // its `finally` with `if (record.outcome === 'failed')` looked like a leak and changed nothing, because
+    // the attempt-record factory DEFAULTS `outcome` to `'failed'` (`fallback-chain.ts`'s
+    // `outcome: extra?.outcome ?? 'failed'`) — so the condition was always true and `dispose()` still ran.
+    // The mutation applied textually and was inert semantically. Deleting the `dispose()` line outright
+    // reddens both arms. This is exactly what the phase's discipline rule 2 means by "verify the mutation
+    // actually applied": a green suite under a mutation is evidence only once the mutation is known to bite.
+    for (const arm of ['stream', 'generate'] as const) {
+      const pending = new Set<() => void>();
+      let armed = 0;
+      let disarmed = 0;
+      const ok = makeProvider({
+        id: 'anthropic',
+        stream: () => streamFrom([{ type: 'text_delta', text: 'it worked' }, STOP_CHUNK]),
+        generate: () =>
+          Promise.resolve({
+            content: [{ type: 'text', text: 'it worked' }],
+            stopReason: 'stop' as const,
+            usage: { inputTokens: 1, outputTokens: 1 },
+            model: 'claude-opus-4-8',
+            provider: 'anthropic' as const,
+          }),
+      });
+      const { options } = makeOptions();
+      const chain = new FallbackChain([entry(ok, 'claude-opus-4-8')], {
+        ...options,
+        newAbortController: () => {
+          let aborted = false;
+          return {
+            signal: {
+              get aborted() {
+                return aborted;
+              },
+              addEventListener: () => undefined,
+              removeEventListener: () => undefined,
+            },
+            abort: () => {
+              aborted = true;
+            },
+          };
+        },
+        setTimer: (_ms, fire) => {
+          armed += 1;
+          pending.add(fire);
+          return () => {
+            disarmed += 1;
+            pending.delete(fire);
+          };
+        },
+      });
+
+      if (arm === 'stream') {
+        const chunks = await collect(chain.stream(userReq));
+        expect(chunks.some((c) => c.type === 'text_delta' && c.text === 'it worked')).toBe(true);
+      } else {
+        const result = await chain.generate(userReq);
+        expect(result.content[0]).toEqual({ type: 'text', text: 'it worked' });
+      }
+
+      // The attempt SUCCEEDED — and its timer is gone. `armed` is asserted first so a chain that armed
+      // nothing (a half-wired port, a refactor that dropped the scope) cannot pass this by vacuous zero.
+      expect(armed, `${arm}: the deadline was armed`).toBe(1);
+      expect(disarmed, `${arm}: …and disposed on the success path`).toBe(1);
+      expect(pending.size, `${arm}: no timer outlives the attempt`).toBe(0);
+    }
+  });
+
   it('a LATE chunk after a deadline abort produces no second attempt record and no cost update', async () => {
     // ADR-0082 §12.14, and it was missing — which mattered, because a review found a live defect on exactly
     // this path (an already-expired scope abandoning the in-flight `next()` unhandled). A provider that

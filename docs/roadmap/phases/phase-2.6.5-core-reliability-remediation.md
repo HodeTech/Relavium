@@ -130,6 +130,11 @@ shape.
 > behind **seven** ADRs, since `CR-92` shares `CR-10`'s and `CR-15`/`CR-17` share one. Each item had an Opus
 > and a Sonnet review round folded before the next one started.
 >
+> **A tenth item shipped in this PR and was only recognised on 2026-08-25:** `CR-21` (the per-attempt
+> provider deadline) is decided by ADR-0082 alongside `CR-14` and its code merged here. It is listed in the
+> `W1` closing register and added to the table below, so the batch history and the register agree on what
+> this PR contained.
+>
 > | Item | Closed | ADR |
 > |------|--------|-----|
 > | `CR-10` | 2026-08-11 | [ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) |
@@ -138,6 +143,7 @@ shape.
 > | `CR-12` | 2026-08-18 | [ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) |
 > | `CR-13` | 2026-08-18 | [ADR-0081](../../decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md) |
 > | `CR-14` | 2026-08-19 | [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) |
+> | `CR-21` | 2026-08-19 | with `CR-14`'s — recognised 2026-08-25, see above |
 > | `CR-15` · `CR-17` | 2026-08-19 | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) |
 > | `CR-16` | 2026-08-20 | [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md) |
 >
@@ -264,7 +270,7 @@ to correct.
 | `CR-20` | made (honour `timeout_ms`; ABSOLUTE per node, `run_timeout`/`retryable: false`) | [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | no | — |
 | `CR-21` | made (per-attempt deadline) | [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) (with `CR-14`'s) | no | — |
 | `CR-21b` | made (apply ADR-0082 §5's hard race to the submission) | — · ADR-0082 §10 **names** it and explicitly declines to decide it; §5 supplies the mechanism | no | — |
-| `CR-21c` | made (bound each poll CALL, not only the loop) | with `CR-21b`'s | no | — |
+| `CR-21c` | shape made (bound each poll CALL, not only the loop); **the bound VALUE is open** — see the item | with `CR-21b`'s | no | — |
 | `CR-22` | made (absolute deadlines) | — | no | — |
 | `CR-23` | made (10 s grace off the abort signal; per-vertex generation fence; **no quarantine**, risk accepted with a named trigger) | [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | no | — |
 | `CR-30` | made — implement [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s accepted no-drop producer-await | none (already decided) | no | — |
@@ -1030,6 +1036,18 @@ Splitting them would mean bounding a media job's first call and leaving its next
 **Fix + acceptance.** Race each poll call against a per-call deadline. A poll that never settles fails the
 job within that bound rather than parking the run forever; the loop's own `deadlineAt` is unchanged, and a
 per-call timeout still classifies as ADR-0045 §3's retryable `provider_unavailable`.
+
+> **The bound VALUE is an open decision, and saying so is the point.** The SHAPE is settled — bound the call,
+> not only the loop. The number is not, and `CR-21b` cannot lend it one: `CR-21b` inherits ADR-0082 §6's
+> 120 s because it bounds a *generation*, while this bounds a *status poll*, and no ADR names a figure for
+> that. Held open the way `CR-31`/`CR-32` hold their cap values, rather than chosen in passing during
+> implementation — which is the failure mode discipline rule 1 exists to prevent.
+>
+> **The proposal to settle it against**, recorded so the decision is a yes/no rather than a blank page:
+> ADR-0045 §7 already configures `media_job_poll_max_ms` (30 000). A single poll that outlives the maximum
+> interval between polls is, by that config's own logic, no longer polling — so deriving the per-call bound
+> from the existing key costs no new configuration surface and no new default to justify. The alternative is
+> a fresh `media_job_poll_call_timeout_ms`, which is more precise and one more knob nobody has asked for.
 
 ### CR-22 — Gate and run deadlines are not preserved across resume · High
 The checkpoint's pending gate carries gate/node/budget data but not an absolute deadline, and the whole-run
