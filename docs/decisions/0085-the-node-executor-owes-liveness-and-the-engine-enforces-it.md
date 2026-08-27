@@ -361,6 +361,15 @@ These land with the implementation, not after it:
   layering besides. It moves to `@relavium/shared` (where `AbortSignalLike` already lives, and where the
   duplicated `AbortControllerLike` definitions in `@relavium/llm` and `@relavium/core` can converge);
   `@relavium/llm` re-exports it and keeps `DEFAULT_ATTEMPT_TIMEOUT_MS`, which is an LLM-specific default.
+  **Landed 2026-08-27.** Two details worth recording because they were decisions, not mechanics. The
+  `SetAttemptTimer` type came across as `SetDeadlineTimer` — "attempt" names a provider call, and the engine's
+  node deadline is not one; the engine's own `SetTimer` (which carries ADR-0036's third `TimerKind` argument)
+  stays assignable to it, so one host port still serves both. And the **tests deliberately did not move**:
+  `@relavium/shared` sets `types: []` so a stray `process`/`Buffer` is a compile error, while the two
+  load-bearing cases need `process.on('unhandledRejection')` to prove the abandoned step is discarded
+  HANDLED. Relaxing that boundary to gain file adjacency would trade an architectural guard for a filename.
+  Proven live rather than assumed: breaking the caller-abort latch in the new `@relavium/shared` home reddens
+  three tests in `@relavium/llm`, so the re-export is the path under test.
 - ADR-0036 gains a dated **Amended by** note recording that its "structurally impossible" claim rests on a
   mechanism that did not exist until this ADR, and that §6 names the half still conditional on the store
   seam. ADRs are append-only; the original text stays. **Landed 2026-08-27** — ahead of the implementation,

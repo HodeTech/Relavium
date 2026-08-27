@@ -7,7 +7,7 @@ import {
   openDeadline,
   type AbortControllerLike,
   type DeadlineScope,
-  type SetAttemptTimer,
+  type SetDeadlineTimer,
 } from './attempt-deadline.js';
 import { isRetryable, LlmProviderError, makeLlmError } from './llm-error.js';
 import { verifyStreamGrammar } from './stream-grammar.js';
@@ -183,7 +183,7 @@ export interface FallbackChainOptions {
    * than half-applying the guarantee.
    */
   readonly newAbortController?: () => AbortControllerLike;
-  readonly setTimer?: SetAttemptTimer;
+  readonly setTimer?: SetDeadlineTimer;
   /** Per-attempt deadline in ms (default {@link DEFAULT_ATTEMPT_TIMEOUT_MS}). Must be finite and positive. */
   readonly attemptTimeoutMs?: number;
   /** Base backoff delay in ms before the first retry of an entry (default 250). */
@@ -365,7 +365,7 @@ export class FallbackChain {
   readonly #sleep: (ms: number, signal?: AbortSignalLike) => Promise<void>;
   readonly #attemptTimeoutMs: number;
   readonly #newAbortController: (() => AbortControllerLike) | undefined;
-  readonly #setTimer: SetAttemptTimer | undefined;
+  readonly #setTimer: SetDeadlineTimer | undefined;
   readonly #now: () => number;
   readonly #backoffBaseMs: number;
   readonly #backoffMaxMs: number;

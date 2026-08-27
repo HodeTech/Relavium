@@ -14,6 +14,7 @@ export * from './canonical.js';
 export * from './constants.js';
 export * from './declared-env.js';
 export * from './content.js';
+export * from './deadline.js';
 export * from './media-deinline.js';
 export * from './agent.js';
 export * from './node.js';

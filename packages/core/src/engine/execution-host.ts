@@ -16,6 +16,7 @@
  */
 
 import {
+  type AbortControllerLike,
   type AbortSignalLike,
   AppendConflictError,
   blocksResume,
@@ -60,11 +61,14 @@ export interface IdSource {
  * rule 5). A native `AbortController` (Node/browser/Bun) structurally satisfies it, so a real surface
  * injects `() => new AbortController()` and its `signal` is a genuine `AbortSignal` that `fetch` honours;
  * {@link createInMemoryHost} injects the in-house {@link createAbortController} for tests.
+ *
+ * **Re-exported, no longer declared here.** This package and `@relavium/llm` each carried a byte-identical
+ * copy until [ADR-0085](../../../../docs/decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md)
+ * §9 moved the deadline primitive that needs it into `@relavium/shared`. Two structural duplicates of one
+ * type are compatible right up to the day one of them gains a field, so the second copy is gone rather than
+ * kept in sync by hand. Every existing importer keeps importing it from here.
  */
-export interface AbortControllerLike {
-  readonly signal: AbortSignalLike;
-  abort: (reason?: unknown) => void;
-}
+export type { AbortControllerLike };
 
 /**
  * An in-house, platform-free {@link AbortControllerLike} — no ambient `AbortController`. Enough for the
