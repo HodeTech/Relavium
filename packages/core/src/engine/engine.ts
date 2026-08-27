@@ -725,7 +725,21 @@ class RunExecution {
     if (timeoutMs === undefined) {
       return;
     }
-    this.#runTimeoutDisarm = this.#host.setTimer(timeoutMs, () => {
+    // **The REMAINING time, not the full duration — `CR-22`.** `timeout_ms` is a bound on the run's total
+    // wall-clock (ADR-0028), and this method is called on a fresh `begin()` AND on both resume paths. Arming
+    // the full duration each time made the cap renew on every resume: a run crashed and resumed ten times got
+    // ten times its authored budget, which is the opposite of a cap. The engine already holds everything the
+    // fix needs — `#seedFromCheckpoint` restores `#startEpochMs` from the checkpoint's `startedAtMs`
+    // (deliberately, so a resumed run's terminal reports total wall-clock), and both resume call sites arm
+    // AFTER that seeding. So `#elapsedMs()` is the true pre-resume elapsed here, and nothing new is
+    // persisted: the absolute deadline is derived, not stored a second time.
+    //
+    // A run whose budget is ALREADY exhausted when it resumes arms at zero rather than being refused: the
+    // timer fires on the next tick and settles through the one `#onRunTimeout` path, so an expired resume and
+    // an expiring live run produce the identical `run:timeout` + `run_timeout` terminal. Refusing it here
+    // instead would be a second, differently-shaped exit for the same condition.
+    const remainingMs = Math.max(0, timeoutMs - this.#elapsedMs());
+    this.#runTimeoutDisarm = this.#host.setTimer(remainingMs, () => {
       void this.#onRunTimeout(timeoutMs);
     });
   }
@@ -932,14 +946,33 @@ class RunExecution {
       });
     }
     for (const gate of cp.pendingGates) {
-      // No gate-timeout timer is re-armed on rehydration: the gate this resume targets has its decision
-      // applied immediately. Re-arming a *remaining* gate's deadline is deferred to the Phase-2
-      // crash-reconciliation that re-arms from persisted policy + a real clock (shared-core-engine.md) —
-      // the data it needs (timeoutAction + expiresAt) is now carried on `human_gate:paused`, so no backfill.
       this.#pendingGates.set(gate.gateId, {
         vertexId: gate.nodeId,
         isBudgetGate: gate.isBudgetGate,
       });
+      // **Re-arm the gate's deadline against its ABSOLUTE `expiresAt` (`CR-22`).** This was deferred for a
+      // long time on the reasoning that "the gate this resume targets has its decision applied immediately"
+      // — true of the TARGET gate, and irrelevant to every other one. A multi-gate run, or a crash while
+      // parked, rehydrated its remaining gates with no timer at all, so their deadlines simply stopped
+      // existing until the next restart. The data was already durable on `human_gate:paused`, whose schema
+      // says it rides there for exactly this; only the fold and this loop were missing.
+      //
+      // The remaining time is derived from the absolute instant, so a run resumed ten times still expires
+      // when it always would have. A gate whose deadline has ALREADY passed arms at zero and fires on the
+      // next tick rather than being resolved inline here: the timeout then travels the one
+      // `#onGateTimeout` path, so a past-deadline resume and a live expiry produce the identical events in
+      // the identical order. Resolving it inline would be a second exit for one condition.
+      if (gate.expiresAt !== undefined && gate.timeoutAction !== undefined) {
+        const remainingMs = Math.max(
+          0,
+          Date.parse(gate.expiresAt) - Date.parse(this.#host.clock.now()),
+        );
+        const action = gate.timeoutAction;
+        const disarm = this.#host.setTimer(remainingMs, () => {
+          void this.#onGateTimeout(gate.gateId, gate.nodeId, action);
+        });
+        this.#gateTimers.set(gate.gateId, disarm);
+      }
     }
     // Re-seed totals BEFORE restoring submitted-job reservations: a committed job must reserve alongside the
     // checkpoint's known spend, and its reservation must exist before the first re-armed poll/schedule can run.

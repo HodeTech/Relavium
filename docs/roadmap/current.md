@@ -471,7 +471,7 @@ the exit rule and the execution order, and added two items (`CR-17` resume ident
 docs-only); `CR-64` came from the Batch 1 triage, `CR-21b` from ADR-0082 §10 and `CR-21c` from the `W2`
 document review on 2026-08-25, which is why the total has moved since the list was first written.
 
-> **Live status — 15 of 48 closed. `W0` and `W1` are both done; `W2` is in progress.**
+> **Live status — 16 of 48 closed. `W0` and `W1` are both done; `W2` is in progress.**
 >
 > - **Batch 1, merged 2026-08-11 (PR #82)** — the prerequisite (`#W15-1`), the oracle (`CR-90`, `CR-91`) and
 >   all of `W0` (`CR-01`–`CR-03`). `CR-64` was added in the same batch and is open.
@@ -483,8 +483,9 @@ document review on 2026-08-25, which is why the total has moved since the list w
 >   Its document review moved the count twice, and the two moves **cancel**: `CR-21` turns out to have
 >   shipped **with `CR-14`** in PR #83 (ADR-0082 decides both, and the execution graph above already
 >   scheduled them together) and only its heading was stale, while `CR-21c` — an unbounded individual
->   `pollMediaJob` call — was found during the same review and added. So `W2` is still **five** open items
->   (`CR-20`, `CR-21b`, `CR-21c`, `CR-22`, `CR-23`) out of six; the phase total moved 47 → 48, not the wave.
+>   `pollMediaJob` call — was found during the same review and added. `W2` was therefore still **five** open
+>   items out of six, not four; the phase total moved 47 → 48, not the wave. `CR-22` closed on 2026-08-27,
+>   leaving **four** — `CR-20`, `CR-21b`, `CR-21c`, `CR-23`.
 >
 > **Not to be confused with the 2.5.5 remediation's own `W2`** ("Shut the doors", in the graph above). Same
 > label, different phase: this one is 2.6.5's liveness wave.

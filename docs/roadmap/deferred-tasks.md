@@ -538,7 +538,13 @@ so directly: these "should remain visible rather than disappear behind the green
 > the deliberately-deferred forward work — each is a **Phase-2** concern that needs real persistence and/or
 > a store-level guarantee the in-memory reference cannot provide, recorded so it isn't lost.
 
-- [ ] **Re-arm a still-pending gate's timeout on cross-process rehydration** — `resumeFromCheckpoint` applies
+- [x] **Re-arm a still-pending gate's timeout on cross-process rehydration — ✅ Done (Phase 2.6.5 `CR-22`, 2026-08-27).**
+  Closed exactly as this note predicted: no backfill was needed, because `timeoutAction` + `expiresAt` were
+  already durable on `human_gate:paused`. The gap was one layer up — `reconstructCheckpointState`'s fold
+  dropped both fields, so `#seedFromCheckpoint` had nothing to re-arm from. The fold now keeps them and
+  rehydration arms at `expiresAt − now`; a past deadline arms at zero so it travels the same
+  `#onGateTimeout` path as a live expiry. The original entry follows.
+- [ ] ~~**Re-arm a still-pending gate's timeout on cross-process rehydration**~~ — `resumeFromCheckpoint` applies
   the target gate's decision immediately, but a *remaining* pending gate (multi-gate run, crash-while-paused)
   is rehydrated without re-arming its timer, so its deadline is lost until the next restart. The data needed
   (`timeoutAction` + `expiresAt`) is now persisted on `human_gate:paused` (PR #22), so no backfill — Phase-2

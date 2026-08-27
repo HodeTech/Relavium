@@ -1846,9 +1846,16 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     );
   });
 
-  it('arms no gate timer on rehydration (re-arm is a Phase-2 reconciliation concern)', async () => {
+  // **This test asserted the OPPOSITE until `CR-22`, and the reasoning it replaced is kept deliberately.**
+  // It read "arms no gate timer on rehydration (re-arm is a Phase-2 reconciliation concern)" and proved
+  // `armCalls === 0`. That behaviour was a real, documented deferral, and its justification was that "the
+  // gate this resume TARGETS has its decision applied immediately" — true of the target gate, and silent
+  // about every other one. A multi-gate run, or a crash while parked, rehydrated its remaining gates with no
+  // timer at all, so their deadlines stopped existing until the next restart. The data needed was already
+  // durable on `human_gate:paused` (its schema says it rides there for exactly this); only the checkpoint
+  // fold and the rehydration loop were missing. See ADR-0028 and `CR-22`.
+  it('re-arms a rehydrated gate at its REMAINING time, not its full `timeout_ms`', async () => {
     const store = new InMemoryRunStore();
-    // Process A: pause at a gate that carries a timeout.
     const engineA = engineWith(
       {
         g: () => ({
@@ -1860,24 +1867,31 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     );
     const handleA = engineA.start({ workflow: workflow(GATED) });
     let gateId = '';
+    let expiresAt = '';
     for await (const event of handleA.events) {
+      if (event.type === 'human_gate:paused') expiresAt = event.expiresAt ?? '';
       if (event.type === 'run:paused') {
         gateId = event.gateIds[0] ?? '';
         break;
       }
     }
-    // Process B rehydrates. Spy on setTimer to prove it is NEVER called during rehydration — distinguishing
-    // "never armed" from "armed then disarmed on resume" (which armedCount alone could not).
+    expect(expiresAt).not.toBe(''); // the absolute deadline is durable — the premise of the whole fix
+
+    // Process B rehydrates with a clock pinned 250 ms before the gate expires. A FIXED clock, not the
+    // in-memory host's auto-advancing one: that double restarts its tick at 0 per host, which would make
+    // B's "now" earlier than A's and the arithmetic meaningless. Pinning it makes the expected value exact.
+    const nowB = new Date(Date.parse(expiresAt) - 250).toISOString();
     const baseHostB = createInMemoryHost({ store });
-    let armCalls = 0;
+    const armedWork: number[] = [];
     const hostB: typeof baseHostB = {
       ...baseHostB,
+      clock: { now: () => nowB },
       // `kind` is counted and FORWARDED. Counted, because the claim is about the run's *work* timers — the
       // ADR-0079 lease heartbeat is armed on every resume by design and is not what this test is about.
       // Forwarded, because dropping it would silently re-label that heartbeat as a work timer in the inner
       // host, which is the failure this spy exists to detect.
       setTimer: (ms, onFire, kind = 'work') => {
-        if (kind === 'work') armCalls += 1;
+        if (kind === 'work') armedWork.push(ms);
         return baseHostB.setTimer(ms, onFire, kind);
       },
     };
@@ -1889,7 +1903,127 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
       decision: { decision: 'approved', decidedBy: 'h' },
     });
     await drain(handleB);
-    expect(armCalls).toBe(0); // rehydration armed no timer at all (re-arm is a Phase-2 concern)
+
+    // The load-bearing assertion: 250, not 1000. Arming the full `timeout_ms` would renew the deadline on
+    // every resume — a gate crashed and resumed ten times would get ten times its authored patience, which
+    // is the defect `CR-22` names. `toContain` rather than an index, because the resume also arms unrelated
+    // work timers and their order is not this test's business.
+    expect(armedWork).toContain(250);
+    expect(armedWork).not.toContain(1000);
+  });
+
+  it("re-arms the RUN's `timeout_ms` at its remaining time, so a resume cannot renew the cap", async () => {
+    // The other half of `CR-22`, and the one nothing held: reverting `#armRunTimeout` to the pre-fix
+    // full-duration arm left all 1338 core tests green. ADR-0028 makes `timeout_ms` a bound on the run's
+    // TOTAL wall-clock; arming it afresh on every resume meant a run crashed and resumed ten times got ten
+    // times its authored budget, which is the opposite of a cap.
+    //
+    // Nothing new is persisted for this. `#seedFromCheckpoint` already restores `#startEpochMs` from the
+    // checkpoint's `startedAtMs` — it always did, so a resumed run's terminal could report total wall-clock
+    // — and both resume paths arm AFTER that seeding. The absolute deadline is derived from state the
+    // engine already had.
+    const TIMED = `  id: timed-gated
+  timeout_ms: 60000
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: out }`;
+    const store = new InMemoryRunStore();
+    const engineA = engineWith(
+      { g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?' } }) },
+      createInMemoryHost({ store }),
+    );
+    const handleA = engineA.start({ workflow: workflow(TIMED) });
+    let gateId = '';
+    let startedAt = '';
+    for await (const event of handleA.events) {
+      if (event.type === 'run:started') startedAt = event.timestamp;
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+    expect(startedAt).not.toBe('');
+
+    // Resume 45 s into the run's 60 s budget. A FIXED clock, for the reason the gate test states: the
+    // in-memory host's clock restarts its tick per host, so B's "now" would otherwise precede A's.
+    const nowB = new Date(Date.parse(startedAt) + 45_000).toISOString();
+    const baseHostB = createInMemoryHost({ store });
+    const armedWork: number[] = [];
+    const hostB: typeof baseHostB = {
+      ...baseHostB,
+      clock: { now: () => nowB },
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'work') armedWork.push(ms);
+        return baseHostB.setTimer(ms, onFire, kind);
+      },
+    };
+    const engineB = engineWith({}, hostB);
+    const handleB = await engineB.resumeFromCheckpoint({
+      runId: handleA.runId,
+      workflow: workflow(TIMED),
+      gateId,
+      decision: { decision: 'approved', decidedBy: 'h' },
+    });
+    await drain(handleB);
+
+    // 15 s left of 60, not a fresh 60. The negative assertion is the load-bearing one — it is what a
+    // full-duration re-arm would violate.
+    expect(armedWork).toContain(15_000);
+    expect(armedWork).not.toContain(60_000);
+  });
+
+  it('a gate whose deadline ALREADY passed re-arms at zero rather than resolving inline', async () => {
+    // The past-deadline case has to travel the same `#onGateTimeout` path as a live expiry, or a
+    // past-deadline resume and an expiring live run would produce two differently-shaped exits for one
+    // condition. Arming at zero is what keeps it to one: the timer fires on the next tick.
+    const store = new InMemoryRunStore();
+    const engineA = engineWith(
+      {
+        g: () => ({
+          kind: 'paused',
+          gate: { gateType: 'approval', message: 'ok?', timeoutMs: 1000, timeoutAction: 'reject' },
+        }),
+      },
+      createInMemoryHost({ store }),
+    );
+    const handleA = engineA.start({ workflow: workflow(GATED) });
+    let gateId = '';
+    let expiresAt = '';
+    for await (const event of handleA.events) {
+      if (event.type === 'human_gate:paused') expiresAt = event.expiresAt ?? '';
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+
+    const nowB = new Date(Date.parse(expiresAt) + 60_000).toISOString(); // a minute PAST the deadline
+    const baseHostB = createInMemoryHost({ store });
+    const armedWork: number[] = [];
+    const hostB: typeof baseHostB = {
+      ...baseHostB,
+      clock: { now: () => nowB },
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'work') armedWork.push(ms);
+        return baseHostB.setTimer(ms, onFire, kind);
+      },
+    };
+    const engineB = engineWith({}, hostB);
+    const handleB = await engineB.resumeFromCheckpoint({
+      runId: handleA.runId,
+      workflow: workflow(GATED),
+      gateId,
+      decision: { decision: 'approved', decidedBy: 'h' },
+    });
+    await drain(handleB);
+
+    // Clamped at zero — never a negative duration handed to a host timer.
+    expect(armedWork).toContain(0);
+    expect(armedWork.every((ms) => ms >= 0)).toBe(true);
   });
 });
 

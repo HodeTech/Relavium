@@ -26,7 +26,7 @@ import type {
   RunStatus,
 } from '@relavium/shared';
 
-import type { NodeFailure } from './node-executor.js';
+import type { GateRequest, NodeFailure } from './node-executor.js';
 
 /** The schema version of the *derivation* (not a stored blob) — lets a later engine refuse/migrate it. */
 export const CHECKPOINT_SCHEMA_VERSION = 1;
@@ -48,6 +48,18 @@ export interface CheckpointPendingGate {
   readonly nodeId: string;
   /** True for a budget gate, so a rejected decision can still fail the run on resume. */
   readonly isBudgetGate: boolean;
+  /**
+   * The gate's ABSOLUTE deadline, when one was configured (`CR-22`).
+   *
+   * Both this and {@link timeoutAction} were already on the durable `human_gate:paused` event — its schema
+   * says in as many words that they ride there "so a Phase-2 crash-resume can re-arm the timer from the
+   * persisted log". The fold simply dropped them, so a rehydrated run lost the deadline of every gate it did
+   * not resume, and the loss was silent. Absolute rather than remaining, deliberately: a duration would
+   * restart on each resume, which is the defect, and an absolute instant is what the event already carries.
+   */
+  readonly expiresAt?: string;
+  /** What the engine does when {@link expiresAt} passes — carried with it, since one is inert without the other. */
+  readonly timeoutAction?: GateRequest['timeoutAction'];
 }
 
 /**
@@ -201,7 +213,15 @@ interface ReconAccumulator {
   cumulativeCostMicrocents: number;
   conservativeCostMicrocents: number;
   readonly nodeStates: Map<string, CheckpointNodeState>;
-  readonly pendingGates: Map<string, { nodeId: string; isBudgetGate: boolean }>;
+  readonly pendingGates: Map<
+    string,
+    {
+      nodeId: string;
+      isBudgetGate: boolean;
+      expiresAt?: string;
+      timeoutAction?: GateRequest['timeoutAction'];
+    }
+  >;
   /** Keyed by `nodeId` — one in-flight media job per node; a re-submit replaces the entry (latest wins). */
   readonly pendingMediaJobs: Map<string, CheckpointPendingMediaJob>;
   readonly resolvedGateIds: Set<string>;
@@ -332,14 +352,26 @@ function applyMediaJobEvent(acc: ReconAccumulator, event: RunEvent): void {
 function applyGateEvent(acc: ReconAccumulator, event: RunEvent): void {
   if (event.type === 'human_gate:paused' || event.type === 'budget:paused') {
     acc.nodeStates.set(event.nodeId, { status: 'paused' });
+    const priorGate = acc.pendingGates.get(event.gateId);
     acc.pendingGates.set(event.gateId, {
       nodeId: event.nodeId,
+      // Only `human_gate:paused` carries a deadline; a `budget:paused` companion shares the gateId and must
+      // not erase what its sibling recorded (they arrive in either order for one gate — see the flag below).
+      ...(event.type === 'human_gate:paused' && event.expiresAt !== undefined
+        ? { expiresAt: event.expiresAt }
+        : priorGate?.expiresAt === undefined
+          ? {}
+          : { expiresAt: priorGate.expiresAt }),
+      ...(event.type === 'human_gate:paused' && event.timeoutAction !== undefined
+        ? { timeoutAction: event.timeoutAction }
+        : priorGate?.timeoutAction === undefined
+          ? {}
+          : { timeoutAction: priorGate.timeoutAction }),
       // A budget gate emits BOTH `budget:paused` then a companion `human_gate:paused` with the SAME gateId
       // (engine `#settlePaused`). OR the flag so the later human_gate:paused never downgrades a budget gate
       // to a plain human gate on reconstruction — else a resumed `rejected` budget gate would not fail the
       // run with `budget_exceeded` (the resume reject branch is gated on `isBudgetGate`).
-      isBudgetGate:
-        acc.pendingGates.get(event.gateId)?.isBudgetGate === true || event.type === 'budget:paused',
+      isBudgetGate: priorGate?.isBudgetGate === true || event.type === 'budget:paused',
     });
     // `cost:updated` is streamed (not persisted), so the cost cannot be recovered from it; but
     // `budget:paused.spentMicrocents` IS the durable cumulative-at-pause. Restore it so a resumed budgeted run
@@ -467,6 +499,8 @@ export function reconstructCheckpointState(
       gateId,
       nodeId: entry.nodeId,
       isBudgetGate: entry.isBudgetGate,
+      ...(entry.expiresAt === undefined ? {} : { expiresAt: entry.expiresAt }),
+      ...(entry.timeoutAction === undefined ? {} : { timeoutAction: entry.timeoutAction }),
     })),
     pendingMediaJobs: [...acc.pendingMediaJobs.values()],
     resolvedGateIds: [...acc.resolvedGateIds],

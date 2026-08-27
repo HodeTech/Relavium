@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0` and `W1` are closed** (15 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25); `W2` is in progress
+- **Status**: in progress — **`W0` and `W1` are closed** (16 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25); `W2` is in progress
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -271,7 +271,7 @@ to correct.
 | `CR-21` | made (per-attempt deadline) | [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) (with `CR-14`'s) | no | — |
 | `CR-21b` | made (apply ADR-0082 §5's hard race to the submission) | — · ADR-0082 §10 **names** it and explicitly declines to decide it; §5 supplies the mechanism | no | — |
 | `CR-21c` | made 2026-08-27 (bound each poll CALL, not only the loop; a new `pollCallTimeoutMs` = 30 000, clamped to the remaining `deadlineAt`) | with `CR-21b`'s | no | — |
-| `CR-22` | made (absolute deadlines) | — | no | — |
+| `CR-22` | made (absolute deadlines) · ✅ closed 2026-08-27 | — | no | — |
 | `CR-23` | made (10 s grace off the abort signal; per-vertex generation fence; **no quarantine**, risk accepted with a named trigger) | [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | no | — |
 | `CR-30` | made — implement [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s accepted no-drop producer-await | none (already decided) | no | — |
 | `CR-31` | **open** — the cap values | — | no | — |
@@ -1066,11 +1066,43 @@ per-call timeout still classifies as ADR-0045 §3's retryable `provider_unavaila
 > the remaining time as the ceiling closes that tail; the `remaining <= 0` case is already handled by the
 > existing top-of-tick check, so the clamp adds no new branch of its own.
 
-### CR-22 — Gate and run deadlines are not preserved across resume · High
+### CR-22 — Gate and run deadlines are not preserved across resume · High · ✅ CLOSED 2026-08-27
 The checkpoint's pending gate carries gate/node/budget data but not an absolute deadline, and the whole-run
 timeout is re-armed for its full duration on every resume — so a crash extends the cap.
 **Fix + acceptance.** Persist absolute deadlines; resume computes the remaining time. A run crashed and resumed
 repeatedly still times out at its original absolute deadline.
+
+> **Closed — and "persist absolute deadlines" turned out to be half already done.** Both halves needed a fix,
+> but neither needed a new durable field.
+>
+> **The gate half.** `human_gate:paused` has carried `expiresAt` and `timeoutAction` since PR #22, and its
+> schema says in as many words that they ride there "so a Phase-2 crash-resume can re-arm the timer from the
+> persisted log". What was missing sat one layer up: `reconstructCheckpointState`'s fold dropped both fields,
+> so `CheckpointPendingGate` could not carry them and `#seedFromCheckpoint` had nothing to re-arm from. The
+> fold now keeps them (a `budget:paused` companion sharing a gateId must not erase what its sibling
+> recorded), and rehydration re-arms at `expiresAt − now`.
+>
+> **The run half.** `#armRunTimeout` armed the full `timeout_ms` on every call, including both resume paths.
+> The data to fix it was already in hand: `#seedFromCheckpoint` restores `#startEpochMs` from the
+> checkpoint's `startedAtMs` — it always did, so a resumed run's terminal could report total wall-clock — and
+> both resume sites arm AFTER that seeding. The absolute deadline is DERIVED from state the engine already
+> had; nothing new is persisted for it.
+>
+> **A past deadline arms at zero rather than resolving inline**, on both halves. The timer then fires on the
+> next tick and travels the one `#onGateTimeout` / `#onRunTimeout` path, so a past-deadline resume and a
+> live expiry produce identical events in identical order. Refusing or resolving inline would be a second,
+> differently-shaped exit for one condition.
+>
+> **What the tests found, recorded because it changes what "closed" means here.** The gate half had a test
+> pinning the OPPOSITE — *"arms no gate timer on rehydration (re-arm is a Phase-2 reconciliation concern)"* —
+> which is rewritten rather than deleted, keeping the reasoning it replaces, the way `CR-14`'s superseded
+> test was handled. The run half had **no test at all**: reverting it left all 1338 core tests green. Both
+> are now pinned on the ARMED DURATION (15 000 of a 60 000 cap; 250 of a 1 000 gate), because a test that
+> only asserted "a timer was armed" would pass for the full-duration bug it exists to catch.
+>
+> This also closes the long-standing [deferred item](../deferred-tasks.md) *"Re-arm a still-pending gate's
+> timeout on cross-process rehydration"*, whose deferral note correctly predicted no backfill would be
+> needed.
 
 ### CR-23 — Exactly-one-terminal is a safety property, not a liveness one · High · **decision settled 2026-08-25** ([ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md))
 Cancel only fires the abort signal, and the terminal waits for the running-node count to reach zero. The node
