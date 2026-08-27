@@ -1651,6 +1651,40 @@ class RunExecution {
    * fields resolving two different ways, which no author would predict.
    */
   /**
+   * **Fence point 4 (ADR-0085 §5): the effect journal, PER METHOD.**
+   *
+   * A blanket "refuse a stale write" here would resurrect the exact defect `PR83-04` fixed — a row stuck
+   * `prepared` forever, swept by nothing, reported as `needs_attention` for an effect that actually
+   * completed. So the three methods split:
+   *
+   * - `prepare` is **refused**. The effect has not left the process, and refusing it is the whole point: a
+   *   dispatch the grace window abandoned must not start new external work.
+   * - `settle` is **allowed**. The effect already left under a valid claim; refusing its receipt would leave
+   *   a durable row lying about an effect that completed.
+   * - `discard` is **allowed**, for the same reason — it releases a `prepared` claim on a proven
+   *   non-dispatch, and refusing it strands the row exactly as refusing `settle` would.
+   *
+   * The refusal rejects rather than resolves, so a caller that ignores it cannot mistake a refusal for a
+   * durable claim and dispatch anyway.
+   */
+  #fenceEffects(port: EffectDispatchPort, vertexId: string): EffectDispatchPort {
+    const dispatchId = this.#dispatchIdForVertex.get(vertexId) ?? -1;
+    return {
+      ...port,
+      prepare: async (...args: Parameters<EffectDispatchPort['prepare']>) => {
+        if (!this.#isLive(vertexId, dispatchId)) {
+          throw new EngineStateError(
+            'run_already_terminal',
+            'the run stopped waiting on this dispatch; no new effect may be prepared',
+            { runId: this.runId },
+          );
+        }
+        return port.prepare(...args);
+      },
+    };
+  }
+
+  /**
    * ADR-0085 §5's fence predicate: may a write from `dispatchId` on `vertexId` still be admitted?
    *
    * True only while the run has not settled AND this dispatch is still its vertex's active one. Both halves
@@ -1844,12 +1878,15 @@ class RunExecution {
         ...(this.#effectJournal === undefined
           ? {}
           : {
-              effects: this.#effectJournal({
-                kind: 'run',
-                runId: this.runId,
-                nodeId: vertex.id,
-                attempt: attemptNumber,
-              }),
+              effects: this.#fenceEffects(
+                this.#effectJournal({
+                  kind: 'run',
+                  runId: this.runId,
+                  nodeId: vertex.id,
+                  attempt: attemptNumber,
+                }),
+                vertex.id,
+              ),
             }),
       };
       // After the executor completes, an `output` node with `save_to` writes its produced media to the

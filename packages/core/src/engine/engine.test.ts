@@ -2214,6 +2214,154 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     expect(events.at(-1)?.type).toBe('run:failed');
   });
 
+  it("the fence refuses a straggler's writes after the grace window abandoned it (ADR-0085 §5)", async () => {
+    // **§5 names five mutation points; three of them were unguarded and none was tested.** `#onOutcome` was
+    // already latched on `#settled`, but the `cost:updated` fold, `save_to` and the effect journal were not
+    // — and `save_to` is the one that writes BYTES TO THE USER'S FILESYSTEM, on the executor's return,
+    // before `#onOutcome`'s latch is ever reached.
+    //
+    // The straggler here is the shape the grace window exists for: an executor that ignored its signal,
+    // was abandoned, and then settles anyway. Its cost must not move a total the terminal already reported,
+    // and its effect must not be prepared.
+    let releaseNode: ((outcome: NodeOutcome) => void) | undefined;
+    let costEmit: ((n: number) => void) | undefined;
+    let prepareRefused = false;
+    const host = createInMemoryHost();
+    const engine = new WorkflowEngine({
+      host,
+      executor: {
+        execute: (ctx) =>
+          new Promise<NodeOutcome>((resolve) => {
+            releaseNode = resolve;
+            costEmit = (costMicrocents) => {
+              ctx.emit({
+                type: 'cost:updated',
+                nodeId: ctx.vertex.id,
+                model: 'm',
+                inputTokens: 0,
+                outputTokens: 0,
+                costMicrocents,
+                cumulativeCostMicrocents: 0,
+              });
+            };
+          }),
+      },
+      effectJournal: () => ({
+        prepare: () => {
+          prepareRefused = false;
+          return Promise.resolve({ outcome: 'proceed' as const });
+        },
+        settle: () => Promise.resolve(),
+        discard: () => Promise.resolve(),
+      }),
+    });
+    const handle = engine.start({ workflow: workflow(SEQUENTIAL) });
+    const events: RunEvent[] = [];
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        events.push(event);
+        if (event.type === 'run:cancelled' || event.type === 'run:failed') settled = true;
+      }
+    })();
+    for (let i = 0; i < 200 && releaseNode === undefined; i += 1) await Promise.resolve();
+    expect(releaseNode).toBeDefined();
+
+    engine.cancel(handle.runId);
+    for (let i = 0; i < 200 && host.deadlineCount() === 0; i += 1) await Promise.resolve();
+    host.fireDeadlines(); // the grace window elapses; the node is abandoned
+    for (let i = 0; i < 400 && !settled; i += 1) {
+      await Promise.resolve();
+      if (host.armedCount() > 0) host.fireTimers();
+    }
+    await consume;
+    const terminalCost = events.find((e) => e.type === 'run:cancelled');
+    const totalAtTerminal =
+      terminalCost?.type === 'run:cancelled' ? (terminalCost.cumulativeCostMicrocents ?? 0) : -1;
+
+    // …and NOW the straggler wakes up and tries to spend.
+    costEmit?.(999_999);
+    releaseNode?.({ kind: 'completed', output: 'too late' });
+    for (let i = 0; i < 100; i += 1) await Promise.resolve();
+
+    // No `cost:updated` reached a subscriber after the terminal, and the total the terminal published stands.
+    const costAfterTerminal = events
+      .slice(events.findIndex((e) => e.type === 'run:cancelled'))
+      .filter((e) => e.type === 'cost:updated');
+    expect(costAfterTerminal).toHaveLength(0);
+    expect(totalAtTerminal).not.toBe(999_999);
+    // The run still has exactly one terminal — the late `completed` changed nothing.
+    expect(
+      events.filter(
+        (e) => e.type === 'run:cancelled' || e.type === 'run:failed' || e.type === 'run:completed',
+      ),
+    ).toHaveLength(1);
+    expect(prepareRefused).toBe(false); // the journal was never reached by the straggler
+  });
+
+  it('the effect fence refuses `prepare` but never `settle` or `discard` (ADR-0085 §5)', async () => {
+    // The per-method split, tested directly, because a blanket "refuse a stale write" would resurrect
+    // `PR83-04` exactly: a row stuck `prepared` forever, swept by nothing, reported as `needs_attention` for
+    // an effect that actually completed. `prepare` is refused because the effect has not left the process;
+    // `settle` and `discard` are admitted because it has, and refusing a receipt strands the row.
+    const calls: string[] = [];
+    let captured: NodeExecContext['effects'];
+    const host = createInMemoryHost();
+    const engine = new WorkflowEngine({
+      host,
+      executor: {
+        execute: (ctx) => {
+          captured = ctx.effects;
+          return new Promise<NodeOutcome>(() => undefined); // never settles — so it gets abandoned
+        },
+      },
+      effectJournal: () => ({
+        prepare: () => {
+          calls.push('prepare');
+          return Promise.resolve({ outcome: 'proceed' as const });
+        },
+        settle: () => {
+          calls.push('settle');
+          return Promise.resolve();
+        },
+        discard: () => {
+          calls.push('discard');
+          return Promise.resolve();
+        },
+      }),
+    });
+    const handle = engine.start({ workflow: workflow(SEQUENTIAL) });
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        if (event.type === 'run:cancelled' || event.type === 'run:failed') settled = true;
+      }
+    })();
+    for (let i = 0; i < 200 && captured === undefined; i += 1) await Promise.resolve();
+    expect(captured).toBeDefined();
+
+    engine.cancel(handle.runId);
+    for (let i = 0; i < 200 && host.deadlineCount() === 0; i += 1) await Promise.resolve();
+    host.fireDeadlines();
+    for (let i = 0; i < 400 && !settled; i += 1) {
+      await Promise.resolve();
+      if (host.armedCount() > 0) host.fireTimers();
+    }
+    await consume;
+
+    // The straggler still holds its journal handle. `prepare` is refused — loudly, so a caller that ignores
+    // the rejection cannot mistake it for a durable claim and dispatch anyway.
+    await expect(captured?.prepare(1, 'http_request', 3, {})).rejects.toBeInstanceOf(
+      EngineStateError,
+    );
+    expect(calls).not.toContain('prepare');
+
+    // …while a receipt for work that already left the process still lands.
+    await captured?.settle(1, 'http_request', 'committed');
+    await captured?.discard(1, 'http_request');
+    expect(calls).toEqual(['settle', 'discard']);
+  });
+
   it('a node with no `timeout_ms` arms no node deadline', async () => {
     // The negative control. Without it the test above passes for an implementation that bounds every node at
     // some default — a different product decision nobody made.
