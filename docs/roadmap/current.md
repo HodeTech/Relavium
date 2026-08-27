@@ -471,7 +471,7 @@ the exit rule and the execution order, and added two items (`CR-17` resume ident
 docs-only); `CR-64` came from the Batch 1 triage, `CR-21b` from ADR-0082 §10 and `CR-21c` from the `W2`
 document review on 2026-08-25, which is why the total has moved since the list was first written.
 
-> **Live status — 18 of 48 closed. `W0` and `W1` are both done; `W2` is in progress.**
+> **Live status — 20 of 48 closed. `W0` and `W1` are both done; `W2` is in progress.**
 >
 > - **Batch 1, merged 2026-08-11 (PR #82)** — the prerequisite (`#W15-1`), the oracle (`CR-90`, `CR-91`) and
 >   all of `W0` (`CR-01`–`CR-03`). `CR-64` was added in the same batch and is open.

@@ -2108,6 +2108,132 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     expect(armedWork).toEqual([15_000]);
   });
 
+  it('a never-settling executor still produces exactly one terminal (ADR-0085 §3)', async () => {
+    // The defect ADR-0036's Consequences called "structurally impossible". `NodeExecutor.execute` returns an
+    // arbitrary promise, `requestCancel()` only aborts a signal, and `#step` settles when `#countRunning()`
+    // reaches zero — so an executor that ignores its signal and never settles left the run with no terminal,
+    // forever. The same gate defeated ADR-0028's run `timeout_ms`, so the cap was no rescue either.
+    const host = createInMemoryHost();
+    const engine = engineWith({ work: () => new Promise<NodeOutcome>(() => undefined) }, host);
+    const handle = engine.start({ workflow: workflow(SEQUENTIAL) });
+    const events: RunEvent[] = [];
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        events.push(event);
+        if (event.type === 'run:cancelled' || event.type === 'run:failed') settled = true;
+      }
+    })();
+
+    // Let the node start, then cancel. The grace window arms off the abort SIGNAL — not per cancel site —
+    // so it exists here without `cancel()` knowing anything about it.
+    for (let i = 0; i < 200 && !events.some((e) => e.type === 'node:started'); i += 1) {
+      await Promise.resolve();
+    }
+    engine.cancel(handle.runId);
+    for (let i = 0; i < 200 && host.deadlineCount() === 0; i += 1) await Promise.resolve();
+    expect(host.deadlineCount()).toBe(1); // the grace window IS armed — the assertion nothing made before
+
+    host.fireDeadlines();
+    for (let i = 0; i < 600 && !settled; i += 1) {
+      await Promise.resolve();
+      if (host.armedCount() > 0) host.fireTimers();
+    }
+    await consume;
+
+    // Exactly one terminal, and cancel-wins decides which (ADR-0036, unchanged).
+    const terminals = events.filter(
+      (e) => e.type === 'run:cancelled' || e.type === 'run:failed' || e.type === 'run:completed',
+    );
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0]?.type).toBe('run:cancelled');
+    // …and the abandoned node has a terminal of its own, so no `node:started` is left without a partner.
+    const nodeFailed = events.find((e) => e.type === 'node:failed');
+    expect(nodeFailed?.type === 'node:failed' && nodeFailed.error.message).toContain(
+      'the engine stopped waiting',
+    );
+    expect(host.deadlineCount()).toBe(0); // disarmed on settle, not leaked
+  });
+
+  it("honours an agent node's authored `timeout_ms` (CR-20, ADR-0085 §2)", async () => {
+    // The field parsed and did nothing: `AgentNodeSchema` accepts it, node-types.md and workflow-yaml-spec.md
+    // both advertise it, and `AgentPlanConfig` carries the whole node so it arrives at dispatch — with no
+    // consumer. An authored field that parses and is ignored is the shape ADR-0023's strict-reject posture
+    // exists to prevent, and worse than a missing feature because it is the bound a user plans around.
+    // An AGENT node, because `timeout_ms` is only on `AgentNodeSchema` — which is itself the point: the
+    // engine reads it off `AgentPlanConfig`, and no other node type declares one.
+    const TIMED_NODE = `  id: node-timeout
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: start, type: input }
+    - { id: work, type: agent, agent_ref: a, prompt_template: 'go', timeout_ms: 4000 }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: work }
+    - { from: work, to: done }`;
+    const base = createInMemoryHost();
+    const armed: number[] = [];
+    const host: typeof base = {
+      ...base,
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'deadline') armed.push(ms);
+        return base.setTimer(ms, onFire, kind);
+      },
+    };
+    const engine = engineWith({ work: () => new Promise<NodeOutcome>(() => undefined) }, host);
+    const handle = engine.start({ workflow: workflow(TIMED_NODE) });
+    const events: RunEvent[] = [];
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        events.push(event);
+        if (event.type === 'run:failed' || event.type === 'run:completed') settled = true;
+      }
+    })();
+    for (let i = 0; i < 200 && armed.length === 0; i += 1) await Promise.resolve();
+
+    // The AUTHORED value, not a default — a test that only checked "a timer was armed" would pass for a
+    // hard-coded bound, which is the hollow shape `CR-21`'s close-out had to fix twice.
+    expect(armed).toEqual([4000]);
+
+    host.fireDeadlines();
+    for (let i = 0; i < 600 && !settled; i += 1) {
+      await Promise.resolve();
+      if (base.armedCount() > 0) base.fireTimers();
+    }
+    await consume;
+
+    // Classified as the human gate's authored `timeout_ms` already is — one meaning for one field name.
+    const nodeFailed = events.find((e) => e.type === 'node:failed');
+    expect(nodeFailed?.type === 'node:failed' && nodeFailed.error.code).toBe('run_timeout');
+    expect(nodeFailed?.type === 'node:failed' && nodeFailed.error.retryable).toBe(false);
+    expect(events.at(-1)?.type).toBe('run:failed');
+  });
+
+  it('a node with no `timeout_ms` arms no node deadline', async () => {
+    // The negative control. Without it the test above passes for an implementation that bounds every node at
+    // some default — a different product decision nobody made.
+    const base = createInMemoryHost();
+    const armed: number[] = [];
+    const host: typeof base = {
+      ...base,
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'deadline') armed.push(ms);
+        return base.setTimer(ms, onFire, kind);
+      },
+    };
+    await drain(
+      engineWith({ work: () => ({ kind: 'completed', output: 'x' }) }, host).start({
+        workflow: workflow(SEQUENTIAL),
+      }),
+    );
+    expect(armed).toEqual([]);
+  });
+
   it('a run resumed PAST its `timeout_ms` arms at zero, never a negative duration', async () => {
     // The run half's `Math.max(0, …)` clamp had no test: removing it left all 1339 core tests green, and it
     // is invisible to coverage because `Math.max` is a call, not a branch, so v8 reports the line covered.

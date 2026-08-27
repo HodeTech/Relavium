@@ -7,7 +7,7 @@ import { createExpressionSandbox, type ExpressionSandbox } from '../expression/s
 import type { ToolDef as CoreToolDef, ToolRegistry, ToolResultPart } from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
 import { WorkflowEngine } from './engine.js';
-import { createAbortController, createInMemoryHost } from './execution-host.js';
+import { createAbortController, createInMemoryHost, type TimerKind } from './execution-host.js';
 import { createStandardNodeExecutor } from './node-handlers/dispatcher.js';
 import type { RunHandle } from './run-handle.js';
 
@@ -817,9 +817,14 @@ workflow:
     const base = createInMemoryHost();
     const host = {
       ...base,
-      // Fire any timeout immediately, deterministically.
-      setTimer: (_ms: number, onFire: () => void) => {
-        onFire();
+      // Fire the run's WORK timeout immediately and deterministically — but never a `deadline` backstop.
+      // ADR-0085 §3 arms a grace window off the abort signal, and this double ignores both `ms` and `kind`,
+      // so without the guard the window fired synchronously INSIDE `#onRunTimeout`'s abort and abandoned the
+      // node before `run:timeout` was written. That is the same blunt-fire problem the `'deadline'` kind
+      // exists to solve for the drive-to-quiescence loops; honouring it here is honouring the real
+      // semantics, not working around them.
+      setTimer: (_ms: number, onFire: () => void, kind: TimerKind = 'work') => {
+        if (kind === 'work') onFire();
         return () => {};
       },
     };

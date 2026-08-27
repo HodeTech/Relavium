@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0` and `W1` are closed** (18 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25); `W2` is in progress
+- **Status**: in progress — **`W0` and `W1` are closed** (20 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25); `W2` is in progress
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -267,12 +267,12 @@ to correct.
 | `CR-15` | made (engine-side admission) | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | yes | — |
 | `CR-16` | made (consent before spawn; **lazy connect split out**, see [deferred-tasks.md](../deferred-tasks.md)) | [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md) | yes | hostile MCP |
 | `CR-17` | made (persist and verify resume identity) | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | yes | — |
-| `CR-20` | made (honour `timeout_ms`; ABSOLUTE per node, `run_timeout`/`retryable: false`) | [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | no | — |
+| `CR-20` | made (honour `timeout_ms`; ABSOLUTE per node, `run_timeout`/`retryable: false`) · ✅ closed 2026-08-27 | [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | no | — |
 | `CR-21` | made (per-attempt deadline) | [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) (with `CR-14`'s) | no | — |
 | `CR-21b` | made (apply ADR-0082 §5's hard race to the submission; bound `MEDIA_GEN_SUBMIT_TIMEOUT_MS`) · ✅ closed 2026-08-27 | — · ADR-0082 §10 **names** it and explicitly declines to decide it; §5 supplies the mechanism | no | — |
 | `CR-21c` | made 2026-08-27 (bound each poll CALL, not only the loop; a new `pollCallTimeoutMs` = 30 000, clamped to the remaining `deadlineAt`) · ✅ closed 2026-08-27 | with `CR-21b`'s | no | — |
 | `CR-22` | made (absolute deadlines) · ✅ closed 2026-08-27 | — | no | — |
-| `CR-23` | made (10 s grace off the abort signal; per-vertex generation fence; **no quarantine**, risk accepted with a named trigger) | [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | no | — |
+| `CR-23` | made · ✅ closed 2026-08-27 (10 s grace off the abort signal; per-vertex generation fence; **no quarantine**, risk accepted with a named trigger) | [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | no | — |
 | `CR-30` | made — implement [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s accepted no-drop producer-await | none (already decided) | no | — |
 | `CR-31` | **open** — the cap values | — | no | — |
 | `CR-32` | **open** — the bound values | — | no | — |
@@ -914,9 +914,20 @@ records that `CR-16`'s **lazy-connect half was split out** rather than closed: i
 [deferred item](../deferred-tasks.md) with ADR-0052 §3 named as its blocker, because deferring the spawn with
 today's immutable registry would delete the agent's MCP tool grant outright.
 
-## W2 — Liveness and deadlines
+## W2 — Liveness and deadlines · ✅ COMPLETE 2026-08-27
 
-### CR-20 — Agent-node `timeout_ms` is completely inert · High · **decided** ([ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md))
+All six items closed. Two things this wave established that outlived their own items, recorded here because
+the next wave inherits them:
+
+- **A third `TimerKind`, `'deadline'`.** A backstop over work already in flight is neither `work` (the run is
+  not parked on it) nor `liveness` (firing it does advance the run). Arming the media bounds as `work` broke
+  six tests at once, because a drive-to-quiescence loop fires every armed `work` timer — so a deadline swept
+  into that set trips the instant it is armed. `fireTimers()` no longer sweeps it.
+- **A deadline primitive with one home.** `openDeadline` moved to `@relavium/shared` under
+  [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §9; four
+  bounds now share it — the provider attempt, the media submission, the media poll, and the node deadline.
+
+### CR-20 — Agent-node `timeout_ms` is completely inert · High · ✅ CLOSED 2026-08-27 · **decided** ([ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md))
 The node schema accepts the field, but the runner passes only the run-level signal to the agent turn; no timer,
 controller or deadline consumes `node.timeout_ms`. An authored liveness bound is silently ignored.
 **Fix + acceptance.** Honour it as a real deadline; a node exceeding it fails with a classified timeout, proven
@@ -1157,7 +1168,7 @@ repeatedly still times out at its original absolute deadline.
 > above; it was already on `human_gate:paused` and the fold simply dropped it, exactly like its two
 > siblings.
 
-### CR-23 — Exactly-one-terminal is a safety property, not a liveness one · High · **decision settled 2026-08-25** ([ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md))
+### CR-23 — Exactly-one-terminal is a safety property, not a liveness one · High · ✅ CLOSED 2026-08-27 · **decision settled 2026-08-25** ([ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md))
 Cancel only fires the abort signal, and the terminal waits for the running-node count to reach zero. The node
 executor seam accepts an arbitrary promise; honouring the signal is not guaranteed at the type level. An
 executor that ignores abort and never settles leaves the run without a terminal forever.
