@@ -1,12 +1,17 @@
 /**
- * ADR-0082 §12's deadline acceptance — the half that can be proven without the chain.
+ * The two deadline cases that genuinely need a platform type, kept in this package for exactly that reason.
  *
- * Every test drives a MANUAL timer and a provider-shaped promise that never settles, because the whole point
- * is that a cooperative signal is not a guarantee: the tests that matter are the ones where the provider
- * ignores it.
+ * `openDeadline` lives in `@relavium/shared` ([ADR-0085](../../../docs/decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §9)
+ * and the other eleven cases live beside it in `packages/shared/src/deadline.test.ts`, where they are
+ * MEASURED against the code they exercise. These two cannot follow: proving that an abandoned step is
+ * discarded HANDLED requires `process.on('unhandledRejection')`, and `@relavium/shared` sets `types: []` so
+ * that a stray `process`/`Buffer` is a compile error — a boundary worth more than file adjacency.
+ *
+ * They are not decoration. Node's default is `--unhandled-rejections=throw`, so the defect they pin killed
+ * the process mid-turn with a stack trace instead of surfacing the `timeout` the caller had just computed;
+ * a review reproduced it as `unhandled= 1`.
  */
 
-import type { AbortSignalLike } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { openDeadline, type AbortControllerLike } from './attempt-deadline.js';
@@ -53,112 +58,7 @@ function manualTimer(): {
   };
 }
 
-/** A promise that never settles — an uncooperative provider, which is the case that matters. */
-const NEVER = new Promise<string>(() => undefined);
-
-describe('openDeadline (ADR-0082 §5-§7)', () => {
-  it('a step that never settles ends at the DEADLINE, not never', async () => {
-    // The whole item: `generate(): Promise<LlmResult> { return new Promise(() => {}) }` used to hang the
-    // chain forever, because the abort signal is a request and this provider ignores it.
-    const timer = manualTimer();
-    const scope = openDeadline(120_000, controller, timer.set);
-
-    const raced = scope.race(NEVER);
-    timer.fire();
-
-    expect(await raced).toEqual({ outcome: 'deadline' });
-    expect(scope.classify()).toBe('deadline');
-    scope.dispose();
-  });
-
-  it('the same ABSOLUTE deadline governs every step — it does not reset per chunk', async () => {
-    // A per-step reset would let a provider dribble one token per interval forever, which is the hang with
-    // extra steps. Once the deadline has tripped, a LATER step is refused without even racing.
-    const timer = manualTimer();
-    const scope = openDeadline(120_000, controller, timer.set);
-
-    expect(await scope.race(Promise.resolve('chunk 1'))).toEqual({
-      outcome: 'settled',
-      value: 'chunk 1',
-    });
-    timer.fire();
-    expect(await scope.race(Promise.resolve('chunk 2'))).toEqual({ outcome: 'deadline' });
-    scope.dispose();
-  });
-
-  it('raises the cooperative abort too — a provider that DOES honour it stops early', () => {
-    const timer = manualTimer();
-    const scope = openDeadline(120_000, controller, timer.set);
-
-    expect(scope.signal.aborted).toBe(false);
-    timer.fire();
-    expect(scope.signal.aborted).toBe(true);
-    scope.dispose();
-  });
-
-  it('a CALLER abort wins a same-tick tie with the deadline', () => {
-    // Precedence resolved at classification time, not by listener order — ADR-0036's cancel-wins rule. A
-    // test pinning listener order would be pinning a scheduler detail.
-    const caller = controller();
-    const timer = manualTimer();
-    const scope = openDeadline(120_000, controller, timer.set, caller.signal);
-
-    caller.abort();
-    timer.fire(); // both fired, same tick
-
-    expect(scope.classify()).toBe('caller');
-    scope.dispose();
-  });
-
-  it('…and a deadline with no caller abort classifies `deadline` — the negative control', () => {
-    const caller = controller();
-    const timer = manualTimer();
-    const scope = openDeadline(120_000, controller, timer.set, caller.signal);
-
-    timer.fire();
-
-    expect(scope.classify()).toBe('deadline');
-    scope.dispose();
-  });
-
-  it('a PRE-ABORTED caller settles the race IMMEDIATELY — without waiting for the deadline', async () => {
-    // The liveness half the neighbouring test does not cover: it asserts `signal.aborted` and `classify()`,
-    // both of which were already right, and never races anything. A review measured what that hid — with a
-    // provider that ignores its signal, `race()` stayed pending until the ABSOLUTE timer fired, so a cancel
-    // landing in the gap between the loop's own check and `openDeadline` (during `preAttempt`, or credential
-    // resolution) looked ignored for the shipped default of 120 seconds.
-    //
-    // The timer is never fired here, and that is the assertion: settling proves the caller latch woke it.
-    const caller = controller();
-    caller.abort();
-    const timer = manualTimer();
-    const scope = openDeadline(120_000, controller, timer.set, caller.signal);
-
-    await expect(scope.race(NEVER)).resolves.toEqual({ outcome: 'deadline' });
-    expect(timer.armed()).toBe(1); // …still armed: nothing fired it
-    expect(scope.classify()).toBe('caller'); // …and the REASON is still caller cancellation
-    scope.dispose();
-    expect(timer.armed()).toBe(0);
-  });
-
-  it('a caller aborting BETWEEN races settles the next one immediately too', async () => {
-    // The latch has to survive past the wake: `onCallerAbort` wakes the waiters that exist AT THAT MOMENT,
-    // so a race registered afterwards would have had nothing to observe without the stored flag.
-    const caller = controller();
-    const timer = manualTimer();
-    const scope = openDeadline(120_000, controller, timer.set, caller.signal);
-
-    expect(await scope.race(Promise.resolve('chunk 1'))).toEqual({
-      outcome: 'settled',
-      value: 'chunk 1',
-    });
-    caller.abort(); // …no race is in flight, so there is no waiter to wake
-    await expect(scope.race(NEVER)).resolves.toEqual({ outcome: 'deadline' });
-    expect(timer.armed()).toBe(1);
-    expect(scope.classify()).toBe('caller');
-    scope.dispose();
-  });
-
+describe('openDeadline — the unhandled-rejection cases (ADR-0082 §12)', () => {
   it('does not leave the abandoned step UNHANDLED when the caller pre-aborted', async () => {
     // The same hazard the deadline arm documents: the step is already invoked, so returning without a
     // handler leaves a live promise nobody owns, and Node's default is `--unhandled-rejections=throw`.
@@ -180,32 +80,6 @@ describe('openDeadline (ADR-0082 §5-§7)', () => {
     }
     expect(unhandled).toEqual([]);
     scope.dispose();
-  });
-
-  it('a caller that ALREADY aborted is honoured without a listener', () => {
-    // Matching a native signal: a listener registered after the abort never fires, so the constructor has
-    // to check first or the attempt would run unbounded under an already-cancelled caller.
-    const caller = controller();
-    caller.abort();
-    const timer = manualTimer();
-    const scope = openDeadline(120_000, controller, timer.set, caller.signal);
-
-    expect(scope.signal.aborted).toBe(true);
-    expect(scope.classify()).toBe('caller');
-    scope.dispose();
-  });
-
-  it('dispose disarms the timer — including on the SUCCESS path', () => {
-    // A leaked timer holds the process awake, which on a CLI is a hang the user cannot explain. The success
-    // path is the one most likely to forget.
-    const timer = manualTimer();
-    const scope = openDeadline(120_000, controller, timer.set);
-
-    expect(timer.armed()).toBe(1);
-    scope.dispose();
-    expect(timer.armed()).toBe(0);
-    scope.dispose(); // idempotent
-    expect(timer.armed()).toBe(0);
   });
 
   it('an already-expired scope HANDLES the step it discards', async () => {
@@ -235,34 +109,5 @@ describe('openDeadline (ADR-0082 §5-§7)', () => {
     }
 
     expect(unhandled).toEqual([]);
-  });
-
-  it('dispose settles anything still racing, so no promise outlives the scope', async () => {
-    const timer = manualTimer();
-    const scope = openDeadline(120_000, controller, timer.set);
-
-    const raced = scope.race(NEVER);
-    scope.dispose();
-
-    expect(await raced).toEqual({ outcome: 'deadline' });
-  });
-
-  it('detaches its caller listener on dispose', () => {
-    let attached = 0;
-    const signal: AbortSignalLike = {
-      aborted: false,
-      addEventListener: () => {
-        attached += 1;
-      },
-      removeEventListener: () => {
-        attached -= 1;
-      },
-    };
-    const timer = manualTimer();
-    const scope = openDeadline(120_000, controller, timer.set, signal);
-
-    expect(attached).toBe(1);
-    scope.dispose();
-    expect(attached).toBe(0);
   });
 });

@@ -364,12 +364,18 @@ These land with the implementation, not after it:
   **Landed 2026-08-27.** Two details worth recording because they were decisions, not mechanics. The
   `SetAttemptTimer` type came across as `SetDeadlineTimer` — "attempt" names a provider call, and the engine's
   node deadline is not one; the engine's own `SetTimer` (which carries ADR-0036's third `TimerKind` argument)
-  stays assignable to it, so one host port still serves both. And the **tests deliberately did not move**:
-  `@relavium/shared` sets `types: []` so a stray `process`/`Buffer` is a compile error, while the two
-  load-bearing cases need `process.on('unhandledRejection')` to prove the abandoned step is discarded
-  HANDLED. Relaxing that boundary to gain file adjacency would trade an architectural guard for a filename.
-  Proven live rather than assumed: breaking the caller-abort latch in the new `@relavium/shared` home reddens
-  three tests in `@relavium/llm`, so the re-export is the path under test.
+  stays assignable to it, so one host port still serves both. And the tests **split 11/2**, which is not
+  where this landed first. Keeping the whole suite in `@relavium/llm` was the initial call, on the reasoning
+  that `@relavium/shared` sets `types: []` and two cases need `process.on('unhandledRejection')`. A review
+  measured what that cost and the reasoning did not survive it: the tests execute `@relavium/shared` from
+  `dist/`, so V8 attributed **0%** to `deadline.ts`, while the 90% floor that used to guard the code
+  (`vitest.config.ts` covers `packages/llm/src/**`, not `packages/shared/src/**`) was left holding a 35-line
+  re-export shell scoring a perfect 100. The enforced branch number went UP while the guarantee went away.
+  The sharpest evidence was that the pre-move report's one uncovered line was `onCallerAbort`'s waiter wake
+  — a branch that, once checked, turned out to be held by nothing at all. So the eleven cases needing no
+  platform type moved to `packages/shared/src/deadline.test.ts` where they are measured against the code they
+  exercise, and only the two that genuinely need `process` stayed behind. `deadline.ts` now measures 100%
+  lines / 96.66% branches, above its pre-move 93.33%.
 - ADR-0036 gains a dated **Amended by** note recording that its "structurally impossible" claim rests on a
   mechanism that did not exist until this ADR, and that §6 names the half still conditional on the store
   seam. ADRs are append-only; the original text stays. **Landed 2026-08-27** — ahead of the implementation,
