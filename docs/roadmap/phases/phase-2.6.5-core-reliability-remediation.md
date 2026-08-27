@@ -968,7 +968,7 @@ is the point rather than the tally.)
 - **Nothing executed the engine-side forwarding of the ports.** The deadline is host-wired and pinned by a
   source-grep over the host files, but `#chainCapabilities` (session) and `chainCapabilities()` (runner) are
   conditional spreads that no test ever ran. **Measured on this commit: with the `setTimer` key deleted from
-  BOTH forwarding sites the core suite reports exactly two reds — and they are exactly these two new tests —
+  BOTH forwarding sites the core suite reports four reds — the two new tests, each in both of its branch variants —
   while both CLI grep guards stay green**, so before them every surface silently reverted to unbounded — a
   strictly larger hole than the one the grep was written to close, and the same "wired and still dead" shape
   the phase has hit before. Both paths now have a behavioural test, separately, because the two express

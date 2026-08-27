@@ -1988,7 +1988,9 @@ describe('AgentSession — the ADR-0082 deadline ports actually reach the chain'
       // That is strictly larger than the gap the grep was written to close — the ports are wired, and dead.
       //
       // Measured, not assumed: with the key removed at BOTH forwarding sites the core suite reports exactly
-      // two reds, and they are exactly this test and its workflow twin in `agent-runner.e2e.test.ts`. (An
+      // four reds — this test and its workflow twin in `agent-runner.e2e.test.ts`, each in BOTH of its
+      // branch variants. (It read "exactly two" until the variants below were added; the loop doubled the
+      // count and the adjacent measurement was not revisited, which a review caught.) (An
       // absolute pass-count is deliberately NOT recorded here — it rots on the next added test, and the
       // durable facts are which mutation and which tests redden.) An earlier version reddened by TIMING OUT —
       // honest, and precedented by ADR-0074 §3's hold-release listener test, whose comment in `engine.ts` says

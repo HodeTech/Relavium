@@ -2,8 +2,9 @@
 
 > Status: Living
 
-> Last updated: 2026-07-29 — the Phase-2.6 rewrite triaged every open item and the 2026-07-19 full-project
-> review added the deliberately-unscheduled block at the end.
+> Last updated: 2026-08-27 — the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
+> review added the deliberately-unscheduled block at the end, and Phase 2.6.5's `W1` and `W2` residual
+> sections were appended as those waves closed.
 >
 > **Lifecycle states**, because this file mixes three: `- [ ]` = unscheduled and actionable ·
 > **Scheduled → 2.6.X / → 2.5.5.X** = owned by that workstream, still unchecked until the PR that lands it ·
@@ -318,6 +319,42 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   throttles/queues subsequent egresses or only surfaces a one-time advisory event. Deferred until
   there is concrete surface demand or telemetry showing operators need an earlier signal.
   *(1.AC; ADR-0028; config-spec.md; workflow-yaml-spec.md)*
+
+## Phase 2.6.5 `W2` residuals ([ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md), 2026-08-25)
+
+The first two are **named by ADR-0085 itself** — §7 and §6 each accept a risk rather than close it, and an
+accepted risk with no tracked home is indistinguishable from one nobody noticed. The ADR's §9 requires this
+recording, and a Sonnet review round caught that §7 already claimed it in the present tense while the file
+had never been touched.
+
+- [ ] **Executor quarantine, and the trigger that would make it necessary
+  ([ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §7).**
+  ADR-0085 declines quarantine and records the reasoning: on the only host that exists, the CLI runs one
+  workflow per process and exits, so an abandoned dispatch outlives the run by at most the process. But
+  `WorkflowEngine` holds ONE `#executor` across a reusable `#runs` map and accepts repeated `start()` calls,
+  so a later run enters the same handler object — `retryable: false` bounds re-dispatch *within* a run and
+  nothing bounds it across runs. **Trigger: the first long-lived host that drives more than one run through
+  one `WorkflowEngine`** — the desktop app or the VS Code extension, neither of which has source today. That
+  host must either add a quarantine or MEASURE that accumulation is harmless; ADR-0085 does not license
+  assuming the latter. *(medium · packages/core/src/engine/engine.ts; ADR-0085 §7)*
+- [ ] **Bound the host persistence seam, or decide what a run may do when it cannot learn whether its own
+  write landed ([ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §6).**
+  `RunStore.persistEvent` is `Promise`-typed and `#emitDurable` catches a REJECTION but still awaits a
+  promise that never settles, so a hanging store hangs the run and no timer in ADR-0085 changes that. Not
+  reachable on the shipping SQLite store (bounded and fail-loud at ~25 s), real for a future async or cloud
+  store. **This is the half of ADR-0036's "structurally impossible" claim that stays conditional.** Deferred
+  deliberately: bounding a durable write raises a question ADR-0085 must not answer in passing — what a run
+  is allowed to do when the outcome of its own write is unknowable. *(high · packages/core/src/engine/engine.ts;
+  ADR-0085 §6; Phase-2 cloud store)*
+- [ ] **`onAuthError` is forwarded to the chain and exercised by nothing above it.**
+  `agent-runner.ts` and `agent-session.ts` both conditionally spread `onAuthError` into `ChainCapabilities`;
+  deleting BOTH lines leaves the entire core suite green (1337/1337, measured 2026-08-27), and no core test
+  references it. **Deliberately NOT filed as a `CR-21`-class defect, and the distinction is the point:**
+  `setTimer`/`newAbortController`/`attemptTimeoutMs` were HIGH because production hosts DO set them, so the
+  engine was silently dropping values real callers supplied. No host sets `onAuthError` at all — not
+  `build-engine.ts`, not `session-host.ts`, and no desktop or extension construction exists — so nothing is
+  being defeated today. The feature itself is genuinely tested one layer down, against `FallbackChain`
+  directly. This is a trap for whoever wires it next, not a live defect. *(medium · packages/core/src/engine/{agent-runner,agent-session}.ts)*
 
 ## Phase 2.6.5 `W1` residuals (PR #83, merged 2026-08-24)
 

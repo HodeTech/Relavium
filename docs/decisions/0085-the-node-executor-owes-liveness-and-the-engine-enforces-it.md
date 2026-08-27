@@ -298,8 +298,9 @@ that would fit).
 **The trigger for revisiting is named so it is not left to memory: the first long-lived host that drives
 more than one run through one `WorkflowEngine`** — the desktop app or the VS Code extension, neither of
 which has any source today. That host must either add a quarantine or measure that accumulation is
-harmless; this ADR does not license it to assume the latter. Recorded in
-[deferred-tasks.md](../roadmap/deferred-tasks.md) with this ADR as its reference.
+harmless; this ADR does not license it to assume the latter. Recorded 2026-08-27 in
+[deferred-tasks.md](../roadmap/deferred-tasks.md) under "Phase 2.6.5 `W2` residuals", with this ADR as its
+reference.
 
 ### 8. Acceptance
 
@@ -362,7 +363,10 @@ These land with the implementation, not after it:
   `@relavium/llm` re-exports it and keeps `DEFAULT_ATTEMPT_TIMEOUT_MS`, which is an LLM-specific default.
 - ADR-0036 gains a dated **Amended by** note recording that its "structurally impossible" claim rests on a
   mechanism that did not exist until this ADR, and that §6 names the half still conditional on the store
-  seam. ADRs are append-only; the original text stays.
+  seam. ADRs are append-only; the original text stays. **Landed 2026-08-27** — ahead of the implementation,
+  because deferring it is what left ADR-0036 silently wrong for a reader following CLAUDE.md's own
+  numerical reading order, and every sibling amendment (ADR-0074, ADR-0078, ADR-0079, ADR-0083) added its
+  reciprocal note at acceptance.
 - [phase-1-engine-and-llm.md](../roadmap/phases/phase-1-engine-and-llm.md)'s 1.N acceptance criterion is
   corrected where it repeats the same claim as shipped.
 - [node-types.md](../reference/shared-core/node-types.md) and
@@ -376,7 +380,9 @@ These land with the implementation, not after it:
   its "Failure and recovery" idempotency-key sentence is brought in line with ADR-0080's tiered contract.
 - The phase document's decision register points `CR-20` and `CR-23` at this ADR, and
   [deferred-tasks.md](../roadmap/deferred-tasks.md) records §7's quarantine trigger and §6's store-liveness
-  follow-up.
+  follow-up. **Landed 2026-08-27**, for the reason a review had to point out: §7 below already asserted the
+  recording in the present tense while this list still carried it as pending and the file had never been
+  touched — a claim reading as shipped inside the ADR that exists to remove exactly that.
 
 ## Consequences
 
