@@ -2214,7 +2214,7 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     expect(events.at(-1)?.type).toBe('run:failed');
   });
 
-  it("the fence refuses a straggler's writes after the grace window abandoned it (ADR-0085 §5)", async () => {
+  it('a straggler that wakes after the grace window changes nothing (ADR-0085 §5)', async () => {
     // **§5 names five mutation points; three of them were unguarded and none was tested.** `#onOutcome` was
     // already latched on `#settled`, but the `cost:updated` fold, `save_to` and the effect journal were not
     // — and `save_to` is the one that writes BYTES TO THE USER'S FILESYSTEM, on the executor's return,

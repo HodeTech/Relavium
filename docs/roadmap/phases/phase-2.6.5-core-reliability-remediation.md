@@ -1200,6 +1200,37 @@ both produce exactly one terminal in bounded time, and the late output is not ap
 
 ---
 
+
+### W2 closing register
+
+Exit criterion 7, for this wave: **per item, the code that closes it — verified by reading the code, not by
+trusting the mark.** `W1`'s register caught two items marked open that had shipped, and a later review still
+found six defects in the code it vouched for. So this table names the test that would fail if each mechanism
+were reverted, and every one of them was confirmed to fail line-precisely.
+
+| Item | The code that closes it | The test that would fail if it were reverted |
+|------|--------------------------|-----------------------------------------------|
+| `CR-20` | `engine.ts`'s `#openNodeDeadline` + `#dispatchBounded` — the authored `agent.timeout_ms`, ABSOLUTE per node and wrapping the whole dispatch (`#applySaveTo`, the money barrier and the retry backoff included) | `engine.test.ts` — *"honours an agent node's authored `timeout_ms`"*, which asserts the **authored 4000**, not that some timer armed; plus its negative control, *"a node with no `timeout_ms` arms no node deadline"* |
+| `CR-21` | `packages/shared/src/deadline.ts` (`openDeadline` — the merged signal, the hard race, the caller-abort latch) + `fallback-chain.ts`'s `#openDeadline` / `#raceStep`, forwarded through `agent-turn.ts` and wired by both CLI hosts | `deadline.test.ts` (11 cases) + `attempt-deadline.test.ts` (the two `process.on('unhandledRejection')` cases that cannot live in a `types: []` package) + the two forwarding tests, which run over BOTH `chainCapabilities` branches because production takes the one they originally missed |
+| `CR-21b` | `agent-runner.ts`'s `openGenerativeDeadline` + the race around `provider.generateMedia`, bounded by `MEDIA_GEN_SUBMIT_TIMEOUT_MS` | `m2-e2e-harness.e2e.test.ts` — *"a generateMedia submission that never settles is bounded too"* — and `agent-runner.test.ts`'s *"a cancel during a HUNG generateMedia is `cancelled`"*, which is the one that catches the caller signal going missing |
+| `CR-21c` | `engine.ts`'s `#openPollDeadline` + `#racePoll`, bounded by `MEDIA_JOB_POLL_DEFAULTS.pollCallTimeoutMs` and clamped to the job's remaining `deadlineAt` | `m2-e2e-harness.e2e.test.ts` — *"a poll call that never settles is bounded"* **and** *"the poll bound is CLAMPED to the job's remaining deadline"*. The clamp needed its own test: every other case ran with 1 799 997 ms remaining, so the constant always won the `min` |
+| `CR-22` | `#armRunTimeout`'s remaining-time arithmetic, `#seedFromCheckpoint`'s gate re-arm, and `reconstructCheckpointState` carrying `expiresAt`/`timeoutAction`/`timeoutMs` | `engine.test.ts`'s **seven** resume cases: the remaining-time arithmetic on the gate half and on the run half; the past-deadline clamp on each; the SURVIVING gate — the case the item exists for, and the one the first three tests all missed by resuming a run's only gate; the skew clamp, which stops a resuming clock running BEHIND from granting more patience than the author wrote; and the decision-beats-the-timer race, a regression this item shipped. Plus `checkpoint.test.ts`'s both-pair-orders fold |
+| `CR-23` | `#armGraceWindow` / `#onGraceElapsed` (armed off the abort signal in the constructor, unconditionally), the abandoned-node terminals, `#isLive` + `#fenceEffects`, and `#onRunTimeout`'s inverted ordering | `engine.test.ts` — *"a never-settling executor still produces exactly one terminal"*, and *"the effect fence refuses `prepare` but never `settle` or `discard`"* |
+
+**Two things this register does not claim.**
+
+The `cost:updated` and `save_to` fence points are **not** independently proven: removing the `cost:updated`
+guard leaves the straggler test green, because by then the run has settled and the bus is closed, so
+`#settled` is what carries it. The dispatch-id comparison is defensive on today's scheduler — `#step` has the
+only `#dispatch` call site and claims only `pending` vertices — and the test says so rather than implying
+coverage. The mutation that would close it is named there.
+
+And `CR-23`'s guarantee is bounded exactly as
+[ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §6 states: run
+liveness with respect to the EXECUTOR. A `RunStore.persistEvent` that never settles still hangs the run, and
+no timer in this wave changes that. It is [tracked](../deferred-tasks.md), not fixed, because bounding a
+durable write raises a question that ADR must not answer in passing.
+
 ## W3 — Resource governance and bounds
 
 ### CR-30 — The accepted no-drop bounded stream is not implemented · High
