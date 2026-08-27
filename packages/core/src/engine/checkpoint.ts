@@ -367,7 +367,16 @@ function applyGateEvent(acc: ReconAccumulator, event: RunEvent): void {
     acc.pendingGates.set(event.gateId, {
       nodeId: event.nodeId,
       // Only `human_gate:paused` carries a deadline; a `budget:paused` companion shares the gateId and must
-      // not erase what its sibling recorded (they arrive in either order for one gate — see the flag below).
+      // not erase what its sibling recorded.
+      //
+      // **The carry-forward arm is unreachable from THIS engine, and that is stated rather than implied.**
+      // `#settlePaused` always emits `budget:paused` BEFORE the companion `human_gate:paused`, so the
+      // deadline-bearing event is always the later one and there is nothing to carry. (An earlier version
+      // of this comment claimed the two "arrive in either order", which is simply not what the emitter
+      // does.) It is kept because this is a pure fold over DURABLE ROWS, which outlive the code that wrote
+      // them: a log from another writer, or a future emitter that reorders the pair, would otherwise
+      // silently lose the deadline. Pinned directly at the fold in `checkpoint.test.ts`, since no engine
+      // path can produce it.
       ...(event.type === 'human_gate:paused' && event.expiresAt !== undefined
         ? { expiresAt: event.expiresAt }
         : priorGate?.expiresAt === undefined

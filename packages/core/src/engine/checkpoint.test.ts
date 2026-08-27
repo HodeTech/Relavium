@@ -358,6 +358,63 @@ describe('reconstructCheckpointState', () => {
     expect(state?.cumulativeCostMicrocents).toBe(900);
   });
 
+  it('carries the gate deadline in BOTH pair orders — including the one the engine never emits (CR-22)', () => {
+    // `#settlePaused` always emits `budget:paused` then `human_gate:paused`, so the carry-forward arm in the
+    // fold is unreachable from this engine — deleting it leaves all 1343 core tests green, and it is the only
+    // uncovered line in `checkpoint.ts`. It is kept because this is a pure fold over DURABLE ROWS, which
+    // outlive the code that wrote them; a log from another writer, or a future emitter that reorders the
+    // pair, would otherwise silently lose the deadline and the gate would rehydrate with no timer at all —
+    // the exact defect `CR-22` closed. Pinned HERE rather than through the engine, because no engine path
+    // can produce the second order.
+    const gatePaused = {
+      type: 'human_gate:paused' as const,
+      nodeId: 'n',
+      gateId: 'g1',
+      gateType: 'approval' as const,
+      message: 'over budget',
+      timeoutMs: 1000,
+      timeoutAction: 'reject' as const,
+      expiresAt: '2026-01-01T00:00:01.000Z',
+    };
+    const budgetPaused = {
+      type: 'budget:paused' as const,
+      nodeId: 'n',
+      gateId: 'g1',
+      spentMicrocents: 900,
+      limitMicrocents: 1000,
+    };
+    const expected = [
+      {
+        gateId: 'g1',
+        nodeId: 'n',
+        isBudgetGate: true,
+        expiresAt: '2026-01-01T00:00:01.000Z',
+        timeoutAction: 'reject',
+        timeoutMs: 1000,
+      },
+    ];
+
+    // The order the engine emits.
+    expect(
+      reconstructCheckpointState([
+        started,
+        { ...budgetPaused, ...base(1) },
+        { ...gatePaused, ...base(2) },
+        { type: 'run:paused', ...base(3), pendingGateCount: 1, gateIds: ['g1'] },
+      ])?.pendingGates,
+    ).toEqual(expected);
+
+    // …and the order it does not. The deadline must survive a `budget:paused` arriving SECOND.
+    expect(
+      reconstructCheckpointState([
+        started,
+        { ...gatePaused, ...base(1) },
+        { ...budgetPaused, ...base(2) },
+        { type: 'run:paused', ...base(3), pendingGateCount: 1, gateIds: ['g1'] },
+      ])?.pendingGates,
+    ).toEqual(expected);
+  });
+
   it('a resumed gate clears the pending gate + records the decision as the node output', () => {
     const state = reconstructCheckpointState([
       started,

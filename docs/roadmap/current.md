@@ -608,7 +608,7 @@ The four Day-1-independent 2.6 workstreams everything downstream sits on — and
 3. **2.6.K** — the shared resume core (security review) → `budget resume` → the gate-decision/`gateType`
    cross-check (#0) → **2.6.G's `engine.reconcile()` wiring (#229), pulled forward** to where its only
    dependency resolves → secret re-provide (**mandatory security review** — it relaxes a fail-closed
-   guarantee) → gate-timeout re-arm → the `run:paused` park distinction.
+   guarantee) → ~~gate-timeout re-arm~~ (closed early in 2.6.5 `CR-22`) → the `run:paused` park distinction.
 4. **2.6.H** — the `applyDerived` exhaustiveness guard (#114) co-landed with resilient per-row parse
    (#277, #282) → step attribution → exact per-node cost + failed/cancelled totals (#118, #232) →
    batched `loadRunEvents` (G12, #273) → the bounded tool trace → gate uniqueness → idempotency.

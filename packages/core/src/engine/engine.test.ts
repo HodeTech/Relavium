@@ -1906,10 +1906,15 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
 
     // The load-bearing assertion: 250, not 1000. Arming the full `timeout_ms` would renew the deadline on
     // every resume — a gate crashed and resumed ten times would get ten times its authored patience, which
-    // is the defect `CR-22` names. `toContain` rather than an index, because the resume also arms unrelated
-    // work timers and their order is not this test's business.
-    expect(armedWork).toContain(250);
-    expect(armedWork).not.toContain(1000);
+    // is the defect `CR-22` names.
+    //
+    // `toEqual` on the whole array, not `toContain`. A first version used `toContain(250)` plus
+    // `not.toContain(1000)` and justified it by saying "the resume also arms unrelated work timers" — which
+    // is measurably false: this resume arms exactly one. With a single-element array the negative assertion
+    // was implied by the positive one and no mutation could make it the failing line, and the superseded
+    // test's EXACT count (`toBe(0)`) had also proved "no other work timer is armed anywhere". `toEqual`
+    // restores that second guarantee at zero cost.
+    expect(armedWork).toEqual([250]);
   });
 
   it('a resuming clock running BEHIND cannot grant more patience than the author wrote', async () => {
@@ -2098,10 +2103,145 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     });
     await drain(handleB);
 
-    // 15 s left of 60, not a fresh 60. The negative assertion is the load-bearing one — it is what a
-    // full-duration re-arm would violate.
-    expect(armedWork).toContain(15_000);
-    expect(armedWork).not.toContain(60_000);
+    // 15 s left of 60, not a fresh 60 — and exactly one timer, which is the guarantee the superseded
+    // test's exact count carried and `toContain` would have dropped.
+    expect(armedWork).toEqual([15_000]);
+  });
+
+  it('a run resumed PAST its `timeout_ms` arms at zero, never a negative duration', async () => {
+    // The run half's `Math.max(0, …)` clamp had no test: removing it left all 1339 core tests green, and it
+    // is invisible to coverage because `Math.max` is a call, not a branch, so v8 reports the line covered.
+    // The gate half had a past-deadline test from the start; this is its missing twin.
+    const TIMED = `  id: timed-expired
+  timeout_ms: 1000
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: out }`;
+    const store = new InMemoryRunStore();
+    const engineA = engineWith(
+      { g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?' } }) },
+      createInMemoryHost({ store }),
+    );
+    const handleA = engineA.start({ workflow: workflow(TIMED) });
+    let gateId = '';
+    let startedAt = '';
+    for await (const event of handleA.events) {
+      if (event.type === 'run:started') startedAt = event.timestamp;
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+
+    // Resume a full minute past a one-second cap — the budget is long gone.
+    const nowB = new Date(Date.parse(startedAt) + 60_000).toISOString();
+    const baseHostB = createInMemoryHost({ store });
+    const armedWork: number[] = [];
+    const hostB: typeof baseHostB = {
+      ...baseHostB,
+      clock: { now: () => nowB },
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'work') armedWork.push(ms);
+        return baseHostB.setTimer(ms, onFire, kind);
+      },
+    };
+    const engineB = engineWith({}, hostB);
+    const handleB = await engineB.resumeFromCheckpoint({
+      runId: handleA.runId,
+      workflow: workflow(TIMED),
+      gateId,
+      decision: { decision: 'approved', decidedBy: 'h' },
+    });
+    await drain(handleB);
+
+    // Zero, not −59 000. A negative duration handed to a host `setTimeout` is a fire-immediately on Node and
+    // undefined behaviour on another host; the clamp is what makes the expired case one shape everywhere.
+    expect(armedWork).toContain(0);
+    expect(armedWork.every((ms) => ms >= 0)).toBe(true);
+  });
+
+  it('a SURVIVING gate keeps its deadline across the resume — the case the item exists for', async () => {
+    // **The motivating case, and it had no test.** The sibling tests all resume a run's ONLY gate — which
+    // `resume()` disarms two lines later, i.e. precisely the "target gate" case the old deferral was right
+    // to say did not matter. What `CR-22` actually fixes is a gate that survives the resume: a multi-gate
+    // run, or a crash while parked, rehydrated its remaining gates with NO timer, so their deadlines
+    // stopped existing until the next restart.
+    //
+    // Two gates, resume one, assert the OTHER still holds a deadline — at its remaining time, and still
+    // armed after the resume has settled into its next park.
+    const MULTIGATE = `  id: multigate
+  nodes:
+    - { id: start, type: input }
+    - { id: g1, type: human_gate, gate_type: approval }
+    - { id: g2, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g1 }
+    - { from: start, to: g2 }
+    - { from: g1, to: out }
+    - { from: g2, to: out }`;
+    const store = new InMemoryRunStore();
+    const gate = (message: string) => ({
+      kind: 'paused' as const,
+      gate: {
+        gateType: 'approval' as const,
+        message,
+        timeoutMs: 5000,
+        timeoutAction: 'reject' as const,
+      },
+    });
+    const engineA = engineWith(
+      { g1: () => gate('first?'), g2: () => gate('second?') },
+      createInMemoryHost({ store }),
+    );
+    const handleA = engineA.start({ workflow: workflow(MULTIGATE) });
+    const gateIds: string[] = [];
+    const expiries: string[] = [];
+    for await (const event of handleA.events) {
+      if (event.type === 'human_gate:paused') {
+        gateIds.push(event.gateId);
+        expiries.push(event.expiresAt ?? '');
+      }
+      if (event.type === 'run:paused' && gateIds.length === 2) break;
+    }
+    expect(gateIds).toHaveLength(2);
+
+    // The two gates park a few clock ticks apart (the in-memory clock advances per read), so they expire at
+    // slightly different instants. Pin `now` off the first and compute BOTH expected remainings exactly —
+    // a band assertion would hide an off-by-one in the arithmetic this test exists to check.
+    const nowB = new Date(Date.parse(expiries[0] ?? '') - 4000).toISOString();
+    const expectedRemaining = expiries.map((e) => Date.parse(e) - Date.parse(nowB));
+    const baseHostB = createInMemoryHost({ store });
+    const armedWork: number[] = [];
+    const hostB: typeof baseHostB = {
+      ...baseHostB,
+      clock: { now: () => nowB },
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'work') armedWork.push(ms);
+        return baseHostB.setTimer(ms, onFire, kind);
+      },
+    };
+    const engineB = engineWith({ g2: () => gate('second?') }, hostB);
+    const handleB = await engineB.resumeFromCheckpoint({
+      runId: handleA.runId,
+      workflow: workflow(MULTIGATE),
+      gateId: gateIds[0] ?? '',
+      decision: { decision: 'approved', decidedBy: 'h' },
+    });
+    for await (const event of handleB.events) {
+      if (event.type === 'run:paused') break; // re-parked on the surviving gate
+    }
+
+    // BOTH gates were re-armed at their own remaining time — the surviving one is the point. Before the fix
+    // this array was empty, because rehydration armed nothing at all.
+    expect(expectedRemaining[0]).toBe(4000); // …and the arithmetic is what it claims
+    for (const ms of expectedRemaining) expect(armedWork).toContain(ms);
+    // …and the survivor's timer is still live after the resume settled: the decision disarmed only its own.
+    expect(baseHostB.armedCount()).toBeGreaterThan(0);
   });
 
   it('a gate whose deadline ALREADY passed re-arms at zero rather than resolving inline', async () => {
@@ -2149,9 +2289,10 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     });
     await drain(handleB);
 
-    // Clamped at zero — never a negative duration handed to a host timer.
-    expect(armedWork).toContain(0);
-    expect(armedWork.every((ms) => ms >= 0)).toBe(true);
+    // Clamped at zero — never a negative duration handed to a host timer. Exact, for the same reason as
+    // its siblings: with a one-element array `every(ms => ms >= 0)` was implied by the value assertion and
+    // could never be the failing line.
+    expect(armedWork).toEqual([0]);
   });
 });
 
