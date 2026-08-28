@@ -158,6 +158,59 @@ ${targets}
   });
 });
 
+describe('ADR-0086 — the NODE retry budget, which is the one the engine spends', () => {
+  // **The bypass the first implementation shipped.** `#retryConfig` reads `node.retry ?? agent.retry` for an
+  // agent node and `node.retry` alone for `condition`/`transform`/`merge`, so an agent-only check was
+  // avoidable with one line of YAML — and the three non-agent types had no enforcement path at all.
+  // Measured against that version: every case below was ADMITTED.
+  const over = ADMISSION_CEILINGS.retryMax + 1;
+
+  it.each([
+    [
+      'transform',
+      `    - { id: n1, type: transform, transform: 'g', retry: { max: ${over}, backoff: exponential } }`,
+    ],
+    [
+      'condition',
+      `    - { id: n1, type: condition, expression_type: js, expression: 'x', branches: [{ when: true, target_node: n0 }], retry: { max: ${over}, backoff: exponential } }`,
+    ],
+  ])(
+    'rejects an over-ceiling `retry.max` on a %s node, which has no agent at all',
+    (_kind, node) => {
+      const yaml = `schema_version: '1.0'
+workflow:
+  id: nodes-retry
+  nodes:
+    - { id: n0, type: input }
+${node}
+  edges:
+    - { from: n0, to: n1 }
+`;
+      const issue = issuesOf(yaml).find((i) => i.kind === 'ceiling_exceeded');
+      expect(issue?.field).toContain('n1');
+      expect(issue?.field).toContain('retry.max');
+    },
+  );
+
+  it('rejects an agent NODE that overrides an at-ceiling agent — the one-line bypass', () => {
+    const yaml = `schema_version: '1.0'
+workflow:
+  id: override
+  agents:
+    - { id: a, model: m, provider: anthropic, system_prompt: hi, retry: { max: ${ADMISSION_CEILINGS.retryMax}, backoff: exponential } }
+  nodes:
+    - { id: n0, type: input }
+    - { id: n1, type: agent, agent_ref: a, prompt_template: 'go', retry: { max: ${over}, backoff: exponential } }
+  edges:
+    - { from: n0, to: n1 }
+`;
+    // The agent is exactly AT the ceiling, so only the node-level check can catch this — which is the whole
+    // point: an author who trips the agent ceiling would otherwise "fix" it by moving the value to the node.
+    const issue = issuesOf(yaml).find((i) => i.kind === 'ceiling_exceeded');
+    expect(issue?.field).toBe('node `n1`.retry.max');
+  });
+});
+
 describe('ADR-0086 §3 — an omitted `max_parallel`', () => {
   it('is a finite constant, not Infinity', () => {
     // The value itself is the assertion: `Infinity` is the one number at which a concurrency cap governs

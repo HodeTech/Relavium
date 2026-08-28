@@ -155,6 +155,31 @@ describe('SessionHandle (1.W) — the long-lived session event stream', () => {
 });
 
 describe('SessionHandle — the producer-await bound (CR-30, ADR-0036)', () => {
+  it('does NOT park a producer when nobody iterates the stream — the CR-30 deadlock', async () => {
+    // **The regression CR-30's first version shipped, caught by its own review round.** Every CLI session
+    // surface attaches with `subscribe()`, which `createSessionHandle` implements as a SEPARATE bus
+    // subscription — it never drains `primary`. So `primary` filled with every session event, nobody ever
+    // pulled, and `whenDrained()` stopped resolving after `capacity`. With the per-chunk await now wired
+    // into the agent turn, that froze `relavium chat` mid-reply, permanently.
+    //
+    // Measured before the fix, with this exact shape: 10 events buffered against a ceiling of 4 and
+    // `whenConsumersReady()` never resolved. Backpressure paces a consumer that EXISTS; parking a producer
+    // on a stream nobody reads is not backpressure.
+    const b = bus();
+    const handle = createSessionHandle(b, 'sess-1', () => undefined, 4);
+    handle.subscribe(() => undefined); // the only consumer, exactly like the CLI persister
+
+    for (let i = 0; i < 10; i += 1) b.emit(turnStarted());
+    expect(handle.bufferedCount).toBeGreaterThan(handle.highWaterMark); // it really is over the ceiling
+
+    let resolved = false;
+    void handle.whenConsumersReady().then(() => {
+      resolved = true;
+    });
+    for (let i = 0; i < 50; i += 1) await Promise.resolve();
+    expect(resolved).toBe(true);
+  });
+
   it('a fast producer that awaits never exceeds the ceiling, and skips no sequence number', async () => {
     // **The session path had NO backpressure, not advisory backpressure.** `createSessionHandle` has always
     // wired `whenConsumersReady: () => primary.whenDrained()` and nothing ever awaited it, so a long

@@ -20,6 +20,11 @@
  * {@link highWaterMark} exposes the ceiling so a test can assert the bound rather than infer it, and
  * {@link bufferedCount} exposes the depth for the same reason.
  *
+ * **And it paces a consumer that EXISTS.** A stream nobody iterates has no consumer to protect, so
+ * `whenDrained` resolves freely until the first `next()`. Without that, the producer-await deadlocked every
+ * CLI session: those surfaces attach with `subscribe()`, which is a separate bus subscription and never
+ * drains this buffer at all.
+ *
  * The optional `onClose` callback fires **once**, deterministically, when the stream closes — whether on a
  * terminal event or when the consumer abandons the loop early (`break` / `return`, which routes through
  * {@link return} → {@link close}). The owning handle passes its bus `unsubscribe` here so an early-abandoned
@@ -39,6 +44,16 @@ export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
   #waitingPull: ((result: IteratorResult<E>) => void) | undefined;
   #drainWaiters: (() => void)[] = [];
   #closed = false;
+  /**
+   * Whether anyone has ever pulled from this stream — the difference between a SLOW consumer and NO consumer.
+   *
+   * Backpressure paces a consumer that exists. Parking a producer on a stream nobody iterates is not
+   * backpressure, it is a deadlock, and it was a real one: every CLI session surface attaches with
+   * `subscribe()` only (a separate bus subscription that never drains this buffer), so `whenDrained()` stopped
+   * resolving after `capacity` events and a streaming reply froze mid-sentence. Measured before the fix: with
+   * a ceiling of 4 and 10 events pushed, `whenConsumersReady()` never resolved.
+   */
+  #everPulled = false;
 
   constructor(capacity: number, onClose?: () => void) {
     this.#capacity = capacity;
@@ -104,7 +119,7 @@ export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
    * dead stream would hang it.
    */
   whenDrained(): Promise<void> {
-    if (this.#closed || this.#buffer.length < this.#capacity) {
+    if (this.#closed || !this.#everPulled || this.#buffer.length < this.#capacity) {
       return Promise.resolve();
     }
     return new Promise<void>((resolve) => {
@@ -113,7 +128,7 @@ export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
   }
 
   #wakeDrainWaiters(): void {
-    if (this.#closed || this.#buffer.length < this.#capacity) {
+    if (this.#closed || !this.#everPulled || this.#buffer.length < this.#capacity) {
       const waiters = this.#drainWaiters;
       this.#drainWaiters = [];
       for (const wake of waiters) {
@@ -123,6 +138,7 @@ export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
   }
 
   next(): Promise<IteratorResult<E>> {
+    this.#everPulled = true; // from here on, a full buffer means a SLOW consumer rather than none
     const buffered = this.#buffer.shift();
     if (buffered !== undefined) {
       this.#wakeDrainWaiters();

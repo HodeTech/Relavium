@@ -220,6 +220,25 @@ export function collectWorkflowCeilingIssues(def: Workflow, issues: GraphIssue[]
     }
   }
 
+  // **The NODE's retry budget, which is the one the engine actually spends.** `#retryConfig` reads
+  // `node.retry ?? agent.retry` for an agent node and `node.retry` alone for `condition`/`transform`/`merge`
+  // — so checking only the resolved agent left the ceiling bypassable by one line of YAML on the node, and
+  // left the three non-agent types with no enforcement path at all. Measured before this: a `transform` with
+  // `retry: { max: 100000 }` was ADMITTED, and so was an agent node overriding an at-ceiling agent.
+  for (const node of spec.nodes) {
+    const retry = 'retry' in node ? node.retry : undefined;
+    if (retry !== undefined && retry.max > ADMISSION_CEILINGS.retryMax) {
+      issues.push(
+        ceilingIssue(
+          `node \`${node.id}\`.retry.max`,
+          retry.max,
+          ADMISSION_CEILINGS.retryMax,
+          'the node-retry budget',
+        ),
+      );
+    }
+  }
+
   const maxParallel = spec.max_parallel;
   if (maxParallel !== undefined && maxParallel > ADMISSION_CEILINGS.maxParallel) {
     issues.push(
