@@ -80,13 +80,14 @@ wrap the whole `#dispatch` body.
 ### 2. The authored node deadline is ABSOLUTE per node, and classifies as the human gate already does
 
 `timeout_ms` bounds the interval from the node's **first `node:started` to its node terminal** — every
-attempt, every backoff, `save_to`, and the money barrier share one remaining budget. (**`save_to` is
-listed in error — corrected 2026-08-28 with §8 item 5.** The schema puts `save_to` on the `output` node
-only and `timeout_ms` on `agent`/`human_gate` only, so no authored node carries both. The clause is
-harmless — it widens the bound to something unreachable rather than narrowing it — but it is not true, and
-a reader who trusts it looks for a test that cannot exist.) `#dispatch` already
+attempt, every backoff, `save_to`, and the money barrier share one remaining budget. `#dispatch` already
 captures `startedAtMs` before the retry loop, so the remaining time is arithmetic on state the engine
 holds.
+
+> **Amended 2026-08-28, with §8 item 5:** `save_to` is listed in error. The schema puts it on the `output`
+> node only and `timeout_ms` on `agent`/`human_gate` only, so no authored node carries both. The clause is
+> harmless — it widens the bound to something unreachable rather than narrowing it — but it is not true, and
+> a reader who trusts it looks for a test that cannot exist.
 
 A node whose bound elapses fails with **`code: 'run_timeout'`, `retryable: false`**.
 
@@ -226,13 +227,38 @@ So:
   replaces **only that vertex's** entry.
 - A write is admitted only when the run has not settled **and** the writing dispatch's id equals its
   vertex's current entry.
+
+  > **Amended 2026-08-28:** this reads as universal and is not. It holds for the four fence points that
+  > write from INSIDE a dispatch — the cost delivery, `save_to`, the effect journal and the money port, each
+  > of which has a dispatch id in scope. It does NOT hold for fence point 1, `#onOutcome`, which is also
+  > re-entered out of band and after §3's grace clears the map; there the predicate is the vertex's terminal
+  > node status, for the reasons appended to item 1. Left as written because the rule is right about the
+  > points it was drawn for, and narrowing it silently would hide that the ADR once claimed it of all five.
 - When the §3 grace elapses, every entry is cleared **atomically, before any await**, so no straggler can
   slip a write in between the decision and the settle.
 
 Node *state* is already fenced — `#onOutcome` returns early on `#settled`. The gap is that this is one
 boolean on one path. The fence covers five points, and each gets its own assertion in §8:
 
-1. `#onOutcome` — already latched; the token subsumes the boolean. **Corrected 2026-08-28: it does not, and the implementation says so.** The token was tried here and refused every async media-job completion: `#dispatch`'s `finally` releases the vertex's slot on return, but a `media_job` PARKS — the node is legitimately still running and settles later, out of band, from the poll timer. The shipped predicate is the vertex's own TERMINAL node status (`completed`/`failed`/`skipped`), which is what actually distinguishes "this node already had its outcome" from `paused`/`running`. The gap the item names is real — `#settled` alone lets a timed-out node's straggler overwrite the timeout with a `completed` while a sibling keeps the run alive — but the token is the wrong instrument for closing it.
+1. `#onOutcome` — already latched; the token subsumes the boolean.
+
+   > **Amended 2026-08-28:** it does not, and the implementation says so. The shipped predicate at this fence
+   > point is the vertex's own TERMINAL node status (`completed`/`failed`/`skipped`), which is what actually
+   > distinguishes "this node already had its outcome" from `paused`/`running`. The gap the item names is
+   > real — `#settled` alone lets a timed-out node's straggler overwrite the timeout with a `completed` while
+   > a sibling keeps the run alive — but the token is the wrong instrument for closing it.
+
+   > **Amended again 2026-08-28**, because the first amendment's REASON did not survive the same day's code.
+   > It said the token had been tried and "refused every async media-job completion, because `#dispatch`'s
+   > `finally` releases the vertex's slot on return while a `media_job` PARKS". That release was narrowed to
+   > a node TERMINAL hours later, so a park no longer frees the slot and the stated mechanism is refuted by
+   > the code beside it. Three reasons survive, and none is about slot release: (a) `#onOutcome` is re-entered
+   > OUT OF BAND from `#onNodeDeadline`, `#settleMediaJobDone` and the media-failure path, none of which holds
+   > a dispatch id — there is no token to compare; (b) a cross-process resume rehydrates a parked job into a
+   > new `RunExecution` whose `#activeDispatchByVertex` never held that vertex, since `#dispatch` is its only
+   > writer, so a token check would refuse every resumed completion; (c) after §3's grace clears the map, an
+   > abandoned node's `cancelled` outcome must still land here, because §4 requires the terminal and §8.16
+   > records what refusing it costs. A correction that carries a false reason is only half a correction.
 2. `#nodeEmit`'s `cost:updated` fold — currently unguarded, and it mutates `#cumulativeCostMicrocents` and
    pushes to every subscriber after the terminal has reported the total.
 3. `#applySaveTo` — currently unguarded, and it writes bytes to the user's filesystem on the executor's
@@ -332,16 +358,18 @@ implementation.
    go red under a per-attempt reading.
 5. A node whose `execute()` returns inside the bound but whose `save_to` hangs still times out — and the
    same for a hanging money barrier. These are the two tests that would pass for a race around
-   `execute()` alone. **Corrected 2026-08-28: the `save_to` half is unreachable by construction, and no
-   test can be written for it.** The authored schema puts `save_to` on the `output` node only
-   (`OutputNodeSchema`) and `timeout_ms` on `agent` and `human_gate` only (`AgentNodeSchema`,
-   `HumanGateNodeSchema`) — see [node-types.md](../reference/shared-core/node-types.md). No authored node can
-   carry both, so "a node with `timeout_ms` whose `save_to` hangs" names a workflow the parser rejects. The
-   claim was written from the engine's call graph (`#applySaveTo` does run inside the dispatch the deadline
-   bounds) without checking what the schema admits. The MONEY-barrier half stands and is reachable: the
-   barrier is inside the agent turn, which is exactly where `timeout_ms` applies. The `save_to` write is
-   still fenced against a stale dispatch (§5 point 3, item 16 below) — that guarantee is unaffected; only
-   the deadline-interaction test is impossible.
+   `execute()` alone.
+
+   > **Amended 2026-08-28:** the `save_to` half is unreachable by construction, and no test can be written
+   > for it. The authored schema puts `save_to` on the `output` node only (`OutputNodeSchema`) and
+   > `timeout_ms` on `agent` and `human_gate` only (`AgentNodeSchema`, `HumanGateNodeSchema`) — see
+   > [node-types.md](../reference/shared-core/node-types.md). No authored node can carry both, so "a node
+   > with `timeout_ms` whose `save_to` hangs" names a workflow the parser rejects. The claim was written
+   > from the engine's call graph (`#applySaveTo` does run inside the dispatch the deadline bounds) without
+   > checking what the schema admits. The MONEY-barrier half stands and is reachable: the barrier is inside
+   > the agent turn, which is exactly where `timeout_ms` applies. The `save_to` write is still fenced
+   > against a stale dispatch (§5 point 3, item 16 below) — that guarantee is unaffected; only the
+   > deadline-interaction test is impossible.
 6. A run cancel landing during a node deadline classifies `cancelled`, not `run_timeout` — cancel-wins,
    asserted against the contract rather than fake-timer callback order.
 7. The node deadline and the run deadline compose by earliest-expiry (ADR-0082 §6), proven with both armed
@@ -380,19 +408,33 @@ implementation.
 13. Two parallel siblings: `B`'s dispatch does **not** stale `A`'s, and both write normally.
 14. The same vertex re-dispatched: the older dispatch's writes are refused, the newer's admitted.
 15. A stale dispatch's `cost:updated` changes neither `cumulativeCostMicrocents` nor what any subscriber
-    receives. **Corrected 2026-08-28, and the correction cost real money to find.** Fencing the FOLD as well
-    as the delivery loses a durable ledger row: `#cumulativeCostMicrocents` is what `TurnMoneyPort.record`
-    stamps as a row's `cumulativeCostMicrocents`, and `refineCostAttemptSettled` rejects a row whose
-    cumulative is below its own cost. A stale-but-genuinely-billed attempt therefore produced
-    `cumulative 0 < cost N` at a producer gate that runs OUTSIDE `#emitDurable`'s try — it threw where the
-    design assumes it cannot, and the charge never reached the ledger. The shipped rule: **the fold is
-    unconditional, the delivery is fenced.** A charge the provider took is recorded either way
-    ([ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §5); what the fence stops is
-    re-announcing a run total to subscribers after the terminal published one.
-16. A stale dispatch's `save_to` does not write. **Extended 2026-08-28: it must also not report a deliverable it did not write.** Both fence paths originally returned the unchanged `completed` outcome, which told `#onOutcome` the write had happened. Measured under an ASYNC `RunStore` — the seam's stated reality, and the case `InMemoryRunStore`'s synchronous resolve hides — an output node abandoned by the grace window then reached `#onOutcome` while its status was still `running` and ended with NO node terminal in the log at all, the omission §4 forbids. Both paths now return a typed `cancelled` failure, so the node is failed rather than silently dropped or falsely completed.
+    receives.
+
+    > **Amended 2026-08-28**, and the correction cost real money to find. Fencing the FOLD as well as the
+    > delivery loses a durable ledger row: `#cumulativeCostMicrocents` is what `TurnMoneyPort.record` stamps
+    > as a row's `cumulativeCostMicrocents`, and `refineCostAttemptSettled` rejects a row whose cumulative is
+    > below its own cost. A stale-but-genuinely-billed attempt therefore produced `cumulative 0 < cost N` at
+    > a producer gate that runs OUTSIDE `#emitDurable`'s try — it threw where the design assumes it cannot,
+    > and the charge never reached the ledger. The shipped rule: **the fold is unconditional, the delivery is
+    > fenced.** A charge the provider took is recorded either way
+    > ([ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §5); what the fence stops is
+    > re-announcing a run total to subscribers after the terminal published one.
+16. A stale dispatch's `save_to` does not write.
+
+    > **Amended 2026-08-28:** it must also not REPORT a deliverable it did not write. Both fence paths
+    > originally returned the unchanged `completed` outcome, which told `#onOutcome` the write had happened.
+    > Measured under an ASYNC `RunStore` — the seam's stated reality, and the case `InMemoryRunStore`'s
+    > synchronous resolve hides — an output node abandoned by the grace window then reached `#onOutcome`
+    > while its status was still `running` and ended with NO node terminal in the log at all, the omission §4
+    > forbids. Both paths now return a typed `cancelled` failure, so the node is failed rather than silently
+    > dropped or falsely completed.
 17. A stale `prepare` is refused; a stale `settle` and a stale `discard` are **admitted** — the paired test
     that stops a fix for one from re-creating `PR83-04`'s stranded row.
-18. A ledger write for an already-incurred charge completes when stale; the run-total fold does not. **Corrected 2026-08-28 with item 15 — the fold DOES complete**, for the reason recorded there. The half of this item that survives is the one it shares with the money port's per-method table: a stale `record` is admitted, because refusing it is how the charge goes missing.
+18. A ledger write for an already-incurred charge completes when stale; the run-total fold does not.
+
+    > **Amended 2026-08-28 with item 15 — the fold DOES complete**, for the reason recorded there. The half
+    > of this item that survives is the one it shares with the money port's per-method table: a stale
+    > `record` is admitted, because refusing it is how the charge goes missing.
 
 **Mutation discipline.** Per the phase's working discipline each of the above is confirmed to FAIL with its
 production change reverted, and the mutation is confirmed to have landed before the red is trusted.

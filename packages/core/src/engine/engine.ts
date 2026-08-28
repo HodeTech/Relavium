@@ -2190,11 +2190,22 @@ class RunExecution {
     // its eventual outcome reaches here on a run that has NOT settled and would overwrite the timeout with a
     // `completed` — a node reporting success for work the engine already told the user had timed out.
     //
-    // The dispatch token is the wrong test here, and trying it proved so: `#dispatch`'s `finally` releases
-    // the vertex's slot on return, but an async media job PARKS — the node is legitimately still running and
-    // settles later, out of band, from the poll timer. Keying on the token refused every media-job
-    // completion. The honest predicate is that a vertex which already reached a TERMINAL node status has had
-    // its outcome; `paused` and `running` have not.
+    // **The dispatch token is the wrong test here, and it is not merely wrong — it is unavailable.** An
+    // earlier version of this comment blamed `#dispatch`'s `finally` releasing the slot on a park; that
+    // stopped being true when the release was narrowed to a node TERMINAL (see `#dispatch`). Three reasons
+    // survive, and none of them is about slot release:
+    //
+    //   1. `#onOutcome` is re-entered OUT OF BAND from three sites that hold no dispatch id at all —
+    //      `#onNodeDeadline`, `#settleMediaJobDone`, and the media-job failure path. There is no token to
+    //      compare, so the predicate could not even be written there.
+    //   2. A cross-process resume rehydrates a parked media job (`#restoreParkedMediaJob`) into a NEW
+    //      `RunExecution` whose `#activeDispatchByVertex` never held that vertex — `#dispatch` is the only
+    //      writer. A token check would refuse every resumed job's completion.
+    //   3. After `#onGraceElapsed` clears the map, an abandoned node's `cancelled` outcome must still land
+    //      here: ADR-0085 §4 requires the node terminal, and §8.16 records what refusing it costs.
+    //
+    // The honest predicate is that a vertex which already reached a TERMINAL node status has had its
+    // outcome; `paused` and `running` have not.
     const settledStatus = this.#states.get(vertex.id)?.status;
     if (
       settledStatus === 'completed' ||
