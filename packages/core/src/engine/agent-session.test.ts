@@ -198,6 +198,34 @@ describe('ADR-0086 §6 — the session checks the SAME agent ceilings the compil
     expect(() => session(deps, greedy)).toThrow(WorkflowGraphError);
   });
 
+  it('a RESUME is not re-admitted — an old transcript never becomes unopenable', () => {
+    // **The trap the constructor check created.** A resumed session runs the agent SNAPSHOT frozen at
+    // session start; the file it came from may have changed or be gone, so an author has nothing to edit.
+    // Applying the ceiling here would make every chat persisted before ADR-0086 permanently unopenable, with
+    // no lever and no warning — the one case where "reject loudly" harms the person it is meant to protect.
+    // Admission governs what is ADMITTED; ADR-0083 draws the same line for a run resume.
+    const greedy = AgentSchema.parse({
+      id: 'greedy-old',
+      model: 'claude-opus-4-8',
+      provider: 'anthropic',
+      system_prompt: 'hi',
+      retry: { max: ADMISSION_CEILINGS.retryMax + 1, backoff: 'exponential' },
+    });
+    const { deps } = harness([[]]);
+    expect(() =>
+      AgentSession.resume(
+        {
+          sessionId: 'sess-old',
+          agentRef: greedy.id,
+          agent: greedy,
+          context: CONTEXT,
+          deps,
+        },
+        { messages: [], turnCount: 0, cumulativeCostMicrocents: 0, conservativeCostMicrocents: 0 },
+      ),
+    ).not.toThrow();
+  });
+
   it('admits an agent AT the ceiling — the negative control', () => {
     const atLimit = AgentSchema.parse({
       id: 'at-limit',

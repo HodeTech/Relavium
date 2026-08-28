@@ -44,6 +44,12 @@ export type GraphIssueKind =
  * (those messages stay positional, `edge #n`); a *matched* condition branch handle is echoed only when
  * it is a short, simple label, else it too stays positional — so a secret-shaped handle never rides a
  * message.
+ *
+ * **One deliberate exception, added with `ceiling_exceeded`
+ * ([ADR-0086](../../../docs/decisions/0086-absolute-admission-ceilings-on-authored-values.md)):** a ceiling
+ * issue echoes the authored NUMBER. The invariant above exists because an authored *string* can carry a
+ * secret; a schema-validated `positiveInt` cannot. And the number is the actionable half — a rejection that
+ * hides which value tripped leaves the author guessing across eight ceilings.
  */
 export interface GraphIssue {
   /** Human field/locator — e.g. ``edge `merge`→`gate```, ``node `gate`.branches[0].target_node``. */

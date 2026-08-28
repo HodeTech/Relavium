@@ -527,17 +527,27 @@ export class AgentSession {
    */
   #autoCompactPending: { readonly model: string; readonly inputTokens: number } | undefined;
 
-  constructor(params: AgentSessionParams) {
+  constructor(params: AgentSessionParams, opts?: { readonly admit?: boolean }) {
     // **The session's half of ADR-0086 §6, and it is a CONSTRUCTOR check on purpose.** `relavium agent run`
     // and `relavium chat` never build a workflow graph, so the compiler's ceiling pass never sees their
     // agent — and `retry.max` / `fallback_chain` / `max_attempts` are exactly the values this path consumes.
     // Rejecting here, before any turn, is the session's equivalent of "the run never starts": no provider
     // call, no tool dispatch, no money. The SAME validator the compiler calls, so an agent file cannot be
     // admitted by `chat` and rejected by a workflow that references it.
-    const ceilingIssues: GraphIssue[] = [];
-    collectAgentCeilingIssues(params.agent, ceilingIssues);
-    if (ceilingIssues.length > 0) {
-      throw new WorkflowGraphError(ceilingIssues);
+    //
+    // **A RESUME does not re-admit, and that is not a loophole — it is the only humane answer.** A resumed
+    // session runs the agent SNAPSHOT frozen at session start: the file it came from may have changed or be
+    // gone, so an author has nothing to edit. Applying a ceiling here would make every transcript persisted
+    // before this ADR permanently unopenable, with no lever for the user and no warning. Admission governs
+    // what is ADMITTED; ADR-0083 draws the same line for a run resume, which verifies what it was admitted
+    // with rather than admitting it again. The snapshot keeps its old budget; every ceiling still applies to
+    // the next session the user starts.
+    if (opts?.admit !== false) {
+      const ceilingIssues: GraphIssue[] = [];
+      collectAgentCeilingIssues(params.agent, ceilingIssues);
+      if (ceilingIssues.length > 0) {
+        throw new WorkflowGraphError(ceilingIssues);
+      }
     }
     this.sessionId = params.sessionId;
     this.#agentRef = params.agentRef;
@@ -558,7 +568,9 @@ export class AgentSession {
    * **replaces** {@link start}: the returned session is past `created`, so calling `start()` on it throws.
    */
   static resume(params: AgentSessionParams, state: SessionResumeState): AgentSession {
-    const session = new AgentSession(params);
+    // `admit: false` — see the constructor. A resume continues a session that was already admitted, on a
+    // frozen snapshot its user cannot edit; re-admitting it would strand their transcript.
+    const session = new AgentSession(params, { admit: false });
     session.#messages.push(...state.messages);
     session.#turnCount = state.turnCount;
     // **`#userCommandSeq` is deliberately NOT restored, and the reason is a limitation rather than a choice.**

@@ -63,6 +63,9 @@ export type { RunScope, ResolverCapabilities } from './interpolation/scope.js';
 
 // DAG builder + RunPlan (1.M) — compile a validated definition into an executable, topologically
 // ordered plan; the run loop (1.N) and AgentRunner (1.O) consume it.
+// ADR-0086's ceilings, exported so a host can READ the number it will be judged against — a surface that
+// shows an author "the limit is 500" before they hit it beats one that only reports the rejection. §9.3.
+export { ADMISSION_CEILINGS, DEFAULT_MAX_PARALLEL } from './limits.js';
 export { buildRunPlan } from './dag.js';
 export type { BuildRunPlanOptions } from './dag.js';
 export type {

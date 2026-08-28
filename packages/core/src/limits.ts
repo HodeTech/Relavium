@@ -179,23 +179,37 @@ export function collectWorkflowCeilingIssues(def: Workflow, issues: GraphIssue[]
   // Same reasoning as fan-out below: `parallel_of` members become real edges in the built graph, so an
   // edge ceiling that counted only `edges[]` would let 500 parallel nodes × 500 members past a limit of
   // 2000. They are authored edges written in a different place, not compiled ones.
-  const parallelEdges = spec.nodes.reduce(
-    (sum, node) => (node.type === 'parallel' ? sum + node.parallel_of.length : sum),
-    0,
-  );
-  const totalEdges = edges.length + parallelEdges;
+  // Every routing form the builder materialises, not only `edges[]`: a `parallel`'s members AND a
+  // `condition`'s branch targets both become real graph edges (`wireParallelNode` / the condition wiring), so
+  // an edge ceiling that counted `edges[]` alone was bypassable by authoring the same graph a different way.
+  const materialisedEdges = spec.nodes.reduce((sum, node) => {
+    if (node.type === 'parallel') return sum + node.parallel_of.length;
+    if (node.type === 'condition')
+      return sum + node.branches.length + (node.default === undefined ? 0 : 1);
+    return sum;
+  }, 0);
+  const totalEdges = edges.length + materialisedEdges;
   if (totalEdges > ADMISSION_CEILINGS.edges) {
     issues.push(
       ceilingIssue('workflow.edges', totalEdges, ADMISSION_CEILINGS.edges, 'the edge count'),
     );
   }
 
-  const outDegree = new Map<string, number>();
-  // A `parallel` node's members are fan-out edges the builder materialises without an `edges[]` entry, so
-  // they must be counted here or the ceiling is bypassable by authoring the same width a different way.
+  // **Fan-out width, counted over the DISTINCT targets a node routes to.** A set, not a running sum, because
+  // the spec documents the redundant form — a `parallel_of` member (or a `condition` branch target) may ALSO
+  // carry an explicit edge to the same node — and a sum would count that width twice, rejecting a file whose
+  // graph is identical to an accepted one purely on which of two documented spellings its author chose.
+  const outTargets = new Map<string, Set<string>>();
+  const addTarget = (producer: string, target: string): void => {
+    const set = outTargets.get(producer) ?? new Set<string>();
+    set.add(target);
+    outTargets.set(producer, set);
+  };
   for (const node of spec.nodes) {
     if (node.type === 'parallel') {
-      outDegree.set(node.id, (outDegree.get(node.id) ?? 0) + node.parallel_of.length);
+      // Members are fan-out edges the builder materialises with no `edges[]` entry, so leaving them out made
+      // the ceiling bypassable: a 200-member split read as a width of zero.
+      for (const member of node.parallel_of) addTarget(node.id, member);
     }
   }
   for (const edge of edges) {
@@ -203,11 +217,14 @@ export function collectWorkflowCeilingIssues(def: Workflow, issues: GraphIssue[]
     // Counting `a:true` and `a:false` as two different sources would under-report a condition's width — and
     // over-report nothing, since a plain edge has no colon.
     const producer = edge.from.split(':')[0] ?? edge.from;
-    outDegree.set(producer, (outDegree.get(producer) ?? 0) + 1);
+    addTarget(producer, edge.to);
   }
   // Sorted so a file with several over-wide nodes reports them in a stable order — an unstable order makes
   // a snapshot test flaky for a reason that has nothing to do with the defect it is guarding.
-  for (const [nodeId, degree] of [...outDegree].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+  for (const [nodeId, targets] of [...outTargets].sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  )) {
+    const degree = targets.size;
     if (degree > ADMISSION_CEILINGS.fanOut) {
       issues.push(
         ceilingIssue(

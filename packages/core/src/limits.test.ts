@@ -143,6 +143,56 @@ ${targets}
     expect(issuesOf(yaml).filter((i) => i.kind === 'ceiling_exceeded')).toEqual([]);
   });
 
+  it('counts the redundant form ONCE — the same graph, two documented spellings', () => {
+    // The spec documents an explicit edge alongside a routing declaration as redundant-but-legal. A running
+    // sum counted that width twice, so an author who wrote both spellings got rejected while an author who
+    // wrote one was admitted — for an identical graph. Width is the count of DISTINCT targets.
+    const members = Array.from({ length: ADMISSION_CEILINGS.fanOut }, (_, i) => `m${i}`);
+    const nodes = [
+      `    - { id: start, type: input }`,
+      `    - { id: split, type: parallel, parallel_of: [${members.join(', ')}] }`,
+      ...members.map((m) => `    - { id: ${m}, type: transform, transform: 'g' }`),
+    ].join('\n');
+    const redundant = members.map((m) => `    - { from: split, to: ${m} }`).join('\n');
+    const yaml = `schema_version: '1.0'
+workflow:
+  id: redundant
+  nodes:
+${nodes}
+  edges:
+    - { from: start, to: split }
+${redundant}
+`;
+    // Exactly AT the ceiling either way — the redundant edges name the same targets.
+    expect(issuesOf(yaml).filter((i) => i.field.includes('split'))).toEqual([]);
+  });
+
+  it("counts a `condition`'s branch targets toward the EDGE ceiling", () => {
+    // Branches are excluded from FAN-OUT (they are alternatives) but they are still real edges the builder
+    // materialises, so leaving them out of the edge count left the same bypass `parallel_of` had.
+    const n = ADMISSION_CEILINGS.edges + 1;
+    const branches = Array.from(
+      { length: n },
+      (_, i) => `{ when: '${i}', target_node: b${i} }`,
+    ).join(', ');
+    const targets = Array.from(
+      { length: n },
+      (_, i) => `    - { id: b${i}, type: transform, transform: 'g' }`,
+    ).join('\n');
+    const yaml = `schema_version: '1.0'
+workflow:
+  id: many-branches
+  nodes:
+    - { id: start, type: input }
+    - { id: pick, type: condition, expression_type: js, expression: 'x', branches: [${branches}] }
+${targets}
+  edges:
+    - { from: start, to: pick }
+`;
+    const issue = issuesOf(yaml).find((i) => i.field === 'workflow.edges');
+    expect(issue?.kind).toBe('ceiling_exceeded');
+  });
+
   it('batches every ceiling breach instead of reporting the first', () => {
     // Admission faults are collected and thrown together, so an author fixes them in one pass. A validator
     // that returned early would satisfy every other test in this file.

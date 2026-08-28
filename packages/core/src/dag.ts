@@ -111,8 +111,18 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
   // a compile step they never see. They join the same `issues` batch as every other graph fault, so an
   // author sees all of them at once instead of fixing one per run.
   collectWorkflowCeilingIssues(def, issues);
-  for (const [agentId, agent] of agentsById) {
-    collectAgentCeilingIssues(agent, issues, `agent \`${agentId}\`.`);
+  // **Only the agents this workflow REFERENCES.** `agentsById` also carries the host's whole registry, and
+  // iterating it made one over-ceiling agent file anywhere in a workspace reject every unrelated workflow —
+  // including workflows with no agent node at all. It also made the issue order depend on the host's Map
+  // insertion order rather than on the file. Sorted so the report is stable for the same file.
+  const referencedAgentIds = new Set(
+    spec.nodes.flatMap((node) => (node.type === 'agent' ? [node.agent_ref] : [])),
+  );
+  for (const agentId of [...referencedAgentIds].sort()) {
+    const agent = agentsById.get(agentId);
+    if (agent !== undefined) {
+      collectAgentCeilingIssues(agent, issues, `agent \`${agentId}\`.`);
+    }
   }
   validateAndWireEdges(spec, nodesById, agentsById, opts?.agents !== undefined, addEdge, issues);
 

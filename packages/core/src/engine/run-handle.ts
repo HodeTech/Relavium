@@ -46,7 +46,7 @@ export interface RunHandle {
    */
   cancel: () => void;
   /**
-   * Resolves when the primary consumer's buffer is at or below its ceiling — ADR-0036's producer-await half.
+   * Resolves when the primary consumer's buffer has room for one more event — ADR-0036's producer-await half.
    *
    * Awaited in two places, bounding two different things: the run loop awaits it once per node, and a
    * streaming agent turn awaits it once per chunk (`CR-30`). The second is the one that matters — a node
@@ -55,7 +55,7 @@ export interface RunHandle {
    */
   whenConsumersReady: () => Promise<void>;
   /** The per-consumer ceiling (ADR-0036's "bounded per consumer"), exposed so a bound can be ASSERTED. */
-  highWaterMark: number;
+  readonly highWaterMark: number;
   /** Events buffered for the primary consumer right now — the other half of an assertable bound. */
   readonly bufferedCount: number;
   /**

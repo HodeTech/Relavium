@@ -78,7 +78,7 @@ export interface SessionHandle {
   /** Resolves when the primary consumer's buffer has drained below capacity — a backpressure knob. */
   whenConsumersReady: () => Promise<void>;
   /** The per-consumer ceiling (ADR-0036's "bounded per consumer"), exposed so a bound can be ASSERTED. */
-  highWaterMark: number;
+  readonly highWaterMark: number;
   /** Events buffered for the primary consumer right now — the other half of an assertable bound. */
   readonly bufferedCount: number;
 }
