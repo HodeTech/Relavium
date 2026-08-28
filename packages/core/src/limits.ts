@@ -150,9 +150,21 @@ export function collectAgentCeilingIssues(agent: Agent, issues: GraphIssue[], wh
  * over a ceiling never reaches the compiler, so the check is cheap, order-independent, and reports the
  * numbers the author actually wrote.
  *
- * Fan-out is the authored out-degree, counted over plain `edges[]` only. A `condition`'s `branches` are
- * routing alternatives — exactly one is taken — so counting them as width would reject a wide `switch` that
- * never runs more than one target, which is not the shape this ceiling is about.
+ * Fan-out is the authored out-degree, and it counts **both** the plain `edges[]` a node produces **and** a
+ * `parallel` node's `parallel_of` members.
+ *
+ * **The `parallel_of` half is not an extra — it is the case the ceiling is most about, and leaving it out
+ * made the ceiling bypassable by rewriting the same graph.** `parallel_of` materialises one fan-out edge per
+ * member inside the builder (`wireParallelNode`) without any `edges[]` entry, so a `parallel` node with 200
+ * members produced 200 concurrent branches while `edges[]` held one line. Measured before the fix: a
+ * 200-member split built a plan without tripping a ceiling of 50. Members are authored — they are just
+ * authored somewhere other than `edges[]` — so counting them keeps the "count the authored file" rule
+ * (ADR-0086 §2) rather than bending it.
+ *
+ * A `condition`'s `branches` are excluded, and that asymmetry is deliberate: branches are routing
+ * ALTERNATIVES — exactly one is taken — so counting them as width would reject a wide `switch` that never
+ * runs more than one target. `parallel_of` members all run, concurrently, which is precisely the shape a
+ * fan-out ceiling is for.
  */
 export function collectWorkflowCeilingIssues(def: Workflow, issues: GraphIssue[]): void {
   const spec = def.workflow;
@@ -164,13 +176,28 @@ export function collectWorkflowCeilingIssues(def: Workflow, issues: GraphIssue[]
   }
 
   const edges = spec.edges ?? [];
-  if (edges.length > ADMISSION_CEILINGS.edges) {
+  // Same reasoning as fan-out below: `parallel_of` members become real edges in the built graph, so an
+  // edge ceiling that counted only `edges[]` would let 500 parallel nodes × 500 members past a limit of
+  // 2000. They are authored edges written in a different place, not compiled ones.
+  const parallelEdges = spec.nodes.reduce(
+    (sum, node) => (node.type === 'parallel' ? sum + node.parallel_of.length : sum),
+    0,
+  );
+  const totalEdges = edges.length + parallelEdges;
+  if (totalEdges > ADMISSION_CEILINGS.edges) {
     issues.push(
-      ceilingIssue('workflow.edges', edges.length, ADMISSION_CEILINGS.edges, 'the edge count'),
+      ceilingIssue('workflow.edges', totalEdges, ADMISSION_CEILINGS.edges, 'the edge count'),
     );
   }
 
   const outDegree = new Map<string, number>();
+  // A `parallel` node's members are fan-out edges the builder materialises without an `edges[]` entry, so
+  // they must be counted here or the ceiling is bypassable by authoring the same width a different way.
+  for (const node of spec.nodes) {
+    if (node.type === 'parallel') {
+      outDegree.set(node.id, (outDegree.get(node.id) ?? 0) + node.parallel_of.length);
+    }
+  }
   for (const edge of edges) {
     // The authored `from` may carry a `nodeId:handle` suffix; the DEGREE belongs to the node, so strip it.
     // Counting `a:true` and `a:false` as two different sources would under-report a condition's width — and

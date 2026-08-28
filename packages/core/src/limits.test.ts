@@ -94,6 +94,55 @@ ${edges}
     expect(issue?.message).toContain(String(ADMISSION_CEILINGS.fanOut));
   });
 
+  it('counts `parallel_of` members as fan-out — the same width authored a different way', () => {
+    // **A bypass this implementation shipped with and a self-review caught before the round did.**
+    // `parallel_of` materialises one fan-out edge per member inside the builder, with no `edges[]` entry, so
+    // a fan-out check reading only `edges[]` saw a width of ZERO. Measured against the first version: a
+    // 200-member split built a plan without tripping a ceiling of 50.
+    const members = Array.from({ length: ADMISSION_CEILINGS.fanOut + 1 }, (_, i) => `m${i}`);
+    const nodes = [
+      `    - { id: start, type: input }`,
+      `    - { id: split, type: parallel, parallel_of: [${members.join(', ')}] }`,
+      ...members.map((m) => `    - { id: ${m}, type: transform, transform: 'g' }`),
+    ].join('\n');
+    const yaml = `schema_version: '1.0'
+workflow:
+  id: wide
+  nodes:
+${nodes}
+  edges:
+    - { from: start, to: split }
+`;
+    const issue = issuesOf(yaml).find((i) => i.kind === 'ceiling_exceeded');
+    expect(issue?.field).toContain('split');
+    expect(issue?.message).toContain(String(ADMISSION_CEILINGS.fanOut));
+  });
+
+  it("does NOT count a condition's branches as fan-out — they are alternatives, not width", () => {
+    // The asymmetry with `parallel_of` above is deliberate and worth pinning: exactly one branch is taken,
+    // so counting them as concurrent width would reject a wide `switch` that never runs more than one
+    // target. A future reader tempted to "fix the inconsistency" should fail this test first.
+    const branches = Array.from(
+      { length: ADMISSION_CEILINGS.fanOut + 5 },
+      (_, i) => `{ when: '${i}', target_node: b${i} }`,
+    ).join(', ');
+    const targets = Array.from(
+      { length: ADMISSION_CEILINGS.fanOut + 5 },
+      (_, i) => `    - { id: b${i}, type: transform, transform: 'g' }`,
+    ).join('\n');
+    const yaml = `schema_version: '1.0'
+workflow:
+  id: switchy
+  nodes:
+    - { id: start, type: input }
+    - { id: pick, type: condition, expression_type: js, expression: 'x', branches: [${branches}] }
+${targets}
+  edges:
+    - { from: start, to: pick }
+`;
+    expect(issuesOf(yaml).filter((i) => i.kind === 'ceiling_exceeded')).toEqual([]);
+  });
+
   it('batches every ceiling breach instead of reporting the first', () => {
     // Admission faults are collected and thrown together, so an author fixes them in one pass. A validator
     // that returned early would satisfy every other test in this file.

@@ -389,9 +389,9 @@ clamped: a file over a ceiling does not run at all.
 
 | What | Ceiling | Counted on |
 |---|---|---|
-| Nodes | 500 | the authored file, before `parallel_of` expansion |
-| Edges | 2000 | the authored file, before any de-duplication |
-| Fan-out width (a node's out-degree) | 50 | the authored file |
+| Nodes | 500 | the authored file |
+| Edges | 2000 | `edges[]` **plus** every `parallel_of` member — those become real fan-out edges |
+| Fan-out width (a node's out-degree) | 50 | plain edges **plus** `parallel_of` members; a `condition`'s branches are alternatives, not width, and do not count |
 | `max_parallel` | 64 | the authored value (omitted ⇒ **8**) |
 | Node dispatches in one run | 500 | at runtime, counted from `node:started` in the durable log |
 

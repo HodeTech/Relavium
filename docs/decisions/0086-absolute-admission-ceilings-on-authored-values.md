@@ -102,11 +102,22 @@ which for tier-3 effects is exactly the duplicate the journal exists to prevent.
 whose subject is a provider response rather than an authored file, so it cannot live at admission; it is a
 turn-level check.
 
-*The graph ceilings count the AUTHORED file, not the compiled plan.* Nodes and edges are counted as written,
-before `parallel_of` expansion or any de-duplication, and fan-out width is a node's authored out-degree. The
-authored file is what the ceiling is a statement about — an author can act on "you wrote 600 nodes" and cannot
-act on a number that only exists after a compile step they never see. It also makes the check cheap and
-order-independent: it runs before the graph is built, so a file over the ceiling never reaches the compiler.
+*The graph ceilings count the AUTHORED file, not the compiled plan.* The authored file is what the ceiling is
+a statement about — an author can act on "you wrote 600 nodes" and cannot act on a number that only exists
+after a compile step they never see. It also makes the check cheap and order-independent: it runs before the
+graph is built, so a file over the ceiling never reaches the compiler.
+
+**"Authored" means everywhere the author wrote an edge, not only `edges[]`** — a distinction the first
+implementation of this ADR got wrong, and which is recorded here because getting it wrong made the ceiling
+bypassable rather than merely inaccurate. A `parallel` node's `parallel_of` members become one fan-out edge
+each inside the builder, with no `edges[]` entry; counting only `edges[]` therefore saw a 200-member split as
+a width of ZERO, and 500 parallel nodes of 500 members as an edge count of zero. Measured: a 200-member split
+built a plan against a fan-out ceiling of 50. Members count toward both the fan-out and the edge ceiling.
+
+A `condition`'s `branches` are **excluded** from fan-out, and the asymmetry is the decision: branches are
+routing ALTERNATIVES — exactly one is taken — so counting them as concurrent width would reject a wide
+`switch` that never runs more than one target. `parallel_of` members all run, concurrently, which is precisely
+the shape a fan-out ceiling is for.
 
 ### 3. An omitted `max_parallel` is **8**, and the number is a fixed constant
 

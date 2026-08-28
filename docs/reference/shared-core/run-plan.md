@@ -83,9 +83,9 @@ The builder owns the structural checks the pure parser defers (it has the full n
   code has always been the authority, and this document is now what it says.)
 - **Ceiling exceeded** — an authored value or graph shape is over an absolute admission ceiling
   ([ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md) §2). The issue names the
-  field, the authored value and the ceiling; nothing is clamped. Counted on the **authored** file — nodes and
-  edges before `parallel_of` expansion or de-duplication, fan-out as a node's authored out-degree — because
-  that is the number the author can act on.
+  field, the authored value and the ceiling; nothing is clamped. Counted on the **authored** file, where "authored" includes every place the
+  author wrote an edge: `edges[]` **and** each `parallel_of` member (which the builder materialises as a
+  fan-out edge). A `condition`'s branches are routing alternatives and do not count toward fan-out.
 - **Dangling ref** — an `agent_ref` resolves to no agent. Only checked when a **resolved-agent registry** is supplied (`agent_ref` resolution against the workspace registry is a host concern — the pure builder never reads files); otherwise resolution is deferred. When resolution was deferred and an `agent` vertex reaches dispatch with **no** `resolvedAgent`, the `AgentRunner` (1.O) fails the node with `code: 'validation'` naming the unresolved `agent_ref` — never a crash ([agent-runner.md](agent-runner.md)).
 
 Separately, a resolved `$ref`/registry agent's `system_prompt` is re-run through the secret-taint gate (a `$ref` agent's prompt lives in another file the pure parser never reads): a secret reaching it throws **`WorkflowSecretLeakError`** (ADR-0029(c)), exactly as for an inline agent.
