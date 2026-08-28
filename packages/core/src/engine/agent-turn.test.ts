@@ -253,6 +253,44 @@ describe('runAgentTurn — streaming + cost', () => {
   });
 });
 
+describe('runAgentTurn — CR-30: the producer awaits between chunks (ADR-0036)', () => {
+  it('awaits `whenReady` once per chunk, BEFORE the chunk is folded and emitted', async () => {
+    // **The wiring no test covered, and the gap is why a deadlock shipped.** The two handle-level CR-30
+    // tests act as their OWN producer — they await `whenConsumersReady()` in the test's own loop — so
+    // deleting every `whenReady` line from `agent-turn.ts`, `engine.ts`, `agent-session.ts` and the CLI
+    // host left the entire suite green. This is the test that fails when the production await is removed.
+    //
+    // The ORDER matters as much as the count: the await is before the fold, so the ceiling is respected on
+    // the way in. Checking afterwards would admit the event that breaches it.
+    const order: string[] = [];
+    const provider = scriptedProvider('anthropic', [
+      [{ type: 'text_delta', text: 'a' }, { type: 'text_delta', text: 'b' }, STOP()],
+    ]);
+    const params = baseParams(provider, {
+      whenReady: () => {
+        order.push('await');
+        return Promise.resolve();
+      },
+      emit: (e) => {
+        if (e.type === 'agent:token') order.push(`emit:${e.token}`);
+      },
+    });
+
+    await runAgentTurn(params);
+
+    // One await per chunk — three chunks, so three awaits — and each precedes its own emit.
+    expect(order.filter((o) => o === 'await')).toHaveLength(3);
+    expect(order.slice(0, 4)).toEqual(['await', 'emit:a', 'await', 'emit:b']);
+  });
+
+  it('runs unchanged when no `whenReady` is supplied — absent means never throttle', () => {
+    // The field is optional so a test double or a host with no consumer needs no wiring, and absent must be
+    // the pre-CR-30 behaviour rather than a crash.
+    const provider = scriptedProvider('anthropic', [[{ type: 'text_delta', text: 'x' }, STOP()]]);
+    return expect(runAgentTurn(baseParams(provider))).resolves.toMatchObject({ text: 'x' });
+  });
+});
+
 describe('runAgentTurn — inline media-out (1.AG/ADR-0046)', () => {
   const image: ContentPart = {
     type: 'media',

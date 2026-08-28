@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { MediaReferencePort, MediaStore, MediaWritePort, RunEvent } from '@relavium/shared';
 
+import { DEFAULT_MAX_PARALLEL } from '../limits.js';
 import { parseWorkflow, type WorkflowDefinition } from '../parser.js';
 import { EngineStateError } from './errors.js';
 import {
@@ -4031,6 +4032,46 @@ describe('WorkflowEngine — max_parallel concurrency cap', () => {
     );
     expect(completedBranches).toHaveLength(3);
     assertGapFreeSeq(events); // gap-free even under concurrent fan-out
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
+  it('an OMITTED max_parallel caps at the default, not Infinity (ADR-0086 §3)', async () => {
+    // **The change nothing guarded.** Reverting `?? DEFAULT_MAX_PARALLEL` to `?? Number.POSITIVE_INFINITY`
+    // left the whole suite green, because every other concurrency test AUTHORS a cap. This one omits it,
+    // which is the case the ADR is about: an unbounded default meant a run's width was decided entirely by
+    // how wide its author happened to draw the graph.
+    const width = DEFAULT_MAX_PARALLEL + 4;
+    const ids = Array.from({ length: width }, (_, i) => `b${i}`);
+    let live = 0;
+    let maxLive = 0;
+    const branch: Handler = async () => {
+      live += 1;
+      maxLive = Math.max(maxLive, live);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      live -= 1;
+      return { kind: 'completed', output: null };
+    };
+    const handlers = Object.fromEntries(ids.map((id) => [id, branch]));
+    const events = await drain(
+      engineWith(handlers).start({
+        workflow: workflow(`  id: default-cap
+  nodes:
+    - { id: start, type: input }
+    - { id: fan, type: parallel, parallel_of: [${ids.join(', ')}] }
+${ids.map((id) => `    - { id: ${id}, type: transform, transform: '${id}' }`).join('\n')}
+    - { id: join, type: merge, merge_strategy: concat }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: fan }
+${ids.map((id) => `    - { from: ${id}, to: join }`).join('\n')}
+    - { from: join, to: out }`),
+      }),
+    );
+    // The bound, and the proof the run was actually wider than it: without the default this reaches `width`.
+    expect(maxLive).toBeLessThanOrEqual(DEFAULT_MAX_PARALLEL);
+    expect(
+      events.filter((e) => e.type === 'node:completed' && ids.includes(e.nodeId)),
+    ).toHaveLength(width);
     expect(terminalsIn(events)[0]?.type).toBe('run:completed');
   });
 });
