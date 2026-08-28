@@ -1963,15 +1963,23 @@ class RunExecution {
         secretInputNames: this.#secretInputNames,
         toolPolicy: this.#workflow.workflow.tools ?? {},
         emit: (event) => {
-          // **Fence point 2 (ADR-0085 §5): the `cost:updated` fold.** Unguarded before this — a straggler
-          // from an abandoned dispatch could push `#cumulativeCostMicrocents` and deliver a `cost:updated`
-          // to every subscriber AFTER the terminal had already reported the run total. The money LEDGER is
-          // deliberately not fenced (a charge already incurred is recorded either way — ADR-0045 §5's
-          // local-only-cancel position); what is refused is changing a total the terminal has published.
-          if (!this.#isLive(vertex.id, dispatchId)) {
+          // **Fence point 2 (ADR-0085 §5): the cost DELIVERY, not the fold.** A straggler from an abandoned
+          // dispatch must not push a `cost:updated` at subscribers after the terminal has already reported
+          // the run total.
+          //
+          // **But the fold must still happen, and getting that wrong lost real money.** The counter is what
+          // `TurnMoneyPort.record` stamps as `cumulativeCostMicrocents`, and
+          // `refineCostAttemptSettled` rejects a row whose cumulative is below its own `costMicrocents`.
+          // Refusing the fold left the counter behind, so a genuinely billed attempt produced
+          // `cumulative 0 < cost 77` — rejected at the producer gate, which runs in `#bus.next` OUTSIDE
+          // `#emitDurable`'s try, so it threw in the one place the design assumes it cannot and the durable
+          // ledger row was lost entirely. ADR-0045 §5's local-only-cancel position and §5's own money table
+          // both say a charge already incurred is recorded either way; the fold is how that stays true.
+          const live = this.#isLive(vertex.id, dispatchId);
+          if (!live && event.type !== 'cost:updated') {
             return;
           }
-          this.#nodeEmit(event);
+          this.#nodeEmit(event, live);
         },
         signal: this.#abort.signal,
         attemptNumber,
@@ -3236,7 +3244,11 @@ class RunExecution {
     return outputs;
   }
 
-  #nodeEmit(event: NodeStreamEvent): void {
+  /**
+   * @param deliver false when the fold must still happen but the event must not reach subscribers — a
+   * straggler's `cost:updated` after the terminal. See the call site for why the two are separable.
+   */
+  #nodeEmit(event: NodeStreamEvent, deliver = true): void {
     const runId = this.runId;
     // The non-cost cases all pass through with only the correlation key added — `{ ...event, runId }`
     // distributes the object spread over the case-narrowed union, so a shared fallthrough body keeps
@@ -3252,13 +3264,18 @@ class RunExecution {
         this.#bus.emit({ ...event, runId });
         return;
       case 'cost:updated':
+        // The FOLD is unconditional: it is what keeps `#cumulativeCostMicrocents` a truthful record of money
+        // the provider actually took, and what `TurnMoneyPort.record` stamps onto the durable ledger row.
         this.#cumulativeCostMicrocents += event.costMicrocents;
         this.#budgetGovernor?.updateCost(this.#cumulativeCostMicrocents);
-        this.#bus.emit({
-          ...event,
-          runId,
-          cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
-        });
+        // The DELIVERY is not: a straggler must not re-announce a total the terminal already published.
+        if (deliver) {
+          this.#bus.emit({
+            ...event,
+            runId,
+            cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
+          });
+        }
         return;
       default: {
         // Exhaustiveness guard over `NodeStreamEvent` (`InNodeEventType`): a future in-node event must add a

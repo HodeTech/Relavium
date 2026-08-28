@@ -2654,14 +2654,25 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     }
 
     expect(dispatches).toBe(2); // the premise: the approval really did re-dispatch
-    // The stale closure's cost reached nobody, and the run total never saw it.
+    // **The stale closure's cost is not DELIVERED — and it IS folded.** An earlier version also asserted the
+    // run total never saw it, which was wrong in a way that lost real money: the counter is what
+    // `TurnMoneyPort.record` stamps as `cumulativeCostMicrocents`, and `refineCostAttemptSettled` rejects a
+    // row whose cumulative is below its own cost. Refusing the fold made a genuinely billed attempt produce
+    // `cumulative 0 < cost 999999`, rejected at a producer gate that runs OUTSIDE `#emitDurable`'s try — so
+    // it threw where the design assumes it cannot, and the durable ledger row was lost. A charge the
+    // provider took is recorded either way (ADR-0045 §5); the fence stops re-announcing a total to
+    // subscribers after the terminal published one.
     const costs = events.filter((e) => e.type === 'cost:updated');
     expect(costs.some((e) => e.type === 'cost:updated' && e.costMicrocents === 999_999)).toBe(
       false,
     );
     const terminal = events.at(-1);
     expect(terminal?.type).toBe('run:completed');
-    expect(terminal?.type === 'run:completed' && terminal.totalCostMicrocents).not.toBe(999_999);
+    // …and the FOLD happened: the run total includes it. This is the assertion that would have caught the
+    // money loss — refusing the fold leaves the counter behind the ledger row that stamps from it.
+    expect(
+      terminal?.type === 'run:completed' && terminal.totalCostMicrocents,
+    ).toBeGreaterThanOrEqual(999_999);
   });
 
   it("a budget-approved RE-dispatch does not renew the node's `timeout_ms` (ADR-0085 §2)", async () => {
