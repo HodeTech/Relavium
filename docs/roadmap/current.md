@@ -2,7 +2,7 @@
 
 > Status: Living
 >
-> Last updated: 2026-08-11
+> Last updated: 2026-08-27
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -471,7 +471,7 @@ the exit rule and the execution order, and added two items (`CR-17` resume ident
 docs-only); `CR-64` came from the Batch 1 triage, `CR-21b` from ADR-0082 §10 and `CR-21c` from the `W2`
 document review on 2026-08-25, which is why the total has moved since the list was first written.
 
-> **Live status — 20 of 48 closed. `W0` and `W1` are both done; `W2` is in progress.**
+> **Live status — 20 of 48 closed. `W0`, `W1` and `W2` are done; `W3` is next.**
 >
 > - **Batch 1, merged 2026-08-11 (PR #82)** — the prerequisite (`#W15-1`), the oracle (`CR-90`, `CR-91`) and
 >   all of `W0` (`CR-01`–`CR-03`). `CR-64` was added in the same batch and is open.
@@ -479,13 +479,15 @@ document review on 2026-08-25, which is why the total has moved since the list w
 >   ADR-0078…ADR-0084. A comprehensive review of the assembled PR found seven further defects, six of them in
 >   the W1 code itself; all seven were fixed and mutation-verified before merge.
 >
-> - **`W2` — liveness and deadlines — in progress**, behind [ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md).
+> - **`W2` — liveness and deadlines — COMPLETE 2026-08-27**, behind [ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md). All six items closed; the wave's own closing register is in the phase document.
 >   Its document review moved the count twice, and the two moves **cancel**: `CR-21` turns out to have
 >   shipped **with `CR-14`** in PR #83 (ADR-0082 decides both, and the execution graph above already
 >   scheduled them together) and only its heading was stale, while `CR-21c` — an unbounded individual
 >   `pollMediaJob` call — was found during the same review and added. `W2` was therefore still **five** open
->   items out of six, not four; the phase total moved 47 → 48, not the wave. `CR-22`, `CR-21b` and `CR-21c` all closed on
->   2026-08-27, leaving **two** — `CR-20` and `CR-23`, which [ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) decides together.
+>   items out of six, not four; the phase total moved 47 → 48, not the wave. All five then closed on
+>   2026-08-27 — `CR-22`, `CR-21b`, `CR-21c`, and finally `CR-20` and `CR-23` together, which
+>   [ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) decides as
+>   one because they are one mechanism at one place.
 >
 > **Not to be confused with the 2.5.5 remediation's own `W2`** ("Shut the doors", in the graph above). Same
 > label, different phase: this one is 2.6.5's liveness wave.

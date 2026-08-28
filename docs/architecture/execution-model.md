@@ -164,9 +164,18 @@ Three run-loop substrate rules make this reliable ([ADR-0036](../decisions/0036-
 a node-boundary / terminal event is **persisted before it is delivered** to consumers, so a crash
 between emit and write can never re-run a completed node or lose its output; the
 **monotonic, gap-free `sequenceNumber` is assigned at a single producer-side point** (one counter per
-run/session), so concurrent fan-out branches cannot duplicate or invert numbers; and gate / run
-`timeout_ms` deadlines are armed as **one-shot timers from an injected clock — not a sleep/poll loop**,
-so the completion-driven scheduler stays event-driven.
+run/session), so concurrent fan-out branches cannot duplicate or invert numbers; and gate / run / **agent
+node** `timeout_ms` deadlines are armed as **one-shot timers from an injected clock — not a sleep/poll
+loop**, so the completion-driven scheduler stays event-driven.
+
+The agent-node deadline is the third of those three and the newest
+([ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §2): it is
+**absolute across the node** — every attempt, every retry backoff and every re-dispatch share one budget —
+and it is armed as a `deadline`-kind timer, a backstop over work already in flight rather than something
+the run is parked ON. The same ADR adds a single post-abort **grace window**: once the run's `AbortSignal`
+fires for any reason, an executor that does not settle within it is abandoned, its vertex closed
+`node:failed`, and the run reaches its terminal. That makes exactly-one-terminal a liveness property with
+respect to the EXECUTOR — §6 of that ADR states the half that stays conditional on the store.
 
 ### 6. Finish
 

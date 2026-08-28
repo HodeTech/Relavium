@@ -392,16 +392,20 @@ These land with the implementation, not after it:
   numerical reading order, and every sibling amendment (ADR-0074, ADR-0078, ADR-0079, ADR-0083) added its
   reciprocal note at acceptance.
 - [phase-1-engine-and-llm.md](../roadmap/phases/phase-1-engine-and-llm.md)'s 1.N acceptance criterion is
-  corrected where it repeats the same claim as shipped.
+  corrected where it repeats the same claim as shipped. **Landed 2026-08-27** — and it was the last of these
+  to land, which is the point: a final review found it still asserting "structurally impossible" inside a
+  section marked Done, in a branch whose whole purpose is closing that gap.
 - [node-types.md](../reference/shared-core/node-types.md) and
   [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md) state what the `agent` node's
-  `timeout_ms` now does, that it is absolute across retries, and what error it produces.
+  `timeout_ms` now does, that it is absolute across retries, and what error it produces. **Landed
+  2026-08-27.**
 - [sse-event-schema.md](../reference/contracts/sse-event-schema.md) records that `run_timeout` is carried
   by three distinct causes — the run cap, a gate deadline and a node deadline — and that `error.nodeId`
   distinguishes them. [error-handling.md](../standards/error-handling.md) gains the same sentence where it
-  classifies the code.
+  classifies the code. **Landed 2026-08-27.**
 - [execution-model.md](../architecture/execution-model.md) names all three `timeout_ms` sites, not two, and
-  its "Failure and recovery" idempotency-key sentence is brought in line with ADR-0080's tiered contract.
+  gains the grace window. **Landed 2026-08-27.** (Its "Failure and recovery" idempotency-key sentence is
+  ADR-0080's to correct, not this one's — scoped out rather than silently skipped.)
 - The phase document's decision register points `CR-20` and `CR-23` at this ADR, and
   [deferred-tasks.md](../roadmap/deferred-tasks.md) records §7's quarantine trigger and §6's store-liveness
   follow-up. **Landed 2026-08-27**, for the reason a review had to point out: §7 below already asserted the
@@ -436,7 +440,6 @@ These land with the implementation, not after it:
   `error.nodeId` and by §9's doc obligation, and preferred over widening a closed taxonomy every surface
   switches on.
 - **Two new one-shot timers join the run loop** — the node deadline and the post-abort grace window
-  — alongside the existing run timeout, gate timeout, retry backoff and media-job poll.
 
   > **Amended 2026-08-27 during implementation: they land as a THIRD kind, `'deadline'`, not as `work`.**
   > This paragraph said `work` because when it was written `TimerKind` had two members. Implementing
