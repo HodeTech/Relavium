@@ -1753,20 +1753,30 @@ class RunExecution {
     if (raced.outcome !== 'deadline') {
       return;
     }
-    // The bound elapsed with the node still in flight. `classify()` owns the label, so a caller cancel that
-    // beat the timer stays `cancelled` — the same cancel-wins precedence ADR-0036 gives the run.
-    const cancelled = nodeDeadline.classify() === 'caller';
+    // **A caller abort is NOT this node's bound elapsing, and must not be treated as one.** `race()` returns
+    // `{outcome:'deadline'}` for both causes; `classify()` separates them, and the separation is
+    // load-bearing rather than cosmetic.
+    //
+    // Settling here on a caller abort gave a node carrying `timeout_ms` ZERO grace on cancel, while a node
+    // without one got §3's full 10 s window — an asymmetry nobody decided, produced by the presence of an
+    // authored bound that says nothing about cancellation. It also negated §3's own justification for that
+    // window ("would abandon well-behaved work that was seconds from returning") for exactly the nodes an
+    // author had bounded. So a caller abort returns and lets the grace window govern, identically to an
+    // unbounded node: `#dispatchLoop` keeps running and may still settle cooperatively, which is what the
+    // window is for.
+    if (nodeDeadline.classify() === 'caller') {
+      return;
+    }
+    // The node's OWN bound elapsed with it still in flight.
     await this.#onOutcome(
       vertex,
       {
         kind: 'failed',
-        error: cancelled
-          ? { code: 'cancelled', message: `node '${vertex.id}' was cancelled`, retryable: false }
-          : {
-              code: 'run_timeout',
-              message: `node '${vertex.id}' exceeded its ${String(vertex.config.kind === 'agent' ? vertex.config.node.timeout_ms : 0)} ms timeout_ms`,
-              retryable: false,
-            },
+        error: {
+          code: 'run_timeout',
+          message: `node '${vertex.id}' exceeded its ${String(vertex.config.kind === 'agent' ? vertex.config.node.timeout_ms : 0)} ms timeout_ms`,
+          retryable: false,
+        },
       },
       this.#elapsedMs(),
       firstAttempt,

@@ -2733,6 +2733,69 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     expect(armed[1]).toBeLessThan(5000);
   });
 
+  it('a cancel treats a node WITH `timeout_ms` exactly like one without (ADR-0085 §3)', async () => {
+    // **An asymmetry nobody decided.** `openDeadline.race` returns `{outcome:'deadline'}` for a caller abort
+    // as well as an elapsed bound, and settling on both gave a node carrying `timeout_ms` ZERO grace on
+    // cancel while an unbounded node got the full 10 s window. An author writing `timeout_ms` is bounding
+    // WORK time; nothing about that says "and give me no cleanup window if the run is cancelled". It also
+    // negated §3's own justification for the window — "would abandon well-behaved work that was seconds from
+    // returning" — for precisely the nodes someone had thought about.
+    //
+    // Both shapes now behave identically: the cancel arms the window, and the node settles only when the
+    // window elapses or the executor gets there first.
+    const withBound = `  id: cancel-bounded
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: start, type: input }
+    - { id: work, type: agent, agent_ref: ag, prompt_template: 'go', timeout_ms: 60000 }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: work }
+    - { from: work, to: done }`;
+
+    const observe = async (wf: string): Promise<{ settledBeforeGrace: boolean }> => {
+      const host = createInMemoryHost();
+      const engine = engineWith({ work: () => new Promise<NodeOutcome>(() => undefined) }, host);
+      const handle = engine.start({ workflow: workflow(wf) });
+      let settled = false;
+      let started = false;
+      const consume = (async (): Promise<void> => {
+        for await (const event of handle.events) {
+          if (event.type === 'node:started' && event.nodeId === 'work') started = true;
+          if (event.type === 'run:cancelled' || event.type === 'run:failed') settled = true;
+        }
+      })();
+      // Wait for the node to be genuinely in flight — a cancel before it starts settles the run at once and
+      // neither shape reaches the path under test. `deadlineCount()` cannot be the trigger here: the bounded
+      // shape has already armed its own node deadline, which is the same kind.
+      for (let i = 0; i < 300 && !started; i += 1) await Promise.resolve();
+      expect(started).toBe(true);
+      engine.cancel(handle.runId);
+      // Pump generously WITHOUT firing any backstop.
+      for (let i = 0; i < 300; i += 1) await Promise.resolve();
+      // Pump WITHOUT firing the backstop. A node that settles here got no grace at all.
+      const settledBeforeGrace = settled;
+      host.fireDeadlines();
+      for (let i = 0; i < 400 && !settled; i += 1) {
+        await Promise.resolve();
+        if (host.armedCount() > 0) host.fireTimers();
+      }
+      await consume;
+      return { settledBeforeGrace };
+    };
+
+    const bounded = await observe(withBound);
+    const unbounded = await observe(SEQUENTIAL);
+    // The load-bearing assertion is the EQUALITY: whatever the grace policy is, an authored `timeout_ms`
+    // must not silently change it.
+    expect(bounded.settledBeforeGrace).toBe(unbounded.settledBeforeGrace);
+    expect(bounded.settledBeforeGrace).toBe(false); // …and neither is abandoned before the window elapses
+  });
+
   it('a node with no `timeout_ms` arms no node deadline', async () => {
     // The negative control. Without it the test above passes for an implementation that bounds every node at
     // some default — a different product decision nobody made.

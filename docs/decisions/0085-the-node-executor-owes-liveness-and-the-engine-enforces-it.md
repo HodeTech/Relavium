@@ -116,6 +116,15 @@ carry a decision the `ErrorCode` could not.
 deadline. `error.nodeId` is what distinguishes them, and §9 requires the canonical event and error docs to
 say so — the code was already carrying two of the three silently.
 
+**A caller abort is not this bound elapsing — added 2026-08-27, after a review measured the asymmetry it
+had produced.** `openDeadline`'s `race()` returns the same `'deadline'` outcome for a caller abort as for an
+expiry, and settling on both gave a node carrying `timeout_ms` **zero** grace on cancel while a node without
+one got §3's full window. Nobody decided that: it fell out of the presence of an authored bound that says
+nothing about cancellation, and it negated §3's own justification for the window — *"would abandon
+well-behaved work that was seconds from returning"* — for exactly the nodes an author had thought about.
+`classify()` separates the two causes; only the node's own expiry settles here, and a caller abort defers to
+the grace window identically to an unbounded node.
+
 **Composition is already decided and is inherited, not restated.** ADR-0082 §6 fixed the rule: *"Against
 the caller's, the node's and the run's deadlines: whichever elapses first wins."* The node deadline
 therefore does not replace, extend or reset the provider attempt deadline beneath it or the run deadline
