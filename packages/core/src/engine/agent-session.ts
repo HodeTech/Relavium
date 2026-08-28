@@ -249,6 +249,20 @@ export interface SessionDeps {
   /** The emission port — 1.V emits session/in-turn bodies here; 1.W wires it onto the `RunEventBus`. */
   readonly emit: SessionEventSink;
   /**
+   * The producer-await half of ADR-0036's no-drop, bounded-per-consumer buffering, for the SESSION path
+   * (`CR-30`). Resolves once this session's consumer has drained to its ceiling.
+   *
+   * **This path had no backpressure at all, not merely advisory backpressure.** `SessionHandle` has always
+   * exposed `whenConsumersReady`, and nothing ever awaited it — so a long streamed reply grew the buffer for
+   * as long as the model talked. The workflow path at least throttled once per node. `AgentSession` is a
+   * co-equal first-class entry point (ADR-0024), so the bound has to reach it too.
+   *
+   * Late-bound by construction on every host: the handle is created FROM the session (it closes over
+   * `session.cancel()`), so the session cannot hold it at construction. A host therefore passes a thunk that
+   * reads the handle once it exists. Optional — absent means "never throttle", the pre-`CR-30` behaviour.
+   */
+  readonly whenReady?: () => Promise<void>;
+  /**
    * Builds this session's effect journal from a correlation (ADR-0080) — a FACTORY, not a port, because the
    * correlation carries the TURN and only the session knows which turn it is on.
    *
@@ -1075,6 +1089,10 @@ export class AgentSession {
         emit: (event) => {
           if (event.type === 'cost:updated') this.#onTurnEmit(event);
         },
+        // Compaction drops every streaming event except `cost:updated`, so this turn cannot flood a
+        // consumer — the await is wired anyway so the two turn sites cannot drift, and it costs one
+        // already-resolved microtask per chunk.
+        ...(this.#deps.whenReady === undefined ? {} : { whenReady: this.#deps.whenReady }),
         signal: abort.signal,
         registry: this.#deps.registry,
         dispatchContext: this.#buildDispatchContext(new Set(), undefined),
@@ -1301,6 +1319,9 @@ export class AgentSession {
       emit: (event) => {
         this.#onTurnEmit(event);
       },
+      // The session path's producer-await (`CR-30`) — this is the turn that streams a reply, so this is the
+      // one that could grow a consumer's buffer without a bound.
+      ...(this.#deps.whenReady === undefined ? {} : { whenReady: this.#deps.whenReady }),
       signal,
       registry: this.#deps.registry,
       dispatchContext,

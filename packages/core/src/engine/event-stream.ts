@@ -6,9 +6,19 @@
  * lives here once (no duplication).
  *
  * No-drop: an event pushed while no consumer is waiting is buffered; backpressure is signalled through
- * {@link whenDrained} (which the engine awaits at node boundaries) rather than by dropping — a drop would
- * force a `sequenceNumber` resync. One active iteration at a time (a second concurrent `next()` rejects);
- * additional observers attach via the handle's `subscribe`, not a second iterator.
+ * {@link whenDrained} rather than by dropping — a drop would force a `sequenceNumber` resync. One active
+ * iteration at a time (a second concurrent `next()` rejects); additional observers attach via the handle's
+ * `subscribe`, not a second iterator.
+ *
+ * **How the ceiling is actually held (`CR-30`).** `push` is synchronous and never drops, so the queue alone
+ * cannot cap itself — the three properties "synchronous push", "no drop" and "hard ceiling" are not
+ * simultaneously satisfiable, and ADR-0036 resolves that by naming the third party: the PRODUCER awaits.
+ * This class therefore owns two things and claims no more: it never drops, and {@link whenDrained} tells the
+ * truth about whether the ceiling is exceeded. Enforcement is the producers' side of the contract, and every
+ * producer that can emit an unbounded number of events now honours it — the workflow run loop once per node,
+ * and the agent turn's chunk loop once per chunk, which is the case that actually grows without a bound.
+ * {@link highWaterMark} exposes the ceiling so a test can assert the bound rather than infer it, and
+ * {@link bufferedCount} exposes the depth for the same reason.
  *
  * The optional `onClose` callback fires **once**, deterministically, when the stream closes — whether on a
  * terminal event or when the consumer abandons the loop early (`break` / `return`, which routes through
@@ -33,6 +43,23 @@ export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
   constructor(capacity: number, onClose?: () => void) {
     this.#capacity = capacity;
     this.#onClose = onClose;
+  }
+
+  /** The per-consumer ceiling this stream was built with (ADR-0036's "bounded per consumer"). */
+  get highWaterMark(): number {
+    return this.#capacity;
+  }
+
+  /**
+   * How many events are buffered right now.
+   *
+   * Exposed so a test can assert the ceiling DIRECTLY. The test that stood here before `CR-30` inferred
+   * backpressure from `whenDrained()` resolving after two pulls, having first pushed four events into a
+   * capacity-2 stream — it demonstrated the ceiling being exceeded and called that backpressure. A property
+   * that is only observable by inference is a property that can be asserted while false.
+   */
+  get bufferedCount(): number {
+    return this.#buffer.length;
   }
 
   /** Offer an event to the consumer (hand to a waiting `next()`, else buffer). Never drops. */
@@ -64,9 +91,20 @@ export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
     this.#onClose?.(); // once (guarded by #closed above) — lets the owning handle unsubscribe deterministically
   }
 
-  /** Resolves once the buffer is at or below capacity (or the stream is closed) — the backpressure knob. */
+  /**
+   * Resolves once there is **room for one more** event — the backpressure knob.
+   *
+   * **Strictly below the ceiling, not at it, and that one character is the bound (`CR-30`).** The
+   * predicate answers a producer's question, and the producer's next action is a `push`: resolving at
+   * `length === capacity` grants permission for a push that lands at `capacity + 1`, so a producer that
+   * obeyed the contract perfectly still exceeded the ceiling by one on every cycle. Measured — the
+   * acceptance test read `expected 5 to be less than or equal to 4` against the older `<=` form.
+   *
+   * A closed stream always resolves: there is no consumer left to protect, and parking a producer on a
+   * dead stream would hang it.
+   */
   whenDrained(): Promise<void> {
-    if (this.#closed || this.#buffer.length <= this.#capacity) {
+    if (this.#closed || this.#buffer.length < this.#capacity) {
       return Promise.resolve();
     }
     return new Promise<void>((resolve) => {
@@ -75,7 +113,7 @@ export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
   }
 
   #wakeDrainWaiters(): void {
-    if (this.#closed || this.#buffer.length <= this.#capacity) {
+    if (this.#closed || this.#buffer.length < this.#capacity) {
       const waiters = this.#drainWaiters;
       this.#drainWaiters = [];
       for (const wake of waiters) {

@@ -177,6 +177,23 @@ export interface AgentTurnParams {
   readonly nodeId: string;
   /** Emit an envelope-less streaming event; the engine/bus attaches the correlation key + sequence. */
   readonly emit: (event: NodeStreamEvent) => void;
+  /**
+   * The producer-await half of ADR-0036's **no-drop, bounded-per-consumer** buffering (`CR-30`): resolves
+   * once the consumer's buffer is at or below its ceiling.
+   *
+   * **It is here, and not on `emit`, deliberately.** `emit` is called from `foldChunk`, which is
+   * synchronous and per chunk; making it async would push a contract change through every executor to
+   * bound one producer. The turn's own chunk loop is the one place that both (a) knows it is about to emit
+   * an unbounded number of events and (b) can already await. So the loop awaits this between chunks and
+   * `emit` stays a plain `void`.
+   *
+   * Optional, because a caller that hands the turn a handle with no consumer has nothing to wait for — a
+   * missing value means "never throttle", which is the pre-`CR-30` behaviour and safe for a test double.
+   * **Both** entry points wire it: the workflow path through `NodeExecContext`, and `AgentSession` through
+   * its own handle — `SessionHandle` has always exposed the knob and nothing ever awaited it, so the
+   * session path had no backpressure at all rather than advisory backpressure.
+   */
+  readonly whenReady?: () => Promise<void>;
   /** Cooperative cancellation — threaded into every seam call (via the request) and tool dispatch. */
   readonly signal: AbortSignalLike;
   /** The shared tool registry (1.T) and the dispatch context for this node (the core adds `signal`). */
@@ -456,6 +473,16 @@ async function streamOneTurn(
   const acc = newAccumulator();
   let stopReason: StopReason = 'stop';
   for await (const chunk of chain.stream(buildRequest(messages, params))) {
+    // **ADR-0036's producer-await, at the only place a streaming turn can honour it (`CR-30`).**
+    // `foldChunk` emits `agent:token` / `agent:reasoning` per chunk through a synchronous `emit`, so
+    // without this the buffer grows for as long as the model talks and the "bounded per consumer" the ADR
+    // guarantees is a comment rather than a bound. Awaited BEFORE the fold, so the ceiling is respected on
+    // the way in — checking afterwards would admit the event that breaches it.
+    //
+    // A resolved promise is the overwhelmingly common case (the buffer is under its ceiling), and awaiting
+    // an already-resolved promise costs one microtask — it does not yield to the event loop, so a fast
+    // consumer sees no added latency per chunk.
+    await params.whenReady?.();
     foldChunk(chunk, acc, params, getModel);
     if (chunk.type === 'error') {
       throwMappedChainError(chunk.error, turnCommitted);

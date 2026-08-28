@@ -67,6 +67,9 @@ function emptyHandle(runId: string): RunHandle {
     subscribe: () => () => {},
     cancel: () => {},
     whenConsumersReady: () => Promise.resolve(),
+    // A closed stream buffers nothing and throttles nobody (mirrors `createClosedRunHandle`).
+    highWaterMark: 256,
+    bufferedCount: 0,
     durability: () => 'durable' as const,
     terminalError: () => undefined,
   };

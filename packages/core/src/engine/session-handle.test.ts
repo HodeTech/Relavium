@@ -154,6 +154,46 @@ describe('SessionHandle (1.W) — the long-lived session event stream', () => {
   });
 });
 
+describe('SessionHandle — the producer-await bound (CR-30, ADR-0036)', () => {
+  it('a fast producer that awaits never exceeds the ceiling, and skips no sequence number', async () => {
+    // **The session path had NO backpressure, not advisory backpressure.** `createSessionHandle` has always
+    // wired `whenConsumersReady: () => primary.whenDrained()` and nothing ever awaited it, so a long
+    // streamed reply grew the buffer for as long as the model talked. The workflow path at least throttled
+    // once per node. `AgentSession` is a co-equal first-class entry point (ADR-0024), so it gets the same
+    // assertion the run path gets — not a weaker one.
+    const CEILING = 4;
+    const TOTAL = 200;
+    const b = bus();
+    const handle = createSessionHandle(b, 'sess-1', () => undefined, CEILING);
+
+    const seen: SessionStreamHandleEvent[] = [];
+    let peakBuffered = 0;
+    const consumer = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        seen.push(event);
+        await Promise.resolve(); // a SLOW consumer
+      }
+    })();
+    await Promise.resolve();
+
+    for (let i = 0; i < TOTAL; i += 1) {
+      await handle.whenConsumersReady();
+      b.emit(turnStarted());
+      peakBuffered = Math.max(peakBuffered, handle.bufferedCount);
+    }
+    await handle.whenConsumersReady();
+    b.emit(cancelled()); // a session terminal, so the stream closes and the consumer finishes
+    await consumer;
+
+    expect(peakBuffered).toBeLessThanOrEqual(CEILING);
+    // No-drop: `session:started` is not among these, so the count is exactly what was pushed.
+    expect(seen).toHaveLength(TOTAL + 1);
+    expect(seen.map((e) => e.sequenceNumber)).toEqual(
+      Array.from({ length: TOTAL + 1 }, (_, i) => i),
+    );
+  });
+});
+
 describe('createSessionEventSink (1.W) — AgentSession envelope-free drafts → the shared bus', () => {
   it('attaches the sessionId and lets the bus stamp the per-session sequence', async () => {
     const b = bus();

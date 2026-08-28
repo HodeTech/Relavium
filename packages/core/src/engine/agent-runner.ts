@@ -425,6 +425,8 @@ async function executeAgent(
       ...resolveGenKnobs(agent, node, deps),
       nodeId: node.id,
       emit: ctx.emit,
+      // ADR-0036's producer-await, forwarded verbatim (`CR-30`) — the turn's chunk loop is what awaits it.
+      ...(ctx.whenReady === undefined ? {} : { whenReady: ctx.whenReady }),
       signal: ctx.signal,
       registry: deps.registry,
       dispatchContext,

@@ -45,8 +45,19 @@ export interface RunHandle {
    * strict programmatic `engine.cancel(runId)`.
    */
   cancel: () => void;
-  /** Resolves when the primary consumer's buffer has drained below capacity — the engine awaits it to throttle. */
+  /**
+   * Resolves when the primary consumer's buffer is at or below its ceiling — ADR-0036's producer-await half.
+   *
+   * Awaited in two places, bounding two different things: the run loop awaits it once per node, and a
+   * streaming agent turn awaits it once per chunk (`CR-30`). The second is the one that matters — a node
+   * boundary comes around once per node, while a model can emit thousands of token deltas between two of
+   * them.
+   */
   whenConsumersReady: () => Promise<void>;
+  /** The per-consumer ceiling (ADR-0036's "bounded per consumer"), exposed so a bound can be ASSERTED. */
+  highWaterMark: number;
+  /** Events buffered for the primary consumer right now — the other half of an assertable bound. */
+  readonly bufferedCount: number;
   /**
    * Whether the run's terminal reached the durable log (ADR-0078 §5). `'pending'` until a terminal is
    * delivered; then `'durable'`, or `'uncertain'` when the write did not land and the terminal was handed to
@@ -134,6 +145,12 @@ export function createRunHandle(
       }),
     cancel,
     whenConsumersReady: () => primary.whenDrained(),
+    highWaterMark: primary.highWaterMark,
+    get bufferedCount() {
+      // A GETTER, not a snapshot: the depth changes as the consumer pulls, and a value captured at handle
+      // construction would report 0 forever — an assertion that can never fail.
+      return primary.bufferedCount;
+    },
     durability: readDurability,
     terminalError: () => terminalError,
   };
@@ -155,6 +172,11 @@ export function createClosedRunHandle(runId: string): RunHandle {
     subscribe: () => () => undefined,
     cancel: () => undefined,
     whenConsumersReady: () => Promise.resolve(),
+    // A closed stream buffers nothing and throttles nobody, so the ceiling is reported as the default and
+    // the depth as zero. Stated rather than omitted: a producer awaiting this handle is told "go ahead",
+    // which is right — there is no consumer left to protect.
+    highWaterMark: DEFAULT_STREAM_CAPACITY,
+    bufferedCount: 0,
     // The run terminated in a PRIOR process and its terminal is in the persisted log — that is what makes
     // this handle closed at all. Reporting anything else would be a guess about a write we did not make.
     durability: () => 'durable',

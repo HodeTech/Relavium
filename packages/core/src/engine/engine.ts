@@ -2042,6 +2042,11 @@ class RunExecution {
           }
           this.#nodeEmit(event, live);
         },
+        // **ADR-0036's producer-await, handed to the executor (`CR-30`).** The run's own consumer ceiling,
+        // so an executor that streams thousands of token deltas between node boundaries throttles instead
+        // of growing the buffer. `#step` still awaits it once per node — that call bounds the run loop
+        // itself; this one bounds a single node's stream, which is the unbounded case.
+        whenReady: () => this.handle.whenConsumersReady(),
         signal: this.#abort.signal,
         attemptNumber,
         ...(preEgress === undefined ? {} : { preEgress }),
