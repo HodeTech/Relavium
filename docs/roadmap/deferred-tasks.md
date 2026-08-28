@@ -356,6 +356,16 @@ had never been touched.
   being defeated today. The feature itself is genuinely tested one layer down, against `FallbackChain`
   directly. This is a trap for whoever wires it next, not a live defect. *(medium · packages/core/src/engine/{agent-runner,agent-session}.ts)*
 
+- [ ] **`W2`'s own commit history does not meet `commit-style.md`, and the maintainer accepted it.** Of the
+  34 commits on this branch, 31 subjects exceed the ~72-char guidance and 20 use a comma-separated
+  multi-scope (`fix(llm,core,shared): …`) where the standard asks for the primary scope with the rest named
+  in the body. Raised as a Low finding in the PR #85 review; the maintainer's call on 2026-08-28 was to
+  leave it. The reason is worth recording, because it is a real trade and not an oversight: rewriting the
+  history changes every SHA on an open PR, which un-anchors the inline review comments the fourteen findings
+  were attached to — a worse outcome for a branch whose whole value is its reviewability. **The remedy is
+  forward-looking:** `W3` writes them correctly from the first commit rather than fixing these. *(low ·
+  [commit-style.md](../standards/commit-style.md))*
+
 ## Phase 2.6.5 `W1` residuals (PR #83, merged 2026-08-24)
 
 Named rather than left implicit, because every one of them was examined during `W1` and consciously left
