@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0`, `W1` and `W2` are merged** (20 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25); `W3` is next
+- **Status**: in progress — **`W0`, `W1` and `W2` are merged** (21 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28); `W3` is next
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -1299,9 +1299,12 @@ producer against a slow consumer and asserts the buffer never exceeds the ceilin
 number is skipped.
 
 ### CR-31 — No safe default concurrency and no absolute graph/retry caps · High · **cap values open**
-An omitted `max_parallel_nodes` means `Infinity`. There is no absolute cap on authored nodes, edges, fan-out
-width, fallback-chain length, retry counts, parallel tools or total attempts; the parser's text-size limit does
-not stop many small ones.
+An omitted `max_parallel` means `Infinity` (`engine.ts` — `this.#plan.maxParallel ?? Number.POSITIVE_INFINITY`).
+There is no absolute cap on authored nodes, edges, fan-out width, fallback-chain length, retry counts, parallel
+tools or total attempts; the parser's text-size limit does not stop many small ones. *(The field was written
+here as `max_parallel_nodes`, which exists nowhere in the repo — corrected 2026-08-28, because a
+grep-based reader looking for the thing to fix would have found nothing. The authored field is `max_parallel`
+on the workflow spec; the compiled field is `maxParallel` on the run plan.)*
 **Fix + acceptance.** A small capacity-derived default concurrency that an authored value may only narrow, plus
 explicit absolute caps enforced at parse/compile admission with typed errors. The numbers are a maintainer call.
 
@@ -1662,13 +1665,28 @@ final generation. The user approves a projection they saw, but the approval mean
 **Fix + acceptance.** Make the approval an immutable numeric lease bound to money/token/attempt scope, model and
 expiry, consumed atomically by each egress. An approved node that exceeds its lease pauses again.
 
-### CR-95 — A mid-tool-loop budget pause replays the whole loop · High (Blocker while CR-12 is open)
+### CR-95 — A mid-tool-loop budget pause replays the whole loop · High · ⚠️ SHORT-TERM HALF CLOSED 2026-08-18 ([ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) §10)
 A budget pause becomes a paused outcome; on approval the node is reset to pending and dispatched from the start.
 The code already acknowledges that this repeats earlier provider and tool calls.
 **Fix + acceptance.** **Short term (non-deferrable): forbid a mid-loop budget pause — fail closed.** Long term:
 checkpoint the continuation — provider messages, tool call/result pairs, round index — and resume from that
 point. A mid-loop pause plus approval must not repeat a mutation. The short-term fix closes the claim; the long
 term may be deferred with its trigger named.
+
+**Closed — the code that closes it, per exit criterion 7.** The short-term fail-closed half shipped with the
+durability spine in commit `de4e19c3` (2026-08-18) and has carried an OPEN heading here ever since — the third
+time this register has recorded a shipped item as open, after `CR-14` and `CR-92` (see the `W1` closing
+register). The code is `agent-turn.ts`'s `turnCommitted = toolTurn > 0` guard, which refuses a
+`BudgetPauseError` once the turn has dispatched tools; the tests that would fail if it were reverted are
+`agent-turn.test.ts` — *"CR-95: a budget pause AFTER a tool round fails closed instead of pausing"* and its
+negative control, *"a budget pause BEFORE any tool round still pauses"*.
+[ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md)'s **Decides** line
+already named `CR-95`'s short-term fix, which is what makes the stale heading detectable at all.
+
+**The LONG-TERM half stays open** and keeps this item on the board: checkpointing the continuation so an
+approved mid-loop pause resumes rather than replays. Its trigger is any surface that pauses a tool-using turn
+on budget and expects it to continue — today the fail-closed refusal is the honest answer, and it is
+disruptive by design.
 
 ---
 
