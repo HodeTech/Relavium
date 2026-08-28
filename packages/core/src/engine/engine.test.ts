@@ -2453,6 +2453,137 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     await consume;
   });
 
+  it('a resuming clock BEHIND cannot grow the run cap either (the gate half had this clamp, the run half did not)', async () => {
+    // `#elapsedMs()` differences THIS process's clock against `#startEpochMs`, seeded from ANOTHER process's
+    // `run:started`. A resuming clock running behind yields a negative elapsed and a remaining LARGER than
+    // the authored cap. Measured before the fix: an hour of skew re-armed a 60 000 ms cap at 3 660 000 ms.
+    // The gate half gained this clamp from the Step 3 round; the run half, twenty-five lines away, did not.
+    const TIMED = `  id: timed-skew
+  timeout_ms: 60000
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: out }`;
+    const store = new InMemoryRunStore();
+    const engineA = engineWith(
+      { g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?' } }) },
+      createInMemoryHost({ store }),
+    );
+    const handleA = engineA.start({ workflow: workflow(TIMED) });
+    let gateId = '';
+    let startedAt = '';
+    for await (const event of handleA.events) {
+      if (event.type === 'run:started') startedAt = event.timestamp;
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+
+    const nowB = new Date(Date.parse(startedAt) - 3_600_000).toISOString(); // an hour BEHIND
+    const baseHostB = createInMemoryHost({ store });
+    const armedWork: number[] = [];
+    const hostB: typeof baseHostB = {
+      ...baseHostB,
+      clock: { now: () => nowB },
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'work') armedWork.push(ms);
+        return baseHostB.setTimer(ms, onFire, kind);
+      },
+    };
+    const engineB = engineWith({}, hostB);
+    await drain(
+      await engineB.resumeFromCheckpoint({
+        runId: handleA.runId,
+        workflow: workflow(TIMED),
+        gateId,
+        decision: { decision: 'approved', decidedBy: 'h' },
+      }),
+    );
+
+    // Never longer than authored, whatever the two clocks think of each other.
+    expect(armedWork.every((ms) => ms <= 60_000)).toBe(true);
+    expect(armedWork).not.toContain(3_660_000);
+  });
+
+  it('a stale dispatch cannot move the run cost while its successor is live (ADR-0085 §5)', async () => {
+    // **The fence had to compare a CAPTURED id, and a first version compared a value against itself.** Both
+    // guards read `#dispatchIdForVertex.get(vertex.id)` at write time, and `#dispatch` writes the same id
+    // into both maps — so while any dispatch of the vertex is active the two sides were equal by
+    // construction and the predicate degenerated to `!#settled && has(vertex)`. That is exactly the "second
+    // boolean latch" ADR-0085 §5 rejects, because it cannot tell dispatch N from N+1 — and the
+    // budget-approved re-dispatch produces precisely that.
+    //
+    // Here dispatch N pauses for approval and keeps its `ctx.emit`; the approval re-dispatches the vertex;
+    // then N's captured closure fires a cost. Measured before the fix: it was DELIVERED.
+    const APPROVED = `  id: stale-cost
+  nodes:
+    - { id: gen, type: transform, transform: 'g' }
+    - { id: out, type: output }
+  edges:
+    - { from: gen, to: out }
+  budget:
+    max_cost_microcents: 100000000
+    on_exceed: pause_for_approval`;
+    let staleEmit: (() => void) | undefined;
+    let dispatches = 0;
+    const engine = engineWith({
+      gen: (ctx) => {
+        dispatches += 1;
+        if (dispatches === 1) {
+          // Keep dispatch N's closure alive past its own pause.
+          staleEmit = () => {
+            ctx.emit({
+              type: 'cost:updated',
+              nodeId: 'gen',
+              model: 'm',
+              inputTokens: 0,
+              outputTokens: 0,
+              costMicrocents: 999_999,
+              cumulativeCostMicrocents: 0,
+            });
+          };
+          return {
+            kind: 'paused',
+            gate: {
+              gateType: 'approval',
+              message: 'over budget — continue?',
+              isBudgetGate: true,
+              spentMicrocents: 900,
+              limitMicrocents: 1000,
+            },
+          };
+        }
+        staleEmit?.(); // dispatch N+1 is live; N's stale closure fires now
+        return { kind: 'completed', output: 'done' };
+      },
+    });
+    const handle = engine.start({ workflow: workflow(APPROVED) });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:paused') {
+        const gateId = event.gateIds[0];
+        if (gateId !== undefined) {
+          await engine.resume(handle.runId, gateId, { decision: 'approved', decidedBy: 'tester' });
+        }
+      }
+    }
+
+    expect(dispatches).toBe(2); // the premise: the approval really did re-dispatch
+    // The stale closure's cost reached nobody, and the run total never saw it.
+    const costs = events.filter((e) => e.type === 'cost:updated');
+    expect(costs.some((e) => e.type === 'cost:updated' && e.costMicrocents === 999_999)).toBe(
+      false,
+    );
+    const terminal = events.at(-1);
+    expect(terminal?.type).toBe('run:completed');
+    expect(terminal?.type === 'run:completed' && terminal.totalCostMicrocents).not.toBe(999_999);
+  });
+
   it("a budget-approved RE-dispatch does not renew the node's `timeout_ms` (ADR-0085 §2)", async () => {
     // **"Absolute per node" was absolute per DISPATCH, and nothing saw it.** An approved budget gate returns
     // the vertex to `pending` (`#claimReady` re-claims it), so the node got a second `#dispatch` — and a

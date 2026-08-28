@@ -774,7 +774,13 @@ class RunExecution {
     // timer fires on the next tick and settles through the one `#onRunTimeout` path, so an expired resume and
     // an expiring live run produce the identical `run:timeout` + `run_timeout` terminal. Refusing it here
     // instead would be a second, differently-shaped exit for the same condition.
-    const remainingMs = Math.max(0, timeoutMs - this.#elapsedMs());
+    // Clamped on BOTH sides, the same way the gate re-arm is. `#elapsedMs()` differences this process's
+    // clock against `#startEpochMs`, which `#seedFromCheckpoint` seeds from ANOTHER process's `run:started`
+    // timestamp — so a resuming clock running behind produces a negative elapsed and a remaining LARGER than
+    // the authored cap. Measured at an hour of skew: a 60 000 ms cap re-armed at 3 660 000 ms, 61×. The gate
+    // half had this clamp from the Step 3 review and the run half twenty-five lines away did not; same
+    // exposure, same one-line fix, simply not carried across.
+    const remainingMs = Math.max(0, Math.min(timeoutMs, timeoutMs - this.#elapsedMs()));
     this.#runTimeoutDisarm = this.#host.setTimer(remainingMs, () => {
       void this.#onRunTimeout(timeoutMs);
     });
@@ -1860,6 +1866,14 @@ class RunExecution {
     attemptNumber: number,
     budgetApproved: boolean,
   ): Promise<NodeOutcome> {
+    // **CAPTURED, not re-read — ADR-0085 §5.** A first version had both fence points call
+    // `#dispatchIdForVertex.get(vertex.id)` at write time, which compares a value against itself: `#dispatch`
+    // writes the same id into both maps, so while any dispatch of the vertex is active the two sides are
+    // equal by construction and the predicate degenerates to `!#settled && has(vertex)` — precisely the
+    // "second boolean latch" §5 rejects, because it cannot tell dispatch N from N+1 and the budget-approved
+    // re-dispatch produces exactly that. Measured: a stale `cost:updated` of 999 999 from dispatch N was
+    // DELIVERED while N+1 was in flight. `#fenceEffects` had it right; these two did not.
+    const dispatchId = this.#dispatchIdForVertex.get(vertex.id) ?? -1;
     try {
       // A just-approved budget gate skips the pre-egress check for the WHOLE approved re-dispatch — every
       // above-chain node-retry attempt of it (H3 × ADR-0040). `budgetApproved` is consumed ONCE per dispatch
@@ -1880,7 +1894,7 @@ class RunExecution {
           // to every subscriber AFTER the terminal had already reported the run total. The money LEDGER is
           // deliberately not fenced (a charge already incurred is recorded either way — ADR-0045 §5's
           // local-only-cancel position); what is refused is changing a total the terminal has published.
-          if (!this.#isLive(vertex.id, this.#dispatchIdForVertex.get(vertex.id) ?? -1)) {
+          if (!this.#isLive(vertex.id, dispatchId)) {
             return;
           }
           this.#nodeEmit(event);
@@ -1912,7 +1926,7 @@ class RunExecution {
       };
       // After the executor completes, an `output` node with `save_to` writes its produced media to the
       // host (1.AF/D16). A write failure FAILS the node (→ run:failed) — save_to is a real deliverable.
-      return await this.#applySaveTo(vertex, await this.#executor.execute(ctx));
+      return await this.#applySaveTo(vertex, await this.#executor.execute(ctx), dispatchId);
     } catch (error) {
       // A money-durability failure is NOT an anonymous handler throw. Barriers B1 and B2 (ADR-0077) both sit
       // INSIDE the turn, and `throwMappedChainError` has two arms whose only job is to keep the class and its
@@ -2963,6 +2977,12 @@ class RunExecution {
     this.#settled = true; // no terminal may be emitted after this point, by any path
     this.#stopHeartbeat();
     this.#abort.abort();
+    // ADR-0085 §8.12 requires the grace window disarmed on a FENCED settle as well as a normal one, and it
+    // was not: `#settle` reaches its fenced branch and returns BEFORE its own `#disarmGraceWindow()`. The
+    // cost is concrete rather than theoretical — the CLI deliberately does not `unref` a `deadline` timer,
+    // and sets `process.exitCode` rather than calling `process.exit`, so a fenced `relavium run` sat idle
+    // for the full 10 s after it had finished.
+    this.#disarmGraceWindow();
     for (const disarm of this.#gateTimers.values()) disarm();
     this.#gateTimers.clear();
     for (const disarm of this.#mediaJobTimers.values()) disarm();
@@ -3483,7 +3503,11 @@ class RunExecution {
    * — it is NOT best-effort (contrast the retention {@link #recordProducedMedia}). Output nodes carry no
    * node-retry budget ({@link #retryConfig}), so the write runs once.
    */
-  async #applySaveTo(vertex: PlanVertex, outcome: NodeOutcome): Promise<NodeOutcome> {
+  async #applySaveTo(
+    vertex: PlanVertex,
+    outcome: NodeOutcome,
+    dispatchId: number,
+  ): Promise<NodeOutcome> {
     if (outcome.kind !== 'completed') {
       return outcome;
     }
@@ -3495,7 +3519,7 @@ class RunExecution {
     // writes BYTES TO THE USER'S FILESYSTEM — on the executor's return, before `#onOutcome`'s `#settled`
     // latch is ever reached. A dispatch the grace window abandoned must not still deliver a file for a run
     // that already reported its terminal.
-    if (!this.#isLive(vertex.id, this.#dispatchIdForVertex.get(vertex.id) ?? -1)) {
+    if (!this.#isLive(vertex.id, dispatchId)) {
       return outcome;
     }
     const failure = await this.#performSaveTo(config.node.save_to, outcome.output);

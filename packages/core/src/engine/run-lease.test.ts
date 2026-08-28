@@ -155,6 +155,52 @@ describe('ADR-0079 §5 — a fenced-out process stops without claiming an outcom
     expect(persisted).not.toContain('run:completed');
   });
 
+  it('a FENCED settle disarms the grace window too (ADR-0085 §8.12)', async () => {
+    // `#settle` reaches its fenced branch and RETURNS before its own `#disarmGraceWindow()`, so a run whose
+    // ownership moved after a cancel left the backstop armed. The cost is concrete, not theoretical: the CLI
+    // deliberately does not `unref` a `deadline` timer (a hung executor may hold no socket, so the backstop
+    // is the only thing that will unblock the run) and sets `process.exitCode` rather than calling
+    // `process.exit` — so a fenced `relavium run` sat idle for the full 10 s after it had finished.
+    //
+    // §8.12 claims the window is disarmed "on a normal settle, on `abandon()`, and on a fenced settle —
+    // proven by the armed count". Only the normal one was.
+    const store = new InMemoryRunStore();
+    const inner = createInMemoryRunLeases();
+    let takenOver = false;
+    const leases: RunLeasePort = {
+      ...inner,
+      heartbeat: (runId, fence, ttlMs) =>
+        takenOver ? Promise.resolve(false) : inner.heartbeat(runId, fence, ttlMs),
+    };
+    const host = createInMemoryHost({ store, runLeases: leases });
+    const started: string[] = [];
+    const engine = new WorkflowEngine({
+      host,
+      executor: new Stub({
+        a: () => {
+          started.push('a');
+          return inFlight();
+        },
+      }),
+    });
+    const handle = engine.start({ workflow: LINEAR });
+
+    await until(() => host.livenessCount() === 1, 'the heartbeat was armed');
+    // Wait for the node to actually be IN FLIGHT. Cancelling before it starts settles the run immediately —
+    // `#step` finds nothing running and closes it `run:cancelled` — and the fenced path is then never taken.
+    await until(() => started.length > 0, 'the node started');
+    // Cancel FIRST, so the grace window is armed before ownership moves — the ordering that produced the
+    // leak. Then the heartbeat discovers the takeover and the run settles fenced.
+    engine.cancel(handle.runId);
+    await until(() => host.deadlineCount() === 1, 'the grace window was armed');
+    takenOver = true;
+    host.fireLiveness();
+
+    await drain(handle);
+    expect(handle.durability()).toBe('uncertain'); // …it really did take the FENCED path
+    expect(host.deadlineCount()).toBe(0); // …and left no backstop holding the loop open
+  });
+
   it('a durable write refused by the fence produces the same disposition', async () => {
     // The other half of §5: the loss is discovered at a WRITE rather than at a beat. Same outcome, because
     // the process learned the same fact — it no longer owns the run.
