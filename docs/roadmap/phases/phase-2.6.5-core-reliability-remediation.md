@@ -273,10 +273,10 @@ to correct.
 | `CR-21c` | made 2026-08-27 (bound each poll CALL, not only the loop; a new `pollCallTimeoutMs` = 30 000, clamped to the remaining `deadlineAt`) · ✅ closed 2026-08-27 | with `CR-21b`'s | no | — |
 | `CR-22` | made (absolute deadlines) · ✅ closed 2026-08-27 | — | no | — |
 | `CR-23` | made · ✅ closed 2026-08-27 (10 s grace off the abort signal; per-vertex generation fence; **no quarantine**, risk accepted with a named trigger) | [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | no | — |
-| `CR-30` | made — implement [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s accepted no-drop producer-await | none (already decided) | no | — |
-| `CR-31` | **open** — the cap values | — | no | — |
-| `CR-32` | **open** — the bound values | — | no | — |
-| `CR-33` | **open** — retention policy shape | — | no | — |
+| `CR-30` | made — implement [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s accepted no-drop producer-await; **placement settled 2026-08-28: the await goes in the turn's chunk loop**, `NodeExecContext.emit` stays synchronous | none (already decided) | no | — |
+| `CR-31` | made 2026-08-28 — conservative caps: default concurrency **8**, and absolute **500** nodes / **2000** edges / fan-out **50** / fallback-chain **5** / `retry.max` **10** / parallel tools **16** / **500** total attempts per run | — | no | — |
+| `CR-32` | made 2026-08-28 — **256 KiB** node output, **4 MiB** total workflow state, **1 MiB** per durable event; typed `validation` rejection | — | no | — |
+| `CR-33` | made 2026-08-28 — **count-based, N = 100** settled runs, FIFO eviction (no clock, so engine purity is untouched); the `#executor` quarantine half stays a `W2` residual and is NOT claimed by this bound | — | no | — |
 | `CR-40` | made (forward signal + deadline) | with `CR-16`'s | no | hostile MCP |
 | `CR-41` | made (apply the built-in egress floor) | with `CR-16`'s | no | hostile MCP |
 | `CR-42` | **open** — the ingress bounds | with `CR-16`'s | no | hostile MCP |
@@ -1288,6 +1288,21 @@ pre-fix code, which is the only red a liveness defect can produce.
 ### CR-30 — The accepted no-drop bounded stream is not implemented · High
 `push()` appends without a capacity check; `whenDrained` is advisory and only awaited at node boundaries, while
 token deltas are emitted synchronously. A single provider stream can grow memory without a hard bound.
+
+**Widened 2026-08-28, before implementation: this is true of the RUN path and worse on the SESSION path.**
+"Only awaited at node boundaries" describes `engine.ts`'s single `whenConsumersReady()` call. `SessionHandle`
+wires the same knob (`session-handle.ts` — `whenConsumersReady: () => primary.whenDrained()`) and **no producer
+ever awaits it**: `AgentSession` has zero backpressure, not advisory backpressure. `AgentSession` is a
+co-equal first-class entry point ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)),
+so a fix that covers only the workflow path leaves half the product unbounded. Both paths share
+`AgentTurnParams`, so one await point in the turn's chunk loop covers both — which is why the placement
+decision above is the cheap one.
+
+**One existing test asserts the opposite of this item and must be replaced, not left beside the fix.**
+`run-handle.test.ts` — *"applies producer-await backpressure once the buffer exceeds capacity, then drains"* —
+builds a handle at capacity 2, pushes four events (its own comment reads `buffer = 4 > capacity 2`) and
+asserts only that `whenDrained()` resolves after two pulls. It demonstrates the ceiling being **violated** and
+names that backpressure, so a green suite currently reads as though `CR-30` were already closed.
 
 **This is not an open choice.** [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)
 already decided it: *"buffering is bounded per consumer with a producer-await (no-drop) policy"*, because the
