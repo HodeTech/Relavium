@@ -15,6 +15,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { openDeadline, type AbortControllerLike } from './attempt-deadline.js';
+import * as llm from './index.js';
 
 /** A platform-free controller — the seam has no ambient `AbortController`. */
 function controller(): AbortControllerLike {
@@ -109,5 +110,19 @@ describe('openDeadline — the unhandled-rejection cases (ADR-0082 §12)', () =>
     }
 
     expect(unhandled).toEqual([]);
+  });
+});
+
+describe("ADR-0085 §9's re-export obligation", () => {
+  it('exposes `openDeadline` and `DEFAULT_ATTEMPT_TIMEOUT_MS` from the package ROOT', () => {
+    // §9 says `@relavium/llm` "re-exports it". `attempt-deadline.ts` did — but nothing re-exported
+    // `attempt-deadline.ts` from `index.ts`, and `package.json` exposes only `.` and `./adapters`, so no
+    // consumer of this package could reach either symbol. The obligation was satisfied on paper only, which
+    // is precisely the failure mode a landing-obligation list exists to prevent. Reading them through the
+    // module NAMESPACE is the point: a named import would be resolved by the bundler and prove nothing
+    // about what the entry point actually publishes.
+    expect(typeof llm.openDeadline).toBe('function');
+    expect(llm.openDeadline).toBe(openDeadline);
+    expect(llm.DEFAULT_ATTEMPT_TIMEOUT_MS).toBe(120_000);
   });
 });

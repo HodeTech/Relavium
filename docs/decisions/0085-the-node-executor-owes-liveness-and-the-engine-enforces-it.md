@@ -228,7 +228,7 @@ So:
 Node *state* is already fenced — `#onOutcome` returns early on `#settled`. The gap is that this is one
 boolean on one path. The fence covers five points, and each gets its own assertion in §8:
 
-1. `#onOutcome` — already latched; the token subsumes the boolean.
+1. `#onOutcome` — already latched; the token subsumes the boolean. **Corrected 2026-08-28: it does not, and the implementation says so.** The token was tried here and refused every async media-job completion: `#dispatch`'s `finally` releases the vertex's slot on return, but a `media_job` PARKS — the node is legitimately still running and settles later, out of band, from the poll timer. The shipped predicate is the vertex's own TERMINAL node status (`completed`/`failed`/`skipped`), which is what actually distinguishes "this node already had its outcome" from `paused`/`running`. The gap the item names is real — `#settled` alone lets a timed-out node's straggler overwrite the timeout with a `completed` while a sibling keeps the run alive — but the token is the wrong instrument for closing it.
 2. `#nodeEmit`'s `cost:updated` fold — currently unguarded, and it mutates `#cumulativeCostMicrocents` and
    pushes to every subscriber after the terminal has reported the total.
 3. `#applySaveTo` — currently unguarded, and it writes bytes to the user's filesystem on the executor's
@@ -328,7 +328,16 @@ implementation.
    go red under a per-attempt reading.
 5. A node whose `execute()` returns inside the bound but whose `save_to` hangs still times out — and the
    same for a hanging money barrier. These are the two tests that would pass for a race around
-   `execute()` alone.
+   `execute()` alone. **Corrected 2026-08-28: the `save_to` half is unreachable by construction, and no
+   test can be written for it.** The authored schema puts `save_to` on the `output` node only
+   (`OutputNodeSchema`) and `timeout_ms` on `agent` and `human_gate` only (`AgentNodeSchema`,
+   `HumanGateNodeSchema`) — see [node-types.md](../reference/shared-core/node-types.md). No authored node can
+   carry both, so "a node with `timeout_ms` whose `save_to` hangs" names a workflow the parser rejects. The
+   claim was written from the engine's call graph (`#applySaveTo` does run inside the dispatch the deadline
+   bounds) without checking what the schema admits. The MONEY-barrier half stands and is reachable: the
+   barrier is inside the agent turn, which is exactly where `timeout_ms` applies. The `save_to` write is
+   still fenced against a stale dispatch (§5 point 3, item 16 below) — that guarantee is unaffected; only
+   the deadline-interaction test is impossible.
 6. A run cancel landing during a node deadline classifies `cancelled`, not `run_timeout` — cancel-wins,
    asserted against the contract rather than fake-timer callback order.
 7. The node deadline and the run deadline compose by earliest-expiry (ADR-0082 §6), proven with both armed
@@ -367,11 +376,19 @@ implementation.
 13. Two parallel siblings: `B`'s dispatch does **not** stale `A`'s, and both write normally.
 14. The same vertex re-dispatched: the older dispatch's writes are refused, the newer's admitted.
 15. A stale dispatch's `cost:updated` changes neither `cumulativeCostMicrocents` nor what any subscriber
-    receives.
+    receives. **Corrected 2026-08-28, and the correction cost real money to find.** Fencing the FOLD as well
+    as the delivery loses a durable ledger row: `#cumulativeCostMicrocents` is what `TurnMoneyPort.record`
+    stamps as a row's `cumulativeCostMicrocents`, and `refineCostAttemptSettled` rejects a row whose
+    cumulative is below its own cost. A stale-but-genuinely-billed attempt therefore produced
+    `cumulative 0 < cost N` at a producer gate that runs OUTSIDE `#emitDurable`'s try — it threw where the
+    design assumes it cannot, and the charge never reached the ledger. The shipped rule: **the fold is
+    unconditional, the delivery is fenced.** A charge the provider took is recorded either way
+    ([ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §5); what the fence stops is
+    re-announcing a run total to subscribers after the terminal published one.
 16. A stale dispatch's `save_to` does not write.
 17. A stale `prepare` is refused; a stale `settle` and a stale `discard` are **admitted** — the paired test
     that stops a fix for one from re-creating `PR83-04`'s stranded row.
-18. A ledger write for an already-incurred charge completes when stale; the run-total fold does not.
+18. A ledger write for an already-incurred charge completes when stale; the run-total fold does not. **Corrected 2026-08-28 with item 15 — the fold DOES complete**, for the reason recorded there. The half of this item that survives is the one it shares with the money port's per-method table: a stale `record` is admitted, because refusing it is how the charge goes missing.
 
 **Mutation discipline.** Per the phase's working discipline each of the above is confirmed to FAIL with its
 production change reverted, and the mutation is confirmed to have landed before the red is trusted.
@@ -387,6 +404,12 @@ These land with the implementation, not after it:
   layering besides. It moves to `@relavium/shared` (where `AbortSignalLike` already lives, and where the
   duplicated `AbortControllerLike` definitions in `@relavium/llm` and `@relavium/core` can converge);
   `@relavium/llm` re-exports it and keeps `DEFAULT_ATTEMPT_TIMEOUT_MS`, which is an LLM-specific default.
+  **The re-export half was satisfied on paper only until 2026-08-28.** `attempt-deadline.ts` re-exported
+  both symbols, but nothing re-exported *that module* from `index.ts`, and `package.json` still exposes only
+  `.` and `./adapters` — so a consumer of `@relavium/llm` could reach neither, which is the same
+  unreachability this obligation was written to end. `index.ts` now exports them, guarded by a test that
+  reads the module NAMESPACE rather than a named import, since a named import is resolved by the bundler and
+  proves nothing about what the entry point publishes.
   **Landed 2026-08-27.** Two details worth recording because they were decisions, not mechanics. The
   `SetAttemptTimer` type came across as `SetDeadlineTimer` — "attempt" names a provider call, and the engine's
   node deadline is not one; the engine's own `SetTimer` (which carries ADR-0036's third `TimerKind` argument)
