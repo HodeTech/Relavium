@@ -81,7 +81,11 @@ import {
   DEFAULT_MAX_TOKENS_ESTIMATE,
   type BudgetAdmission,
 } from './budget-governor.js';
-import type { CheckpointPendingMediaJob, CheckpointState } from './checkpoint.js';
+import type {
+  CheckpointPendingGate,
+  CheckpointPendingMediaJob,
+  CheckpointState,
+} from './checkpoint.js';
 import {
   LedgerDurabilityError,
   MoneyDurability,
@@ -806,6 +810,42 @@ class RunExecution {
     );
   }
 
+  /**
+   * Re-arm one rehydrated gate's deadline against its ABSOLUTE `expiresAt` (`CR-22`).
+   *
+   * Extracted from `#seedFromCheckpoint`, which the inline version pushed to a cognitive complexity of 18
+   * against Sonar-Way's threshold of 15 — a nested conditional with a nested ternary inside a loop. The
+   * seeding loop reads as a list of restorations again, and this reads as one decision.
+   *
+   * This was deferred for a long time on the reasoning that "the gate this resume targets has its decision
+   * applied immediately" — true of the TARGET gate, and silent about every other one. A multi-gate run, or a
+   * crash while parked, rehydrated its remaining gates with no timer at all, so their deadlines stopped
+   * existing until the next restart. The data was already durable on `human_gate:paused`, whose schema says
+   * it rides there for exactly this; only the fold and this arm were missing.
+   */
+  #reArmGateDeadline(gate: CheckpointPendingGate): void {
+    if (gate.expiresAt === undefined || gate.timeoutAction === undefined) {
+      return;
+    }
+    // Clamped on BOTH sides. `Math.max` stops a past deadline arming a negative duration; `Math.min` stops a
+    // resuming process whose clock runs BEHIND the one that parked the gate from granting more patience than
+    // the author wrote — measured at an hour of skew, a 1 000 ms gate re-armed at 3 601 000 ms. The authored
+    // duration is the ceiling; the absolute instant is the target.
+    const untilExpiryMs = Date.parse(gate.expiresAt) - Date.parse(this.#host.clock.now());
+    const remainingMs = Math.max(
+      0,
+      gate.timeoutMs === undefined ? untilExpiryMs : Math.min(untilExpiryMs, gate.timeoutMs),
+    );
+    // A gate whose deadline has ALREADY passed arms at zero and fires on the next tick rather than being
+    // resolved inline: the timeout then travels the one `#onGateTimeout` path, so a past-deadline resume and
+    // a live expiry produce the identical events in the identical order.
+    const action = gate.timeoutAction;
+    const disarm = this.#host.setTimer(clampTimerDelayMs(remainingMs), () => {
+      void this.#onGateTimeout(gate.gateId, gate.nodeId, action);
+    });
+    this.#gateTimers.set(gate.gateId, disarm);
+  }
+
   #disarmGraceWindow(): void {
     if (this.#graceDisarm !== undefined) {
       this.#graceDisarm();
@@ -1070,35 +1110,7 @@ class RunExecution {
         vertexId: gate.nodeId,
         isBudgetGate: gate.isBudgetGate,
       });
-      // **Re-arm the gate's deadline against its ABSOLUTE `expiresAt` (`CR-22`).** This was deferred for a
-      // long time on the reasoning that "the gate this resume targets has its decision applied immediately"
-      // — true of the TARGET gate, and irrelevant to every other one. A multi-gate run, or a crash while
-      // parked, rehydrated its remaining gates with no timer at all, so their deadlines simply stopped
-      // existing until the next restart. The data was already durable on `human_gate:paused`, whose schema
-      // says it rides there for exactly this; only the fold and this loop were missing.
-      //
-      // The remaining time is derived from the absolute instant, so a run resumed ten times still expires
-      // when it always would have. A gate whose deadline has ALREADY passed arms at zero and fires on the
-      // next tick rather than being resolved inline here: the timeout then travels the one
-      // `#onGateTimeout` path, so a past-deadline resume and a live expiry produce the identical events in
-      // the identical order. Resolving it inline would be a second exit for one condition.
-      if (gate.expiresAt !== undefined && gate.timeoutAction !== undefined) {
-        // Clamped on BOTH sides. `Math.max` stops a past deadline arming a negative duration; `Math.min`
-        // stops a resuming process whose clock runs BEHIND the one that parked the gate from granting more
-        // patience than the author wrote. `expiresAt` is an instant compared against a different machine's
-        // clock, so the two can disagree — measured at an hour of skew, a 1 000 ms gate re-armed at
-        // 3 601 000 ms. The authored duration is the ceiling; the absolute instant is the target.
-        const untilExpiryMs = Date.parse(gate.expiresAt) - Date.parse(this.#host.clock.now());
-        const remainingMs = Math.max(
-          0,
-          gate.timeoutMs === undefined ? untilExpiryMs : Math.min(untilExpiryMs, gate.timeoutMs),
-        );
-        const action = gate.timeoutAction;
-        const disarm = this.#host.setTimer(clampTimerDelayMs(remainingMs), () => {
-          void this.#onGateTimeout(gate.gateId, gate.nodeId, action);
-        });
-        this.#gateTimers.set(gate.gateId, disarm);
-      }
+      this.#reArmGateDeadline(gate);
     }
     // Re-seed totals BEFORE restoring submitted-job reservations: a committed job must reserve alongside the
     // checkpoint's known spend, and its reservation must exist before the first re-armed poll/schedule can run.
