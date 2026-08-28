@@ -1210,14 +1210,31 @@ were reverted, and every one of them was confirmed to fail line-precisely.
 
 | Item | The code that closes it | The test that would fail if it were reverted |
 |------|--------------------------|-----------------------------------------------|
-| `CR-20` | `engine.ts`'s `#openNodeDeadline` + `#dispatchBounded` — the authored `agent.timeout_ms`, ABSOLUTE across every attempt AND re-dispatch, wrapping the whole dispatch — the money barrier and the retry backoff included. (Not `save_to`: `timeout_ms` is declared only on the agent and gate nodes and `save_to` only on the output node, so no vertex can carry both — ADR-0085 §2 says otherwise and is wrong on that clause) | `engine.test.ts` — *"honours an agent node's authored `timeout_ms`"*, which asserts the **authored 4000**, not that some timer armed; plus its negative control, *"a node with no `timeout_ms` arms no node deadline"* |
+| `CR-20` | `engine.ts`'s `#armNodeDeadline` / `#onNodeDeadline` / `#disarmNodeDeadline` — the authored `agent.timeout_ms`, ABSOLUTE across every attempt AND re-dispatch, wrapping the whole dispatch — the money barrier and the retry backoff included. (Not `save_to`: `timeout_ms` is declared only on the agent and gate nodes and `save_to` only on the output node, so no vertex can carry both — ADR-0085 §2 says otherwise and is wrong on that clause) | `engine.test.ts` — *"honours an agent node's authored `timeout_ms`"*, which asserts the **authored 4000**, not that some timer armed; plus its negative control, *"a node with no `timeout_ms` arms no node deadline"* |
 | `CR-21` | `packages/shared/src/deadline.ts` (`openDeadline` — the merged signal, the hard race, the caller-abort latch) + `fallback-chain.ts`'s `#openDeadline` / `#raceStep`, forwarded through `agent-turn.ts` and wired by both CLI hosts | `deadline.test.ts` (11 cases) + `attempt-deadline.test.ts` (the two `process.on('unhandledRejection')` cases that cannot live in a `types: []` package) + the two forwarding tests, which run over BOTH `chainCapabilities` branches because production takes the one they originally missed |
 | `CR-21b` | `agent-runner.ts`'s `openGenerativeDeadline` + the race around `provider.generateMedia`, bounded by `MEDIA_GEN_SUBMIT_TIMEOUT_MS` | `m2-e2e-harness.e2e.test.ts` — *"a generateMedia submission that never settles is bounded too"* — and `agent-runner.test.ts`'s *"a cancel during a HUNG generateMedia is `cancelled`"*, which is the one that catches the caller signal going missing |
 | `CR-21c` | `engine.ts`'s `#openPollDeadline` + `#racePoll`, bounded by `MEDIA_JOB_POLL_DEFAULTS.pollCallTimeoutMs` and clamped to the job's remaining `deadlineAt` | `m2-e2e-harness.e2e.test.ts` — *"a poll call that never settles is bounded"* **and** *"the poll bound is CLAMPED to the job's remaining deadline"*. The clamp needed its own test: every other case ran with 1 799 997 ms remaining, so the constant always won the `min` |
 | `CR-22` | `#armRunTimeout`'s remaining-time arithmetic, `#seedFromCheckpoint`'s gate re-arm, and `reconstructCheckpointState` carrying `expiresAt`/`timeoutAction`/`timeoutMs` | `engine.test.ts`'s **seven** resume cases: the remaining-time arithmetic on the gate half and on the run half; the past-deadline clamp on each; the SURVIVING gate — the case the item exists for, and the one the first three tests all missed by resuming a run's only gate; the skew clamp, which stops a resuming clock running BEHIND from granting more patience than the author wrote; and the decision-beats-the-timer race, a regression this item shipped. Plus `checkpoint.test.ts`'s both-pair-orders fold |
-| `CR-23` | `#armGraceWindow` / `#onGraceElapsed` (armed off the abort signal in the constructor, unconditionally), the abandoned-node terminals, `#isLive` + `#fenceEffects`, and `#onRunTimeout`'s inverted ordering | `engine.test.ts` — *"a never-settling executor still produces exactly one terminal"*, and *"the effect fence refuses `prepare` but never `settle` or `discard`"* |
+| `CR-23` | `#armGraceWindow` / `#onGraceElapsed` (armed off the abort signal in the constructor, unconditionally), the abandoned-node terminals, `#isLive` + `#fenceEffects`, `#onRunTimeout`'s inverted ordering, and the `.catch` on `#step`'s `void this.#dispatch(...)` | `engine.test.ts` — *"a never-settling executor still produces exactly one terminal"*, and *"the effect fence refuses `prepare` but never `settle` or `discard`"* |
 
-**Two things this register does not claim.**
+**Two things this register does not claim.** (The heading stood alone for several commits — its first
+paragraph was rewritten into the correction below and its second drifted to the end of the section. Both are
+restored here, because a heading with nothing under it reads as a claim that was made and then quietly
+dropped.)
+
+**It does not claim ADR-0085's acceptance list is fully discharged.** §8.9 and §8 item 8 are **withdrawn**
+against §6 for the reason recorded below; §8 item 5's `save_to` half names a node combination the authored
+schema forbids, so no test can exist for it. Three more of §8's claims were corrected in place on 2026-08-28
+rather than satisfied — §5 item 1 (the token does not subsume `#onOutcome`'s boolean) and items 15/18 (a
+stale dispatch's cost IS folded; only its delivery is fenced). An acceptance list that reads as satisfied
+when three of its clauses were wrong is worse than one that is visibly short.
+
+And `CR-23`'s guarantee is bounded exactly as
+[ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §6 states: run
+liveness with respect to the EXECUTOR. A `RunStore.persistEvent` that never settles still hangs the run, and
+no timer in this wave changes that. It is [tracked](../deferred-tasks.md), not fixed, because bounding a
+durable write raises a question that ADR must not answer in passing.
+
 
 **One thing this register got WRONG and now states correctly.** An earlier version said the `cost:updated`
 fence was defensive — *"removing the guard leaves the straggler test green, because by then the run has
@@ -1241,11 +1258,30 @@ persist never settles: ADR-0078 serialises every emit behind one tail, so the wr
 one. The acceptance item was asking for more than the ADR claims — it is withdrawn against §6 rather than
 worked around.
 
-And `CR-23`'s guarantee is bounded exactly as
-[ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §6 states: run
-liveness with respect to the EXECUTOR. A `RunStore.persistEvent` that never settles still hangs the run, and
-no timer in this wave changes that. It is [tracked](../deferred-tasks.md), not fixed, because bounding a
-durable write raises a question that ADR must not answer in passing.
+**The PR #85 Request-Changes round (2026-08-28), and the one pattern under all five blockers.** A review of
+the branch returned a BLOCK with fourteen findings. Every one was verified against the code before it was
+acted on; none was taken on assertion. The five blockers were not five bugs — they were **one mistake made
+five times: an ownership decision taken at a point in time, guarding work that spans an await.** The node
+deadline was owned by a dispatch that could return while the node was still alive; three fences checked
+liveness on entry to an async call and not on its exit; a slot was released the moment a promise resolved.
+The repairs are correspondingly uniform: move ownership to the run and end it only at the node's terminal,
+invalidate synchronously at the decision instant, and re-check immediately before the irreversible step.
+
+Two of the remaining findings were worth more than their severity labels:
+
+- **The `cost:updated` fence lost real money (High).** Fencing the FOLD as well as the delivery left
+  `#cumulativeCostMicrocents` behind the ledger row that stamps from it, so a genuinely billed attempt
+  produced `cumulative 0 < cost N` — rejected by `refineCostAttemptSettled` at a producer gate that runs
+  OUTSIDE `#emitDurable`'s try. It threw where the design assumes it cannot and the durable row was lost.
+  The rule is now explicit in ADR-0085 §8 items 15/18: **the fold is unconditional, the delivery is fenced.**
+- **A synchronous host fault produced a run with NO terminal (Medium).** `#armNodeDeadline` runs outside
+  `#dispatch`'s `try`, so a host whose `setTimer` throws rejected the promise at `void this.#dispatch(...)`
+  — an `unhandledRejection` and a run that never settles, in the same wave whose subject is
+  exactly-one-terminal. Fixed at the call site by routing any dispatch fault through `#settleFailed`.
+  Measured while fixing it: the in-memory flag alone still hung, because it emits no `node:failed`.
+
+Both regression tests were break-verified line-precisely; the second hangs to a vitest timeout against the
+pre-fix code, which is the only red a liveness defect can produce.
 
 ## W3 — Resource governance and bounds
 

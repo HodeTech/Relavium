@@ -2151,7 +2151,7 @@ class RunExecution {
     }
     // **Fence point 1 (ADR-0085 §5), and the predicate is the vertex's own STATUS, not the dispatch token.**
     // `#settled` alone does not cover the window this item created: a node whose `timeout_ms` tripped is
-    // settled `failed` by `#dispatchBounded` while `#dispatchLoop` keeps running beside a live sibling, so
+    // settled `failed` by `#onNodeDeadline` while `#dispatchLoop` keeps running beside a live sibling, so
     // its eventual outcome reaches here on a run that has NOT settled and would overwrite the timeout with a
     // `completed` — a node reporting success for work the engine already told the user had timed out.
     //

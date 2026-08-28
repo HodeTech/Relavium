@@ -80,7 +80,11 @@ wrap the whole `#dispatch` body.
 ### 2. The authored node deadline is ABSOLUTE per node, and classifies as the human gate already does
 
 `timeout_ms` bounds the interval from the node's **first `node:started` to its node terminal** — every
-attempt, every backoff, `save_to`, and the money barrier share one remaining budget. `#dispatch` already
+attempt, every backoff, `save_to`, and the money barrier share one remaining budget. (**`save_to` is
+listed in error — corrected 2026-08-28 with §8 item 5.** The schema puts `save_to` on the `output` node
+only and `timeout_ms` on `agent`/`human_gate` only, so no authored node carries both. The clause is
+harmless — it widens the bound to something unreachable rather than narrowing it — but it is not true, and
+a reader who trusts it looks for a test that cannot exist.) `#dispatch` already
 captures `startedAtMs` before the retry loop, so the remaining time is arithmetic on state the engine
 holds.
 
