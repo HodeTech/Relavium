@@ -359,6 +359,39 @@ function applyMediaJobEvent(acc: ReconAccumulator, event: RunEvent): void {
   });
 }
 
+/**
+ * The gate's deadline fields, preferring what THIS event carries and otherwise keeping what a sibling
+ * recorded (`CR-22`).
+ *
+ * Only `human_gate:paused` carries a deadline; a `budget:paused` companion shares the gateId and must not
+ * erase it. **The carry-forward is unreachable from THIS engine, and that is stated rather than implied:**
+ * `#settlePaused` always emits `budget:paused` BEFORE the companion, so the deadline-bearing event is always
+ * the later one and there is nothing to carry. It is kept because this is a pure fold over DURABLE ROWS,
+ * which outlive the code that wrote them — a log from another writer, or a future emitter that reorders the
+ * pair, would otherwise silently lose the deadline and the gate would rehydrate with no timer at all.
+ * Pinned directly at the fold in `checkpoint.test.ts`, in both orders, since no engine path produces the
+ * second.
+ *
+ * Extracted from `applyGateEvent`, where three copies of this `??` written as nested ternaries carried it
+ * past the cognitive-complexity threshold — the same merge said once.
+ */
+function carryGateDeadline(
+  event: RunEvent,
+  prior:
+    | { expiresAt?: string; timeoutAction?: GateRequest['timeoutAction']; timeoutMs?: number }
+    | undefined,
+): { expiresAt?: string; timeoutAction?: GateRequest['timeoutAction']; timeoutMs?: number } {
+  const paused = event.type === 'human_gate:paused' ? event : undefined;
+  const expiresAt = paused?.expiresAt ?? prior?.expiresAt;
+  const timeoutAction = paused?.timeoutAction ?? prior?.timeoutAction;
+  const timeoutMs = paused?.timeoutMs ?? prior?.timeoutMs;
+  return {
+    ...(expiresAt === undefined ? {} : { expiresAt }),
+    ...(timeoutAction === undefined ? {} : { timeoutAction }),
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  };
+}
+
 /** Human-gate / budget-gate lifecycle: park a pending gate, or resolve it (decision becomes the gate vertex output). */
 function applyGateEvent(acc: ReconAccumulator, event: RunEvent): void {
   if (event.type === 'human_gate:paused' || event.type === 'budget:paused') {
@@ -366,32 +399,7 @@ function applyGateEvent(acc: ReconAccumulator, event: RunEvent): void {
     const priorGate = acc.pendingGates.get(event.gateId);
     acc.pendingGates.set(event.gateId, {
       nodeId: event.nodeId,
-      // Only `human_gate:paused` carries a deadline; a `budget:paused` companion shares the gateId and must
-      // not erase what its sibling recorded.
-      //
-      // **The carry-forward arm is unreachable from THIS engine, and that is stated rather than implied.**
-      // `#settlePaused` always emits `budget:paused` BEFORE the companion `human_gate:paused`, so the
-      // deadline-bearing event is always the later one and there is nothing to carry. (An earlier version
-      // of this comment claimed the two "arrive in either order", which is simply not what the emitter
-      // does.) It is kept because this is a pure fold over DURABLE ROWS, which outlive the code that wrote
-      // them: a log from another writer, or a future emitter that reorders the pair, would otherwise
-      // silently lose the deadline. Pinned directly at the fold in `checkpoint.test.ts`, since no engine
-      // path can produce it.
-      ...(event.type === 'human_gate:paused' && event.expiresAt !== undefined
-        ? { expiresAt: event.expiresAt }
-        : priorGate?.expiresAt === undefined
-          ? {}
-          : { expiresAt: priorGate.expiresAt }),
-      ...(event.type === 'human_gate:paused' && event.timeoutAction !== undefined
-        ? { timeoutAction: event.timeoutAction }
-        : priorGate?.timeoutAction === undefined
-          ? {}
-          : { timeoutAction: priorGate.timeoutAction }),
-      ...(event.type === 'human_gate:paused' && event.timeoutMs !== undefined
-        ? { timeoutMs: event.timeoutMs }
-        : priorGate?.timeoutMs === undefined
-          ? {}
-          : { timeoutMs: priorGate.timeoutMs }),
+      ...carryGateDeadline(event, priorGate),
       // A budget gate emits BOTH `budget:paused` then a companion `human_gate:paused` with the SAME gateId
       // (engine `#settlePaused`). OR the flag so the later human_gate:paused never downgrades a budget gate
       // to a plain human gate on reconstruction — else a resumed `rejected` budget gate would not fail the

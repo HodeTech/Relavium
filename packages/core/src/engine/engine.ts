@@ -1658,12 +1658,22 @@ class RunExecution {
     // reading multiplies, since two ordinary retryable failures followed by a timeout spend roughly three
     // times the authored bound and `retryable: false` only stops the timed-out attempt being retried.
     const nodeDeadline = this.#openNodeDeadline(vertex);
+    let handedToGrace = false;
     try {
-      await this.#dispatchBounded(vertex, firstAttempt, nodeDeadline);
+      handedToGrace = await this.#dispatchBounded(vertex, firstAttempt, nodeDeadline);
     } finally {
       nodeDeadline?.dispose();
-      // Release the slot only if it is still ours — a later dispatch of this vertex owns it now.
-      if (this.#activeDispatchByVertex.get(vertex.id) === dispatchId) {
+      // **Release the slot only if this dispatch is really finished with it.**
+      //
+      // On the caller-abort path `#dispatchBounded` returns EARLY while `#dispatchLoop` is still running —
+      // deliberately, so the grace window governs (§3). Releasing here would then un-fence a node that is
+      // still legitimately live: if its executor settles cooperatively inside the window, `#isLive` would
+      // refuse its `cost:updated` fold and, worse, its `save_to` write. The window exists to let exactly
+      // that work land. `#onGraceElapsed` clears the map when it stops waiting, and `#isLive`'s `!#settled`
+      // half still refuses anything after the terminal.
+      //
+      // The ownership check stays for the normal path: a later dispatch of this vertex owns the slot now.
+      if (!handedToGrace && this.#activeDispatchByVertex.get(vertex.id) === dispatchId) {
         this.#activeDispatchByVertex.delete(vertex.id);
       }
     }
@@ -1752,18 +1762,19 @@ class RunExecution {
     );
   }
 
+  /** Returns true when it handed an in-flight dispatch to the grace window rather than settling it. */
   async #dispatchBounded(
     vertex: PlanVertex,
     firstAttempt: number,
     nodeDeadline: DeadlineScope | undefined,
-  ): Promise<void> {
+  ): Promise<boolean> {
     if (nodeDeadline === undefined) {
       await this.#dispatchLoop(vertex, firstAttempt);
-      return;
+      return false;
     }
     const raced = await nodeDeadline.race(this.#dispatchLoop(vertex, firstAttempt));
     if (raced.outcome !== 'deadline') {
-      return;
+      return false;
     }
     // **A caller abort is NOT this node's bound elapsing, and must not be treated as one.** `race()` returns
     // `{outcome:'deadline'}` for both causes; `classify()` separates them, and the separation is
@@ -1777,7 +1788,7 @@ class RunExecution {
     // unbounded node: `#dispatchLoop` keeps running and may still settle cooperatively, which is what the
     // window is for.
     if (nodeDeadline.classify() === 'caller') {
-      return;
+      return true; // still running, under the grace window — the slot stays claimed
     }
     // The node's OWN bound elapsed with it still in flight.
     await this.#onOutcome(
@@ -1791,8 +1802,11 @@ class RunExecution {
         },
       },
       this.#elapsedMs(),
-      firstAttempt,
+      // The attempt the node actually died on, not the one it started at — matching the grace path. A node
+      // that timed out on attempt 3 reported attempt 1.
+      this.#lastAttemptByVertex.get(vertex.id) ?? firstAttempt,
     );
+    return false;
   }
 
   async #dispatchLoop(vertex: PlanVertex, firstAttempt: number): Promise<void> {

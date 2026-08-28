@@ -336,7 +336,13 @@ implementation.
 
 **The grace window and the forced terminal (`CR-23`)**
 
-8. A never-settling executor produces **exactly one** terminal after the grace window, on cancel.
+8. A never-settling executor produces **exactly one** terminal after the grace window, on cancel —
+   **qualified 2026-08-27 the same way item 9 is, and for the same reason.** The grace window bounds how
+   long the engine waits for the EXECUTOR; it does not bound the store. If `RunStore.persistEvent` or the
+   ADR-0078 delivery tail is itself blocked, the abandoned nodes' `node:failed` and the terminal queue behind
+   it and no terminal follows. What this item guarantees is what §6 claims: the engine stops waiting on the
+   executor, marks the run's outcome and abandons the dispatch within the window. The durable terminal is
+   ADR-0078's to deliver.
 9. The same on a run `timeout_ms`. **Amended 2026-08-27: the "including when the `run:timeout` persist itself
    never settles" half of this item is WITHDRAWN, because it contradicts §6 and cannot be met against
    ADR-0078.** The ordering fix §3 requires is real and landed — `#failure` is set and `abort()` fires before
@@ -346,8 +352,10 @@ implementation.
    it. Measured during the review round. That is exactly the limit §6 already states — "a `RunStore` that
    never settles still hangs the run" — so the acceptance item was asking for more than this ADR claims, and
    the honest correction is to the item, not to the code. The residual is
-   [tracked](../roadmap/deferred-tasks.md). The original text follows. — the
-   ordering fix in §3, and the case a cancel-only reading misses entirely.
+   [tracked](../roadmap/deferred-tasks.md).
+
+   What the item still requires, and what the ordering fix in §3 buys, is that the abort fires and the grace
+   window arms even against a hung store — the case a cancel-only reading misses entirely.
 10. Every abandoned vertex has a `node:failed` carrying §4's fixed message before the run terminal; no
     `node:started` is left without a partner. Asserted with several parallel abandoned nodes, not one.
 11. A forced terminal with no prior `#failure` carries `run_timeout`, never an undefined cause.

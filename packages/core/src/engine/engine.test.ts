@@ -2796,6 +2796,84 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     expect(bounded.settledBeforeGrace).toBe(false); // …and neither is abandoned before the window elapses
   });
 
+  it('a bounded node that settles cooperatively INSIDE the grace window keeps its cost (ADR-0085 §3/§5)', async () => {
+    // **The fence slot must outlive `#dispatchBounded`'s early return.** On a caller abort that method
+    // returns while `#dispatchLoop` is still running — deliberately, so the grace window governs. Releasing
+    // the vertex's `#activeDispatchByVertex` entry in `#dispatch`'s `finally` then un-fenced a node that was
+    // still legitimately live: if its executor settled cooperatively inside the window, `#isLive` refused
+    // its `cost:updated` fold and, worse, its `save_to` write. The window exists to let exactly that land.
+    let release: ((o: NodeOutcome) => void) | undefined;
+    let emitCost: (() => void) | undefined;
+    const BOUNDED = `  id: cooperative-bounded
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: start, type: input }
+    - { id: work, type: agent, agent_ref: ag, prompt_template: 'go', timeout_ms: 60000 }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: work }
+    - { from: work, to: done }`;
+    const host = createInMemoryHost();
+    const engine = new WorkflowEngine({
+      host,
+      executor: {
+        execute: (ctx) =>
+          ctx.vertex.id === 'work'
+            ? new Promise<NodeOutcome>((resolve) => {
+                release = resolve;
+                emitCost = () => {
+                  ctx.emit({
+                    type: 'cost:updated',
+                    nodeId: 'work',
+                    model: 'm',
+                    inputTokens: 0,
+                    outputTokens: 0,
+                    costMicrocents: 4_242,
+                    cumulativeCostMicrocents: 0,
+                  });
+                };
+              })
+            : Promise.resolve({ kind: 'completed', output: ctx.vertex.id }),
+      },
+    });
+    const handle = engine.start({ workflow: workflow(BOUNDED) });
+    const seen: RunEvent[] = [];
+    handle.subscribe((event) => {
+      seen.push(event);
+    });
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        if (event.type === 'run:cancelled' || event.type === 'run:failed') settled = true;
+      }
+    })();
+    for (let i = 0; i < 300 && release === undefined; i += 1) await Promise.resolve();
+    expect(release).toBeDefined();
+
+    engine.cancel(handle.runId); // the node is handed to the grace window, still running
+    for (let i = 0; i < 200; i += 1) await Promise.resolve();
+
+    // The executor honours its signal and settles INSIDE the window, reporting what it spent.
+    emitCost?.();
+    release?.({
+      kind: 'failed',
+      error: { code: 'cancelled', message: 'stopped', retryable: false },
+    });
+    for (let i = 0; i < 400 && !settled; i += 1) {
+      await Promise.resolve();
+      if (host.armedCount() > 0) host.fireTimers();
+      if (host.deadlineCount() > 0) host.fireDeadlines();
+    }
+    await consume;
+
+    // Its cost was NOT refused — the node was live, not a straggler.
+    expect(seen.some((e) => e.type === 'cost:updated' && e.costMicrocents === 4_242)).toBe(true);
+  });
+
   it('a node with no `timeout_ms` arms no node deadline', async () => {
     // The negative control. Without it the test above passes for an implementation that bounds every node at
     // some default — a different product decision nobody made.

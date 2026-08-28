@@ -656,32 +656,12 @@ async function executeGenerativeMedia(
       // a terminal payload. Preserve the bounded reservation in those uncertain paths; only credential resolution
       // above is proven pre-egress and may release it.
       egressStarted = true;
-      const call = provider.generateMedia(
-        deadline === undefined ? req : { ...req, signal: deadline.signal },
-        key,
-      );
-      if (deadline === undefined) {
-        result = await call;
-      } else {
-        const raced = await deadline.race(call);
-        if (raced.outcome === 'deadline') {
-          admission?.settleAtReservedEstimate({ nodeId: node.id });
-          // `classify()` owns the label: a caller cancel that beat the timer stays `cancelled`, which is the
-          // same cancel-wins precedence ADR-0036 gives the run and ADR-0082 §7 gives an attempt.
-          return deadline.classify() === 'caller'
-            ? failed(
-                'cancelled',
-                `agent node '${node.id}': run cancelled during media generation`,
-                false,
-              )
-            : failed(
-                'provider_unavailable',
-                `agent node '${node.id}': the provider did not respond within the ${String(MEDIA_GEN_SUBMIT_TIMEOUT_MS)}ms media-submission deadline`,
-                true,
-              );
-        }
-        result = raced.value;
+      const submitted = await submitGenerativeMedia(provider, req, key, deadline, node.id);
+      if (submitted.kind === 'refused') {
+        admission?.settleAtReservedEstimate({ nodeId: node.id });
+        return submitted.outcome;
       }
+      result = submitted.result;
     } catch (err) {
       admission?.settleAtReservedEstimate({ nodeId: node.id });
       return mapGenerateMediaError(err);
@@ -1037,6 +1017,54 @@ function resolveGenKnobs(
     ...(temperature === undefined ? {} : { temperature }),
     ...(maxTokens === undefined ? {} : { maxTokens }),
     ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+  };
+}
+
+/**
+ * The bounded `generateMedia` submission (`CR-21b`) — the seam call and its race, lifted out of
+ * `executeGenerativeMedia` so that function's budget/egress bookkeeping reads as one story again.
+ *
+ * The scope's merged signal REPLACES `ctx.signal` on the request: `openDeadline` merges the caller's abort
+ * with the deadline's, so a well-behaved adapter stops on either cause, and the race covers one that
+ * honours neither.
+ */
+async function submitGenerativeMedia(
+  provider: NonNullable<FallbackPlanEntry['provider']>,
+  req: MediaGenRequest,
+  key: string,
+  deadline: DeadlineScope | undefined,
+  nodeId: string,
+): Promise<{ kind: 'ok'; result: MediaGenResult } | { kind: 'refused'; outcome: NodeOutcome }> {
+  if (provider.generateMedia === undefined) {
+    throw new Error('generateMedia is absent — the caller checks this before reaching here');
+  }
+  const call = provider.generateMedia(
+    deadline === undefined ? req : { ...req, signal: deadline.signal },
+    key,
+  );
+  if (deadline === undefined) {
+    return { kind: 'ok', result: await call };
+  }
+  const raced = await deadline.race(call);
+  if (raced.outcome !== 'deadline') {
+    return { kind: 'ok', result: raced.value };
+  }
+  // `classify()` owns the label: a caller cancel that beat the timer stays `cancelled`, the same cancel-wins
+  // precedence ADR-0036 gives the run and ADR-0082 §7 gives an attempt.
+  return {
+    kind: 'refused',
+    outcome:
+      deadline.classify() === 'caller'
+        ? failed(
+            'cancelled',
+            `agent node '${nodeId}': run cancelled during media generation`,
+            false,
+          )
+        : failed(
+            'provider_unavailable',
+            `agent node '${nodeId}': the provider did not respond within the ${String(MEDIA_GEN_SUBMIT_TIMEOUT_MS)}ms media-submission deadline`,
+            true,
+          ),
   };
 }
 
