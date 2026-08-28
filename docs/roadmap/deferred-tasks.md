@@ -366,6 +366,31 @@ had never been touched.
   forward-looking:** `W3` writes them correctly from the first commit rather than fixing these. *(low ·
   [commit-style.md](../standards/commit-style.md))*
 
+- [ ] **A cross-process resume RENEWS the node `timeout_ms`, where it does not renew the run cap.** Found by
+  an adversarial pass on this round's own findings, not by the round itself. A node `running` at the crash is
+  absent from the checkpoint, so resume seeds it `pending` and re-runs it; `#nodeDeadlineStartMs`
+  (`engine.ts`) is in-memory and never checkpointed, so `#armNodeDeadline` arms the full authored value. The
+  behaviour is defensible — the prior attempt's work is discarded, so charging its elapsed time would bill
+  the author for nothing, and the run-level cap still bounds the total — and it is now stated in ADR-0085 §2
+  rather than left to be inferred. Open only as a QUESTION for the maintainer: if the bound should be
+  absolute across a resume as well, it needs a durable `nodeDeadlineStartMs` on the checkpoint, which is a
+  spec change (`CheckpointState`) and therefore its own item. *(low · packages/core/src/engine/engine.ts,
+  checkpoint.ts)*
+
+- [ ] **`attemptTimeoutMs` has no upper bound, so `armLongTimer`'s multi-hop path is configuration-reachable.**
+  The PR #85 round asked for an absolute-deadline rewrite of `armLongTimer` with an injected clock; declined,
+  and the reasons matter because two of the first-pass reasons were themselves wrong. It is NOT blocked by the
+  ADR append-only rule — [documentation-style.md](../standards/documentation-style.md) §7 permits amending an
+  Accepted ADR in place with a dated note — and multi-hop is NOT unreachable by construction:
+  `ChainCapabilities.attemptTimeoutMs` is caller-supplied and validated only as finite-and-positive, and
+  `packages/shared/src/deadline.test.ts` already exercises a thirty-day chain. What is true is narrower and
+  sufficient: no shipped surface passes a large value (zero hits for `attemptTimeoutMs` across `apps/**`), the
+  spec's largest documented `timeout_ms` is 24 h — single-hop — and the drift a late hop introduces is always
+  LATE, never early, which is the safe direction for a liveness backstop. Injecting a clock would also break
+  the `SetTimer`→`SetDeadlineTimer` assignability ADR-0085 §9 deliberately relies on. Revisit if a surface
+  ever exposes `attemptTimeoutMs`, or add a `MAX_TIMER_DELAY_MS` ceiling at its validation instead — the
+  cheaper fix. *(low · packages/shared/src/deadline.ts, packages/llm/src/fallback-chain.ts)*
+
 ## Phase 2.6.5 `W1` residuals (PR #83, merged 2026-08-24)
 
 Named rather than left implicit, because every one of them was examined during `W1` and consciously left

@@ -84,6 +84,19 @@ attempt, every backoff, `save_to`, and the money barrier share one remaining bud
 captures `startedAtMs` before the retry loop, so the remaining time is arithmetic on state the engine
 holds.
 
+> **Amended 2026-08-28 — what happens across a cross-process RESUME, which this section never said.** A node
+> that was `running` when the process died is ABSENT from the checkpoint's node states, so the rehydrating
+> engine seeds it `pending` and re-runs it (`checkpoint.ts`). `#nodeDeadlineStartMs` is in-memory and is not
+> checkpointed, so the resumed dispatch arms the FULL authored `timeout_ms` — the node bound is renewed,
+> where `CR-22` made the run cap and the gate deadline re-arm at their REMAINING time precisely so a resume
+> could not renew them. That asymmetry is deliberate and is recorded here because it was not: the run cap
+> bounds wall-clock that genuinely continued across the crash, and the gate's `expiresAt` is a durable
+> instant, but the node's prior attempt produced NOTHING that survives — charging its elapsed time against
+> the fresh attempt would bill the author's budget for work that was thrown away, and a node that crashed at
+> 90% of its bound could never complete afterwards. The run-level `timeout_ms` still caps the total, so the
+> renewal cannot run unbounded. Left as it ships; if the other reading is wanted it needs a checkpoint field
+> and is [tracked](../roadmap/deferred-tasks.md), not silently changed.
+
 > **Amended 2026-08-28, with §8 item 5:** `save_to` is listed in error. The schema puts it on the `output`
 > node only and `timeout_ms` on `agent`/`human_gate` only, so no authored node carries both. The clause is
 > harmless — it widens the bound to something unreachable rather than narrowing it — but it is not true, and
