@@ -72,24 +72,38 @@ function manualTimer(): {
 /** A promise that never settles — an uncooperative provider, which is the case that matters. */
 const NEVER = new Promise<string>(() => undefined);
 describe('openDeadline (ADR-0082 §5-§7, ADR-0085 §9)', () => {
-  it('clamps a delay above 2^31-1, because Node inverts it into an immediate fire', () => {
+  it('CHAINS a delay above 2^31-1, because Node inverts it into an immediate fire', async () => {
     // **A governance control turning into its own bypass.** `positiveInt` has no upper bound, so an author
     // may write a thirty-day `human_gate` `timeout_ms`. Node's `setTimeout` emits `TimeoutOverflowWarning`
     // and silently sets the duration to 1 ms — measured directly: `setTimeout(fn, 2147483648)` fires in
     // ~1 ms. With `timeout_action: 'approve'` that gate auto-approves on the next tick instead of waiting a
     // month. Clamped at the seam rather than per host, and clamped rather than refused at parse: the
-    // authored schema is a published contract, and a bound of 24.86 days is one an author would recognise
-    // where a 1 ms one is not.
+    // authored schema is a published contract. And CHAINED rather than merely clamped: a bare clamp turned
+    // thirty days into 24.86, firing 5.1 days early — better than 1 ms and still not the bound the author
+    // wrote, with a governance gate auto-approving days before anyone expected it and nothing saying so.
     const armed: number[] = [];
-    const scope = openDeadline(
-      30 * 24 * 60 * 60 * 1000, // thirty days
-      controller,
-      (ms) => {
-        armed.push(ms);
-        return () => undefined;
-      },
-    );
-    expect(armed).toEqual([MAX_TIMER_DELAY_MS]);
+    let fired = false;
+    const fires: (() => void)[] = [];
+    const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+    const scope = openDeadline(THIRTY_DAYS, controller, (ms, fire) => {
+      armed.push(ms);
+      fires.push(fire);
+      return () => undefined;
+    });
+    void scope.race(NEVER).then(() => {
+      fired = true;
+    });
+
+    // Hop by hop until the chain is exhausted — each within the host's ceiling, the remainder carried.
+    for (let i = 0; i < 40 && armed.length === fires.length && !fired; i += 1) {
+      const next = fires.at(-1);
+      if (armed.reduce((a, b) => a + b, 0) >= THIRTY_DAYS) break;
+      next?.();
+      await Promise.resolve();
+    }
+    expect(armed.every((ms) => ms <= MAX_TIMER_DELAY_MS)).toBe(true); // every hop is honourable…
+    expect(armed.reduce((a, b) => a + b, 0)).toBe(THIRTY_DAYS); // …and they sum to what was authored
+    expect(armed.length).toBeGreaterThan(1); // it really did chain
     scope.dispose();
 
     // …and the helper itself, on both ends: a negative never reaches a host timer either.

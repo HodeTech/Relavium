@@ -2506,6 +2506,70 @@ describe('FallbackChain — the grammar and the deadline are wired', () => {
     expect(pending.size).toBe(0); // …and disarmed on the way out
   });
 
+  it('a cancel during credential resolution produces NO provider call — generate and stream', async () => {
+    // `#resolveKey` is I/O (a keychain read today, a network one in Phase 2), and a cancel landing inside it
+    // was invisible: the provider was invoked, and only the deadline opened AFTERWARDS latched the aborted
+    // caller — so `race()` reported `cancelled` for a request that had nonetheless gone out. A cancelled run
+    // must not produce provider traffic, let alone a charge.
+    for (const arm of ['generate', 'stream'] as const) {
+      let calls = 0;
+      let releaseKey: (() => void) | undefined;
+      let aborted = false;
+      const listeners = new Set<() => void>();
+      const signal = {
+        get aborted() {
+          return aborted;
+        },
+        addEventListener: (_t: 'abort', l: () => void) => listeners.add(l),
+        removeEventListener: (_t: 'abort', l: () => void) => listeners.delete(l),
+      };
+      const provider = makeProvider({
+        id: 'anthropic',
+        generate: () => {
+          calls += 1;
+          return Promise.resolve({
+            content: [{ type: 'text', text: 'sent' }],
+            stopReason: 'stop' as const,
+            usage: { inputTokens: 1, outputTokens: 1 },
+            model: 'claude-opus-4-8',
+            provider: 'anthropic' as const,
+          });
+        },
+        stream: () => {
+          calls += 1;
+          return streamFrom([{ type: 'text_delta', text: 'sent' }, STOP_CHUNK]);
+        },
+      });
+      const { options } = makeOptions();
+      const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], {
+        ...options,
+        // The credential resolves only when the test releases it — the window under examination.
+        keyFor: () =>
+          new Promise<string>((resolve) => {
+            releaseKey = () => resolve('k');
+          }),
+      });
+
+      const req = { ...userReq, signal };
+      const running =
+        arm === 'generate'
+          ? chain.generate(req).then(
+              () => 'ok',
+              () => 'err',
+            )
+          : collect(chain.stream(req)).then(() => 'ok');
+      for (let i = 0; i < 200 && releaseKey === undefined; i += 1) await Promise.resolve();
+      expect(releaseKey).toBeDefined();
+
+      aborted = true; // the caller cancels while the key is still resolving
+      for (const l of [...listeners]) l();
+      releaseKey?.();
+      await running;
+
+      expect(calls, `${arm}: the provider was not called`).toBe(0);
+    }
+  });
+
   it('disarms the deadline on the SUCCESS path too — both `stream` and `generate` (ADR-0082 §12.13)', async () => {
     // §12.13 says "timer cleanup proven with a fake clock on every path, **including success**". It was
     // proven for `openDeadline` in isolation (`attempt-deadline.test.ts`) and, at chain level, only on

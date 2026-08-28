@@ -60,7 +60,7 @@ import {
   type UnresolvedEffect,
   openDeadline,
   type DeadlineScope,
-  clampTimerDelayMs,
+  armLongTimer,
 } from '@relavium/shared';
 import type { EndpointKind, MediaJobStatus, PricingOverlay, ProviderId } from '@relavium/llm';
 
@@ -790,9 +790,13 @@ class RunExecution {
     // half had this clamp from the Step 3 review and the run half twenty-five lines away did not; same
     // exposure, same one-line fix, simply not carried across.
     const remainingMs = Math.max(0, Math.min(timeoutMs, timeoutMs - this.#elapsedMs()));
-    this.#runTimeoutDisarm = this.#host.setTimer(clampTimerDelayMs(remainingMs), () => {
-      void this.#onRunTimeout(timeoutMs);
-    });
+    this.#runTimeoutDisarm = armLongTimer(
+      remainingMs,
+      () => {
+        void this.#onRunTimeout(timeoutMs);
+      },
+      (ms, fire) => this.#host.setTimer(ms, fire, 'work'),
+    );
   }
 
   /**
@@ -844,9 +848,13 @@ class RunExecution {
     // resolved inline: the timeout then travels the one `#onGateTimeout` path, so a past-deadline resume and
     // a live expiry produce the identical events in the identical order.
     const action = gate.timeoutAction;
-    const disarm = this.#host.setTimer(clampTimerDelayMs(remainingMs), () => {
-      void this.#onGateTimeout(gate.gateId, gate.nodeId, action);
-    });
+    const disarm = armLongTimer(
+      remainingMs,
+      () => {
+        void this.#onGateTimeout(gate.gateId, gate.nodeId, action);
+      },
+      (ms, fire) => this.#host.setTimer(ms, fire, 'work'),
+    );
     this.#gateTimers.set(gate.gateId, disarm);
   }
 
@@ -1718,13 +1726,13 @@ class RunExecution {
     const remainingMs = Math.max(0, timeoutMs - (nowMs - startedAtMs));
     this.#nodeDeadlineDisarm.set(
       vertex.id,
-      this.#host.setTimer(
-        clampTimerDelayMs(remainingMs),
+      armLongTimer(
+        remainingMs,
         () => {
           void this.#onNodeDeadline(vertex, timeoutMs);
         },
         // A backstop over work already in flight — never something the run is parked ON.
-        'deadline',
+        (ms, fire) => this.#host.setTimer(ms, fire, 'deadline'),
       ),
     );
   }
@@ -2242,9 +2250,13 @@ class RunExecution {
         ? undefined
         : new Date(Date.parse(this.#host.clock.now()) + gate.timeoutMs).toISOString());
     if (gate.timeoutMs !== undefined && effectiveAction !== undefined) {
-      const disarm = this.#host.setTimer(clampTimerDelayMs(gate.timeoutMs), () => {
-        void this.#onGateTimeout(gateId, vertex.id, effectiveAction);
-      });
+      const disarm = armLongTimer(
+        gate.timeoutMs,
+        () => {
+          void this.#onGateTimeout(gateId, vertex.id, effectiveAction);
+        },
+        (ms, fire) => this.#host.setTimer(ms, fire, 'work'),
+      );
       this.#gateTimers.set(gateId, disarm);
     }
     if (gate.spentMicrocents !== undefined && gate.limitMicrocents !== undefined) {

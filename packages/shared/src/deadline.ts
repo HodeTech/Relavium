@@ -63,6 +63,41 @@ export function clampTimerDelayMs(ms: number): number {
 }
 
 /**
+ * Arm a one-shot timer for ANY delay, by CHAINING hops of at most {@link MAX_TIMER_DELAY_MS}.
+ *
+ * **Clamping alone was a silent semantic change, and that is why this exists.** A bare clamp turns a
+ * thirty-day authored `timeout_ms` into one that fires 5.1 days early — better than Node's own 1 ms
+ * inversion, and still not the bound the author wrote. A governance gate with `timeout_action: 'approve'`
+ * would auto-approve five days before anyone expected it, and nothing would say so.
+ *
+ * Chaining keeps the total honest: each hop is within the host's 32-bit ceiling, and the remainder carries
+ * to the next. The returned disarm cancels whichever hop is currently armed, so it stays a one-shot timer
+ * from the caller's side.
+ *
+ * Rejecting long timeouts at parse was the alternative and was declined: the authored schema is `positiveInt`
+ * with no upper bound and is a published contract, so narrowing it would refuse workflows that parse today.
+ */
+export function armLongTimer(ms: number, fire: () => void, setTimer: SetDeadlineTimer): () => void {
+  let remaining = Math.max(0, ms);
+  let disarmHop: (() => void) | undefined;
+  let disarmed = false;
+  const hop = (): void => {
+    if (disarmed) return;
+    if (remaining <= MAX_TIMER_DELAY_MS) {
+      disarmHop = setTimer(remaining, fire);
+      return;
+    }
+    remaining -= MAX_TIMER_DELAY_MS;
+    disarmHop = setTimer(MAX_TIMER_DELAY_MS, hop);
+  };
+  hop();
+  return () => {
+    disarmed = true;
+    disarmHop?.();
+  };
+}
+
+/**
  * A controller the host supplies — a platform-free seam has no ambient `AbortController` (the strict base's
  * `lib: ["ES2023"]` does not carry one). A native `AbortController` structurally satisfies it, so a real
  * surface injects `() => new AbortController()` and its `signal` is a genuine `AbortSignal` that `fetch`
@@ -149,7 +184,7 @@ export function openDeadline(
     for (const wake of waiters) wake();
     controller.abort();
   };
-  const disarm = setTimer(clampTimerDelayMs(timeoutMs), trip);
+  const disarm = armLongTimer(timeoutMs, trip, setTimer);
 
   const onCallerAbort = (): void => {
     callerCancelled = true;

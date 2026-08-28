@@ -295,6 +295,19 @@ async function pollMediaJobThroughDeps(
       }),
     };
   }
+  // **Re-check the caller AFTER credential resolution, BEFORE the seam call** — the same window the chain's
+  // two arms had. `keyFor` is I/O, so a cancel landing inside it was invisible here and the poll went out
+  // anyway. A cancelled run must not produce provider traffic.
+  if (signal?.aborted === true) {
+    return {
+      state: 'failed',
+      error: makeLlmError({
+        provider: job.provider,
+        kind: 'cancelled',
+        message: `media job poll cancelled for provider ${job.provider}`,
+      }),
+    };
+  }
   return provider.pollMediaJob(job.jobId, key, signal);
 }
 
