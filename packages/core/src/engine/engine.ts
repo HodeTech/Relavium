@@ -3618,6 +3618,23 @@ class RunExecution {
   }
 
   /**
+   * The typed failure both `save_to` fence paths return when the run stopped waiting on this dispatch
+   * (ADR-0085 §5, fence point 3).
+   *
+   * `cancelled` and `retryable: false` deliberately: the cutoff that trips this fence is a cancel or an
+   * elapsed grace window, and cancel-wins precedence means `#settleFailed` leaves an already-recorded
+   * `#failure` alone — so this classifies the NODE without ever overwriting the run's real cause. Message
+   * is path-free and byte-free (I3).
+   */
+  #saveToAbandoned(): NodeFailure {
+    return {
+      code: 'cancelled',
+      message: 'the run stopped waiting on this dispatch before `save_to` was written',
+      retryable: false,
+    };
+  }
+
+  /**
    * Apply an `output` node's `save_to` (1.AF/D16, ADR-0044 §2) once its executor has `completed`: returns
    * the outcome unchanged when there is nothing to write (not an output node, no `save_to`, or a
    * non-`completed` outcome), else writes the produced media and returns the outcome on success or a typed
@@ -3646,8 +3663,15 @@ class RunExecution {
     // template, de-inlines media and consults the store before it calls `mediaWrite`, and every one of those
     // is an await the cutoff can land inside. Guarding only the entry left a TOCTOU whose losing side is a
     // file on the user's disk.
+    //
+    // **Both fence paths return a FAILURE, not the completed outcome.** Returning `outcome` unchanged was
+    // the first version and it defeated the fence it was part of: `#isLive` goes false the instant
+    // `#onGraceElapsed` clears the dispatch map, which is BEFORE `#settled` is set and before the grace loop
+    // reaches this vertex — so an output node still `running` at that moment passed `#onOutcome`'s status
+    // guard and persisted `node:completed` for a deliverable that was never written. A `save_to` is a real
+    // deliverable ({@link #performSaveTo}), so an unwritten one is a failed node, not a completed one.
     if (!this.#isLive(vertex.id, dispatchId)) {
-      return outcome;
+      return { kind: 'failed', error: this.#saveToAbandoned() };
     }
     const failure = await this.#performSaveTo(config.node.save_to, outcome.output, () =>
       this.#isLive(vertex.id, dispatchId),
@@ -3711,7 +3735,10 @@ class RunExecution {
       // that honours its contract but treats the abort signal as advisory would otherwise write a file for a
       // run that had already reported its terminal.
       if (!stillOurs()) {
-        return undefined; // the run stopped waiting on this dispatch; the write is not ours to make
+        // A FAILURE, not `undefined`. `undefined` is this method's success signal, so returning it here
+        // told `#applySaveTo` the deliverable had been written — the same defect as the entry fence above,
+        // one await later.
+        return this.#saveToAbandoned();
       }
       await write(relativePath, bytes, this.#abort.signal);
       return undefined;

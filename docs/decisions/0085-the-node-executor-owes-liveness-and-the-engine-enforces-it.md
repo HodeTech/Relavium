@@ -389,7 +389,7 @@ implementation.
     unconditional, the delivery is fenced.** A charge the provider took is recorded either way
     ([ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §5); what the fence stops is
     re-announcing a run total to subscribers after the terminal published one.
-16. A stale dispatch's `save_to` does not write.
+16. A stale dispatch's `save_to` does not write. **Extended 2026-08-28: it must also not report a deliverable it did not write.** Both fence paths originally returned the unchanged `completed` outcome, which told `#onOutcome` the write had happened. Measured under an ASYNC `RunStore` — the seam's stated reality, and the case `InMemoryRunStore`'s synchronous resolve hides — an output node abandoned by the grace window then reached `#onOutcome` while its status was still `running` and ended with NO node terminal in the log at all, the omission §4 forbids. Both paths now return a typed `cancelled` failure, so the node is failed rather than silently dropped or falsely completed.
 17. A stale `prepare` is refused; a stale `settle` and a stale `discard` are **admitted** — the paired test
     that stops a fix for one from re-creating `PR83-04`'s stranded row.
 18. A ledger write for an already-incurred charge completes when stale; the run-total fold does not. **Corrected 2026-08-28 with item 15 — the fold DOES complete**, for the reason recorded there. The half of this item that survives is the one it shares with the money port's per-method table: a stale `record` is admitted, because refusing it is how the charge goes missing.

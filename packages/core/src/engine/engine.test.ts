@@ -818,6 +818,109 @@ describe('WorkflowEngine — output-node save_to (1.AF/D16, ADR-0044 §2)', () =
     expect(terminalsIn(events)).toHaveLength(1);
   });
 
+  it('an output node abandoned by the grace window FAILS — it never reports a deliverable it did not write', async () => {
+    // **The fence returned the completed outcome, and that defeated the fence.** `#isLive` goes false the
+    // instant `#onGraceElapsed` clears the dispatch map — which is BEFORE `#settled` is set and before the
+    // grace loop reaches this vertex. An output node still `running` at that moment therefore passed
+    // `#onOutcome`'s terminal-status guard and persisted `node:completed` for a `save_to` that was never
+    // written: the durable log claiming a deliverable that does not exist on disk.
+    //
+    // The window needs TWO running nodes and that is the whole construction. With one, the grace loop calls
+    // `#settleFailed` on it FIRST, and that sets `status = 'failed'` synchronously — the guard catches the
+    // straggler and nothing is reproduced. Here the loop awaits `a`'s settle (insertion order: `a` before
+    // `out`), and `out`'s executor resolves inside that await.
+    const PARALLEL_SAVE_TO = `  id: saveto-parallel
+  nodes:
+    - { id: start, type: input }
+    - { id: a, type: transform, transform: 'g' }
+    - { id: out, type: output, save_to: 'media/{{ run.id }}/image.png' }
+  edges:
+    - { from: start, to: a }
+    - { from: start, to: out }`;
+    const { store: mediaStore } = stubMediaStore();
+    const { write, writes } = stubMediaWrite();
+    // **An ASYNC store, and it is the reproduction — not a convenience.** `InMemoryRunStore` resolves
+    // synchronously, so `#settleFailed(a)` finishes inside the grace loop before `out`'s completion chain
+    // reaches `#onOutcome`, and the vertex-status guard closes the window by accident. A real store (1.R
+    // SQLite, the Phase-2 cloud one) does not — the seam exists precisely so an async store plugs in — and
+    // under one the abandoned `out` reaches `#onOutcome` while its status is still `running`. Delegated
+    // method-by-method, never `{...store}`: the store is a class instance and a spread drops its prototype.
+    const inner = new InMemoryRunStore();
+    const slowStore: RunStore = {
+      resolveWorkflowId: (slug) => inner.resolveWorkflowId(slug),
+      listInterruptedRuns: () => inner.listInterruptedRuns(),
+      readWorkflowSnapshot: (runId) => inner.readWorkflowSnapshot(runId),
+      persistEvent: async (event, ctx) => {
+        for (let hop = 0; hop < 8; hop += 1) await Promise.resolve();
+        return inner.persistEvent(event, ctx);
+      },
+    };
+    const host = createInMemoryHost({ store: slowStore, mediaStore, mediaWrite: write });
+    let releaseOut: (() => void) | undefined;
+    // `node:started` is NOT the signal to cancel on: `#step` emits it, then re-reads the `#noNewDispatch`
+    // latch before calling `#dispatch`, so a cancel landing in between leaves `out` started-but-never-
+    // dispatched and its handler is never invoked. Measured — the first version of this test cancelled on
+    // the third `node:started` and reproduced nothing at all.
+    let outInFlight = false;
+    const outSettled = new Promise<void>((resolve) => {
+      releaseOut = resolve;
+    });
+    const engine = engineWith(
+      {
+        a: () => new Promise<NodeOutcome>(() => undefined), // never settles — it is what the grace loop awaits
+        out: () => {
+          outInFlight = true;
+          return outSettled.then(() => ({ kind: 'completed', output: { image: MEDIA_PART } }));
+        },
+      },
+      host,
+    );
+    const handle = engine.start({ workflow: workflow(PARALLEL_SAVE_TO) });
+    const events: RunEvent[] = [];
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        events.push(event);
+        if (event.type === 'run:cancelled' || event.type === 'run:failed') settled = true;
+      }
+    })();
+
+    for (let i = 0; i < 400 && !outInFlight; i += 1) {
+      await Promise.resolve();
+    }
+    expect(outInFlight).toBe(true); // `out`'s executor is genuinely running before anything is cancelled
+    engine.cancel(handle.runId);
+    for (let i = 0; i < 400 && host.deadlineCount() === 0; i += 1) await Promise.resolve();
+    expect(host.deadlineCount()).toBe(1); // the grace window is armed
+
+    // **The two lines that make the window, and their order is the test.** `fireDeadlines()` runs
+    // `#onGraceElapsed` up to its first `await` — the dispatch map is now clear, `#settled` is still false,
+    // and `out`'s status is still `running` because the loop is parked on `a`'s settle. Releasing `out`
+    // HERE puts its whole chain (`#applySaveTo` → `#runAttempt` → `#dispatchLoop` → `#onOutcome`, pure
+    // microtasks) inside that park, ahead of `#settleFailed(a)` — which has to wait on the consumer and the
+    // delivery tail. Release any later (at `a`'s `node:failed`, say) and the grace loop reaches `out` first,
+    // its synchronous `status = 'failed'` closes `#onOutcome`'s guard, and the defect hides behind it.
+    host.fireDeadlines();
+    releaseOut?.();
+    for (let i = 0; i < 800 && !settled; i += 1) {
+      await Promise.resolve();
+      if (host.armedCount() > 0) host.fireTimers();
+    }
+    await consume;
+
+    // **What the mutation actually produces, measured rather than assumed.** Reverting the entry fence to
+    // `return outcome` gives `out` NO node terminal at all — the run publishes `run:cancelled` with `out`
+    // missing from the log entirely, which is the omission ADR-0085 §4 exists to forbid. (The PR review
+    // predicted a persisted `node:completed`; with this microtask alignment the run terminal wins the
+    // delivery tail instead, and a different alignment could produce either. Both are the same defect:
+    // `#applySaveTo` returning `completed` from a fence path asserts a deliverable that was never written.)
+    // The three assertions below hold under both outcomes.
+    expect(events.some((e) => e.type === 'node:completed' && e.nodeId === 'out')).toBe(false);
+    expect(writes).toHaveLength(0);
+    expect(events.some((e) => e.type === 'node:failed' && e.nodeId === 'out')).toBe(true);
+    expect(terminalsIn(events)).toHaveLength(1);
+  });
+
   it('does not invoke save_to for an output node WITHOUT a save_to field (unchanged capture path)', async () => {
     const { store: mediaStore } = stubMediaStore();
     const { write, writes } = stubMediaWrite();
