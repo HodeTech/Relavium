@@ -2,7 +2,7 @@
  * The two deadline cases that genuinely need a platform type, kept in this package for exactly that reason.
  *
  * `openDeadline` lives in `@relavium/shared` ([ADR-0085](../../../docs/decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §9)
- * and the other eleven cases live beside it in `packages/shared/src/deadline.test.ts`, where they are
+ * and the other cases live beside it in `packages/shared/src/deadline.test.ts`, where they are
  * MEASURED against the code they exercise. These two cannot follow: proving that an abandoned step is
  * discarded HANDLED requires `process.on('unhandledRejection')`, and `@relavium/shared` sets `types: []` so
  * that a stray `process`/`Buffer` is a compile error — a boundary worth more than file adjacency.

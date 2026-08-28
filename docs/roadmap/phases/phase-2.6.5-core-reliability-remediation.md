@@ -1219,11 +1219,14 @@ were reverted, and every one of them was confirmed to fail line-precisely.
 
 **Two things this register does not claim.**
 
-The `cost:updated` and `save_to` fence points are **not** independently proven: removing the `cost:updated`
-guard leaves the straggler test green, because by then the run has settled and the bus is closed, so
-`#settled` is what carries it. The dispatch-id comparison is defensive on today's scheduler — `#step` has the
-only `#dispatch` call site and claims only `pending` vertices — and the test says so rather than implying
-coverage. The mutation that would close it is named there.
+**One thing this register got WRONG and now states correctly.** An earlier version said the `cost:updated`
+fence was defensive — *"removing the guard leaves the straggler test green, because by then the run has
+settled and the bus is closed, so `#settled` is what carries it"*. The bus is **not** closed to subscribers.
+A live `handle.subscribe()` observer receives a stale `cost:updated` of 999 999 after the terminal with the
+guard removed; the old test only looked green because its `for await` capture had already stopped. The fence
+is load-bearing, the test now uses a subscriber, and it is break-verified. Recording a gap that was not real
+is the same failure as missing one that is — it told the next reader to trust something that was doing
+nothing, and to distrust something that was doing the work.
 
 **Five gaps the Step 5 review closed, and one it could only correct.** ADR-0085's §1 obligation had never
 been written at the seam it names; §2's "absolute per node" was absolute per DISPATCH, so an approved budget

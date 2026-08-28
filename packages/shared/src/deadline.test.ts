@@ -12,7 +12,7 @@
  * 90% floor that used to guard it (`vitest.config.ts`, `packages/llm/src/**`) was left holding a 35-line
  * re-export shell scoring a perfect 100. The enforced branch number went UP while the guarantee went away —
  * and the pre-move report's "uncovered line 102" was `onCallerAbort`'s waiter wake, exactly the branch that
- * turned out to be untested. So the eleven cases that need no platform type live here, where they are
+ * turned out to be untested. So the cases that need no platform type live here, where they are
  * measured against the code they exercise; the two that genuinely need `process` stay in
  * `@relavium/llm/src/attempt-deadline.test.ts` and say so.
  */

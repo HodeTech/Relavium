@@ -2108,6 +2108,91 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     expect(armedWork).toEqual([15_000]);
   });
 
+  it('the run-timeout abort happens BEFORE its durable write, so a hung store cannot defeat it (ADR-0085 §3)', async () => {
+    // `#onRunTimeout` awaited its `run:timeout` persist and THEN aborted, so a store that never settles meant
+    // the abort never fired and the grace window never armed — the rescue path defeated by the very stall it
+    // exists to rescue. The fix inverts the order, and nothing held it: reverting left all 1355 tests green.
+    //
+    // What this asserts is exactly what the fix buys and no more: the window ARMS. It cannot assert a
+    // terminal, because ADR-0078 serialises every emit behind one delivery tail — which is why ADR-0085
+    // §8.9's "including when the persist never settles" half is withdrawn against §6.
+    const TIMED = `  id: hung-store
+  timeout_ms: 1000
+  nodes:
+    - { id: start, type: input }
+    - { id: work, type: transform, transform: 'w' }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: work }
+    - { from: work, to: done }`;
+    const base = createInMemoryHost();
+    let hangNext = false;
+    const host: typeof base = {
+      ...base,
+      // **Delegated method-by-method, NOT spread.** `base.store` is a class instance, so `{...store}` copies
+      // own properties and drops everything on the prototype — the store would silently lose
+      // `resolveWorkflowId` and `listInterruptedRuns` and the run would die before it ever armed its cap.
+      // (The same hazard a review flagged in `#fenceEffects`; it is easy to hit, which is the point.)
+      store: {
+        resolveWorkflowId: (slug) => base.store.resolveWorkflowId(slug),
+        listInterruptedRuns: () => base.store.listInterruptedRuns(),
+        readWorkflowSnapshot: (runId) => base.store.readWorkflowSnapshot(runId),
+        persistEvent: (event, ctx) =>
+          hangNext && event.type === 'run:timeout'
+            ? new Promise<never>(() => undefined) // the store never settles on THIS write
+            : base.store.persistEvent(event, ctx),
+      },
+    };
+    const engine = engineWith({ work: () => new Promise<NodeOutcome>(() => undefined) }, host);
+    const handle = engine.start({ workflow: workflow(TIMED) });
+    // The stream MUST be consumed — the bus applies consumer backpressure, so an unread handle never lets
+    // the run reach its first node. It will not complete here, which is exactly §8.9's withdrawal.
+    void (async () => {
+      for await (const _ of handle.events) void _;
+    })();
+    for (let i = 0; i < 400 && base.armedCount() === 0; i += 1) await Promise.resolve();
+    expect(base.armedCount()).toBeGreaterThan(0); // the run cap is armed — the premise
+    hangNext = true;
+    base.fireTimers(); // the run cap elapses; its durable write will hang
+
+    for (let i = 0; i < 300 && base.deadlineCount() === 0; i += 1) await Promise.resolve();
+    // The grace window IS armed even though the diagnostic write is still pending.
+    expect(base.deadlineCount()).toBe(1);
+  });
+
+  it('the three liveness constants are the values that actually arrive', async () => {
+    // The manual timer controller DISCARDS `ms`, so a test that only fires a timer proves nothing about its
+    // duration — the hollow-constant shape this phase has now hit three times. Measured: changing
+    // GRACE_WINDOW_MS to 77 777, MEDIA_GEN_SUBMIT_TIMEOUT_MS to 3 333 and pollCallTimeoutMs to 300 000 all
+    // left the suite green. This pins the two the engine arms directly; the media pair is pinned at their
+    // own call sites.
+    const base = createInMemoryHost();
+    const armed: number[] = [];
+    const host: typeof base = {
+      ...base,
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'deadline') armed.push(ms);
+        return base.setTimer(ms, onFire, kind);
+      },
+    };
+    const engine = engineWith({ work: () => new Promise<NodeOutcome>(() => undefined) }, host);
+    const handle = engine.start({ workflow: workflow(SEQUENTIAL) });
+    for (let i = 0; i < 200 && !armed.length; i += 1) {
+      await Promise.resolve();
+      if (armed.length === 0) engine.cancel(handle.runId);
+    }
+    // The GRACE window, at its stated 10 s — not "some timer was armed". A LITERAL, deliberately:
+    // `GRACE_WINDOW_MS` is module-private, and importing it would make the assertion compare the constant
+    // with itself. The literal is what pins it — change the constant and this reddens.
+    expect(armed).toEqual([10_000]);
+    host.fireDeadlines();
+    for (let i = 0; i < 400; i += 1) {
+      await Promise.resolve();
+      if (base.armedCount() > 0) base.fireTimers();
+    }
+    for await (const _ of handle.events) void _;
+  });
+
   it('a never-settling executor still produces exactly one terminal (ADR-0085 §3)', async () => {
     // The defect ADR-0036's Consequences called "structurally impossible". `NodeExecutor.execute` returns an
     // arbitrary promise, `requestCancel()` only aborts a signal, and `#step` settles when `#countRunning()`
@@ -2219,18 +2304,18 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     expect(events.at(-1)?.type).toBe('run:failed');
   });
 
-  it('a straggler that wakes after the grace window changes nothing (ADR-0085 §5)', async () => {
-    // **§5 names five mutation points; three of them were unguarded and none was tested.** `#onOutcome` was
-    // already latched on `#settled`, but the `cost:updated` fold, `save_to` and the effect journal were not
-    // — and `save_to` is the one that writes BYTES TO THE USER'S FILESYSTEM, on the executor's return,
-    // before `#onOutcome`'s latch is ever reached.
+  it("a straggler's cost never reaches a live SUBSCRIBER after the terminal (ADR-0085 §5)", async () => {
+    // **This test replaced one whose recorded reasoning was FALSE.** The first version captured events with
+    // `for await` and concluded the `cost:updated` fence was defensive — "the run has settled and the bus is
+    // closed, so `#settled` carries it". A review disproved it with a live `subscribe()` observer: the bus is
+    // NOT closed to subscribers, and a stale `cost:updated` of 999 999 DOES arrive after the terminal. The
+    // old test only looked green because its `for await` capture had already stopped.
     //
-    // The straggler here is the shape the grace window exists for: an executor that ignored its signal,
-    // was abandoned, and then settles anyway. Its cost must not move a total the terminal already reported,
-    // and its effect must not be prepared.
+    // So the fence at the `cost:updated` fold is load-bearing, not defence in depth, and this is what holds
+    // it: a straggler from an abandoned dispatch may not push a number at an observer after that observer
+    // has been told the run's total.
     let releaseNode: ((outcome: NodeOutcome) => void) | undefined;
     let costEmit: ((n: number) => void) | undefined;
-    let prepareRefused = false;
     const host = createInMemoryHost();
     const engine = new WorkflowEngine({
       host,
@@ -2251,21 +2336,16 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
             };
           }),
       },
-      effectJournal: () => ({
-        prepare: () => {
-          prepareRefused = false;
-          return Promise.resolve({ outcome: 'proceed' as const });
-        },
-        settle: () => Promise.resolve(),
-        discard: () => Promise.resolve(),
-      }),
     });
     const handle = engine.start({ workflow: workflow(SEQUENTIAL) });
-    const events: RunEvent[] = [];
+    // A LIVE observer, not a `for await` capture — the distinction the old test got wrong.
+    const seen: RunEvent[] = [];
+    handle.subscribe((event) => {
+      seen.push(event);
+    });
     let settled = false;
     const consume = (async (): Promise<void> => {
       for await (const event of handle.events) {
-        events.push(event);
         if (event.type === 'run:cancelled' || event.type === 'run:failed') settled = true;
       }
     })();
@@ -2274,34 +2354,23 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
 
     engine.cancel(handle.runId);
     for (let i = 0; i < 200 && host.deadlineCount() === 0; i += 1) await Promise.resolve();
-    host.fireDeadlines(); // the grace window elapses; the node is abandoned
+    host.fireDeadlines();
     for (let i = 0; i < 400 && !settled; i += 1) {
       await Promise.resolve();
       if (host.armedCount() > 0) host.fireTimers();
     }
     await consume;
-    const terminalCost = events.find((e) => e.type === 'run:cancelled');
-    const totalAtTerminal =
-      terminalCost?.type === 'run:cancelled' ? (terminalCost.cumulativeCostMicrocents ?? 0) : -1;
+    const terminalIndex = seen.findIndex((e) => e.type === 'run:cancelled');
+    expect(terminalIndex).toBeGreaterThanOrEqual(0);
 
-    // …and NOW the straggler wakes up and tries to spend.
+    // …and NOW the abandoned executor wakes and tries to spend.
     costEmit?.(999_999);
     releaseNode?.({ kind: 'completed', output: 'too late' });
-    for (let i = 0; i < 100; i += 1) await Promise.resolve();
+    for (let i = 0; i < 200; i += 1) await Promise.resolve();
 
-    // No `cost:updated` reached a subscriber after the terminal, and the total the terminal published stands.
-    const costAfterTerminal = events
-      .slice(events.findIndex((e) => e.type === 'run:cancelled'))
-      .filter((e) => e.type === 'cost:updated');
-    expect(costAfterTerminal).toHaveLength(0);
-    expect(totalAtTerminal).not.toBe(999_999);
-    // The run still has exactly one terminal — the late `completed` changed nothing.
-    expect(
-      events.filter(
-        (e) => e.type === 'run:cancelled' || e.type === 'run:failed' || e.type === 'run:completed',
-      ),
-    ).toHaveLength(1);
-    expect(prepareRefused).toBe(false); // the journal was never reached by the straggler
+    // Nothing after the terminal, and certainly not that number.
+    expect(seen.slice(terminalIndex + 1)).toEqual([]);
+    expect(seen.some((e) => e.type === 'cost:updated' && e.costMicrocents === 999_999)).toBe(false);
   });
 
   it('the effect fence refuses `prepare` but never `settle` or `discard` (ADR-0085 §5)', async () => {
@@ -2310,19 +2379,24 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     // an effect that actually completed. `prepare` is refused because the effect has not left the process;
     // `settle` and `discard` are admitted because it has, and refusing a receipt strands the row.
     const calls: string[] = [];
+    const livePrepare: { slot: number; toolId: string }[] = [];
     let captured: NodeExecContext['effects'];
     const host = createInMemoryHost();
     const engine = new WorkflowEngine({
       host,
       executor: {
-        execute: (ctx) => {
+        execute: async (ctx) => {
           captured = ctx.effects;
+          // A LIVE prepare, while the dispatch is unquestionably current — the pass-through this wrapper
+          // must not break.
+          await ctx.effects?.prepare(7, 'run_command', 3, {});
           return new Promise<NodeOutcome>(() => undefined); // never settles — so it gets abandoned
         },
       },
       effectJournal: () => ({
-        prepare: () => {
+        prepare: (slot, toolId) => {
           calls.push('prepare');
+          livePrepare.push({ slot, toolId });
           return Promise.resolve({ outcome: 'proceed' as const });
         },
         settle: () => {
@@ -2356,15 +2430,21 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
 
     // The straggler still holds its journal handle. `prepare` is refused — loudly, so a caller that ignores
     // the rejection cannot mistake it for a durable claim and dispatch anyway.
+    const callsBefore = [...calls];
     await expect(captured?.prepare(1, 'http_request', 3, {})).rejects.toBeInstanceOf(
       EngineStateError,
     );
-    expect(calls).not.toContain('prepare');
+    expect(calls).toEqual(callsBefore); // the refused prepare never reached the port at all
+    // …and the underlying port was genuinely reached BEFORE the fence closed, so the wrapper is a filter and
+    // not a wall. Without this the whole live path — every effectful node's dispatch — could break and this
+    // test would stay green: mutating `return port.prepare(...args)` to throw left all 1355 tests passing.
+    expect(livePrepare).toEqual([{ slot: 7, toolId: 'run_command' }]);
 
     // …while a receipt for work that already left the process still lands.
     await captured?.settle(1, 'http_request', 'committed');
     await captured?.discard(1, 'http_request');
-    expect(calls).toEqual(['settle', 'discard']);
+    // The live `prepare` is in this list and the refused one is not — which is the whole split.
+    expect(calls).toEqual(['prepare', 'settle', 'discard']);
   });
 
   it('a timed-out node cannot report success afterwards, while a sibling keeps the run alive (ADR-0085 §5)', async () => {

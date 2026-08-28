@@ -381,7 +381,7 @@ These land with the implementation, not after it:
   (`vitest.config.ts` covers `packages/llm/src/**`, not `packages/shared/src/**`) was left holding a 35-line
   re-export shell scoring a perfect 100. The enforced branch number went UP while the guarantee went away.
   The sharpest evidence was that the pre-move report's one uncovered line was `onCallerAbort`'s waiter wake
-  — a branch that, once checked, turned out to be held by nothing at all. So the eleven cases needing no
+  — a branch that, once checked, turned out to be held by nothing at all. So the cases needing no
   platform type moved to `packages/shared/src/deadline.test.ts` where they are measured against the code they
   exercise, and only the two that genuinely need `process` stayed behind. `deadline.ts` now measures 100%
   lines / 96.66% branches, above its pre-move 93.33%.

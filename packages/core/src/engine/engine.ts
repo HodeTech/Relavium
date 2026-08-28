@@ -1684,8 +1684,13 @@ class RunExecution {
    */
   #fenceEffects(port: EffectDispatchPort, vertexId: string): EffectDispatchPort {
     const dispatchId = this.#dispatchIdForVertex.get(vertexId) ?? -1;
+    // Delegated method-by-method rather than spread. `{...port}` copies OWN properties only, so a host that
+    // implements `EffectDispatchPort` as a CLASS would arrive here with `settle` and `discard` undefined —
+    // TypeScript's spread-type inference hides it, and both shipping implementations happen to be object
+    // literals, so it would have been latent until the first class-based one.
     return {
-      ...port,
+      settle: (...args: Parameters<EffectDispatchPort['settle']>) => port.settle(...args),
+      discard: (...args: Parameters<EffectDispatchPort['discard']>) => port.discard(...args),
       prepare: async (...args: Parameters<EffectDispatchPort['prepare']>) => {
         if (!this.#isLive(vertexId, dispatchId)) {
           throw new EngineStateError(

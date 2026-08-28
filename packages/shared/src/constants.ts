@@ -246,6 +246,16 @@ export type MediaSurface = (typeof MEDIA_SURFACES)[number];
  */
 export const MEDIA_GEN_SUBMIT_TIMEOUT_MS = 120_000;
 
+/**
+ * The async media-job poll cadence and bounds (1.AG Section D,
+ * [ADR-0045](../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §7) — the
+ * single source of these magic numbers. The engine poll loop uses them directly: poll at `pollInitialMs`,
+ * exponential back-off (no jitter) capped at `pollMaxMs`, bound each individual call at
+ * `pollCallTimeoutMs`, and abandon a job past `deadlineMs` (from submit) as a retryable timeout.
+ *
+ * (This docblock was orphaned for one commit: inserting `MEDIA_GEN_SUBMIT_TIMEOUT_MS` above the object left
+ * the description sitting on the new constant instead of the one it describes.)
+ */
 export const MEDIA_JOB_POLL_DEFAULTS = {
   pollInitialMs: 5_000,
   pollMaxMs: 30_000,
