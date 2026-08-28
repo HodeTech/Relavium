@@ -63,8 +63,8 @@ fallback_chain:             # ordered alternates tried after the primary is exha
 | `tools` | no | Tool ids — see [../shared-core/built-in-tools.md](../shared-core/built-in-tools.md). |
 | `mcp_servers` | no | See [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md). |
 | `memory` | no | `none` (default), `window` (last N turns), or `summary` (rolling summary). |
-| `retry` | no | Node-retry budget **above** the fallback chain — re-runs the whole node on a retryable failure, up to `max` total attempts ([ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md)). |
-| `fallback_chain` | no | Switch to a *different* model/provider **within an attempt** (the within-chain failover); the node `retry` budget then re-runs the whole chain above it. |
+| `retry` | no | Node-retry budget **above** the fallback chain — re-runs the whole node on a retryable failure, up to `max` total attempts ([ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md)). `max` may not exceed **10** ([ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md), which supersedes ADR-0040's "intentionally unbounded" clause). |
+| `fallback_chain` | no | Switch to a *different* model/provider **within an attempt** (the within-chain failover); the node `retry` budget then re-runs the whole chain above it. At most **5** entries, each with `max_attempts` at most **10** ([ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md)) — the two multiply, so both are bounded. |
 
 ## Retry vs. fallback
 

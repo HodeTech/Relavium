@@ -274,7 +274,7 @@ to correct.
 | `CR-22` | made (absolute deadlines) · ✅ closed 2026-08-27 | — | no | — |
 | `CR-23` | made · ✅ closed 2026-08-27 (10 s grace off the abort signal; per-vertex generation fence; **no quarantine**, risk accepted with a named trigger) | [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | no | — |
 | `CR-30` | made — implement [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s accepted no-drop producer-await; **placement settled 2026-08-28: the await goes in the turn's chunk loop**, `NodeExecContext.emit` stays synchronous | none (already decided) | no | — |
-| `CR-31` | made 2026-08-28 — conservative caps: default concurrency **8**, and absolute **500** nodes / **2000** edges / fan-out **50** / fallback-chain **5** / `retry.max` **10** / parallel tools **16** / **500** total attempts per run | — | no | — |
+| `CR-31` | made 2026-08-28 — default concurrency **8** (omitted `max_parallel`), and absolute ceilings: **500** nodes · **2000** edges · fan-out **50** · fallback-chain **5** entries · `retry.max` **10** · per-entry `max_attempts` **10** · `max_parallel` **64** · **16** tool calls in one model response · **500** node dispatches per run. Over-ceiling is a REJECTION, never a clamp | [ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md) | no | — |
 | `CR-32` | made 2026-08-28 — **256 KiB** node output, **4 MiB** total workflow state, **1 MiB** per durable event; typed `validation` rejection | — | no | — |
 | `CR-33` | made 2026-08-28 — **count-based, N = 100** settled runs, FIFO eviction (no clock, so engine purity is untouched); the `#executor` quarantine half stays a `W2` residual and is NOT claimed by this bound | — | no | — |
 | `CR-40` | made (forward signal + deadline) | with `CR-16`'s | no | hostile MCP |
@@ -1322,6 +1322,15 @@ grep-based reader looking for the thing to fix would have found nothing. The aut
 on the workflow spec; the compiled field is `maxParallel` on the run plan.)*
 **Fix + acceptance.** A small capacity-derived default concurrency that an authored value may only narrow, plus
 explicit absolute caps enforced at parse/compile admission with typed errors. The numbers are a maintainer call.
+
+**Settled 2026-08-28 by [ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md),
+which corrects this paragraph on two points.** "Capacity-derived" is refused: `workflow-yaml-spec.md`
+guarantees a file "parses and runs **identically** on every surface", and a CPU-derived default breaks that —
+so the default is a fixed **8** on every machine. "An authored value may only narrow" describes a silent
+clamp, which contradicts [ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md); an over-ceiling
+value is **rejected** at admission instead, naming the field, the value and the ceiling. The item also needed
+an ADR, which this register's ADR column said it did not: capping `retry.max` reverses ADR-0040's explicit
+"intentionally unbounded" decision, and a reversal cannot be an in-place amendment.
 
 ### CR-32 — Workflow output, state and durable event size are unbounded · High · **bound values open**
 **Fix + acceptance.** Bound them at the durable boundary with a typed rejection, the same way tool output is

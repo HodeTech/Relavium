@@ -129,6 +129,7 @@ flowchart TD
 | 0083 | [One input-admission gate in the engine, and a resume that verifies its own identity](0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | Accepted | 2026-08-19 |
 | 0084 | [Consent before a local MCP spawn](0084-consent-before-a-local-mcp-spawn.md) | Accepted | 2026-08-20 |
 | 0085 | [The node executor owes liveness, the engine enforces it, and a late dispatch is fenced](0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | Accepted | 2026-08-25 |
+| 0086 | [Authored values get absolute admission ceilings, and an omitted concurrency cap is finite](0086-absolute-admission-ceilings-on-authored-values.md) | Accepted | 2026-08-28 |
 
 ## Creating a new ADR
 
