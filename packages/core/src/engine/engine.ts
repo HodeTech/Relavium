@@ -1674,16 +1674,12 @@ class RunExecution {
   }
 
   /**
-   * Dispatch a vertex with its above-chain node-retry budget (1.S, ADR-0040). The vertex stays `running`
-   * across the whole loop — including the backoff sleep — so it never frees its slot or lets the run go
-   * idle mid-retry. Attempt 1's `node:started` was emitted by `#step`; this loop emits `node:started` for
-   * each re-dispatch. A retryable failure within budget (and admitted by `retry_on`) emits a non-terminal
-   * `node:retrying`, sleeps the backoff (abort-aware — cancel wins), and re-runs; any other outcome (or an
-   * exhausted budget, or a fatal/`retry_on`-excluded failure) settles via `#onOutcome`.
+   * Open a vertex's dispatch: claim ADR-0085 §5's per-vertex fence slot, arm the authored node deadline, run
+   * the retry loop, and release the slot only once the node is genuinely terminal.
    *
-   * Trade-off: a node waiting out its backoff keeps occupying a `max_parallel` slot (it stays `running`), so
-   * under a tight cap a long `backoff_ms` can serialize otherwise-ready sibling branches (ADR-0040 A.3 — keep
-   * `backoff_ms` modest under a tight cap). Freeing the slot mid-backoff would re-introduce the idle race.
+   * The retry semantics themselves live in `#dispatchLoop`, documented there. This method owns the two
+   * things that must bracket the loop rather than live inside it, because both outlive an individual
+   * dispatch: the fence identity and the node bound.
    */
   async #dispatch(vertex: PlanVertex, firstAttempt: number): Promise<void> {
     // **ADR-0085 §5's fence.** A monotonic id per dispatch, claiming this vertex's slot. A re-dispatch of the
@@ -1859,6 +1855,18 @@ class RunExecution {
     };
   }
 
+  /**
+   * Run a vertex's attempts against its above-chain node-retry budget (1.S, ADR-0040). The vertex stays
+   * `running` across the whole loop — including the backoff sleep — so it never frees its slot or lets the
+   * run go idle mid-retry. Attempt 1's `node:started` was emitted by `#step`; this loop emits `node:started`
+   * for each re-dispatch. A retryable failure within budget (and admitted by `retry_on`) emits a
+   * non-terminal `node:retrying`, sleeps the backoff (abort-aware — cancel wins), and re-runs; any other
+   * outcome (or an exhausted budget, or a fatal/`retry_on`-excluded failure) settles via `#onOutcome`.
+   *
+   * Trade-off: a node waiting out its backoff keeps occupying a `max_parallel` slot (it stays `running`), so
+   * under a tight cap a long `backoff_ms` can serialize otherwise-ready sibling branches (ADR-0040 A.3 — keep
+   * `backoff_ms` modest under a tight cap). Freeing the slot mid-backoff would re-introduce the idle race.
+   */
   async #dispatchLoop(vertex: PlanVertex, firstAttempt: number): Promise<void> {
     const retry = this.#retryConfig(vertex);
     let attempt = firstAttempt;

@@ -220,20 +220,12 @@ export const MEDIA_SURFACES = ['chat', 'generative'] as const;
 export type MediaSurface = (typeof MEDIA_SURFACES)[number];
 
 /**
- * The async media-job (generateMedia LRO) poll cadence + deadline DEFAULTS (1.AG/ADR-0045 §7). The single
- * source of these magic numbers — the engine poll loop (Section D) uses them directly: poll at `pollInitialMs`,
- * exponential-back-off (no jitter) capped at `pollMaxMs`, abandon a job past `deadlineMs` (from submit) as a
- * retryable timeout. The `[defaults].media_job_poll_initial_ms` / `_max_ms` / `_deadline_ms` config OVERRIDES
- * exist + validate (config.ts), but the engine does NOT yet read them — wiring the host-resolved overrides into
- * the run loop (the `max_tokens_estimate` pattern) is 1.AH host-wiring, like the other `[defaults].*` reads.
- */
-/**
  * How long ONE `generateMedia` SUBMISSION may take before the engine stops waiting (`CR-21b`).
  *
  * A number of its own rather than a borrow, and the borrow was the first attempt. `@relavium/llm`'s
- * `DEFAULT_ATTEMPT_TIMEOUT_MS` is the obvious candidate — same value — but it is not exported from that
- * package's index, and [ADR-0085](../../../docs/decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md)
- * §9 kept it there on purpose: "the deadline MECHANISM is generic, this NUMBER is a statement about
+ * `DEFAULT_ATTEMPT_TIMEOUT_MS` is the obvious candidate — same value — but
+ * [ADR-0085](../../../docs/decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md)
+ * §9 kept it in that package on purpose: "the deadline MECHANISM is generic, this NUMBER is a statement about
  * provider latency and belongs with the seam that knows about providers." Reaching across for it would have
  * widened the LLM package's public surface to let the ENGINE bound a media call — and would have coupled
  * two budgets that answer different questions, so a future change to chat latency would silently move the
@@ -253,8 +245,9 @@ export const MEDIA_GEN_SUBMIT_TIMEOUT_MS = 120_000;
  * exponential back-off (no jitter) capped at `pollMaxMs`, bound each individual call at
  * `pollCallTimeoutMs`, and abandon a job past `deadlineMs` (from submit) as a retryable timeout.
  *
- * (This docblock was orphaned for one commit: inserting `MEDIA_GEN_SUBMIT_TIMEOUT_MS` above the object left
- * the description sitting on the new constant instead of the one it describes.)
+ * The `[defaults].media_job_poll_initial_ms` / `_max_ms` / `_deadline_ms` config OVERRIDES exist and
+ * validate (`config.ts`), but the engine does NOT yet read them — wiring the host-resolved overrides into the
+ * run loop (the `max_tokens_estimate` pattern) is 1.AH host-wiring, like the other `[defaults].*` reads.
  */
 export const MEDIA_JOB_POLL_DEFAULTS = {
   pollInitialMs: 5_000,
