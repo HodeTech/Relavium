@@ -60,6 +60,7 @@ import {
   type UnresolvedEffect,
   openDeadline,
   type DeadlineScope,
+  clampTimerDelayMs,
 } from '@relavium/shared';
 import type { EndpointKind, MediaJobStatus, PricingOverlay, ProviderId } from '@relavium/llm';
 
@@ -781,7 +782,7 @@ class RunExecution {
     // half had this clamp from the Step 3 review and the run half twenty-five lines away did not; same
     // exposure, same one-line fix, simply not carried across.
     const remainingMs = Math.max(0, Math.min(timeoutMs, timeoutMs - this.#elapsedMs()));
-    this.#runTimeoutDisarm = this.#host.setTimer(remainingMs, () => {
+    this.#runTimeoutDisarm = this.#host.setTimer(clampTimerDelayMs(remainingMs), () => {
       void this.#onRunTimeout(timeoutMs);
     });
   }
@@ -1093,7 +1094,7 @@ class RunExecution {
           gate.timeoutMs === undefined ? untilExpiryMs : Math.min(untilExpiryMs, gate.timeoutMs),
         );
         const action = gate.timeoutAction;
-        const disarm = this.#host.setTimer(remainingMs, () => {
+        const disarm = this.#host.setTimer(clampTimerDelayMs(remainingMs), () => {
           void this.#onGateTimeout(gate.gateId, gate.nodeId, action);
         });
         this.#gateTimers.set(gate.gateId, disarm);
@@ -2176,7 +2177,7 @@ class RunExecution {
         ? undefined
         : new Date(Date.parse(this.#host.clock.now()) + gate.timeoutMs).toISOString());
     if (gate.timeoutMs !== undefined && effectiveAction !== undefined) {
-      const disarm = this.#host.setTimer(gate.timeoutMs, () => {
+      const disarm = this.#host.setTimer(clampTimerDelayMs(gate.timeoutMs), () => {
         void this.#onGateTimeout(gateId, vertex.id, effectiveAction);
       });
       this.#gateTimers.set(gateId, disarm);

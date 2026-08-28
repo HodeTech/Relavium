@@ -43,6 +43,26 @@
 import type { AbortSignalLike } from './content.js';
 
 /**
+ * The largest delay a host timer can actually honour: 2³¹−1 ms, ~24.86 days.
+ *
+ * **Not a style rule — an authored value above it INVERTS into an immediate fire.** Node's `setTimeout`
+ * emits `TimeoutOverflowWarning` and silently clamps the duration to **1 ms**, so a workflow author who
+ * writes a thirty-day `human_gate` `timeout_ms` with `timeout_action: 'approve'` gets a gate that
+ * auto-approves on the next tick. That is a governance control turning into its own bypass, which is why
+ * this is clamped at the seam rather than left to each host.
+ *
+ * Clamping rather than refusing at parse: the authored schema is `positiveInt` with no upper bound and is a
+ * published contract, so narrowing it would reject workflows that parse today. A run bounded at 24.86 days
+ * instead of 30 is a bound the author would recognise; one that fires in 1 ms is not.
+ */
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/** Clamp a delay into the range a host timer can honour — see {@link MAX_TIMER_DELAY_MS}. */
+export function clampTimerDelayMs(ms: number): number {
+  return Math.min(Math.max(0, ms), MAX_TIMER_DELAY_MS);
+}
+
+/**
  * A controller the host supplies — a platform-free seam has no ambient `AbortController` (the strict base's
  * `lib: ["ES2023"]` does not carry one). A native `AbortController` structurally satisfies it, so a real
  * surface injects `() => new AbortController()` and its `signal` is a genuine `AbortSignal` that `fetch`
@@ -129,7 +149,7 @@ export function openDeadline(
     for (const wake of waiters) wake();
     controller.abort();
   };
-  const disarm = setTimer(timeoutMs, trip);
+  const disarm = setTimer(clampTimerDelayMs(timeoutMs), trip);
 
   const onCallerAbort = (): void => {
     callerCancelled = true;

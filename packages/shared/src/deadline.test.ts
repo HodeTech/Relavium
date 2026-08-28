@@ -20,7 +20,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { AbortSignalLike } from './content.js';
-import { openDeadline, type AbortControllerLike } from './deadline.js';
+import {
+  clampTimerDelayMs,
+  MAX_TIMER_DELAY_MS,
+  openDeadline,
+  type AbortControllerLike,
+} from './deadline.js';
 
 /** A platform-free controller — the seam has no ambient `AbortController`. */
 function controller(): AbortControllerLike {
@@ -67,6 +72,32 @@ function manualTimer(): {
 /** A promise that never settles — an uncooperative provider, which is the case that matters. */
 const NEVER = new Promise<string>(() => undefined);
 describe('openDeadline (ADR-0082 §5-§7, ADR-0085 §9)', () => {
+  it('clamps a delay above 2^31-1, because Node inverts it into an immediate fire', () => {
+    // **A governance control turning into its own bypass.** `positiveInt` has no upper bound, so an author
+    // may write a thirty-day `human_gate` `timeout_ms`. Node's `setTimeout` emits `TimeoutOverflowWarning`
+    // and silently sets the duration to 1 ms — measured directly: `setTimeout(fn, 2147483648)` fires in
+    // ~1 ms. With `timeout_action: 'approve'` that gate auto-approves on the next tick instead of waiting a
+    // month. Clamped at the seam rather than per host, and clamped rather than refused at parse: the
+    // authored schema is a published contract, and a bound of 24.86 days is one an author would recognise
+    // where a 1 ms one is not.
+    const armed: number[] = [];
+    const scope = openDeadline(
+      30 * 24 * 60 * 60 * 1000, // thirty days
+      controller,
+      (ms) => {
+        armed.push(ms);
+        return () => undefined;
+      },
+    );
+    expect(armed).toEqual([MAX_TIMER_DELAY_MS]);
+    scope.dispose();
+
+    // …and the helper itself, on both ends: a negative never reaches a host timer either.
+    expect(clampTimerDelayMs(-1)).toBe(0);
+    expect(clampTimerDelayMs(5_000)).toBe(5_000);
+    expect(clampTimerDelayMs(Number.MAX_SAFE_INTEGER)).toBe(MAX_TIMER_DELAY_MS);
+  });
+
   it('a step that never settles ends at the DEADLINE, not never', async () => {
     // The whole item: `generate(): Promise<LlmResult> { return new Promise(() => {}) }` used to hang the
     // chain forever, because the abort signal is a request and this provider ignores it.
