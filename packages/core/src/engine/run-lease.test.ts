@@ -32,6 +32,26 @@ workflow:
 `,
 );
 
+/** An agent node carrying an authored `timeout_ms`, so a run arms a NODE deadline as well as a grace one. */
+const BOUNDED: WorkflowDefinition = parseWorkflow(
+  `schema_version: '1.0'
+workflow:
+  id: lease-bounded-fixture
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: a, type: input }
+    - { id: work, type: agent, agent_ref: ag, prompt_template: 'go', timeout_ms: 600000 }
+    - { id: b, type: output }
+  edges:
+    - { from: a, to: work }
+    - { from: work, to: b }
+`,
+);
+
 const GATED: WorkflowDefinition = parseWorkflow(
   `schema_version: '1.0'
 workflow:
@@ -199,6 +219,52 @@ describe('ADR-0079 §5 — a fenced-out process stops without claiming an outcom
     await drain(handle);
     expect(handle.durability()).toBe('uncertain'); // …it really did take the FENCED path
     expect(host.deadlineCount()).toBe(0); // …and left no backstop holding the loop open
+  });
+
+  it('a FENCED settle disarms the NODE deadlines too, not just the grace window (ADR-0085 §3)', async () => {
+    // §8.12's grace-window leak was one instance of a general asymmetry, and fixing only that instance left
+    // the general case open. `#settle` sweeps every timer the run armed, but its fenced branch returns to
+    // `#settleFenced` BEFORE reaching that sweep — and `#settleFenced` disarmed the grace window, the gate
+    // timers, the media timers and the run timeout, but not the node deadlines.
+    //
+    // A node deadline is exactly the one that survives: ADR-0085 §2 makes it run-owned and disarmed only at
+    // the node's TERMINAL, so a node in flight when the lease is lost is still holding one by design. The
+    // cost is the same as §8.12's and larger — the CLI does not `unref` a `deadline` timer and sets
+    // `process.exitCode` rather than calling `process.exit`, so a fenced `relavium run` sat idle for the
+    // node's full authored `timeout_ms` (ten MINUTES here) where the grace leak cost ten seconds.
+    const store = new InMemoryRunStore();
+    const inner = createInMemoryRunLeases();
+    let takenOver = false;
+    const leases: RunLeasePort = {
+      ...inner,
+      heartbeat: (runId, fence, ttlMs) =>
+        takenOver ? Promise.resolve(false) : inner.heartbeat(runId, fence, ttlMs),
+    };
+    const host = createInMemoryHost({ store, runLeases: leases });
+    const started: string[] = [];
+    const engine = new WorkflowEngine({
+      host,
+      executor: new Stub({
+        work: () => {
+          started.push('work');
+          return inFlight();
+        },
+      }),
+    });
+    const handle = engine.start({ workflow: BOUNDED });
+
+    await until(() => host.livenessCount() === 1, 'the heartbeat was armed');
+    await until(() => started.length > 0, 'the bounded node started');
+    // The NODE deadline is armed and nothing has been cancelled — no grace window exists yet, so this count
+    // is unambiguous. Cancelling first (as §8.12's test does) would arm a second `deadline` timer and the
+    // final assertion could then pass on the grace disarm alone.
+    await until(() => host.deadlineCount() === 1, "the node's `timeout_ms` was armed");
+    takenOver = true;
+    host.fireLiveness();
+
+    await drain(handle);
+    expect(handle.durability()).toBe('uncertain'); // …it really did take the FENCED path
+    expect(host.deadlineCount()).toBe(0); // …and left no node deadline holding the loop open
   });
 
   it('a durable write refused by the fence produces the same disposition', async () => {

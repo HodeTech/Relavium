@@ -884,7 +884,12 @@ class RunExecution {
     // on an already-aborted signal, and a `cost:updated` accepted for work the run had stopped waiting for.
     this.#noNewDispatch = true;
     this.#activeDispatchByVertex.clear();
-    for (const vertexId of [...this.#nodeDeadlineDisarm.keys()]) this.#disarmNodeDeadline(vertexId);
+    // **The LIVE `keys()`, not a `[...]` snapshot.** `Map.prototype.delete` tombstones the entry in place —
+    // it never splices the backing list — and the map iterator advances past the entry it has already
+    // yielded, so deleting the one this loop is standing on skips nothing. Measured, not assumed. A snapshot
+    // would differ only for an entry ADDED mid-loop, and there the live form is the SAFER one: it disarms
+    // the late arrival instead of leaking a timer past the terminal.
+    for (const vertexId of this.#nodeDeadlineDisarm.keys()) this.#disarmNodeDeadline(vertexId);
     for (const [vertexId, state] of this.#states) {
       if (state.status !== 'running') continue;
       const vertex = this.#plan.vertices.get(vertexId);
@@ -3007,7 +3012,8 @@ class RunExecution {
     // can settle the run between resume() arming it and the re-dispatch — no stale entry on the retained run)
     this.#disarmRunTimeout();
     this.#disarmGraceWindow(); // ADR-0085 §3 — a settled run leaves no backstop holding the loop open
-    for (const vertexId of [...this.#nodeDeadlineDisarm.keys()]) this.#disarmNodeDeadline(vertexId);
+    // Live `keys()` — see the note at the `#onGraceElapsed` sweep for why deleting during iteration is safe.
+    for (const vertexId of this.#nodeDeadlineDisarm.keys()) this.#disarmNodeDeadline(vertexId);
     const durationMs = Math.max(0, this.#elapsedMs());
     let draft: RunEventDraft;
     if (type === 'run:completed') {
@@ -3096,6 +3102,15 @@ class RunExecution {
     // and sets `process.exitCode` rather than calling `process.exit`, so a fenced `relavium run` sat idle
     // for the full 10 s after it had finished.
     this.#disarmGraceWindow();
+    // **And the node deadlines, for the same reason and by the same measurement.** §8.12's grace-window
+    // finding was one instance of a general asymmetry: `#settle` sweeps every timer this run armed, but its
+    // fenced branch returns to `#settleFenced` BEFORE reaching that sweep. A node deadline outlives the
+    // fenced teardown — it is armed for the node's whole life by design, so a node in flight (a slow
+    // provider call, a media park, a gate park) still holds one when the lease is lost. The CLI does not
+    // `unref` a `deadline` timer and sets `process.exitCode` rather than calling `process.exit`, so a fenced
+    // `relavium run` sat idle for the node's full authored `timeout_ms` — minutes, where the grace leak cost
+    // ten seconds.
+    for (const vertexId of this.#nodeDeadlineDisarm.keys()) this.#disarmNodeDeadline(vertexId);
     for (const disarm of this.#gateTimers.values()) disarm();
     this.#gateTimers.clear();
     for (const disarm of this.#mediaJobTimers.values()) disarm();
