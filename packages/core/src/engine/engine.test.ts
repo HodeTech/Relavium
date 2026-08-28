@@ -818,6 +818,109 @@ describe('WorkflowEngine — output-node save_to (1.AF/D16, ADR-0044 §2)', () =
     expect(terminalsIn(events)).toHaveLength(1);
   });
 
+  it('an output node abandoned by the grace window FAILS — it never reports a deliverable it did not write', async () => {
+    // **The fence returned the completed outcome, and that defeated the fence.** `#isLive` goes false the
+    // instant `#onGraceElapsed` clears the dispatch map — which is BEFORE `#settled` is set and before the
+    // grace loop reaches this vertex. An output node still `running` at that moment therefore passed
+    // `#onOutcome`'s terminal-status guard and persisted `node:completed` for a `save_to` that was never
+    // written: the durable log claiming a deliverable that does not exist on disk.
+    //
+    // The window needs TWO running nodes and that is the whole construction. With one, the grace loop calls
+    // `#settleFailed` on it FIRST, and that sets `status = 'failed'` synchronously — the guard catches the
+    // straggler and nothing is reproduced. Here the loop awaits `a`'s settle (insertion order: `a` before
+    // `out`), and `out`'s executor resolves inside that await.
+    const PARALLEL_SAVE_TO = `  id: saveto-parallel
+  nodes:
+    - { id: start, type: input }
+    - { id: a, type: transform, transform: 'g' }
+    - { id: out, type: output, save_to: 'media/{{ run.id }}/image.png' }
+  edges:
+    - { from: start, to: a }
+    - { from: start, to: out }`;
+    const { store: mediaStore } = stubMediaStore();
+    const { write, writes } = stubMediaWrite();
+    // **An ASYNC store, and it is the reproduction — not a convenience.** `InMemoryRunStore` resolves
+    // synchronously, so `#settleFailed(a)` finishes inside the grace loop before `out`'s completion chain
+    // reaches `#onOutcome`, and the vertex-status guard closes the window by accident. A real store (1.R
+    // SQLite, the Phase-2 cloud one) does not — the seam exists precisely so an async store plugs in — and
+    // under one the abandoned `out` reaches `#onOutcome` while its status is still `running`. Delegated
+    // method-by-method, never `{...store}`: the store is a class instance and a spread drops its prototype.
+    const inner = new InMemoryRunStore();
+    const slowStore: RunStore = {
+      resolveWorkflowId: (slug) => inner.resolveWorkflowId(slug),
+      listInterruptedRuns: () => inner.listInterruptedRuns(),
+      readWorkflowSnapshot: (runId) => inner.readWorkflowSnapshot(runId),
+      persistEvent: async (event, ctx) => {
+        for (let hop = 0; hop < 8; hop += 1) await Promise.resolve();
+        return inner.persistEvent(event, ctx);
+      },
+    };
+    const host = createInMemoryHost({ store: slowStore, mediaStore, mediaWrite: write });
+    let releaseOut: (() => void) | undefined;
+    // `node:started` is NOT the signal to cancel on: `#step` emits it, then re-reads the `#noNewDispatch`
+    // latch before calling `#dispatch`, so a cancel landing in between leaves `out` started-but-never-
+    // dispatched and its handler is never invoked. Measured — the first version of this test cancelled on
+    // the third `node:started` and reproduced nothing at all.
+    let outInFlight = false;
+    const outSettled = new Promise<void>((resolve) => {
+      releaseOut = resolve;
+    });
+    const engine = engineWith(
+      {
+        a: () => new Promise<NodeOutcome>(() => undefined), // never settles — it is what the grace loop awaits
+        out: () => {
+          outInFlight = true;
+          return outSettled.then(() => ({ kind: 'completed', output: { image: MEDIA_PART } }));
+        },
+      },
+      host,
+    );
+    const handle = engine.start({ workflow: workflow(PARALLEL_SAVE_TO) });
+    const events: RunEvent[] = [];
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        events.push(event);
+        if (event.type === 'run:cancelled' || event.type === 'run:failed') settled = true;
+      }
+    })();
+
+    for (let i = 0; i < 400 && !outInFlight; i += 1) {
+      await Promise.resolve();
+    }
+    expect(outInFlight).toBe(true); // `out`'s executor is genuinely running before anything is cancelled
+    engine.cancel(handle.runId);
+    for (let i = 0; i < 400 && host.deadlineCount() === 0; i += 1) await Promise.resolve();
+    expect(host.deadlineCount()).toBe(1); // the grace window is armed
+
+    // **The two lines that make the window, and their order is the test.** `fireDeadlines()` runs
+    // `#onGraceElapsed` up to its first `await` — the dispatch map is now clear, `#settled` is still false,
+    // and `out`'s status is still `running` because the loop is parked on `a`'s settle. Releasing `out`
+    // HERE puts its whole chain (`#applySaveTo` → `#runAttempt` → `#dispatchLoop` → `#onOutcome`, pure
+    // microtasks) inside that park, ahead of `#settleFailed(a)` — which has to wait on the consumer and the
+    // delivery tail. Release any later (at `a`'s `node:failed`, say) and the grace loop reaches `out` first,
+    // its synchronous `status = 'failed'` closes `#onOutcome`'s guard, and the defect hides behind it.
+    host.fireDeadlines();
+    releaseOut?.();
+    for (let i = 0; i < 800 && !settled; i += 1) {
+      await Promise.resolve();
+      if (host.armedCount() > 0) host.fireTimers();
+    }
+    await consume;
+
+    // **What the mutation actually produces, measured rather than assumed.** Reverting the entry fence to
+    // `return outcome` gives `out` NO node terminal at all — the run publishes `run:cancelled` with `out`
+    // missing from the log entirely, which is the omission ADR-0085 §4 exists to forbid. (The PR review
+    // predicted a persisted `node:completed`; with this microtask alignment the run terminal wins the
+    // delivery tail instead, and a different alignment could produce either. Both are the same defect:
+    // `#applySaveTo` returning `completed` from a fence path asserts a deliverable that was never written.)
+    // The three assertions below hold under both outcomes.
+    expect(events.some((e) => e.type === 'node:completed' && e.nodeId === 'out')).toBe(false);
+    expect(writes).toHaveLength(0);
+    expect(events.some((e) => e.type === 'node:failed' && e.nodeId === 'out')).toBe(true);
+    expect(terminalsIn(events)).toHaveLength(1);
+  });
+
   it('does not invoke save_to for an output node WITHOUT a save_to field (unchanged capture path)', async () => {
     const { store: mediaStore } = stubMediaStore();
     const { write, writes } = stubMediaWrite();
@@ -1846,9 +1949,16 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     );
   });
 
-  it('arms no gate timer on rehydration (re-arm is a Phase-2 reconciliation concern)', async () => {
+  // **This test asserted the OPPOSITE until `CR-22`, and the reasoning it replaced is kept deliberately.**
+  // It read "arms no gate timer on rehydration (re-arm is a Phase-2 reconciliation concern)" and proved
+  // `armCalls === 0`. That behaviour was a real, documented deferral, and its justification was that "the
+  // gate this resume TARGETS has its decision applied immediately" — true of the target gate, and silent
+  // about every other one. A multi-gate run, or a crash while parked, rehydrated its remaining gates with no
+  // timer at all, so their deadlines stopped existing until the next restart. The data needed was already
+  // durable on `human_gate:paused` (its schema says it rides there for exactly this); only the checkpoint
+  // fold and the rehydration loop were missing. See ADR-0028 and `CR-22`.
+  it('re-arms a rehydrated gate at its REMAINING time, not its full `timeout_ms`', async () => {
     const store = new InMemoryRunStore();
-    // Process A: pause at a gate that carries a timeout.
     const engineA = engineWith(
       {
         g: () => ({
@@ -1860,24 +1970,31 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     );
     const handleA = engineA.start({ workflow: workflow(GATED) });
     let gateId = '';
+    let expiresAt = '';
     for await (const event of handleA.events) {
+      if (event.type === 'human_gate:paused') expiresAt = event.expiresAt ?? '';
       if (event.type === 'run:paused') {
         gateId = event.gateIds[0] ?? '';
         break;
       }
     }
-    // Process B rehydrates. Spy on setTimer to prove it is NEVER called during rehydration — distinguishing
-    // "never armed" from "armed then disarmed on resume" (which armedCount alone could not).
+    expect(expiresAt).not.toBe(''); // the absolute deadline is durable — the premise of the whole fix
+
+    // Process B rehydrates with a clock pinned 250 ms before the gate expires. A FIXED clock, not the
+    // in-memory host's auto-advancing one: that double restarts its tick at 0 per host, which would make
+    // B's "now" earlier than A's and the arithmetic meaningless. Pinning it makes the expected value exact.
+    const nowB = new Date(Date.parse(expiresAt) - 250).toISOString();
     const baseHostB = createInMemoryHost({ store });
-    let armCalls = 0;
+    const armedWork: number[] = [];
     const hostB: typeof baseHostB = {
       ...baseHostB,
+      clock: { now: () => nowB },
       // `kind` is counted and FORWARDED. Counted, because the claim is about the run's *work* timers — the
       // ADR-0079 lease heartbeat is armed on every resume by design and is not what this test is about.
       // Forwarded, because dropping it would silently re-label that heartbeat as a work timer in the inner
       // host, which is the failure this spy exists to detect.
       setTimer: (ms, onFire, kind = 'work') => {
-        if (kind === 'work') armCalls += 1;
+        if (kind === 'work') armedWork.push(ms);
         return baseHostB.setTimer(ms, onFire, kind);
       },
     };
@@ -1889,7 +2006,1432 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
       decision: { decision: 'approved', decidedBy: 'h' },
     });
     await drain(handleB);
-    expect(armCalls).toBe(0); // rehydration armed no timer at all (re-arm is a Phase-2 concern)
+
+    // The load-bearing assertion: 250, not 1000. Arming the full `timeout_ms` would renew the deadline on
+    // every resume — a gate crashed and resumed ten times would get ten times its authored patience, which
+    // is the defect `CR-22` names.
+    //
+    // `toEqual` on the whole array, not `toContain`. A first version used `toContain(250)` plus
+    // `not.toContain(1000)` and justified it by saying "the resume also arms unrelated work timers" — which
+    // is measurably false: this resume arms exactly one. With a single-element array the negative assertion
+    // was implied by the positive one and no mutation could make it the failing line, and the superseded
+    // test's EXACT count (`toBe(0)`) had also proved "no other work timer is armed anywhere". `toEqual`
+    // restores that second guarantee at zero cost.
+    expect(armedWork).toEqual([250]);
+  });
+
+  it('a resuming clock running BEHIND cannot grant more patience than the author wrote', async () => {
+    // `expiresAt` is an instant written by one process and differenced against another's clock. A resuming
+    // process an hour behind computed `expiresAt − now` = 3 601 000 ms for a 1 000 ms gate — `Math.max(0, …)`
+    // only ever guarded the other direction. The authored `timeout_ms` is now the ceiling, and it rides the
+    // checkpoint for exactly this: it was already on `human_gate:paused` and the fold simply dropped it.
+    const store = new InMemoryRunStore();
+    const engineA = engineWith(
+      {
+        g: () => ({
+          kind: 'paused',
+          gate: { gateType: 'approval', message: 'ok?', timeoutMs: 1000, timeoutAction: 'reject' },
+        }),
+      },
+      createInMemoryHost({ store }),
+    );
+    const handleA = engineA.start({ workflow: workflow(GATED) });
+    let gateId = '';
+    let expiresAt = '';
+    for await (const event of handleA.events) {
+      if (event.type === 'human_gate:paused') expiresAt = event.expiresAt ?? '';
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+
+    const nowB = new Date(Date.parse(expiresAt) - 3_600_000).toISOString(); // an hour BEHIND
+    const baseHostB = createInMemoryHost({ store });
+    const armedWork: number[] = [];
+    const hostB: typeof baseHostB = {
+      ...baseHostB,
+      clock: { now: () => nowB },
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'work') armedWork.push(ms);
+        return baseHostB.setTimer(ms, onFire, kind);
+      },
+    };
+    const engineB = engineWith({}, hostB);
+    const handleB = await engineB.resumeFromCheckpoint({
+      runId: handleA.runId,
+      workflow: workflow(GATED),
+      gateId,
+      decision: { decision: 'approved', decidedBy: 'h' },
+    });
+    await drain(handleB);
+
+    // Never longer than authored, whatever the clocks think.
+    expect(armedWork.every((ms) => ms <= 1000)).toBe(true);
+    expect(armedWork).not.toContain(3_601_000);
+  });
+
+  it('the re-armed timer must not beat the decision this resume was handed', async () => {
+    // **A regression `CR-22` introduced and its own tests could not see.** Rehydration arms a timer for
+    // EVERY pending gate — including the one this resume targets — and a past-deadline gate arms at zero.
+    // `beginResume` then awaits context resolution and the effect-resume gate BEFORE `resume()` claims the
+    // gate, and `#onGateTimeout` guards only on `#settled || !#pendingGates.has(gateId)`, both still
+    // permissive in that window. So a `timeout_action: approve` timer could fire first and record
+    // `human_gate:resumed{decision:'approved', decidedBy:'timeout'}` for a caller who supplied `rejected` —
+    // a human's explicit refusal rewritten as an approval attributed to a timer.
+    //
+    // It needs a REAL timer, not `createInMemoryHost`'s manual controller: a 0 ms manual timer never fires
+    // without `fireTimers()`, which is exactly why the sibling past-deadline test cannot catch this.
+    // `execution-model.md` already states the contract this violates — "a decision that arrives first
+    // disarms the timer" — and on a cross-process resume the decision definitionally arrived first: it was
+    // handed to `resumeFromCheckpoint` before the timer existed.
+    const store = new InMemoryRunStore();
+    const engineA = engineWith(
+      {
+        g: () => ({
+          kind: 'paused',
+          gate: { gateType: 'approval', message: 'ok?', timeoutMs: 1000, timeoutAction: 'approve' },
+        }),
+      },
+      createInMemoryHost({ store }),
+    );
+    const handleA = engineA.start({ workflow: workflow(GATED) });
+    let gateId = '';
+    let expiresAt = '';
+    for await (const event of handleA.events) {
+      if (event.type === 'human_gate:paused') expiresAt = event.expiresAt ?? '';
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+
+    // Past the deadline, so the re-arm lands at zero — the sharpest version of the window.
+    const nowB = new Date(Date.parse(expiresAt) + 60_000).toISOString();
+    const baseHostB = createInMemoryHost({ store });
+    const hostB: typeof baseHostB = {
+      ...baseHostB,
+      clock: { now: () => nowB },
+      // A real macrotask timer, and one awaited boundary inside `beginResume` is enough to let it land.
+      setTimer: (ms, onFire) => {
+        const t = setTimeout(onFire, ms);
+        return () => {
+          clearTimeout(t);
+        };
+      },
+    };
+    // A real MACROTASK boundary inside `beginResume`, which is what opens the window. Not contrived: the
+    // port is `Promise`-typed precisely for a store that does I/O, and Phase-2's Postgres-backed
+    // `EffectResumePort` is exactly this shape. With today's synchronous better-sqlite3 CLI both awaits
+    // settle in microtasks and a `setTimeout(fn, 0)` lands after them — which is why this is unreachable on
+    // the shipping host and reachable the moment any seam becomes genuinely async.
+    const engineB = engineWith({}, hostB, {
+      effectResume: {
+        unresolvedForRun: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          return [];
+        },
+      },
+    });
+    const handleB = await engineB.resumeFromCheckpoint({
+      runId: handleA.runId,
+      workflow: workflow(GATED),
+      gateId,
+      decision: { decision: 'rejected', decidedBy: 'a-real-human' },
+    });
+    const eventsB: RunEvent[] = [];
+    for await (const event of handleB.events) eventsB.push(event);
+
+    // The HUMAN's decision is what the durable log records — not the timer's.
+    const resumed = eventsB.find((e) => e.type === 'human_gate:resumed');
+    expect(resumed?.type === 'human_gate:resumed' && resumed.decidedBy).toBe('a-real-human');
+    expect(resumed?.type === 'human_gate:resumed' && resumed.decision).toBe('rejected');
+  });
+
+  it("re-arms the RUN's `timeout_ms` at its remaining time, so a resume cannot renew the cap", async () => {
+    // The other half of `CR-22`, and the one nothing held: reverting `#armRunTimeout` to the pre-fix
+    // full-duration arm left all 1338 core tests green. ADR-0028 makes `timeout_ms` a bound on the run's
+    // TOTAL wall-clock; arming it afresh on every resume meant a run crashed and resumed ten times got ten
+    // times its authored budget, which is the opposite of a cap.
+    //
+    // Nothing new is persisted for this. `#seedFromCheckpoint` already restores `#startEpochMs` from the
+    // checkpoint's `startedAtMs` — it always did, so a resumed run's terminal could report total wall-clock
+    // — and both resume paths arm AFTER that seeding. The absolute deadline is derived from state the
+    // engine already had.
+    const TIMED = `  id: timed-gated
+  timeout_ms: 60000
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: out }`;
+    const store = new InMemoryRunStore();
+    const engineA = engineWith(
+      { g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?' } }) },
+      createInMemoryHost({ store }),
+    );
+    const handleA = engineA.start({ workflow: workflow(TIMED) });
+    let gateId = '';
+    let startedAt = '';
+    for await (const event of handleA.events) {
+      if (event.type === 'run:started') startedAt = event.timestamp;
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+    expect(startedAt).not.toBe('');
+
+    // Resume 45 s into the run's 60 s budget. A FIXED clock, for the reason the gate test states: the
+    // in-memory host's clock restarts its tick per host, so B's "now" would otherwise precede A's.
+    const nowB = new Date(Date.parse(startedAt) + 45_000).toISOString();
+    const baseHostB = createInMemoryHost({ store });
+    const armedWork: number[] = [];
+    const hostB: typeof baseHostB = {
+      ...baseHostB,
+      clock: { now: () => nowB },
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'work') armedWork.push(ms);
+        return baseHostB.setTimer(ms, onFire, kind);
+      },
+    };
+    const engineB = engineWith({}, hostB);
+    const handleB = await engineB.resumeFromCheckpoint({
+      runId: handleA.runId,
+      workflow: workflow(TIMED),
+      gateId,
+      decision: { decision: 'approved', decidedBy: 'h' },
+    });
+    await drain(handleB);
+
+    // 15 s left of 60, not a fresh 60 — and exactly one timer, which is the guarantee the superseded
+    // test's exact count carried and `toContain` would have dropped.
+    expect(armedWork).toEqual([15_000]);
+  });
+
+  it('the run-timeout abort happens BEFORE its durable write, so a hung store cannot defeat it (ADR-0085 §3)', async () => {
+    // `#onRunTimeout` awaited its `run:timeout` persist and THEN aborted, so a store that never settles meant
+    // the abort never fired and the grace window never armed — the rescue path defeated by the very stall it
+    // exists to rescue. The fix inverts the order, and nothing held it: reverting left all 1355 tests green.
+    //
+    // What this asserts is exactly what the fix buys and no more: the window ARMS. It cannot assert a
+    // terminal, because ADR-0078 serialises every emit behind one delivery tail — which is why ADR-0085
+    // §8.9's "including when the persist never settles" half is withdrawn against §6.
+    const TIMED = `  id: hung-store
+  timeout_ms: 1000
+  nodes:
+    - { id: start, type: input }
+    - { id: work, type: transform, transform: 'w' }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: work }
+    - { from: work, to: done }`;
+    const base = createInMemoryHost();
+    let hangNext = false;
+    const host: typeof base = {
+      ...base,
+      // **Delegated method-by-method, NOT spread.** `base.store` is a class instance, so `{...store}` copies
+      // own properties and drops everything on the prototype — the store would silently lose
+      // `resolveWorkflowId` and `listInterruptedRuns` and the run would die before it ever armed its cap.
+      // (The same hazard a review flagged in `#fenceEffects`; it is easy to hit, which is the point.)
+      store: {
+        resolveWorkflowId: (slug) => base.store.resolveWorkflowId(slug),
+        listInterruptedRuns: () => base.store.listInterruptedRuns(),
+        readWorkflowSnapshot: (runId) => base.store.readWorkflowSnapshot(runId),
+        persistEvent: (event, ctx) =>
+          hangNext && event.type === 'run:timeout'
+            ? new Promise<never>(() => undefined) // the store never settles on THIS write
+            : base.store.persistEvent(event, ctx),
+      },
+    };
+    const engine = engineWith({ work: () => new Promise<NodeOutcome>(() => undefined) }, host);
+    const handle = engine.start({ workflow: workflow(TIMED) });
+    // The stream MUST be consumed — the bus applies consumer backpressure, so an unread handle never lets
+    // the run reach its first node. It will not complete here, which is exactly §8.9's withdrawal.
+    void (async () => {
+      for await (const _ of handle.events) void _;
+    })();
+    for (let i = 0; i < 400 && base.armedCount() === 0; i += 1) await Promise.resolve();
+    expect(base.armedCount()).toBeGreaterThan(0); // the run cap is armed — the premise
+    hangNext = true;
+    base.fireTimers(); // the run cap elapses; its durable write will hang
+
+    for (let i = 0; i < 300 && base.deadlineCount() === 0; i += 1) await Promise.resolve();
+    // The grace window IS armed even though the diagnostic write is still pending.
+    expect(base.deadlineCount()).toBe(1);
+  });
+
+  it('the three liveness constants are the values that actually arrive', async () => {
+    // The manual timer controller DISCARDS `ms`, so a test that only fires a timer proves nothing about its
+    // duration — the hollow-constant shape this phase has now hit three times. Measured: changing
+    // GRACE_WINDOW_MS to 77 777, MEDIA_GEN_SUBMIT_TIMEOUT_MS to 3 333 and pollCallTimeoutMs to 300 000 all
+    // left the suite green. This pins the two the engine arms directly; the media pair is pinned at their
+    // own call sites.
+    const base = createInMemoryHost();
+    const armed: number[] = [];
+    const host: typeof base = {
+      ...base,
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'deadline') armed.push(ms);
+        return base.setTimer(ms, onFire, kind);
+      },
+    };
+    const engine = engineWith({ work: () => new Promise<NodeOutcome>(() => undefined) }, host);
+    const handle = engine.start({ workflow: workflow(SEQUENTIAL) });
+    for (let i = 0; i < 200 && !armed.length; i += 1) {
+      await Promise.resolve();
+      if (armed.length === 0) engine.cancel(handle.runId);
+    }
+    // The GRACE window, at its stated 10 s — not "some timer was armed". A LITERAL, deliberately:
+    // `GRACE_WINDOW_MS` is module-private, and importing it would make the assertion compare the constant
+    // with itself. The literal is what pins it — change the constant and this reddens.
+    expect(armed).toEqual([10_000]);
+    host.fireDeadlines();
+    for (let i = 0; i < 400; i += 1) {
+      await Promise.resolve();
+      if (base.armedCount() > 0) base.fireTimers();
+    }
+    for await (const _ of handle.events) void _;
+  });
+
+  it('a never-settling executor still produces exactly one terminal (ADR-0085 §3)', async () => {
+    // The defect ADR-0036's Consequences called "structurally impossible". `NodeExecutor.execute` returns an
+    // arbitrary promise, `requestCancel()` only aborts a signal, and `#step` settles when `#countRunning()`
+    // reaches zero — so an executor that ignores its signal and never settles left the run with no terminal,
+    // forever. The same gate defeated ADR-0028's run `timeout_ms`, so the cap was no rescue either.
+    const host = createInMemoryHost();
+    const engine = engineWith({ work: () => new Promise<NodeOutcome>(() => undefined) }, host);
+    const handle = engine.start({ workflow: workflow(SEQUENTIAL) });
+    const events: RunEvent[] = [];
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        events.push(event);
+        if (event.type === 'run:cancelled' || event.type === 'run:failed') settled = true;
+      }
+    })();
+
+    // Let the node start, then cancel. The grace window arms off the abort SIGNAL — not per cancel site —
+    // so it exists here without `cancel()` knowing anything about it.
+    for (let i = 0; i < 200 && !events.some((e) => e.type === 'node:started'); i += 1) {
+      await Promise.resolve();
+    }
+    engine.cancel(handle.runId);
+    for (let i = 0; i < 200 && host.deadlineCount() === 0; i += 1) await Promise.resolve();
+    expect(host.deadlineCount()).toBe(1); // the grace window IS armed — the assertion nothing made before
+
+    host.fireDeadlines();
+    for (let i = 0; i < 600 && !settled; i += 1) {
+      await Promise.resolve();
+      if (host.armedCount() > 0) host.fireTimers();
+    }
+    await consume;
+
+    // Exactly one terminal, and cancel-wins decides which (ADR-0036, unchanged).
+    const terminals = events.filter(
+      (e) => e.type === 'run:cancelled' || e.type === 'run:failed' || e.type === 'run:completed',
+    );
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0]?.type).toBe('run:cancelled');
+    // …and the abandoned node has a terminal of its own, so no `node:started` is left without a partner.
+    const nodeFailed = events.find((e) => e.type === 'node:failed');
+    expect(nodeFailed?.type === 'node:failed' && nodeFailed.error.message).toContain(
+      'the engine stopped waiting',
+    );
+    // An abandoned node's record is the ONLY record it gets, so it must not be the thinnest in the log. A
+    // first version wrote the event inline and silently dropped the `correlationId` ADR-0036 calls the single
+    // producer-side translation point, plus the cost snapshot the schema says the engine always populates.
+    expect(nodeFailed?.type === 'node:failed' && nodeFailed.error.correlationId).toBeDefined();
+    expect(nodeFailed?.type === 'node:failed' && nodeFailed.cumulativeCostMicrocents).toBeDefined();
+    expect(host.deadlineCount()).toBe(0); // disarmed on settle, not leaked
+  });
+
+  it("honours an agent node's authored `timeout_ms` (CR-20, ADR-0085 §2)", async () => {
+    // The field parsed and did nothing: `AgentNodeSchema` accepts it, node-types.md and workflow-yaml-spec.md
+    // both advertise it, and `AgentPlanConfig` carries the whole node so it arrives at dispatch — with no
+    // consumer. An authored field that parses and is ignored is the shape ADR-0023's strict-reject posture
+    // exists to prevent, and worse than a missing feature because it is the bound a user plans around.
+    // An AGENT node, because `timeout_ms` is only on `AgentNodeSchema` — which is itself the point: the
+    // engine reads it off `AgentPlanConfig`, and no other node type declares one.
+    const TIMED_NODE = `  id: node-timeout
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: start, type: input }
+    - { id: work, type: agent, agent_ref: a, prompt_template: 'go', timeout_ms: 4000 }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: work }
+    - { from: work, to: done }`;
+    const base = createInMemoryHost();
+    const armed: number[] = [];
+    const host: typeof base = {
+      ...base,
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'deadline') armed.push(ms);
+        return base.setTimer(ms, onFire, kind);
+      },
+    };
+    const engine = engineWith({ work: () => new Promise<NodeOutcome>(() => undefined) }, host);
+    const handle = engine.start({ workflow: workflow(TIMED_NODE) });
+    const events: RunEvent[] = [];
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        events.push(event);
+        if (event.type === 'run:failed' || event.type === 'run:completed') settled = true;
+      }
+    })();
+    for (let i = 0; i < 200 && armed.length === 0; i += 1) await Promise.resolve();
+
+    // The AUTHORED value, not a default — a test that only checked "a timer was armed" would pass for a
+    // hard-coded bound, which is the hollow shape `CR-21`'s close-out had to fix twice.
+    expect(armed).toEqual([4000]);
+
+    host.fireDeadlines();
+    for (let i = 0; i < 600 && !settled; i += 1) {
+      await Promise.resolve();
+      if (base.armedCount() > 0) base.fireTimers();
+    }
+    await consume;
+
+    // Classified as the human gate's authored `timeout_ms` already is — one meaning for one field name.
+    const nodeFailed = events.find((e) => e.type === 'node:failed');
+    expect(nodeFailed?.type === 'node:failed' && nodeFailed.error.code).toBe('run_timeout');
+    expect(nodeFailed?.type === 'node:failed' && nodeFailed.error.retryable).toBe(false);
+    expect(events.at(-1)?.type).toBe('run:failed');
+  });
+
+  it("a straggler's cost never reaches a live SUBSCRIBER after the terminal (ADR-0085 §5)", async () => {
+    // **This test replaced one whose recorded reasoning was FALSE.** The first version captured events with
+    // `for await` and concluded the `cost:updated` fence was defensive — "the run has settled and the bus is
+    // closed, so `#settled` carries it". A review disproved it with a live `subscribe()` observer: the bus is
+    // NOT closed to subscribers, and a stale `cost:updated` of 999 999 DOES arrive after the terminal. The
+    // old test only looked green because its `for await` capture had already stopped.
+    //
+    // So the fence at the `cost:updated` fold is load-bearing, not defence in depth, and this is what holds
+    // it: a straggler from an abandoned dispatch may not push a number at an observer after that observer
+    // has been told the run's total.
+    let releaseNode: ((outcome: NodeOutcome) => void) | undefined;
+    let costEmit: ((n: number) => void) | undefined;
+    const host = createInMemoryHost();
+    const engine = new WorkflowEngine({
+      host,
+      executor: {
+        execute: (ctx) =>
+          new Promise<NodeOutcome>((resolve) => {
+            releaseNode = resolve;
+            costEmit = (costMicrocents) => {
+              ctx.emit({
+                type: 'cost:updated',
+                nodeId: ctx.vertex.id,
+                model: 'm',
+                inputTokens: 0,
+                outputTokens: 0,
+                costMicrocents,
+                cumulativeCostMicrocents: 0,
+              });
+            };
+          }),
+      },
+    });
+    const handle = engine.start({ workflow: workflow(SEQUENTIAL) });
+    // A LIVE observer, not a `for await` capture — the distinction the old test got wrong.
+    const seen: RunEvent[] = [];
+    handle.subscribe((event) => {
+      seen.push(event);
+    });
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        if (event.type === 'run:cancelled' || event.type === 'run:failed') settled = true;
+      }
+    })();
+    for (let i = 0; i < 200 && releaseNode === undefined; i += 1) await Promise.resolve();
+    expect(releaseNode).toBeDefined();
+
+    engine.cancel(handle.runId);
+    for (let i = 0; i < 200 && host.deadlineCount() === 0; i += 1) await Promise.resolve();
+    host.fireDeadlines();
+    for (let i = 0; i < 400 && !settled; i += 1) {
+      await Promise.resolve();
+      if (host.armedCount() > 0) host.fireTimers();
+    }
+    await consume;
+    const terminalIndex = seen.findIndex((e) => e.type === 'run:cancelled');
+    expect(terminalIndex).toBeGreaterThanOrEqual(0);
+
+    // …and NOW the abandoned executor wakes and tries to spend.
+    costEmit?.(999_999);
+    releaseNode?.({ kind: 'completed', output: 'too late' });
+    for (let i = 0; i < 200; i += 1) await Promise.resolve();
+
+    // Nothing after the terminal, and certainly not that number.
+    expect(seen.slice(terminalIndex + 1)).toEqual([]);
+    expect(seen.some((e) => e.type === 'cost:updated' && e.costMicrocents === 999_999)).toBe(false);
+  });
+
+  it('the effect fence refuses `prepare` but never `settle` or `discard` (ADR-0085 §5)', async () => {
+    // The per-method split, tested directly, because a blanket "refuse a stale write" would resurrect
+    // `PR83-04` exactly: a row stuck `prepared` forever, swept by nothing, reported as `needs_attention` for
+    // an effect that actually completed. `prepare` is refused because the effect has not left the process;
+    // `settle` and `discard` are admitted because it has, and refusing a receipt strands the row.
+    const calls: string[] = [];
+    const livePrepare: { slot: number; toolId: string }[] = [];
+    let captured: NodeExecContext['effects'];
+    const host = createInMemoryHost();
+    const engine = new WorkflowEngine({
+      host,
+      executor: {
+        execute: async (ctx) => {
+          captured = ctx.effects;
+          // A LIVE prepare, while the dispatch is unquestionably current — the pass-through this wrapper
+          // must not break.
+          await ctx.effects?.prepare(7, 'run_command', 3, {});
+          return new Promise<NodeOutcome>(() => undefined); // never settles — so it gets abandoned
+        },
+      },
+      effectJournal: () => ({
+        prepare: (slot, toolId) => {
+          calls.push('prepare');
+          livePrepare.push({ slot, toolId });
+          return Promise.resolve({ outcome: 'proceed' as const });
+        },
+        settle: () => {
+          calls.push('settle');
+          return Promise.resolve();
+        },
+        discard: () => {
+          calls.push('discard');
+          return Promise.resolve();
+        },
+      }),
+    });
+    const handle = engine.start({ workflow: workflow(SEQUENTIAL) });
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        if (event.type === 'run:cancelled' || event.type === 'run:failed') settled = true;
+      }
+    })();
+    for (let i = 0; i < 200 && captured === undefined; i += 1) await Promise.resolve();
+    expect(captured).toBeDefined();
+
+    engine.cancel(handle.runId);
+    for (let i = 0; i < 200 && host.deadlineCount() === 0; i += 1) await Promise.resolve();
+    host.fireDeadlines();
+    for (let i = 0; i < 400 && !settled; i += 1) {
+      await Promise.resolve();
+      if (host.armedCount() > 0) host.fireTimers();
+    }
+    await consume;
+
+    // The straggler still holds its journal handle. `prepare` is refused — loudly, so a caller that ignores
+    // the rejection cannot mistake it for a durable claim and dispatch anyway.
+    const callsBefore = [...calls];
+    await expect(captured?.prepare(1, 'http_request', 3, {})).rejects.toBeInstanceOf(
+      EngineStateError,
+    );
+    expect(calls).toEqual(callsBefore); // the refused prepare never reached the port at all
+    // …and the underlying port was genuinely reached BEFORE the fence closed, so the wrapper is a filter and
+    // not a wall. Without this the whole live path — every effectful node's dispatch — could break and this
+    // test would stay green: mutating `return port.prepare(...args)` to throw left all 1355 tests passing.
+    expect(livePrepare).toEqual([{ slot: 7, toolId: 'run_command' }]);
+
+    // …while a receipt for work that already left the process still lands.
+    await captured?.settle(1, 'http_request', 'committed');
+    await captured?.discard(1, 'http_request');
+    // The live `prepare` is in this list and the refused one is not — which is the whole split.
+    expect(calls).toEqual(['prepare', 'settle', 'discard']);
+  });
+
+  it('a timed-out node cannot report success afterwards, while a sibling keeps the run alive (ADR-0085 §5)', async () => {
+    // **The window this item created, and `#settled` does not cover it.** When a node's own `timeout_ms`
+    // trips, `#dispatchBounded` settles it `failed` while `#dispatchLoop` keeps running. With a sibling still
+    // in flight the RUN has not settled — so the timed-out node's eventual outcome reaches `#onOutcome` on a
+    // live run and, unfenced, overwrites the timeout with a `completed`. A node reporting success for work
+    // the engine already told the user had timed out.
+    //
+    // Measured: removing the fence leaves all 1354 tests green, which is why this exists.
+    const TWO = `  id: two-nodes
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: start, type: input }
+    - { id: a, type: agent, agent_ref: ag, prompt_template: 'go', timeout_ms: 3000 }
+    - { id: b, type: transform, transform: 'b' }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: a }
+    - { from: start, to: b }
+    - { from: a, to: out }
+    - { from: b, to: out }`;
+    let releaseA: ((o: NodeOutcome) => void) | undefined;
+    let releaseB: ((o: NodeOutcome) => void) | undefined;
+    const host = createInMemoryHost();
+    const engine = engineWith(
+      {
+        a: () =>
+          new Promise<NodeOutcome>((resolve) => {
+            releaseA = resolve;
+          }),
+        b: () =>
+          new Promise<NodeOutcome>((resolve) => {
+            releaseB = resolve;
+          }),
+      },
+      host,
+    );
+    const handle = engine.start({ workflow: workflow(TWO) });
+    const events: RunEvent[] = [];
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        events.push(event);
+        if (event.type === 'run:completed' || event.type === 'run:failed') settled = true;
+      }
+    })();
+    for (let i = 0; i < 300 && (releaseA === undefined || releaseB === undefined); i += 1) {
+      await Promise.resolve();
+    }
+    expect(releaseA).toBeDefined();
+    expect(releaseB).toBeDefined();
+
+    // `a`'s bound trips. `b` is untouched, so the RUN is still live — which is the whole point.
+    host.fireDeadlines();
+    for (let i = 0; i < 300 && !events.some((e) => e.type === 'node:failed'); i += 1) {
+      await Promise.resolve();
+    }
+    const failedA = events.find((e) => e.type === 'node:failed');
+    expect(failedA?.type === 'node:failed' && failedA.nodeId).toBe('a');
+    expect(failedA?.type === 'node:failed' && failedA.error.code).toBe('run_timeout');
+    expect(settled).toBe(false); // …and the run has NOT ended — the sibling still holds it open
+
+    // Now `a`'s abandoned executor wakes and claims success.
+    releaseA?.({ kind: 'completed', output: 'too late' });
+    for (let i = 0; i < 300; i += 1) await Promise.resolve();
+
+    // It is refused: `a` has exactly one node terminal, and it is the timeout.
+    const aTerminals = events.filter(
+      (e) =>
+        (e.type === 'node:completed' || e.type === 'node:failed' || e.type === 'node:skipped') &&
+        e.nodeId === 'a',
+    );
+    expect(aTerminals).toHaveLength(1);
+    expect(aTerminals[0]?.type).toBe('node:failed');
+
+    releaseB?.({ kind: 'completed', output: 'b done' });
+    for (let i = 0; i < 400 && !settled; i += 1) {
+      await Promise.resolve();
+      if (host.armedCount() > 0) host.fireTimers();
+    }
+    await consume;
+  });
+
+  it('a resuming clock BEHIND cannot grow the run cap either (the gate half had this clamp, the run half did not)', async () => {
+    // `#elapsedMs()` differences THIS process's clock against `#startEpochMs`, seeded from ANOTHER process's
+    // `run:started`. A resuming clock running behind yields a negative elapsed and a remaining LARGER than
+    // the authored cap. Measured before the fix: an hour of skew re-armed a 60 000 ms cap at 3 660 000 ms.
+    // The gate half gained this clamp from the Step 3 round; the run half, twenty-five lines away, did not.
+    const TIMED = `  id: timed-skew
+  timeout_ms: 60000
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: out }`;
+    const store = new InMemoryRunStore();
+    const engineA = engineWith(
+      { g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?' } }) },
+      createInMemoryHost({ store }),
+    );
+    const handleA = engineA.start({ workflow: workflow(TIMED) });
+    let gateId = '';
+    let startedAt = '';
+    for await (const event of handleA.events) {
+      if (event.type === 'run:started') startedAt = event.timestamp;
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+
+    const nowB = new Date(Date.parse(startedAt) - 3_600_000).toISOString(); // an hour BEHIND
+    const baseHostB = createInMemoryHost({ store });
+    const armedWork: number[] = [];
+    const hostB: typeof baseHostB = {
+      ...baseHostB,
+      clock: { now: () => nowB },
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'work') armedWork.push(ms);
+        return baseHostB.setTimer(ms, onFire, kind);
+      },
+    };
+    const engineB = engineWith({}, hostB);
+    await drain(
+      await engineB.resumeFromCheckpoint({
+        runId: handleA.runId,
+        workflow: workflow(TIMED),
+        gateId,
+        decision: { decision: 'approved', decidedBy: 'h' },
+      }),
+    );
+
+    // Never longer than authored, whatever the two clocks think of each other.
+    expect(armedWork.every((ms) => ms <= 60_000)).toBe(true);
+    expect(armedWork).not.toContain(3_660_000);
+  });
+
+  it('a stale dispatch cannot move the run cost while its successor is live (ADR-0085 §5)', async () => {
+    // **The fence had to compare a CAPTURED id, and a first version compared a value against itself.** Both
+    // guards read `#dispatchIdForVertex.get(vertex.id)` at write time, and `#dispatch` writes the same id
+    // into both maps — so while any dispatch of the vertex is active the two sides were equal by
+    // construction and the predicate degenerated to `!#settled && has(vertex)`. That is exactly the "second
+    // boolean latch" ADR-0085 §5 rejects, because it cannot tell dispatch N from N+1 — and the
+    // budget-approved re-dispatch produces precisely that.
+    //
+    // Here dispatch N pauses for approval and keeps its `ctx.emit`; the approval re-dispatches the vertex;
+    // then N's captured closure fires a cost. Measured before the fix: it was DELIVERED.
+    const APPROVED = `  id: stale-cost
+  nodes:
+    - { id: gen, type: transform, transform: 'g' }
+    - { id: out, type: output }
+  edges:
+    - { from: gen, to: out }
+  budget:
+    max_cost_microcents: 100000000
+    on_exceed: pause_for_approval`;
+    let staleEmit: (() => void) | undefined;
+    let dispatches = 0;
+    const engine = engineWith({
+      gen: (ctx) => {
+        dispatches += 1;
+        if (dispatches === 1) {
+          // Keep dispatch N's closure alive past its own pause.
+          staleEmit = () => {
+            ctx.emit({
+              type: 'cost:updated',
+              nodeId: 'gen',
+              model: 'm',
+              inputTokens: 0,
+              outputTokens: 0,
+              costMicrocents: 999_999,
+              cumulativeCostMicrocents: 0,
+            });
+          };
+          return {
+            kind: 'paused',
+            gate: {
+              gateType: 'approval',
+              message: 'over budget — continue?',
+              isBudgetGate: true,
+              spentMicrocents: 900,
+              limitMicrocents: 1000,
+            },
+          };
+        }
+        staleEmit?.(); // dispatch N+1 is live; N's stale closure fires now
+        return { kind: 'completed', output: 'done' };
+      },
+    });
+    const handle = engine.start({ workflow: workflow(APPROVED) });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:paused') {
+        const gateId = event.gateIds[0];
+        if (gateId !== undefined) {
+          await engine.resume(handle.runId, gateId, { decision: 'approved', decidedBy: 'tester' });
+        }
+      }
+    }
+
+    expect(dispatches).toBe(2); // the premise: the approval really did re-dispatch
+    // **The stale closure's cost is not DELIVERED — and it IS folded.** An earlier version also asserted the
+    // run total never saw it, which was wrong in a way that lost real money: the counter is what
+    // `TurnMoneyPort.record` stamps as `cumulativeCostMicrocents`, and `refineCostAttemptSettled` rejects a
+    // row whose cumulative is below its own cost. Refusing the fold made a genuinely billed attempt produce
+    // `cumulative 0 < cost 999999`, rejected at a producer gate that runs OUTSIDE `#emitDurable`'s try — so
+    // it threw where the design assumes it cannot, and the durable ledger row was lost. A charge the
+    // provider took is recorded either way (ADR-0045 §5); the fence stops re-announcing a total to
+    // subscribers after the terminal published one.
+    const costs = events.filter((e) => e.type === 'cost:updated');
+    expect(costs.some((e) => e.type === 'cost:updated' && e.costMicrocents === 999_999)).toBe(
+      false,
+    );
+    const terminal = events.at(-1);
+    expect(terminal?.type).toBe('run:completed');
+    // …and the FOLD happened: the run total includes it. This is the assertion that would have caught the
+    // money loss — refusing the fold leaves the counter behind the ledger row that stamps from it.
+    expect(
+      terminal?.type === 'run:completed' && terminal.totalCostMicrocents,
+    ).toBeGreaterThanOrEqual(999_999);
+  });
+
+  it('a fault mid-abandonment still gives every other abandoned node its terminal (ADR-0085 §4)', async () => {
+    // **`#settleFailed` is not the total path its callers assume.** `#emitDurable` absorbs store faults, but
+    // `#bus.next` — which stamps the sequence number and Zod-parses the candidate — runs OUTSIDE that try,
+    // and so does `this.#host.ids.newId()` in the `node:failed` draft. A throw from either aborted
+    // `#onGraceElapsed`'s whole loop: every remaining abandoned node lost its `node:failed` (the omission §4
+    // forbids), the `#failure` fallback was skipped, `#schedule()` was skipped, and the rejection floated
+    // out of `void this.#onGraceElapsed()` — fatal under Node's default `--unhandled-rejections=throw`.
+    //
+    // The fault is injected at `ids.newId()` because that is the one draft-construction call the grace path
+    // makes on a host port, and it is one-shot so only the FIRST abandoned node is hit — which is the whole
+    // point: the second must still get its terminal.
+    const FANOUT = `  id: grace-fanout
+  nodes:
+    - { id: start, type: input }
+    - { id: a, type: transform, transform: 'g' }
+    - { id: b, type: transform, transform: 'g' }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: a }
+    - { from: start, to: b }
+    - { from: a, to: done }
+    - { from: b, to: done }`;
+    const base = createInMemoryHost();
+    let faultedOnce = false;
+    // Armed only just before the grace window fires. `newId()` is called during run setup and on every
+    // node terminal, so an always-on fault kills the run long before the path under test.
+    let armFault = false;
+    const host: typeof base = {
+      ...base,
+      ids: {
+        newId: () => {
+          if (armFault && !faultedOnce) {
+            faultedOnce = true;
+            throw new Error('id source unavailable');
+          }
+          return base.ids.newId();
+        },
+      },
+    };
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+    try {
+      const engine = engineWith(
+        {
+          a: () => new Promise<NodeOutcome>(() => undefined),
+          b: () => new Promise<NodeOutcome>(() => undefined),
+        },
+        host,
+      );
+      const handle = engine.start({ workflow: workflow(FANOUT) });
+      const events: RunEvent[] = [];
+      let settled = false;
+      const consume = (async (): Promise<void> => {
+        for await (const event of handle.events) {
+          events.push(event);
+          if (event.type === 'run:cancelled' || event.type === 'run:failed') settled = true;
+        }
+      })();
+
+      for (
+        let i = 0;
+        i < 400 && events.filter((e) => e.type === 'node:started').length < 3;
+        i += 1
+      ) {
+        await Promise.resolve();
+      }
+      engine.cancel(handle.runId);
+      for (let i = 0; i < 400 && host.deadlineCount() === 0; i += 1) await Promise.resolve();
+      armFault = true;
+      host.fireDeadlines();
+      for (let i = 0; i < 800 && !settled; i += 1) {
+        await Promise.resolve();
+        if (host.armedCount() > 0) host.fireTimers();
+      }
+      await consume;
+
+      // The load-bearing assertions: the run TERMINATES (it hung before), the SECOND abandoned node still
+      // got its terminal even though the first one's draft threw, and nothing floated.
+      expect(terminalsIn(events)).toHaveLength(1);
+      expect(faultedOnce).toBe(true); // the fault really was injected
+      expect(events.filter((e) => e.type === 'node:failed')).toHaveLength(1);
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+  });
+
+  it('a DISARM that throws cannot strand the grace backstop either (ADR-0085 §3)', async () => {
+    // The other half of the abandonment backstop, and it needs its own test because the per-vertex catch
+    // inside the loop does not cover it: `#onGraceElapsed` sweeps the node deadlines BEFORE the loop, so a
+    // host whose disarm function throws rejects the method outside every try it contains. Without the
+    // `.catch` at `void this.#onGraceElapsed()` that is an `unhandledRejection` AND a terminal-less run —
+    // the same pair the `#dispatch` call site guards against, on the one path that is supposed to be the
+    // last line of defence.
+    const BOUND = `  id: disarm-throws
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: start, type: input }
+    - { id: work, type: agent, agent_ref: ag, prompt_template: 'go', timeout_ms: 600000 }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: work }
+    - { from: work, to: done }`;
+    const base = createInMemoryHost();
+    let nodeDeadlineArmed = false;
+    const host: typeof base = {
+      ...base,
+      setTimer: (ms, fire, kind) => {
+        const disarm = base.setTimer(ms, fire, kind);
+        // **Selected by DELAY, not by arm order** — a break-verify caught the order assumption being wrong.
+        // `node:started` is emitted BEFORE `#dispatch` arms the node bound, so a cancel landing in that gap
+        // arms the 10 s grace window FIRST. Picking "the first `'deadline'`" made this test fault the grace
+        // disarm, which `#onGraceElapsed` never calls (it clears `#graceDisarm` without invoking it) — so
+        // the test passed with the production fix reverted. The authored 600 000 is unambiguous.
+        if (kind !== 'deadline' || ms !== 600_000) return disarm;
+        nodeDeadlineArmed = true;
+        return () => {
+          throw new Error('disarm failed');
+        };
+      },
+    };
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+    try {
+      const engine = engineWith({ work: () => new Promise<NodeOutcome>(() => undefined) }, host);
+      const handle = engine.start({ workflow: workflow(BOUND) });
+      const events: RunEvent[] = [];
+      let settled = false;
+      const consume = (async (): Promise<void> => {
+        for await (const event of handle.events) {
+          events.push(event);
+          if (event.type === 'run:cancelled' || event.type === 'run:failed') settled = true;
+        }
+      })();
+
+      for (
+        let i = 0;
+        i < 400 && !events.some((e) => e.type === 'node:started' && e.nodeId === 'work');
+        i += 1
+      ) {
+        await Promise.resolve();
+      }
+      engine.cancel(handle.runId);
+      for (let i = 0; i < 400 && host.deadlineCount() < 2; i += 1) await Promise.resolve();
+      expect(nodeDeadlineArmed).toBe(true); // the node bound is armed, with the throwing disarm attached
+      host.fireDeadlines();
+      for (let i = 0; i < 800 && !settled; i += 1) {
+        await Promise.resolve();
+        if (host.armedCount() > 0) host.fireTimers();
+      }
+      await consume;
+
+      expect(terminalsIn(events)).toHaveLength(1); // it terminates at all — it hung before
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+  });
+
+  it('a host whose `setTimer` throws still reaches exactly one terminal — no floating rejection (ADR-0085 §6)', async () => {
+    // **A synchronous host fault used to strand the run.** `#armNodeDeadline` runs OUTSIDE `#dispatch`'s
+    // `try`, so a host whose `setTimer` throws rejects the promise at `void this.#dispatch(...)`. Un-caught
+    // that is an `unhandledRejection` AND a terminal-less run: the node stays `running`, `#handleIdle` sees
+    // work in flight forever, and no `run:failed` is ever published. The call site now routes it to
+    // `#failNodeInternal`, the same backstop every other internal fault uses.
+    const FAULTY = `  id: faulty-host
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: start, type: input }
+    - { id: work, type: agent, agent_ref: ag, prompt_template: 'go', timeout_ms: 5000 }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: work }
+    - { from: work, to: done }`;
+    const base = createInMemoryHost();
+    let faultedOnce = false;
+    const host: typeof base = {
+      ...base,
+      setTimer: (ms, fire, kind) => {
+        // ONE-SHOT, and it must be: `'deadline'` is also the kind the abort path's own arms use, so a
+        // permanently faulting host breaks the very settle this test asserts and proves nothing about the
+        // dispatch call site. The first `'deadline'` arm of this run IS `work`'s node deadline — `start` is
+        // an `input` node with no `timeout_ms`.
+        if (kind === 'deadline' && !faultedOnce) {
+          faultedOnce = true;
+          throw new Error('host clock unavailable');
+        }
+        return base.setTimer(ms, fire, kind);
+      },
+    };
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+    try {
+      const engine = engineWith({ work: () => new Promise<NodeOutcome>(() => undefined) }, host);
+      // The run TERMINATES — this `drain` hung forever under the old behaviour, which is the bug.
+      const events = await drain(engine.start({ workflow: workflow(FAULTY) }));
+      const terminal = events.at(-1);
+      expect(terminal?.type).toBe('run:failed');
+      expect(terminal?.type === 'run:failed' && terminal.error.message).toContain(
+        'host clock unavailable',
+      );
+      expect(
+        events.filter((e) => e.type === 'run:failed' || e.type === 'run:completed'),
+      ).toHaveLength(1);
+      // Give any floating rejection a full macrotask to surface before asserting there was none. A REAL
+      // `setTimeout` — the in-memory host's timers are a manual controller that never fires on its own, so
+      // parking on `base.setTimer` here would hang the test rather than yield to the runtime.
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+  });
+
+  it("a budget-approved RE-dispatch does not renew the node's `timeout_ms` (ADR-0085 §2)", async () => {
+    // **"Absolute per node" was absolute per DISPATCH, and nothing saw it.** An approved budget gate returns
+    // the vertex to `pending` (`#claimReady` re-claims it), so the node got a second `#dispatch` — and a
+    // second FULL-length bound. A node that pauses for approval and continues could spend 2 × `timeout_ms`,
+    // which is the same shape as `CR-22`'s run cap renewing on every resume, one level down. Reverting to a
+    // fresh bound per dispatch left all 110 tests in this file green.
+    const APPROVED = `  id: budget-redispatch
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: gen, type: agent, agent_ref: a, prompt_template: 'go', timeout_ms: 5000 }
+    - { id: out, type: output }
+  edges:
+    - { from: gen, to: out }
+  budget:
+    max_cost_microcents: 100000000
+    on_exceed: pause_for_approval`;
+    const base = createInMemoryHost();
+    const armed: number[] = [];
+    const host: typeof base = {
+      ...base,
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'deadline') armed.push(ms);
+        return base.setTimer(ms, onFire, kind);
+      },
+    };
+    let dispatches = 0;
+    const engine = engineWith(
+      {
+        gen: () => {
+          dispatches += 1;
+          if (dispatches === 1) {
+            return {
+              kind: 'paused',
+              gate: {
+                gateType: 'approval',
+                message: 'over budget — continue?',
+                isBudgetGate: true,
+                spentMicrocents: 900,
+                limitMicrocents: 1000,
+              },
+            };
+          }
+          return { kind: 'completed', output: 'done' };
+        },
+      },
+      host,
+    );
+    const handle = engine.start({ workflow: workflow(APPROVED) });
+    for await (const event of handle.events) {
+      if (event.type === 'run:paused') {
+        const gateId = event.gateIds[0];
+        if (gateId !== undefined) {
+          await engine.resume(handle.runId, gateId, { decision: 'approved', decidedBy: 'tester' });
+        }
+      }
+    }
+
+    expect(dispatches).toBe(2); // the approval really did re-dispatch — the premise, not the claim
+    // **Armed ONCE, for the node, and not re-armed by the re-dispatch.** An earlier version expected two
+    // arms with the second smaller, because the deadline was owned by the dispatch call. It is owned by the
+    // RUN now and survives the park, which is the stronger property: a renewing bound would appear here as
+    // a second 5000.
+    expect(armed).toEqual([5000]);
+  });
+
+  it('a cancel treats a node WITH `timeout_ms` exactly like one without (ADR-0085 §3)', async () => {
+    // **An asymmetry nobody decided.** `openDeadline.race` returns `{outcome:'deadline'}` for a caller abort
+    // as well as an elapsed bound, and settling on both gave a node carrying `timeout_ms` ZERO grace on
+    // cancel while an unbounded node got the full 10 s window. An author writing `timeout_ms` is bounding
+    // WORK time; nothing about that says "and give me no cleanup window if the run is cancelled". It also
+    // negated §3's own justification for the window — "would abandon well-behaved work that was seconds from
+    // returning" — for precisely the nodes someone had thought about.
+    //
+    // Both shapes now behave identically: the cancel arms the window, and the node settles only when the
+    // window elapses or the executor gets there first.
+    const withBound = `  id: cancel-bounded
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: start, type: input }
+    - { id: work, type: agent, agent_ref: ag, prompt_template: 'go', timeout_ms: 60000 }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: work }
+    - { from: work, to: done }`;
+
+    const observe = async (wf: string): Promise<{ settledBeforeGrace: boolean }> => {
+      const host = createInMemoryHost();
+      const engine = engineWith({ work: () => new Promise<NodeOutcome>(() => undefined) }, host);
+      const handle = engine.start({ workflow: workflow(wf) });
+      let settled = false;
+      let started = false;
+      const consume = (async (): Promise<void> => {
+        for await (const event of handle.events) {
+          if (event.type === 'node:started' && event.nodeId === 'work') started = true;
+          if (event.type === 'run:cancelled' || event.type === 'run:failed') settled = true;
+        }
+      })();
+      // Wait for the node to be genuinely in flight — a cancel before it starts settles the run at once and
+      // neither shape reaches the path under test. `deadlineCount()` cannot be the trigger here: the bounded
+      // shape has already armed its own node deadline, which is the same kind.
+      for (let i = 0; i < 300 && !started; i += 1) await Promise.resolve();
+      expect(started).toBe(true);
+      engine.cancel(handle.runId);
+      // Pump generously WITHOUT firing any backstop.
+      for (let i = 0; i < 300; i += 1) await Promise.resolve();
+      // Pump WITHOUT firing the backstop. A node that settles here got no grace at all.
+      const settledBeforeGrace = settled;
+      host.fireDeadlines();
+      for (let i = 0; i < 400 && !settled; i += 1) {
+        await Promise.resolve();
+        if (host.armedCount() > 0) host.fireTimers();
+      }
+      await consume;
+      return { settledBeforeGrace };
+    };
+
+    const bounded = await observe(withBound);
+    const unbounded = await observe(SEQUENTIAL);
+    // The load-bearing assertion is the EQUALITY: whatever the grace policy is, an authored `timeout_ms`
+    // must not silently change it.
+    expect(bounded.settledBeforeGrace).toBe(unbounded.settledBeforeGrace);
+    expect(bounded.settledBeforeGrace).toBe(false); // …and neither is abandoned before the window elapses
+  });
+
+  it('a bounded node that settles cooperatively INSIDE the grace window keeps its cost (ADR-0085 §3/§5)', async () => {
+    // **The fence slot must outlive `#dispatchBounded`'s early return.** On a caller abort that method
+    // returns while `#dispatchLoop` is still running — deliberately, so the grace window governs. Releasing
+    // the vertex's `#activeDispatchByVertex` entry in `#dispatch`'s `finally` then un-fenced a node that was
+    // still legitimately live: if its executor settled cooperatively inside the window, `#isLive` refused
+    // its `cost:updated` fold and, worse, its `save_to` write. The window exists to let exactly that land.
+    let release: ((o: NodeOutcome) => void) | undefined;
+    let emitCost: (() => void) | undefined;
+    const BOUNDED = `  id: cooperative-bounded
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: start, type: input }
+    - { id: work, type: agent, agent_ref: ag, prompt_template: 'go', timeout_ms: 60000 }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: work }
+    - { from: work, to: done }`;
+    const host = createInMemoryHost();
+    const engine = new WorkflowEngine({
+      host,
+      executor: {
+        execute: (ctx) =>
+          ctx.vertex.id === 'work'
+            ? new Promise<NodeOutcome>((resolve) => {
+                release = resolve;
+                emitCost = () => {
+                  ctx.emit({
+                    type: 'cost:updated',
+                    nodeId: 'work',
+                    model: 'm',
+                    inputTokens: 0,
+                    outputTokens: 0,
+                    costMicrocents: 4_242,
+                    cumulativeCostMicrocents: 0,
+                  });
+                };
+              })
+            : Promise.resolve({ kind: 'completed', output: ctx.vertex.id }),
+      },
+    });
+    const handle = engine.start({ workflow: workflow(BOUNDED) });
+    const seen: RunEvent[] = [];
+    handle.subscribe((event) => {
+      seen.push(event);
+    });
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        if (event.type === 'run:cancelled' || event.type === 'run:failed') settled = true;
+      }
+    })();
+    for (let i = 0; i < 300 && release === undefined; i += 1) await Promise.resolve();
+    expect(release).toBeDefined();
+
+    engine.cancel(handle.runId); // the node is handed to the grace window, still running
+    for (let i = 0; i < 200; i += 1) await Promise.resolve();
+
+    // The executor honours its signal and settles INSIDE the window, reporting what it spent.
+    emitCost?.();
+    release?.({
+      kind: 'failed',
+      error: { code: 'cancelled', message: 'stopped', retryable: false },
+    });
+    for (let i = 0; i < 400 && !settled; i += 1) {
+      await Promise.resolve();
+      if (host.armedCount() > 0) host.fireTimers();
+      if (host.deadlineCount() > 0) host.fireDeadlines();
+    }
+    await consume;
+
+    // Its cost was NOT refused — the node was live, not a straggler.
+    expect(seen.some((e) => e.type === 'cost:updated' && e.costMicrocents === 4_242)).toBe(true);
+  });
+
+  it('a node with no `timeout_ms` arms no node deadline', async () => {
+    // The negative control. Without it the test above passes for an implementation that bounds every node at
+    // some default — a different product decision nobody made.
+    const base = createInMemoryHost();
+    const armed: number[] = [];
+    const host: typeof base = {
+      ...base,
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'deadline') armed.push(ms);
+        return base.setTimer(ms, onFire, kind);
+      },
+    };
+    await drain(
+      engineWith({ work: () => ({ kind: 'completed', output: 'x' }) }, host).start({
+        workflow: workflow(SEQUENTIAL),
+      }),
+    );
+    expect(armed).toEqual([]);
+  });
+
+  it('a run resumed PAST its `timeout_ms` arms at zero, never a negative duration', async () => {
+    // The run half's `Math.max(0, …)` clamp had no test: removing it left all 1339 core tests green, and it
+    // is invisible to coverage because `Math.max` is a call, not a branch, so v8 reports the line covered.
+    // The gate half had a past-deadline test from the start; this is its missing twin.
+    const TIMED = `  id: timed-expired
+  timeout_ms: 1000
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: out }`;
+    const store = new InMemoryRunStore();
+    const engineA = engineWith(
+      { g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?' } }) },
+      createInMemoryHost({ store }),
+    );
+    const handleA = engineA.start({ workflow: workflow(TIMED) });
+    let gateId = '';
+    let startedAt = '';
+    for await (const event of handleA.events) {
+      if (event.type === 'run:started') startedAt = event.timestamp;
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+
+    // Resume a full minute past a one-second cap — the budget is long gone.
+    const nowB = new Date(Date.parse(startedAt) + 60_000).toISOString();
+    const baseHostB = createInMemoryHost({ store });
+    const armedWork: number[] = [];
+    const hostB: typeof baseHostB = {
+      ...baseHostB,
+      clock: { now: () => nowB },
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'work') armedWork.push(ms);
+        return baseHostB.setTimer(ms, onFire, kind);
+      },
+    };
+    const engineB = engineWith({}, hostB);
+    const handleB = await engineB.resumeFromCheckpoint({
+      runId: handleA.runId,
+      workflow: workflow(TIMED),
+      gateId,
+      decision: { decision: 'approved', decidedBy: 'h' },
+    });
+    await drain(handleB);
+
+    // Zero, not −59 000. A negative duration handed to a host `setTimeout` is a fire-immediately on Node and
+    // undefined behaviour on another host; the clamp is what makes the expired case one shape everywhere.
+    expect(armedWork).toContain(0);
+    expect(armedWork.every((ms) => ms >= 0)).toBe(true);
+  });
+
+  it('a SURVIVING gate keeps its deadline across the resume — the case the item exists for', async () => {
+    // **The motivating case, and it had no test.** The sibling tests all resume a run's ONLY gate — which
+    // `resume()` disarms two lines later, i.e. precisely the "target gate" case the old deferral was right
+    // to say did not matter. What `CR-22` actually fixes is a gate that survives the resume: a multi-gate
+    // run, or a crash while parked, rehydrated its remaining gates with NO timer, so their deadlines
+    // stopped existing until the next restart.
+    //
+    // Two gates, resume one, assert the OTHER still holds a deadline — at its remaining time, and still
+    // armed after the resume has settled into its next park.
+    const MULTIGATE = `  id: multigate
+  nodes:
+    - { id: start, type: input }
+    - { id: g1, type: human_gate, gate_type: approval }
+    - { id: g2, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g1 }
+    - { from: start, to: g2 }
+    - { from: g1, to: out }
+    - { from: g2, to: out }`;
+    const store = new InMemoryRunStore();
+    const gate = (message: string) => ({
+      kind: 'paused' as const,
+      gate: {
+        gateType: 'approval' as const,
+        message,
+        timeoutMs: 5000,
+        timeoutAction: 'reject' as const,
+      },
+    });
+    const engineA = engineWith(
+      { g1: () => gate('first?'), g2: () => gate('second?') },
+      createInMemoryHost({ store }),
+    );
+    const handleA = engineA.start({ workflow: workflow(MULTIGATE) });
+    const gateIds: string[] = [];
+    const expiries: string[] = [];
+    for await (const event of handleA.events) {
+      if (event.type === 'human_gate:paused') {
+        gateIds.push(event.gateId);
+        expiries.push(event.expiresAt ?? '');
+      }
+      if (event.type === 'run:paused' && gateIds.length === 2) break;
+    }
+    expect(gateIds).toHaveLength(2);
+
+    // The two gates park a few clock ticks apart (the in-memory clock advances per read), so they expire at
+    // slightly different instants. Pin `now` off the first and compute BOTH expected remainings exactly —
+    // a band assertion would hide an off-by-one in the arithmetic this test exists to check.
+    const nowB = new Date(Date.parse(expiries[0] ?? '') - 4000).toISOString();
+    const expectedRemaining = expiries.map((e) => Date.parse(e) - Date.parse(nowB));
+    const baseHostB = createInMemoryHost({ store });
+    const armedWork: number[] = [];
+    const hostB: typeof baseHostB = {
+      ...baseHostB,
+      clock: { now: () => nowB },
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'work') armedWork.push(ms);
+        return baseHostB.setTimer(ms, onFire, kind);
+      },
+    };
+    const engineB = engineWith({ g2: () => gate('second?') }, hostB);
+    const handleB = await engineB.resumeFromCheckpoint({
+      runId: handleA.runId,
+      workflow: workflow(MULTIGATE),
+      gateId: gateIds[0] ?? '',
+      decision: { decision: 'approved', decidedBy: 'h' },
+    });
+    for await (const event of handleB.events) {
+      if (event.type === 'run:paused') break; // re-parked on the surviving gate
+    }
+
+    // BOTH gates were re-armed at their own remaining time — the surviving one is the point. Before the fix
+    // this array was empty, because rehydration armed nothing at all.
+    expect(expectedRemaining[0]).toBe(4000); // …and the arithmetic is what it claims
+    for (const ms of expectedRemaining) expect(armedWork).toContain(ms);
+    // …and the survivor's timer is still live after the resume settled: the decision disarmed only its own.
+    expect(baseHostB.armedCount()).toBeGreaterThan(0);
+  });
+
+  it('a gate whose deadline ALREADY passed re-arms at zero rather than resolving inline', async () => {
+    // The past-deadline case has to travel the same `#onGateTimeout` path as a live expiry, or a
+    // past-deadline resume and an expiring live run would produce two differently-shaped exits for one
+    // condition. Arming at zero is what keeps it to one: the timer fires on the next tick.
+    const store = new InMemoryRunStore();
+    const engineA = engineWith(
+      {
+        g: () => ({
+          kind: 'paused',
+          gate: { gateType: 'approval', message: 'ok?', timeoutMs: 1000, timeoutAction: 'reject' },
+        }),
+      },
+      createInMemoryHost({ store }),
+    );
+    const handleA = engineA.start({ workflow: workflow(GATED) });
+    let gateId = '';
+    let expiresAt = '';
+    for await (const event of handleA.events) {
+      if (event.type === 'human_gate:paused') expiresAt = event.expiresAt ?? '';
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+
+    const nowB = new Date(Date.parse(expiresAt) + 60_000).toISOString(); // a minute PAST the deadline
+    const baseHostB = createInMemoryHost({ store });
+    const armedWork: number[] = [];
+    const hostB: typeof baseHostB = {
+      ...baseHostB,
+      clock: { now: () => nowB },
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'work') armedWork.push(ms);
+        return baseHostB.setTimer(ms, onFire, kind);
+      },
+    };
+    const engineB = engineWith({}, hostB);
+    const handleB = await engineB.resumeFromCheckpoint({
+      runId: handleA.runId,
+      workflow: workflow(GATED),
+      gateId,
+      decision: { decision: 'approved', decidedBy: 'h' },
+    });
+    await drain(handleB);
+
+    // Clamped at zero — never a negative duration handed to a host timer. Exact, for the same reason as
+    // its siblings: with a one-element array `every(ms => ms >= 0)` was implied by the value assertion and
+    // could never be the failing line.
+    expect(armedWork).toEqual([0]);
   });
 });
 

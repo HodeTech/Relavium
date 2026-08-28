@@ -218,7 +218,7 @@ Each node has an `id` (kebab-case, unique within the workflow) and a `type`. The
 | `type` | Purpose | Key fields |
 | --- | --- | --- |
 | `input` | Workflow entry point; emits the resolved inputs. | — |
-| `agent` | Invoke an agent (LLM call with tools). | `agent_ref`, `prompt_template`, `tools`, `model`, `temperature`, `max_tokens`, `output_modalities`, `timeout_ms`, `retry` |
+| `agent` | Invoke an agent (LLM call with tools). | `agent_ref`, `prompt_template`, `tools`, `model`, `temperature`, `max_tokens`, `output_modalities`, `timeout_ms` (absolute across attempts and re-dispatches — a `retry` budget does not multiply it; exceeding it fails the node `run_timeout`, non-retryable), `retry` |
 | `human_gate` | Pause for human approval / input / review. | `gate_type`, `assignee`, `message_template`, `timeout_ms`, `timeout_action` |
 | `condition` | Branch on a JS expression over run outputs. | `expression`, `branches[]` (`when`, `target_node`), `default`, `retry` |
 | `transform` | Reshape state without an LLM (JS expression). | `transform`, `retry` |

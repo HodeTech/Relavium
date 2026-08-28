@@ -722,7 +722,7 @@ security-sensitive `gate.ts` cross-process resume path, so they land together wi
   relaxing today's fail-closed `MaskedSecret` exit-2 — behind a
   **mandatory security review** (this deliberately relaxes a fail-closed guarantee into
   allow-with-re-provisioning).
-- **Gate timeout re-arm on rehydration** *(deferred pull-in)*: re-arm a still-pending gate's persisted
+- ✅ **DONE — closed in Phase 2.6.5 `CR-22` (2026-08-27), ahead of this workstream.** **Gate timeout re-arm on rehydration** *(deferred pull-in)*: re-arm a still-pending gate's persisted
   `expiresAt`/`timeoutAction` against a real clock on reconcile/resume, so a crash-while-paused run's
   deadline is honored.
 - **Exit-code fidelity** *(deferred pull-in)*: distinguish a gate park from a media-only park on
@@ -1256,7 +1256,7 @@ workstreams — each stays checked off **only** in the PR that lands it:
 | MCP tool-list cache · network header auth (§6) · mid-call abort | 2.6.I |
 | `relavium budget resume` command (documented, unimplemented) | 2.6.K |
 | Re-provide `secret`-typed inputs on cross-process resume | 2.6.K |
-| Re-arm a still-pending gate's timeout on rehydration | 2.6.K |
+| Re-arm a still-pending gate's timeout on rehydration | ~~2.6.K~~ → 2.6.5 (closed in 2.6.5 `CR-22`, 2026-08-27) |
 | `run:paused` gate-park vs media-park exit distinction | 2.6.K |
 | Session budget pause/resume (EA4 ride; 1.V follow-up) | 2.6.K |
 | i18n CI key-parity + data/code separation standard | 2.6.L |

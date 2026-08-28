@@ -1,4 +1,4 @@
-import type { AbortSignalLike } from '@relavium/shared';
+import type { AbortControllerLike, AbortSignalLike } from '@relavium/shared';
 
 /**
  * The host timer behind the engine's `sleep` seam — the `setTimeout` the platform-free packages cannot reach.
@@ -53,7 +53,7 @@ export function hostSleep(ms: number, signal?: AbortSignalLike): Promise<void> {
  * The leak this would guard against is already impossible: the chain disposes the scope in a `finally` on
  * every exit, including success.
  */
-export function hostAttemptTimer(ms: number, fire: () => void): () => void {
+export function hostDeadlineTimer(ms: number, fire: () => void): () => void {
   const timer = setTimeout(fire, ms);
   return () => {
     clearTimeout(timer);
@@ -63,11 +63,14 @@ export function hostAttemptTimer(ms: number, fire: () => void): () => void {
 /**
  * A real `AbortController` for the engine's deadline scope — the seam is platform-free and names no
  * DOM/Node type, so the host supplies one whose signal a `fetch` in an adapter can also observe.
+ *
+ * Annotated with the shared `AbortControllerLike` rather than an inline structural literal, which is what
+ * this was. That literal had already drifted — it declared `signal` without the `readonly` the real type
+ * carries — and a grep for `interface AbortControllerLike` is structurally blind to it, which is how the
+ * "exactly one definition" check ADR-0085 §9's move relied on missed a third copy sitting at the host
+ * wiring point for the very primitive that moved.
  */
-export function hostAbortController(): {
-  signal: AbortSignalLike;
-  abort: (reason?: unknown) => void;
-} {
+export function hostAbortController(): AbortControllerLike {
   const controller = new AbortController();
   return { signal: controller.signal, abort: (reason?: unknown) => controller.abort(reason) };
 }

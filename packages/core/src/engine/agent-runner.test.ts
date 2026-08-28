@@ -1,3 +1,4 @@
+import { MEDIA_GEN_SUBMIT_TIMEOUT_MS } from '@relavium/shared';
 import type { Agent, ContentPart, OutputModality, ReasoningEffort } from '@relavium/shared';
 import { LlmProviderError, UnsupportedCapabilityError, makeLlmError } from '@relavium/llm';
 import type {
@@ -1061,6 +1062,59 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
       }),
     );
     expect((await exec.execute(ctxFor(genVertex()).ctx)).kind).toBe('paused');
+  });
+
+  it('CR-21b: a cancel during a HUNG generateMedia is `cancelled`, not a 120 s `provider_unavailable`', async () => {
+    // **The regression `CR-21b` shipped, and the branch every prior cancel test avoided.** The bound opens a
+    // scope whose merged signal REPLACES `ctx.signal` on the request — so the merge is the only thing still
+    // connecting a run cancel to the adapter. Opened without a caller signal, three things broke at once: the
+    // adapter never saw the cancel (its controller is aborted only by the 120 s timer), `race()` had no
+    // caller waker so the node waited out the whole bound after a Ctrl-C, and `classify()` could never
+    // return `'caller'`, making the `cancelled` arm dead code that reported a cancel as a RETRYABLE
+    // `provider_unavailable` — which a node-retry budget can then spend on a second paid submission.
+    //
+    // Every other generative cancel test in this file wires no timer port, so all of them take the
+    // `deadline === undefined` arm — the branch `CR-21b` did not change. That is the same "the port is
+    // forwarded and the test takes the branch that does not use it" shape the commit itself named.
+    let adapterSawCancel = false;
+    const caller = new AbortController();
+    const provider: LlmProvider = {
+      ...generativeProvider(),
+      // Never settles, but DOES honour its signal — a well-behaved adapter, which is what makes the
+      // assertion about the merge rather than about the race.
+      generateMedia: (req) =>
+        new Promise((_resolve, reject) => {
+          req.signal?.addEventListener('abort', () => {
+            adapterSawCancel = true;
+            reject(new Error('aborted'));
+          });
+        }),
+    };
+    const { ctx } = ctxFor(genVertex());
+    const armed: number[] = [];
+    const outcome = createAgentNodeExecutor(
+      genDeps(provider, {
+        newAbortController: () => new AbortController(),
+        // Armed but NEVER fired: if the deadline had to fire for this to settle, the defect is present.
+        setTimer: (ms: number) => {
+          armed.push(ms);
+          return () => undefined;
+        },
+      }),
+    ).execute({ ...ctx, signal: caller.signal });
+
+    for (let i = 0; i < 200 && armed.length === 0; i += 1) await Promise.resolve();
+    expect(armed).toEqual([MEDIA_GEN_SUBMIT_TIMEOUT_MS]); // the bound is armed, and it is the right one
+    caller.abort();
+
+    // Assert the merge BEFORE awaiting the outcome. Without this the mutation reddens only by a 5 s vitest
+    // timeout — honest, since waiting out the bound IS the defect, but it cannot tell "the adapter never
+    // heard the cancel" from "the outcome never settled for some other reason". Draining bounded microtasks
+    // and checking the adapter turns that into a 3 ms assertion that names which.
+    for (let i = 0; i < 200 && !adapterSawCancel; i += 1) await Promise.resolve();
+    expect(adapterSawCancel).toBe(true); // the provider was actually told to stop — the merge held
+
+    expect(await outcome).toMatchObject({ kind: 'failed', error: { code: 'cancelled' } });
   });
 
   it('a cancel landing DURING generateMedia (the post-await re-check) → cancelled, no stray cost:updated', async () => {

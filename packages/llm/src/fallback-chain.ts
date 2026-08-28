@@ -7,7 +7,7 @@ import {
   openDeadline,
   type AbortControllerLike,
   type DeadlineScope,
-  type SetAttemptTimer,
+  type SetDeadlineTimer,
 } from './attempt-deadline.js';
 import { isRetryable, LlmProviderError, makeLlmError } from './llm-error.js';
 import { verifyStreamGrammar } from './stream-grammar.js';
@@ -183,7 +183,7 @@ export interface FallbackChainOptions {
    * than half-applying the guarantee.
    */
   readonly newAbortController?: () => AbortControllerLike;
-  readonly setTimer?: SetAttemptTimer;
+  readonly setTimer?: SetDeadlineTimer;
   /** Per-attempt deadline in ms (default {@link DEFAULT_ATTEMPT_TIMEOUT_MS}). Must be finite and positive. */
   readonly attemptTimeoutMs?: number;
   /** Base backoff delay in ms before the first retry of an entry (default 250). */
@@ -365,7 +365,7 @@ export class FallbackChain {
   readonly #sleep: (ms: number, signal?: AbortSignalLike) => Promise<void>;
   readonly #attemptTimeoutMs: number;
   readonly #newAbortController: (() => AbortControllerLike) | undefined;
-  readonly #setTimer: SetAttemptTimer | undefined;
+  readonly #setTimer: SetDeadlineTimer | undefined;
   readonly #now: () => number;
   readonly #backoffBaseMs: number;
   readonly #backoffMaxMs: number;
@@ -601,6 +601,16 @@ export class FallbackChain {
         ...(maxTokens === undefined ? {} : { maxTokens }),
       });
       const key = await this.#resolveKey(entry.provider.id);
+      // **Re-check the caller AFTER credential resolution, BEFORE the seam call.** `#resolveKey` is I/O — a
+      // keychain read, and in Phase 2 a network one — so a cancel landing inside it used to be invisible
+      // here: the provider was invoked, the deadline opened afterwards latched an already-aborted caller,
+      // and `race()` reported `cancelled` for a request that had nonetheless gone out. A cancelled run must
+      // not produce provider traffic, let alone a charge.
+      if (this.#aborted(entryReq)) {
+        const error = this.#cancelledError(entry.provider.id);
+        this.#emit({ ...record, outcome: 'failed', error });
+        return { status: 'error', error };
+      }
       deadline = this.#openDeadline(entryReq);
       const call = entry.provider.generate(
         deadline === undefined ? entryReq : withSignal(entryReq, deadline.signal),
@@ -689,6 +699,14 @@ export class FallbackChain {
         ...(maxTokens === undefined ? {} : { maxTokens }),
       });
       const key = await this.#resolveKey(entry.provider.id);
+      // **Re-check the caller AFTER credential resolution, BEFORE the seam call.** `#resolveKey` is I/O — a
+      // keychain read, and in Phase 2 a network one — so a cancel landing inside it used to be invisible
+      // here: the provider was invoked, the deadline opened afterwards latched an already-aborted caller,
+      // and `race()` reported `cancelled` for a request that had nonetheless gone out. A cancelled run must
+      // not produce provider traffic, let alone a charge.
+      if (this.#aborted(entryReq)) {
+        return yield* this.#failAttempt(record, this.#cancelledError(entry.provider.id), state);
+      }
       // **The grammar is verified HERE, where the seam is crossed** (ADR-0082 §3). The audited adapters
       // already detect a truncated stream and keep doing so — better-attributed, since an adapter knows it
       // was reading SSE — but the chain accepts ANY `LLMProvider`: a cassette, a test double, and in Phase 2

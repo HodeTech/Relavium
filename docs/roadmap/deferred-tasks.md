@@ -2,8 +2,9 @@
 
 > Status: Living
 
-> Last updated: 2026-07-29 — the Phase-2.6 rewrite triaged every open item and the 2026-07-19 full-project
-> review added the deliberately-unscheduled block at the end.
+> Last updated: 2026-08-27 — the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
+> review added the deliberately-unscheduled block at the end, and Phase 2.6.5's `W1` and `W2` residual
+> sections were appended as those waves closed.
 >
 > **Lifecycle states**, because this file mixes three: `- [ ]` = unscheduled and actionable ·
 > **Scheduled → 2.6.X / → 2.5.5.X** = owned by that workstream, still unchecked until the PR that lands it ·
@@ -319,6 +320,77 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   there is concrete surface demand or telemetry showing operators need an earlier signal.
   *(1.AC; ADR-0028; config-spec.md; workflow-yaml-spec.md)*
 
+## Phase 2.6.5 `W2` residuals ([ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md), 2026-08-25)
+
+The first two are **named by ADR-0085 itself** — §7 and §6 each accept a risk rather than close it, and an
+accepted risk with no tracked home is indistinguishable from one nobody noticed. The ADR's §9 requires this
+recording, and a Sonnet review round caught that §7 already claimed it in the present tense while the file
+had never been touched.
+
+- [ ] **Executor quarantine, and the trigger that would make it necessary
+  ([ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §7).**
+  ADR-0085 declines quarantine and records the reasoning: on the only host that exists, the CLI runs one
+  workflow per process and exits, so an abandoned dispatch outlives the run by at most the process. But
+  `WorkflowEngine` holds ONE `#executor` across a reusable `#runs` map and accepts repeated `start()` calls,
+  so a later run enters the same handler object — `retryable: false` bounds re-dispatch *within* a run and
+  nothing bounds it across runs. **Trigger: the first long-lived host that drives more than one run through
+  one `WorkflowEngine`** — the desktop app or the VS Code extension, neither of which has source today. That
+  host must either add a quarantine or MEASURE that accumulation is harmless; ADR-0085 does not license
+  assuming the latter. *(medium · packages/core/src/engine/engine.ts; ADR-0085 §7)*
+- [ ] **Bound the host persistence seam, or decide what a run may do when it cannot learn whether its own
+  write landed ([ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §6).**
+  `RunStore.persistEvent` is `Promise`-typed and `#emitDurable` catches a REJECTION but still awaits a
+  promise that never settles, so a hanging store hangs the run and no timer in ADR-0085 changes that. Not
+  reachable on the shipping SQLite store (bounded and fail-loud at ~25 s), real for a future async or cloud
+  store. **This is the half of ADR-0036's "structurally impossible" claim that stays conditional.** Deferred
+  deliberately: bounding a durable write raises a question ADR-0085 must not answer in passing — what a run
+  is allowed to do when the outcome of its own write is unknowable. *(high · packages/core/src/engine/engine.ts;
+  ADR-0085 §6; Phase-2 cloud store)*
+- [ ] **`onAuthError` is forwarded to the chain and exercised by nothing above it.**
+  `agent-runner.ts` and `agent-session.ts` both conditionally spread `onAuthError` into `ChainCapabilities`;
+  deleting BOTH lines leaves the entire core suite green (1337/1337, measured 2026-08-27), and no core test
+  references it. **Deliberately NOT filed as a `CR-21`-class defect, and the distinction is the point:**
+  `setTimer`/`newAbortController`/`attemptTimeoutMs` were HIGH because production hosts DO set them, so the
+  engine was silently dropping values real callers supplied. No host sets `onAuthError` at all — not
+  `build-engine.ts`, not `session-host.ts`, and no desktop or extension construction exists — so nothing is
+  being defeated today. The feature itself is genuinely tested one layer down, against `FallbackChain`
+  directly. This is a trap for whoever wires it next, not a live defect. *(medium · packages/core/src/engine/{agent-runner,agent-session}.ts)*
+
+- [ ] **`W2`'s own commit history does not meet `commit-style.md`, and the maintainer accepted it.** Of the
+  34 commits on this branch, 31 subjects exceed the ~72-char guidance and 20 use a comma-separated
+  multi-scope (`fix(llm,core,shared): …`) where the standard asks for the primary scope with the rest named
+  in the body. Raised as a Low finding in the PR #85 review; the maintainer's call on 2026-08-28 was to
+  leave it. The reason is worth recording, because it is a real trade and not an oversight: rewriting the
+  history changes every SHA on an open PR, which un-anchors the inline review comments the fourteen findings
+  were attached to — a worse outcome for a branch whose whole value is its reviewability. **The remedy is
+  forward-looking:** `W3` writes them correctly from the first commit rather than fixing these. *(low ·
+  [commit-style.md](../standards/commit-style.md))*
+
+- [ ] **A cross-process resume RENEWS the node `timeout_ms`, where it does not renew the run cap.** Found by
+  an adversarial pass on this round's own findings, not by the round itself. A node `running` at the crash is
+  absent from the checkpoint, so resume seeds it `pending` and re-runs it; `#nodeDeadlineStartMs`
+  (`engine.ts`) is in-memory and never checkpointed, so `#armNodeDeadline` arms the full authored value. The
+  behaviour is defensible — the prior attempt's work is discarded, so charging its elapsed time would bill
+  the author for nothing, and the run-level cap still bounds the total — and it is now stated in ADR-0085 §2
+  rather than left to be inferred. Open only as a QUESTION for the maintainer: if the bound should be
+  absolute across a resume as well, it needs a durable `nodeDeadlineStartMs` on the checkpoint, which is a
+  spec change (`CheckpointState`) and therefore its own item. *(low · packages/core/src/engine/engine.ts,
+  checkpoint.ts)*
+
+- [ ] **`attemptTimeoutMs` has no upper bound, so `armLongTimer`'s multi-hop path is configuration-reachable.**
+  The PR #85 round asked for an absolute-deadline rewrite of `armLongTimer` with an injected clock; declined,
+  and the reasons matter because two of the first-pass reasons were themselves wrong. It is NOT blocked by the
+  ADR append-only rule — [documentation-style.md](../standards/documentation-style.md) §7 permits amending an
+  Accepted ADR in place with a dated note — and multi-hop is NOT unreachable by construction:
+  `ChainCapabilities.attemptTimeoutMs` is caller-supplied and validated only as finite-and-positive, and
+  `packages/shared/src/deadline.test.ts` already exercises a thirty-day chain. What is true is narrower and
+  sufficient: no shipped surface passes a large value (zero hits for `attemptTimeoutMs` across `apps/**`), the
+  spec's largest documented `timeout_ms` is 24 h — single-hop — and the drift a late hop introduces is always
+  LATE, never early, which is the safe direction for a liveness backstop. Injecting a clock would also break
+  the `SetTimer`→`SetDeadlineTimer` assignability ADR-0085 §9 deliberately relies on. Revisit if a surface
+  ever exposes `attemptTimeoutMs`, or add a `MAX_TIMER_DELAY_MS` ceiling at its validation instead — the
+  cheaper fix. *(low · packages/shared/src/deadline.ts, packages/llm/src/fallback-chain.ts)*
+
 ## Phase 2.6.5 `W1` residuals (PR #83, merged 2026-08-24)
 
 Named rather than left implicit, because every one of them was examined during `W1` and consciously left
@@ -501,7 +573,13 @@ so directly: these "should remain visible rather than disappear behind the green
 > the deliberately-deferred forward work — each is a **Phase-2** concern that needs real persistence and/or
 > a store-level guarantee the in-memory reference cannot provide, recorded so it isn't lost.
 
-- [ ] **Re-arm a still-pending gate's timeout on cross-process rehydration** — `resumeFromCheckpoint` applies
+- [x] **Re-arm a still-pending gate's timeout on cross-process rehydration — ✅ Done (Phase 2.6.5 `CR-22`, 2026-08-27).**
+  Closed exactly as this note predicted: no backfill was needed, because `timeoutAction` + `expiresAt` were
+  already durable on `human_gate:paused`. The gap was one layer up — `reconstructCheckpointState`'s fold
+  dropped both fields, so `#seedFromCheckpoint` had nothing to re-arm from. The fold now keeps them and
+  rehydration arms at `expiresAt − now`; a past deadline arms at zero so it travels the same
+  `#onGateTimeout` path as a live expiry. The original entry follows.
+- [ ] ~~**Re-arm a still-pending gate's timeout on cross-process rehydration**~~ — `resumeFromCheckpoint` applies
   the target gate's decision immediately, but a *remaining* pending gate (multi-gate run, crash-while-paused)
   is rehydrated without re-arming its timer, so its deadline is lost until the next restart. The data needed
   (`timeoutAction` + `expiresAt`) is now persisted on `human_gate:paused` (PR #22), so no backfill — Phase-2

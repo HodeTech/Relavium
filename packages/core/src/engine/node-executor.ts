@@ -214,6 +214,26 @@ export interface NodeExecContext {
 
 /** The injected per-vertex executor. 1.O (`AgentRunner`) and 1.P (node handlers) implement it. */
 export interface NodeExecutor {
+  /**
+   * Execute one vertex.
+   *
+   * **You owe the run LIVENESS, and this is where the obligation is stated**
+   * ([ADR-0085](../../../../docs/decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md)
+   * §1): this promise MUST settle — with any {@link NodeOutcome}, a failure included — within the grace
+   * window after `ctx.signal` aborts. It is written here, at the signature an implementor actually reads,
+   * rather than only in an ADR nobody opens while writing an executor.
+   *
+   * **And the engine does not rely on you keeping it.** It hard-races this promise, exactly as
+   * [ADR-0082](../../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
+   * §5 races a provider call, because "an `AbortSignal` is a request, not a guarantee" is as true of an
+   * executor as of a provider. An implementation that ignores the signal and never settles is abandoned:
+   * its vertex is closed `node:failed`, the run reaches its terminal, and the work is left running with
+   * nobody waiting on it. Returning a failure promptly is strictly better than being abandoned — the
+   * abandoned path cannot report WHY.
+   *
+   * A vertex carrying an authored `agent.timeout_ms` is additionally bounded by that value, absolute across
+   * every attempt and re-dispatch of the node (§2).
+   */
   execute(ctx: NodeExecContext): Promise<NodeOutcome>;
   /**
    * Poll an async media job the executor previously submitted (1.AG Section D, ADR-0045 §3). The ENGINE owns

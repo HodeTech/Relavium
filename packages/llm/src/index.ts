@@ -227,3 +227,17 @@ export {
 // pre-authorizes spend on tokens the model is physically incapable of producing kills runs over phantom money.
 export { cappedMaxTokens } from './output-cap.js';
 export type { EndpointKind } from './output-cap.js';
+// The per-attempt provider deadline (ADR-0082 §5–§7) and the deadline vocabulary it reads from
+// `@relavium/shared` (ADR-0085 §9). §9 says this package "re-exports it" — `attempt-deadline.ts` did, but
+// nothing re-exported `attempt-deadline.ts` from the root, so no consumer of `@relavium/llm` could reach
+// either symbol and the obligation was satisfied only on paper. `DEFAULT_ATTEMPT_TIMEOUT_MS` is the half
+// that genuinely belongs here: the mechanism is generic, but this NUMBER is a statement about provider
+// latency and belongs with the seam that knows about providers.
+export {
+  openDeadline,
+  DEFAULT_ATTEMPT_TIMEOUT_MS,
+  type AbortControllerLike,
+  type DeadlineOutcome,
+  type DeadlineScope,
+  type SetDeadlineTimer,
+} from './attempt-deadline.js';

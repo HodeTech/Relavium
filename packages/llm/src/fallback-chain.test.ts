@@ -2280,6 +2280,93 @@ describe('FallbackChain — the grammar and the deadline are wired', () => {
     expect(disarmed).toBeGreaterThan(0); // …and the timer was cleaned up
   });
 
+  it('a deadline that trips AFTER content is surfaced, never failed over', async () => {
+    // Rule 7 through the DEADLINE arm, which had no coverage: every other deadline test here times out
+    // pre-content, and the nearest committed test drives a provider that THROWS after a delta — that lands
+    // in `#runEntryStream`'s catch, not in the `step.kind === 'timeout'` branch. Two different lines, and
+    // only one of them was pinned.
+    //
+    // The isolating mutation is passing `{ ...state, committed: false }` to `#failAttempt` in the timeout
+    // branch: exactly this test reddens. (DELETING the `state` argument is NOT the mutation — it is a
+    // required parameter, so the call throws and four tests fail for the wrong reason. Recorded because the
+    // first attempt at break-verifying this made that mistake and read the four reds as coverage.)
+    let fire: (() => void) | undefined;
+    // Set when the iterator is asked for a SECOND chunk — i.e. the delta above is already forwarded and the
+    // attempt is committed. Firing on `fire !== undefined` alone would trip the clock while the deadline was
+    // merely armed, which is the PRE-content case three other tests already cover.
+    let stalled = false;
+    const stalls = makeProvider({
+      id: 'anthropic',
+      stream: () => ({
+        [Symbol.asyncIterator]: () => {
+          let sent = false;
+          return {
+            next: () => {
+              if (sent) {
+                stalled = true;
+                return new Promise<never>(() => undefined);
+              }
+              sent = true;
+              return Promise.resolve({
+                value: { type: 'text_delta', text: 'partial output' } satisfies StreamChunk,
+                done: false,
+              });
+            },
+          };
+        },
+      }),
+    });
+    const fallback = makeProvider({
+      id: 'openai',
+      stream: () => streamFrom([{ type: 'text_delta', text: 'never' }, STOP_CHUNK]),
+    });
+    const { options, trace } = makeOptions();
+    const chain = new FallbackChain(
+      [entry(stalls, 'claude-opus-4-8'), entry(fallback, 'gpt-5.5')],
+      {
+        ...options,
+        newAbortController: () => {
+          let aborted = false;
+          return {
+            signal: {
+              get aborted() {
+                return aborted;
+              },
+              addEventListener: () => undefined,
+              removeEventListener: () => undefined,
+            },
+            abort: () => {
+              aborted = true;
+            },
+          };
+        },
+        setTimer: (_ms, onFire) => {
+          fire = onFire;
+          return () => undefined;
+        },
+      },
+    );
+
+    const streamed = collect(chain.stream(userReq));
+    // Let the first chunk through — commitment is what this test is about — then trip the clock.
+    for (let i = 0; i < 200 && !stalled; i += 1) await Promise.resolve();
+    expect(stalled).toBe(true); // the delta really was forwarded before the deadline tripped
+    fire?.();
+    const chunks = await streamed;
+
+    // Asserted field-by-field rather than through `committedErrChunk`, whose message is a provider's
+    // `'boom'`: this error is minted by the deadline itself, so the helper would be asserting the wrong
+    // author. `contentCommitted` is the load-bearing one — it is what the node-retry budget reads.
+    const surfaced = chunks[1];
+    expect(surfaced?.type).toBe('error');
+    if (surfaced?.type !== 'error') throw new Error('unreachable — narrowed above');
+    expect(surfaced.error.kind).toBe('timeout');
+    expect(surfaced.error.provider).toBe('anthropic');
+    expect(surfaced.error.contentCommitted).toBe(true);
+    expect(fallback.calls).toHaveLength(0); // …no failover past content
+    expect(trace.filter((r) => r.outcome === 'failed')).toHaveLength(1); // …and exactly one attempt record
+  });
+
   it('entry 1 timing out disarms ITS timer before entry 2 arms one', async () => {
     // A subtle multi-attempt interaction with no direct coverage: the deadline is per ATTEMPT, so a fresh
     // scope must open for entry 2 and entry 1's must already be disarmed. Correct today by construction —
@@ -2417,6 +2504,149 @@ describe('FallbackChain — the grammar and the deadline are wired', () => {
     await expect(generated).rejects.toMatchObject({ llmError: { kind: 'timeout' } });
     expect(trace.filter((r) => r.outcome === 'failed')).toHaveLength(1);
     expect(pending.size).toBe(0); // …and disarmed on the way out
+  });
+
+  it('a cancel during credential resolution produces NO provider call — generate and stream', async () => {
+    // `#resolveKey` is I/O (a keychain read today, a network one in Phase 2), and a cancel landing inside it
+    // was invisible: the provider was invoked, and only the deadline opened AFTERWARDS latched the aborted
+    // caller — so `race()` reported `cancelled` for a request that had nonetheless gone out. A cancelled run
+    // must not produce provider traffic, let alone a charge.
+    for (const arm of ['generate', 'stream'] as const) {
+      let calls = 0;
+      let releaseKey: (() => void) | undefined;
+      let aborted = false;
+      const listeners = new Set<() => void>();
+      const signal = {
+        get aborted() {
+          return aborted;
+        },
+        addEventListener: (_t: 'abort', l: () => void) => listeners.add(l),
+        removeEventListener: (_t: 'abort', l: () => void) => listeners.delete(l),
+      };
+      const provider = makeProvider({
+        id: 'anthropic',
+        generate: () => {
+          calls += 1;
+          return Promise.resolve({
+            content: [{ type: 'text', text: 'sent' }],
+            stopReason: 'stop' as const,
+            usage: { inputTokens: 1, outputTokens: 1 },
+            model: 'claude-opus-4-8',
+            provider: 'anthropic' as const,
+          });
+        },
+        stream: () => {
+          calls += 1;
+          return streamFrom([{ type: 'text_delta', text: 'sent' }, STOP_CHUNK]);
+        },
+      });
+      const { options } = makeOptions();
+      const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], {
+        ...options,
+        // The credential resolves only when the test releases it — the window under examination.
+        keyFor: () =>
+          new Promise<string>((resolve) => {
+            releaseKey = () => resolve('k');
+          }),
+      });
+
+      const req = { ...userReq, signal };
+      const running =
+        arm === 'generate'
+          ? chain.generate(req).then(
+              () => 'ok',
+              () => 'err',
+            )
+          : collect(chain.stream(req)).then(() => 'ok');
+      for (let i = 0; i < 200 && releaseKey === undefined; i += 1) await Promise.resolve();
+      expect(releaseKey).toBeDefined();
+
+      aborted = true; // the caller cancels while the key is still resolving
+      for (const l of [...listeners]) l();
+      releaseKey?.();
+      await running;
+
+      expect(calls, `${arm}: the provider was not called`).toBe(0);
+    }
+  });
+
+  it('disarms the deadline on the SUCCESS path too — both `stream` and `generate` (ADR-0082 §12.13)', async () => {
+    // §12.13 says "timer cleanup proven with a fake clock on every path, **including success**". It was
+    // proven for `openDeadline` in isolation (`attempt-deadline.test.ts`) and, at chain level, only on
+    // FAILURE paths — every existing assertion here follows a timeout or an error. Nothing proved the chain
+    // calls `dispose()` when the attempt simply works.
+    //
+    // Measured before writing this: making the stream's success exit leak its scope
+    // (`if (step.kind === 'done') { deadline = undefined; break; }`) left all 107 tests in this file and
+    // `attempt-deadline.test.ts` green. The docblock ten lines above the leak already names the cost — "a
+    // leaked timer holds the process awake, which on a CLI is a hang the user cannot explain" — so the risk
+    // was identified and simply unguarded.
+    //
+    // **And the first break-verify of the `generate` arm was a NO-OP, which is worth recording.** Guarding
+    // its `finally` with `if (record.outcome === 'failed')` looked like a leak and changed nothing, because
+    // the attempt-record factory DEFAULTS `outcome` to `'failed'` (`fallback-chain.ts`'s
+    // `outcome: extra?.outcome ?? 'failed'`) — so the condition was always true and `dispose()` still ran.
+    // The mutation applied textually and was inert semantically. Deleting the `dispose()` line outright
+    // reddens both arms. This is exactly what the phase's discipline rule 2 means by "verify the mutation
+    // actually applied": a green suite under a mutation is evidence only once the mutation is known to bite.
+    for (const arm of ['stream', 'generate'] as const) {
+      const pending = new Set<() => void>();
+      let armed = 0;
+      let disarmed = 0;
+      const ok = makeProvider({
+        id: 'anthropic',
+        stream: () => streamFrom([{ type: 'text_delta', text: 'it worked' }, STOP_CHUNK]),
+        generate: () =>
+          Promise.resolve({
+            content: [{ type: 'text', text: 'it worked' }],
+            stopReason: 'stop' as const,
+            usage: { inputTokens: 1, outputTokens: 1 },
+            model: 'claude-opus-4-8',
+            provider: 'anthropic' as const,
+          }),
+      });
+      const { options } = makeOptions();
+      const chain = new FallbackChain([entry(ok, 'claude-opus-4-8')], {
+        ...options,
+        newAbortController: () => {
+          let aborted = false;
+          return {
+            signal: {
+              get aborted() {
+                return aborted;
+              },
+              addEventListener: () => undefined,
+              removeEventListener: () => undefined,
+            },
+            abort: () => {
+              aborted = true;
+            },
+          };
+        },
+        setTimer: (_ms, fire) => {
+          armed += 1;
+          pending.add(fire);
+          return () => {
+            disarmed += 1;
+            pending.delete(fire);
+          };
+        },
+      });
+
+      if (arm === 'stream') {
+        const chunks = await collect(chain.stream(userReq));
+        expect(chunks.some((c) => c.type === 'text_delta' && c.text === 'it worked')).toBe(true);
+      } else {
+        const result = await chain.generate(userReq);
+        expect(result.content[0]).toEqual({ type: 'text', text: 'it worked' });
+      }
+
+      // The attempt SUCCEEDED — and its timer is gone. `armed` is asserted first so a chain that armed
+      // nothing (a half-wired port, a refactor that dropped the scope) cannot pass this by vacuous zero.
+      expect(armed, `${arm}: the deadline was armed`).toBe(1);
+      expect(disarmed, `${arm}: …and disposed on the success path`).toBe(1);
+      expect(pending.size, `${arm}: no timer outlives the attempt`).toBe(0);
+    }
   });
 
   it('a LATE chunk after a deadline abort produces no second attempt record and no cost update', async () => {

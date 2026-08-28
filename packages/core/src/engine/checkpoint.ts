@@ -26,7 +26,7 @@ import type {
   RunStatus,
 } from '@relavium/shared';
 
-import type { NodeFailure } from './node-executor.js';
+import type { GateRequest, NodeFailure } from './node-executor.js';
 
 /** The schema version of the *derivation* (not a stored blob) — lets a later engine refuse/migrate it. */
 export const CHECKPOINT_SCHEMA_VERSION = 1;
@@ -48,6 +48,28 @@ export interface CheckpointPendingGate {
   readonly nodeId: string;
   /** True for a budget gate, so a rejected decision can still fail the run on resume. */
   readonly isBudgetGate: boolean;
+  /**
+   * The gate's ABSOLUTE deadline, when one was configured (`CR-22`).
+   *
+   * Both this and {@link timeoutAction} were already on the durable `human_gate:paused` event — its schema
+   * says in as many words that they ride there "so a Phase-2 crash-resume can re-arm the timer from the
+   * persisted log". The fold simply dropped them, so a rehydrated run lost the deadline of every gate it did
+   * not resume, and the loss was silent. Absolute rather than remaining, deliberately: a duration would
+   * restart on each resume, which is the defect, and an absolute instant is what the event already carries.
+   */
+  readonly expiresAt?: string;
+  /** What the engine does when {@link expiresAt} passes — carried with it, since one is inert without the other. */
+  readonly timeoutAction?: GateRequest['timeoutAction'];
+  /**
+   * The gate's AUTHORED duration, carried so the re-armed remaining time can be clamped from ABOVE.
+   *
+   * `expiresAt` is an instant written by one process and differenced against another's clock. A resuming
+   * process running BEHIND the one that parked the gate computes a remaining time LONGER than the author
+   * ever granted — measured at an hour of skew, a 1 000 ms gate re-armed at 3 601 000 ms. `Math.max(0, …)`
+   * only guards the other direction. This bounds it: whatever the clocks disagree about, a gate never waits
+   * longer than it was authored to.
+   */
+  readonly timeoutMs?: number;
 }
 
 /**
@@ -201,7 +223,16 @@ interface ReconAccumulator {
   cumulativeCostMicrocents: number;
   conservativeCostMicrocents: number;
   readonly nodeStates: Map<string, CheckpointNodeState>;
-  readonly pendingGates: Map<string, { nodeId: string; isBudgetGate: boolean }>;
+  readonly pendingGates: Map<
+    string,
+    {
+      nodeId: string;
+      isBudgetGate: boolean;
+      expiresAt?: string;
+      timeoutAction?: GateRequest['timeoutAction'];
+      timeoutMs?: number;
+    }
+  >;
   /** Keyed by `nodeId` — one in-flight media job per node; a re-submit replaces the entry (latest wins). */
   readonly pendingMediaJobs: Map<string, CheckpointPendingMediaJob>;
   readonly resolvedGateIds: Set<string>;
@@ -328,18 +359,52 @@ function applyMediaJobEvent(acc: ReconAccumulator, event: RunEvent): void {
   });
 }
 
+/**
+ * The gate's deadline fields, preferring what THIS event carries and otherwise keeping what a sibling
+ * recorded (`CR-22`).
+ *
+ * Only `human_gate:paused` carries a deadline; a `budget:paused` companion shares the gateId and must not
+ * erase it. **The carry-forward is unreachable from THIS engine, and that is stated rather than implied:**
+ * `#settlePaused` always emits `budget:paused` BEFORE the companion, so the deadline-bearing event is always
+ * the later one and there is nothing to carry. It is kept because this is a pure fold over DURABLE ROWS,
+ * which outlive the code that wrote them — a log from another writer, or a future emitter that reorders the
+ * pair, would otherwise silently lose the deadline and the gate would rehydrate with no timer at all.
+ * Pinned directly at the fold in `checkpoint.test.ts`, in both orders, since no engine path produces the
+ * second.
+ *
+ * Extracted from `applyGateEvent`, where three copies of this `??` written as nested ternaries carried it
+ * past the cognitive-complexity threshold — the same merge said once.
+ */
+function carryGateDeadline(
+  event: RunEvent,
+  prior:
+    | { expiresAt?: string; timeoutAction?: GateRequest['timeoutAction']; timeoutMs?: number }
+    | undefined,
+): { expiresAt?: string; timeoutAction?: GateRequest['timeoutAction']; timeoutMs?: number } {
+  const paused = event.type === 'human_gate:paused' ? event : undefined;
+  const expiresAt = paused?.expiresAt ?? prior?.expiresAt;
+  const timeoutAction = paused?.timeoutAction ?? prior?.timeoutAction;
+  const timeoutMs = paused?.timeoutMs ?? prior?.timeoutMs;
+  return {
+    ...(expiresAt === undefined ? {} : { expiresAt }),
+    ...(timeoutAction === undefined ? {} : { timeoutAction }),
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  };
+}
+
 /** Human-gate / budget-gate lifecycle: park a pending gate, or resolve it (decision becomes the gate vertex output). */
 function applyGateEvent(acc: ReconAccumulator, event: RunEvent): void {
   if (event.type === 'human_gate:paused' || event.type === 'budget:paused') {
     acc.nodeStates.set(event.nodeId, { status: 'paused' });
+    const priorGate = acc.pendingGates.get(event.gateId);
     acc.pendingGates.set(event.gateId, {
       nodeId: event.nodeId,
+      ...carryGateDeadline(event, priorGate),
       // A budget gate emits BOTH `budget:paused` then a companion `human_gate:paused` with the SAME gateId
       // (engine `#settlePaused`). OR the flag so the later human_gate:paused never downgrades a budget gate
       // to a plain human gate on reconstruction — else a resumed `rejected` budget gate would not fail the
       // run with `budget_exceeded` (the resume reject branch is gated on `isBudgetGate`).
-      isBudgetGate:
-        acc.pendingGates.get(event.gateId)?.isBudgetGate === true || event.type === 'budget:paused',
+      isBudgetGate: priorGate?.isBudgetGate === true || event.type === 'budget:paused',
     });
     // `cost:updated` is streamed (not persisted), so the cost cannot be recovered from it; but
     // `budget:paused.spentMicrocents` IS the durable cumulative-at-pause. Restore it so a resumed budgeted run
@@ -467,6 +532,9 @@ export function reconstructCheckpointState(
       gateId,
       nodeId: entry.nodeId,
       isBudgetGate: entry.isBudgetGate,
+      ...(entry.expiresAt === undefined ? {} : { expiresAt: entry.expiresAt }),
+      ...(entry.timeoutAction === undefined ? {} : { timeoutAction: entry.timeoutAction }),
+      ...(entry.timeoutMs === undefined ? {} : { timeoutMs: entry.timeoutMs }),
     })),
     pendingMediaJobs: [...acc.pendingMediaJobs.values()],
     resolvedGateIds: [...acc.resolvedGateIds],

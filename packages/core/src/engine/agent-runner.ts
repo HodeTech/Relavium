@@ -29,6 +29,9 @@ import {
   type OutputModality,
   type ReasoningEffort,
   unwiredEffectJournal,
+  openDeadline,
+  type DeadlineScope,
+  MEDIA_GEN_SUBMIT_TIMEOUT_MS,
 } from '@relavium/shared';
 import {
   LlmConfigError,
@@ -289,6 +292,19 @@ async function pollMediaJobThroughDeps(
         provider: job.provider,
         kind: 'auth',
         message: `credential resolution failed for provider ${job.provider}`,
+      }),
+    };
+  }
+  // **Re-check the caller AFTER credential resolution, BEFORE the seam call** — the same window the chain's
+  // two arms had. `keyFor` is I/O, so a cancel landing inside it was invisible here and the poll went out
+  // anyway. A cancelled run must not produce provider traffic.
+  if (signal?.aborted === true) {
+    return {
+      state: 'failed',
+      error: makeLlmError({
+        provider: job.provider,
+        kind: 'cancelled',
+        message: `media job poll cancelled for provider ${job.provider}`,
       }),
     };
   }
@@ -630,15 +646,40 @@ async function executeGenerativeMedia(
     }
 
     let result: MediaGenResult;
+    // **The submission gets the same hard race a chain attempt gets (`CR-21b`).** ADR-0082 §10 named this
+    // gap rather than absorbing it: this call is not a poll, so ADR-0045's job deadline does not cover it,
+    // and it is not a `FallbackChain` attempt, so §6's per-attempt deadline does not either. It was awaited
+    // unbounded, which is the exact "the vendor SDK default becomes our liveness semantics" that ADR-0082
+    // exists to remove — and `security-review.md` forbids outright ("a hung provider must not pin a worker
+    // open").
+    //
+    // No seam amendment was needed: `MediaGenRequest.signal` already exists and `ctx.signal` was already
+    // passed. The gap was only that nothing raced the await, and a signal is a request rather than a
+    // guarantee. The scope's merged signal REPLACES `ctx.signal` on the request so a well-behaved adapter
+    // aborts on either cause; the race is what covers one that ignores both.
+    //
+    // The bound is `MEDIA_GEN_SUBMIT_TIMEOUT_MS`, which is its OWN number rather than the chain's. Borrowing
+    // `DEFAULT_ATTEMPT_TIMEOUT_MS` was the first attempt and the packaging refused it: ADR-0085 §9 keeps that
+    // constant inside `@relavium/llm` deliberately, so reaching for it would widen that package's public
+    // surface to let the engine bound a media call — and would couple two budgets answering different
+    // questions. Equal today, independent by construction; the reasoning lives with the constant.
+    const deadline = openGenerativeDeadline(deps, ctx.signal);
     try {
       // From this call onward the provider may have accepted/billed the generation even if its SDK throws or omits
       // a terminal payload. Preserve the bounded reservation in those uncertain paths; only credential resolution
       // above is proven pre-egress and may release it.
       egressStarted = true;
-      result = await provider.generateMedia(req, key);
+      const submitted = await submitGenerativeMedia(provider, req, key, deadline, node.id);
+      if (submitted.kind === 'refused') {
+        admission?.settleAtReservedEstimate({ nodeId: node.id });
+        return submitted.outcome;
+      }
+      result = submitted.result;
     } catch (err) {
       admission?.settleAtReservedEstimate({ nodeId: node.id });
       return mapGenerateMediaError(err);
+    } finally {
+      deadline?.dispose();
     }
 
     // A cancel that landed WHILE generateMedia was in-flight (a non-cooperative adapter that ignored the signal,
@@ -990,6 +1031,81 @@ function resolveGenKnobs(
     ...(maxTokens === undefined ? {} : { maxTokens }),
     ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
   };
+}
+
+/**
+ * The bounded `generateMedia` submission (`CR-21b`) — the seam call and its race, lifted out of
+ * `executeGenerativeMedia` so that function's budget/egress bookkeeping reads as one story again.
+ *
+ * The scope's merged signal REPLACES `ctx.signal` on the request: `openDeadline` merges the caller's abort
+ * with the deadline's, so a well-behaved adapter stops on either cause, and the race covers one that
+ * honours neither.
+ */
+async function submitGenerativeMedia(
+  provider: NonNullable<FallbackPlanEntry['provider']>,
+  req: MediaGenRequest,
+  key: string,
+  deadline: DeadlineScope | undefined,
+  nodeId: string,
+): Promise<{ kind: 'ok'; result: MediaGenResult } | { kind: 'refused'; outcome: NodeOutcome }> {
+  if (provider.generateMedia === undefined) {
+    throw new Error('generateMedia is absent — the caller checks this before reaching here');
+  }
+  const call = provider.generateMedia(
+    deadline === undefined ? req : { ...req, signal: deadline.signal },
+    key,
+  );
+  if (deadline === undefined) {
+    return { kind: 'ok', result: await call };
+  }
+  const raced = await deadline.race(call);
+  if (raced.outcome !== 'deadline') {
+    return { kind: 'ok', result: raced.value };
+  }
+  // `classify()` owns the label: a caller cancel that beat the timer stays `cancelled`, the same cancel-wins
+  // precedence ADR-0036 gives the run and ADR-0082 §7 gives an attempt.
+  return {
+    kind: 'refused',
+    outcome:
+      deadline.classify() === 'caller'
+        ? failed(
+            'cancelled',
+            `agent node '${nodeId}': run cancelled during media generation`,
+            false,
+          )
+        : failed(
+            'provider_unavailable',
+            `agent node '${nodeId}': the provider did not respond within the ${String(MEDIA_GEN_SUBMIT_TIMEOUT_MS)}ms media-submission deadline`,
+            true,
+          ),
+  };
+}
+
+/**
+ * Open a deadline for the generative submission, or `undefined` when the host wired no timer port — the same
+ * both-or-neither shape `FallbackChain#openDeadline` uses (ADR-0082 §6): a chain given only one primitive
+ * keeps the old unbounded behaviour rather than pretending to a guarantee it cannot make.
+ */
+function openGenerativeDeadline(
+  deps: AgentRunnerDeps,
+  callerSignal: AbortSignalLike,
+): DeadlineScope | undefined {
+  const newController = deps.newAbortController;
+  const setTimer = deps.setTimer;
+  if (newController === undefined || setTimer === undefined) return undefined;
+  // **`callerSignal` is REQUIRED here, not optional, and omitting it shipped a regression.** The scope's
+  // merged signal REPLACES `ctx.signal` on the request, so the merge is the only thing still connecting a
+  // run cancel to the adapter. Opened without it, three things broke at once: a well-behaved adapter never
+  // saw the cancel (it held a controller only the 120 s timer ever aborts), `race()` had no caller waker so
+  // the node waited out the full bound after a Ctrl-C, and `classify()` could never return `'caller'` —
+  // making the `cancelled` arm at the call site dead code that reported a cancel as a retryable
+  // `provider_unavailable`.
+  //
+  // That is `PR83-03`'s defect one call site over, and `deadline.ts`'s own `callerCancelled` docblock
+  // records the measurement from the first time: "120 seconds of a cancel that looks ignored". Both siblings
+  // pass one — `FallbackChain#openDeadline` its `req.signal`, the engine's `#openPollDeadline` its
+  // `#abort.signal` — so this is the parameter, not a parameter.
+  return openDeadline(MEDIA_GEN_SUBMIT_TIMEOUT_MS, newController, setTimer, callerSignal);
 }
 
 /** Forward only the platform-level chain capabilities the host supplies. */

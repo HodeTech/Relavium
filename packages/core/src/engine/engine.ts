@@ -58,6 +58,9 @@ import {
   type EffectDispatchPort,
   type EffectResumePort,
   type UnresolvedEffect,
+  openDeadline,
+  type DeadlineScope,
+  armLongTimer,
 } from '@relavium/shared';
 import type { EndpointKind, MediaJobStatus, PricingOverlay, ProviderId } from '@relavium/llm';
 
@@ -78,7 +81,11 @@ import {
   DEFAULT_MAX_TOKENS_ESTIMATE,
   type BudgetAdmission,
 } from './budget-governor.js';
-import type { CheckpointPendingMediaJob, CheckpointState } from './checkpoint.js';
+import type {
+  CheckpointPendingGate,
+  CheckpointPendingMediaJob,
+  CheckpointState,
+} from './checkpoint.js';
 import {
   LedgerDurabilityError,
   MoneyDurability,
@@ -416,6 +423,27 @@ class RunExecution {
   readonly #mediaJobTimers = new Map<string, () => void>();
   /** The run-level wall-clock timeout timer, when a `timeout_ms` is configured (ADR-0028). */
   #runTimeoutDisarm: (() => void) | undefined;
+  /** ADR-0085 §3's post-abort grace window; armed off the abort signal, disarmed on settle. */
+  #graceDisarm: (() => void) | undefined;
+  /** Set synchronously when the grace window elapses: no vertex may be dispatched after this (ADR-0085 §3). */
+  #noNewDispatch = false;
+  /** ADR-0085 §5's fence: the dispatch id currently authoritative for each vertex. */
+  readonly #activeDispatchByVertex = new Map<string, number>();
+  /** The dispatch id a vertex's in-flight work was started under — the value `#isLive` is checked against. */
+  readonly #dispatchIdForVertex = new Map<string, number>();
+  /**
+   * When each vertex's node deadline started, so `timeout_ms` is absolute across RE-dispatches too
+   * (ADR-0085 §2). Set on a vertex's first dispatch and never reset while the run lives: an approved budget
+   * gate returns the vertex to `pending`, `#claimReady` re-claims it, and a fresh full-length bound would
+   * hand the node a second helping of the patience its author granted once.
+   */
+  readonly #nodeDeadlineStartMs = new Map<string, number>();
+  /** The armed node-deadline timer per vertex — run-owned, disarmed only at the node's terminal. */
+  readonly #nodeDeadlineDisarm = new Map<string, () => void>();
+  /** The attempt number a vertex is currently on, so an ABANDONED node logs its real attempt, not 1. */
+  readonly #lastAttemptByVertex = new Map<string, number>();
+  /** Monotonic per-run dispatch id — see {@link #activeDispatchByVertex}. */
+  #nextDispatchId = 0;
   /** The pre-egress budget governor, when a workflow `budget` is configured (ADR-0028, 1.AC). */
   readonly #budgetGovernor: BudgetGovernor | undefined;
   /** The money-durability barrier for BOTH chains — always present, cap or no cap (ADR-0077 §5). */
@@ -629,6 +657,23 @@ class RunExecution {
       });
     }
 
+    // **ADR-0085 §3 — one grace window, armed off the abort signal itself.** Registered here,
+    // UNCONDITIONALLY, and both of those words are the decision. Here, because the listener above solved
+    // this exact class once already and its comment says why: "registered ONCE here, so no future abort site
+    // can forget it" — there are eleven `#abort.abort()` sites and a per-site arm is a per-site omission
+    // waiting to happen. Unconditionally, because that sibling sits inside `plan.budget !== undefined` and
+    // therefore never protects an unbudgeted run; this one bounds the CLASS, including causes nobody has
+    // enumerated yet.
+    //
+    // What it bounds is the wait for the EXECUTOR, not the durability of the terminal. `NodeExecutor.execute`
+    // returns an arbitrary promise (`node-executor.ts`), so an implementation that ignores `ctx.signal` and
+    // never settles keeps its vertex `running`, `#step` never reaches `#countRunning() === 0`, and the run
+    // has no terminal — forever. ADR-0036's Consequences call that "structurally impossible"; it was not,
+    // and ADR-0085 §6 states which half stays conditional (a `RunStore` that never settles still hangs).
+    this.#abort.signal.addEventListener('abort', () => {
+      this.#armGraceWindow();
+    });
+
     if (params.checkpoint === undefined) {
       for (const id of params.plan.vertices.keys()) {
         this.#states.set(id, { status: 'pending' });
@@ -725,9 +770,184 @@ class RunExecution {
     if (timeoutMs === undefined) {
       return;
     }
-    this.#runTimeoutDisarm = this.#host.setTimer(timeoutMs, () => {
-      void this.#onRunTimeout(timeoutMs);
-    });
+    // **The REMAINING time, not the full duration — `CR-22`.** `timeout_ms` is a bound on the run's total
+    // wall-clock (ADR-0028), and this method is called on a fresh `begin()` AND on both resume paths. Arming
+    // the full duration each time made the cap renew on every resume: a run crashed and resumed ten times got
+    // ten times its authored budget, which is the opposite of a cap. The engine already holds everything the
+    // fix needs — `#seedFromCheckpoint` restores `#startEpochMs` from the checkpoint's `startedAtMs`
+    // (deliberately, so a resumed run's terminal reports total wall-clock), and both resume call sites arm
+    // AFTER that seeding. So `#elapsedMs()` is the true pre-resume elapsed here, and nothing new is
+    // persisted: the absolute deadline is derived, not stored a second time.
+    //
+    // A run whose budget is ALREADY exhausted when it resumes arms at zero rather than being refused: the
+    // timer fires on the next tick and settles through the one `#onRunTimeout` path, so an expired resume and
+    // an expiring live run produce the identical `run:timeout` + `run_timeout` terminal. Refusing it here
+    // instead would be a second, differently-shaped exit for the same condition.
+    // Clamped on BOTH sides, the same way the gate re-arm is. `#elapsedMs()` differences this process's
+    // clock against `#startEpochMs`, which `#seedFromCheckpoint` seeds from ANOTHER process's `run:started`
+    // timestamp — so a resuming clock running behind produces a negative elapsed and a remaining LARGER than
+    // the authored cap. Measured at an hour of skew: a 60 000 ms cap re-armed at 3 660 000 ms, 61×. The gate
+    // half had this clamp from the Step 3 review and the run half twenty-five lines away did not; same
+    // exposure, same one-line fix, simply not carried across.
+    const remainingMs = Math.max(0, Math.min(timeoutMs, timeoutMs - this.#elapsedMs()));
+    this.#runTimeoutDisarm = armLongTimer(
+      remainingMs,
+      () => {
+        void this.#onRunTimeout(timeoutMs);
+      },
+      (ms, fire) => this.#host.setTimer(ms, fire, 'work'),
+    );
+  }
+
+  /**
+   * Arm the post-abort grace window (ADR-0085 §3). Idempotent: the abort signal fires once, but `abort()` is
+   * called from several sites and a re-entrant arm would double-count the window.
+   */
+  #armGraceWindow(): void {
+    if (this.#graceDisarm !== undefined || this.#settled) {
+      return;
+    }
+    this.#graceDisarm = this.#host.setTimer(
+      GRACE_WINDOW_MS,
+      () => {
+        // Nothing may float out of a timer callback (the same rule `#step`'s `#dispatch` call site follows).
+        // `#onGraceElapsed` is the last thing standing between a hung executor and a run with no terminal,
+        // so it must not itself become the reason there is none: an unhandled rejection here is fatal under
+        // Node's default `--unhandled-rejections=throw`, and it would kill the process mid-run rather than
+        // settle it.
+        void this.#onGraceElapsed().catch(() => {
+          if (!this.#settled && this.#failure === undefined && !this.#cancelling) {
+            this.#failure = {
+              error: {
+                code: 'internal',
+                message: 'the grace-window backstop failed while abandoning the run',
+                retryable: false,
+              },
+            };
+          }
+          this.#schedule();
+        });
+      },
+      // A backstop over work already in flight, not something the run is parked ON — the same role
+      // `CR-21b`/`CR-21c` gave the media bounds, and the reason `TimerKind` has a third member at all.
+      'deadline',
+    );
+  }
+
+  /**
+   * Re-arm one rehydrated gate's deadline against its ABSOLUTE `expiresAt` (`CR-22`).
+   *
+   * Extracted from `#seedFromCheckpoint`, which the inline version pushed to a cognitive complexity of 18
+   * against Sonar-Way's threshold of 15 — a nested conditional with a nested ternary inside a loop. The
+   * seeding loop reads as a list of restorations again, and this reads as one decision.
+   *
+   * This was deferred for a long time on the reasoning that "the gate this resume targets has its decision
+   * applied immediately" — true of the TARGET gate, and silent about every other one. A multi-gate run, or a
+   * crash while parked, rehydrated its remaining gates with no timer at all, so their deadlines stopped
+   * existing until the next restart. The data was already durable on `human_gate:paused`, whose schema says
+   * it rides there for exactly this; only the fold and this arm were missing.
+   */
+  #reArmGateDeadline(gate: CheckpointPendingGate): void {
+    if (gate.expiresAt === undefined || gate.timeoutAction === undefined) {
+      return;
+    }
+    // Clamped on BOTH sides. `Math.max` stops a past deadline arming a negative duration; `Math.min` stops a
+    // resuming process whose clock runs BEHIND the one that parked the gate from granting more patience than
+    // the author wrote — measured at an hour of skew, a 1 000 ms gate re-armed at 3 601 000 ms. The authored
+    // duration is the ceiling; the absolute instant is the target.
+    const untilExpiryMs = Date.parse(gate.expiresAt) - Date.parse(this.#host.clock.now());
+    const remainingMs = Math.max(
+      0,
+      gate.timeoutMs === undefined ? untilExpiryMs : Math.min(untilExpiryMs, gate.timeoutMs),
+    );
+    // A gate whose deadline has ALREADY passed arms at zero and fires on the next tick rather than being
+    // resolved inline: the timeout then travels the one `#onGateTimeout` path, so a past-deadline resume and
+    // a live expiry produce the identical events in the identical order.
+    const action = gate.timeoutAction;
+    const disarm = armLongTimer(
+      remainingMs,
+      () => {
+        void this.#onGateTimeout(gate.gateId, gate.nodeId, action);
+      },
+      (ms, fire) => this.#host.setTimer(ms, fire, 'work'),
+    );
+    this.#gateTimers.set(gate.gateId, disarm);
+  }
+
+  #disarmGraceWindow(): void {
+    if (this.#graceDisarm !== undefined) {
+      this.#graceDisarm();
+      this.#graceDisarm = undefined;
+    }
+  }
+
+  /**
+   * The grace window elapsed and the run has still not settled — stop waiting for the executor.
+   *
+   * Every vertex still `running` is settled `node:failed` FIRST, so the durable log has no `node:started`
+   * without a partner (ADR-0085 §4) and `step_executions` stays consistent. The message is fixed text
+   * rather than free prose because `cancelled` alone would read as "the user cancelled this node", when
+   * what happened is that the engine stopped waiting.
+   */
+  async #onGraceElapsed(): Promise<void> {
+    this.#graceDisarm = undefined;
+    if (this.#settled) {
+      return;
+    }
+    // **Latch FIRST, synchronously, before any await.** Clearing the tokens alone was not a cutoff: `#step`
+    // awaits its `node:started` persist and then calls `#dispatch` without re-reading the run's state, so a
+    // node claimed before the window elapsed could still START after it — a fresh token, an executor invoked
+    // on an already-aborted signal, and a `cost:updated` accepted for work the run had stopped waiting for.
+    this.#noNewDispatch = true;
+    this.#activeDispatchByVertex.clear();
+    // **The LIVE `keys()`, not a `[...]` snapshot.** `Map.prototype.delete` tombstones the entry in place —
+    // it never splices the backing list — and the map iterator advances past the entry it has already
+    // yielded, so deleting the one this loop is standing on skips nothing. Measured, not assumed. A snapshot
+    // would differ only for an entry ADDED mid-loop, and there the live form is the SAFER one: it disarms
+    // the late arrival instead of leaking a timer past the terminal.
+    for (const vertexId of this.#nodeDeadlineDisarm.keys()) this.#disarmNodeDeadline(vertexId);
+    for (const [vertexId, state] of this.#states) {
+      if (state.status !== 'running') continue;
+      const vertex = this.#plan.vertices.get(vertexId);
+      if (vertex === undefined) continue;
+      // Through `#settleFailed`, not a hand-rolled draft. A first version wrote the event inline and it
+      // silently lost three things `#settleFailed` stamps: the secret-free `correlationId` that ADR-0036
+      // calls the single producer-side translation point, the `cumulativeCostMicrocents` snapshot whose
+      // schema comment says "the engine always populates it", and the real attempt number — it hard-coded
+      // 1, so a node abandoned on attempt 3 logged attempt 1. An abandoned node's record is the ONLY record
+      // it gets; making it the thinnest one in the log is the wrong place to economise.
+      try {
+        await this.#settleFailed(
+          vertex,
+          { code: 'cancelled', message: GRACE_ABANDON_MESSAGE, retryable: false },
+          this.#lastAttemptByVertex.get(vertexId) ?? 1,
+        );
+      } catch {
+        // **One vertex's terminal failing must not abandon the others.** `#settleFailed` is not the total
+        // path its callers assume: `#emitDurable` absorbs store faults, but `#bus.next` — which stamps the
+        // sequence number and Zod-parses the candidate — runs OUTSIDE that try, and so does
+        // `this.#host.ids.newId()` in the draft. A throw from either used to abort this whole loop, leaving
+        // every remaining abandoned node with no `node:failed` (the omission §4 forbids), skipping the
+        // `#failure` fallback below, and skipping `#schedule()` — a run with no terminal at all, produced by
+        // the very backstop whose job is to guarantee one.
+        //
+        // Continuing is safe and is what the invariant wants: `#settleFailed` sets `status = 'failed'` and
+        // records `#failure` BEFORE it emits, both synchronously, so the vertex is already marked and the
+        // run already has a cause. What is lost is one durable event that could not be written anyway.
+      }
+    }
+    // If nothing set a cause, the run-level `timeout_ms` is what aborted us — say so rather than shipping a
+    // terminal with an undefined reason (ADR-0085 §3).
+    if (this.#failure === undefined && !this.#cancelling) {
+      this.#failure = {
+        error: {
+          code: 'run_timeout',
+          message: 'the run was aborted and its executors did not settle within the grace window',
+          retryable: false,
+        },
+      };
+    }
+    this.#schedule();
   }
 
   #disarmRunTimeout(): void {
@@ -743,6 +963,19 @@ class RunExecution {
     }
     this.#disarmRunTimeout();
     const elapsedMs = this.#elapsedMs();
+    // **Decide and ABORT first; write the diagnostic second (ADR-0085 §3).** This was the other way round,
+    // and the ordering was load-bearing in the wrong direction: `#emitDurable` awaits the store, so a store
+    // that never settles meant the abort never fired — and the grace window below, which arms off the abort
+    // signal, never armed either. The rescue path was defeated by the very stall it exists to rescue. The
+    // `run:timeout` event is a RECORD of a decision already taken, so nothing is lost by writing it after.
+    this.#failure = {
+      error: {
+        code: 'run_timeout',
+        message: `the run exceeded its ${timeoutMs} ms timeout`,
+        retryable: false,
+      },
+    };
+    this.#abort.abort();
     await this.#emitDurable({
       type: 'run:timeout',
       runId: this.runId,
@@ -750,14 +983,6 @@ class RunExecution {
       timeoutMs,
     });
     if (!this.#settled) {
-      this.#failure = {
-        error: {
-          code: 'run_timeout',
-          message: `the run exceeded its ${timeoutMs} ms timeout`,
-          retryable: false,
-        },
-      };
-      this.#abort.abort();
       this.#schedule();
     }
   }
@@ -932,14 +1157,11 @@ class RunExecution {
       });
     }
     for (const gate of cp.pendingGates) {
-      // No gate-timeout timer is re-armed on rehydration: the gate this resume targets has its decision
-      // applied immediately. Re-arming a *remaining* gate's deadline is deferred to the Phase-2
-      // crash-reconciliation that re-arms from persisted policy + a real clock (shared-core-engine.md) —
-      // the data it needs (timeoutAction + expiresAt) is now carried on `human_gate:paused`, so no backfill.
       this.#pendingGates.set(gate.gateId, {
         vertexId: gate.nodeId,
         isBudgetGate: gate.isBudgetGate,
       });
+      this.#reArmGateDeadline(gate);
     }
     // Re-seed totals BEFORE restoring submitted-job reservations: a committed job must reserve alongside the
     // checkpoint's known spend, and its reservation must exist before the first re-armed poll/schedule can run.
@@ -1016,6 +1238,24 @@ class RunExecution {
     if (!gateAlreadyResolved) {
       this.#assertGatePending(gateId); // fail fast on a bad gateId, before any context side effect
     }
+    // **Disarm THIS gate's timer synchronously, before any await — the decision has already arrived.**
+    // `CR-22` re-arms a deadline for every rehydrated gate, and that is its point: a run resumed ten times
+    // must not renew the patience its author granted. But the gate this resume TARGETS is different — its
+    // decision was handed to `resumeFromCheckpoint` before the timer existed, which is exactly the case
+    // `execution-model.md` covers with "a decision that arrives first disarms the timer".
+    //
+    // Without this line the two race, and a past-deadline gate arms at zero so the timer is already due.
+    // The window is the two awaits below (`#resolveContextOrFail`, `#effectResumeGateOrFail`), which run
+    // before `resume()` claims the gate, while `#onGateTimeout` still sees it pending. Measured: with a
+    // macrotask inside that window and `timeout_action: approve`, a caller's explicit `rejected` was
+    // recorded as `human_gate:resumed{decision:'approved', decidedBy:'timeout'}` — a human's refusal
+    // rewritten as an approval attributed to a timer. Unreachable on today's synchronous better-sqlite3
+    // CLI, where both awaits settle in microtasks; live the moment any of these `Promise`-typed seams does
+    // real I/O, which is what Phase-2's Postgres `EffectResumePort` is.
+    //
+    // Idempotent, so the `gateAlreadyResolved` kick path takes it harmlessly. Every OTHER pending gate
+    // keeps its re-armed deadline, which is what `CR-22` exists to restore.
+    this.#disarmTimer(gateId);
     if (!(await this.#resolveContextOrFail())) {
       await this.#settle(this.#cancelling ? 'run:cancelled' : 'run:failed');
       return;
@@ -1224,6 +1464,7 @@ class RunExecution {
       state.status = 'completed';
       state.output = decision.payload ?? { decision: decision.decision };
     }
+    this.#disarmNodeDeadline(gate.vertexId); // the gate vertex is terminal — its node bound ends here
     // The payload (a gate `input` value, `z.unknown()`) is the one resume event that can carry media. If
     // de-inline cannot make it durable-safe, the emit throws — but the gate is already resolved + the
     // vertex marked completed, so we must NOT skip #schedule() (that would strand the resumed run with no
@@ -1273,6 +1514,7 @@ class RunExecution {
       if (state !== undefined) {
         state.status = 'failed';
       }
+      this.#disarmNodeDeadline(gate.vertexId);
       if (this.#failure === undefined && !this.#cancelling) {
         this.#failure = {
           nodeId: gate.vertexId,
@@ -1357,6 +1599,7 @@ class RunExecution {
     // Emit a durable `node:skipped` for each vertex the loop just dimmed — BEFORE any terminal settle —
     // so the event log is a complete, replayable record (1.R reconstructs a skipped vertex from this).
     for (const { id, reason } of this.#propagateSkips()) {
+      this.#disarmNodeDeadline(id); // a skipped node is terminal too — ADR-0085 §2's bound ends here
       await this.#emitDurable({ type: 'node:skipped', runId: this.runId, nodeId: id, reason });
     }
     const running = this.#countRunning();
@@ -1393,7 +1636,30 @@ class RunExecution {
         nodeId: vertex.id,
         nodeType: vertex.type,
       });
-      void this.#dispatch(vertex, 1);
+      // Re-read the latch AFTER the durable `node:started` write above: the grace window may have elapsed
+      // while it was pending, and a dispatch started past the cutoff is exactly what the latch forbids.
+      if (this.#noNewDispatch || this.#settled) {
+        return;
+      }
+      // **A dispatch may never float its rejection (Medium 9).** `#dispatch` is `async`, so even a
+      // SYNCHRONOUS fault before its `try` — a host whose `setTimer` throws, which `#armNodeDeadline` calls
+      // outside it — surfaces as a rejected promise here. Un-caught that is an `unhandledRejection` AND a
+      // terminal-less run: the node stays `running`, `#handleIdle` sees work in flight forever, and nothing
+      // ever publishes `run:failed`. Route it to the same settle every other node failure takes.
+      void this.#dispatch(vertex, 1).catch(async (cause: unknown) => {
+        const message = `dispatch failed unexpectedly: ${cause instanceof Error ? cause.message : String(cause)}`;
+        try {
+          // The FULL settle, not just the in-memory flag: `#failNodeInternal` marks the state and aborts but
+          // emits no `node:failed`, so the graph never publishes this node's terminal. Measured — with the
+          // flag alone the run still hung.
+          await this.#settleFailed(vertex, { code: 'internal', message, retryable: false });
+        } catch {
+          // The settle itself faulted (the same broken host can fault the abort path's own timer arm).
+          // Fall back to the in-memory backstop — an aborted run still beats a hung one.
+          this.#failNodeInternal(vertex, message);
+        }
+        this.#schedule();
+      });
     }
   }
 
@@ -1443,18 +1709,200 @@ class RunExecution {
   }
 
   /**
-   * Dispatch a vertex with its above-chain node-retry budget (1.S, ADR-0040). The vertex stays `running`
-   * across the whole loop — including the backoff sleep — so it never frees its slot or lets the run go
-   * idle mid-retry. Attempt 1's `node:started` was emitted by `#step`; this loop emits `node:started` for
-   * each re-dispatch. A retryable failure within budget (and admitted by `retry_on`) emits a non-terminal
-   * `node:retrying`, sleeps the backoff (abort-aware — cancel wins), and re-runs; any other outcome (or an
-   * exhausted budget, or a fatal/`retry_on`-excluded failure) settles via `#onOutcome`.
+   * Open a vertex's dispatch: claim ADR-0085 §5's per-vertex fence slot, arm the authored node deadline, run
+   * the retry loop, and release the slot only once the node is genuinely terminal.
+   *
+   * The retry semantics themselves live in `#dispatchLoop`, documented there. This method owns the two
+   * things that must bracket the loop rather than live inside it, because both outlive an individual
+   * dispatch: the fence identity and the node bound.
+   */
+  async #dispatch(vertex: PlanVertex, firstAttempt: number): Promise<void> {
+    // **ADR-0085 §5's fence.** A monotonic id per dispatch, claiming this vertex's slot. A re-dispatch of the
+    // SAME vertex replaces only this vertex's entry, so two parallel siblings never stale each other — which
+    // a single run-wide "current generation" would have done, and is why §5 specifies a per-vertex map
+    // rather than a counter.
+    const dispatchId = (this.#nextDispatchId += 1);
+    this.#activeDispatchByVertex.set(vertex.id, dispatchId);
+    this.#dispatchIdForVertex.set(vertex.id, dispatchId);
+    // **The node deadline is owned by the RUN, not by this call.** It is armed once for the vertex and
+    // disarmed only at the node's TERMINAL — see `#armNodeDeadline`. A first version opened it here and
+    // disposed it in this method's `finally`, which silently dropped the bound on every path where
+    // `#dispatch` returns without the node being finished: a `media_job` park, a human-gate park and a
+    // budget-approval park are all non-terminal outcomes. A node authored `timeout_ms: 1000` that parked on
+    // a media job then ran under ADR-0045's thirty-minute job deadline instead, and its eventual failure
+    // classified `provider_unavailable`/retryable rather than `run_timeout`/fatal.
+    this.#armNodeDeadline(vertex);
+    try {
+      await this.#dispatchLoop(vertex, firstAttempt);
+    } finally {
+      // **Release the slot only if this dispatch is really finished with it.**
+      //
+      // Not released while the node is still non-terminal: after a cancel the grace window governs and
+      // `#dispatchLoop` may still settle cooperatively, and after a park the node resumes later. Releasing
+      // early un-fences a node that is legitimately live — its `cost:updated` fold and, worse, its `save_to`
+      // write would be refused. `#onGraceElapsed` clears the map when it stops waiting, `#isLive`'s
+      // `!#settled` half refuses anything after the terminal, and the ownership check below keeps a newer
+      // dispatch's claim intact.
+      const status = this.#states.get(vertex.id)?.status;
+      const nodeFinished = status === 'completed' || status === 'failed' || status === 'skipped';
+      if (nodeFinished && this.#activeDispatchByVertex.get(vertex.id) === dispatchId) {
+        this.#activeDispatchByVertex.delete(vertex.id);
+      }
+    }
+  }
+
+  /**
+   * Arm the authored `agent.timeout_ms` for a vertex, once per NODE (ADR-0085 §2).
+   *
+   * Idempotent by vertex: a re-dispatch after a park or a budget approval finds the timer already armed and
+   * leaves it alone, which is what makes the bound absolute across attempts, re-dispatches AND parks rather
+   * than merely across the attempts of one dispatch.
+   *
+   * **It survives the dispatch that armed it, and that is the whole correction.** `paused` and `media_job`
+   * are outcomes, not node terminals; a deadline tied to the dispatch promise vanished at exactly the moment
+   * a node started waiting on something slow.
+   */
+  #armNodeDeadline(vertex: PlanVertex): void {
+    const timeoutMs = vertex.config.kind === 'agent' ? vertex.config.node.timeout_ms : undefined;
+    if (timeoutMs === undefined || this.#nodeDeadlineDisarm.has(vertex.id)) {
+      return;
+    }
+    // ONE clock read: two would lose a tick between them on a per-read clock, so a first dispatch would arm
+    // `timeoutMs - 1` and a test asserting the authored value would be pinning an off-by-one.
+    const nowMs = this.#elapsedMs();
+    const startedAtMs = this.#nodeDeadlineStartMs.get(vertex.id) ?? nowMs;
+    this.#nodeDeadlineStartMs.set(vertex.id, startedAtMs);
+    const remainingMs = Math.max(0, timeoutMs - (nowMs - startedAtMs));
+    this.#nodeDeadlineDisarm.set(
+      vertex.id,
+      armLongTimer(
+        remainingMs,
+        () => {
+          void this.#onNodeDeadline(vertex, timeoutMs);
+        },
+        // A backstop over work already in flight — never something the run is parked ON.
+        (ms, fire) => this.#host.setTimer(ms, fire, 'deadline'),
+      ),
+    );
+  }
+
+  /**
+   * ADR-0085 §5's fence predicate: may a write from `dispatchId` on `vertexId` still be admitted?
+   *
+   * True only while the run has not settled AND this dispatch is still its vertex's active one. Both halves
+   * are needed: `#settled` alone is one boolean on one path, and it cannot tell dispatch N of a vertex from
+   * dispatch N+1 — which is exactly what a budget-approved re-dispatch produces.
+   */
+  #isLive(vertexId: string, dispatchId: number): boolean {
+    return !this.#settled && this.#activeDispatchByVertex.get(vertexId) === dispatchId;
+  }
+
+  #disarmNodeDeadline(vertexId: string): void {
+    const disarm = this.#nodeDeadlineDisarm.get(vertexId);
+    if (disarm !== undefined) {
+      disarm();
+      this.#nodeDeadlineDisarm.delete(vertexId);
+    }
+  }
+
+  /**
+   * The authored node bound elapsed with the node still unfinished.
+   *
+   * **Ownership is dropped SYNCHRONOUSLY, before the failure is persisted.** A first version awaited
+   * `#onOutcome` and only then released the dispatch id, so for the whole duration of that durable write the
+   * timed-out executor's `ctx.emit` cost folds and `ctx.effects.prepare()` calls still passed `#isLive` — a
+   * timeout boundary that was not an ownership cutoff. Invalidating first makes the two the same instant.
+   */
+  async #onNodeDeadline(vertex: PlanVertex, timeoutMs: number): Promise<void> {
+    this.#nodeDeadlineDisarm.delete(vertex.id);
+    const status = this.#states.get(vertex.id)?.status;
+    if (this.#settled || status === 'completed' || status === 'failed' || status === 'skipped') {
+      return; // the node finished first — nothing to bound
+    }
+    this.#activeDispatchByVertex.delete(vertex.id); // the cutoff, before any await
+    await this.#onOutcome(
+      vertex,
+      {
+        kind: 'failed',
+        error: {
+          code: 'run_timeout',
+          message: `node '${vertex.id}' exceeded its ${String(timeoutMs)} ms timeout_ms`,
+          retryable: false,
+        },
+      },
+      this.#elapsedMs(),
+      this.#lastAttemptByVertex.get(vertex.id) ?? 1,
+    );
+  }
+
+  /**
+   * Open the authored node deadline (`agent.timeout_ms`), or `undefined` when the node declares none.
+   *
+   * `run_timeout` / `retryable: false` is the classification, and it is not a new decision: `#failGateOnTimeout`
+   * already settles the HUMAN GATE's authored `timeout_ms` with exactly that. Both are authored node-level
+   * liveness bounds on the same schema; giving the agent node a different one would mean two `timeout_ms`
+   * fields resolving two different ways, which no author would predict.
+   */
+  /**
+   * **Fence point 4 (ADR-0085 §5): the effect journal, PER METHOD.**
+   *
+   * A blanket "refuse a stale write" here would resurrect the exact defect `PR83-04` fixed — a row stuck
+   * `prepared` forever, swept by nothing, reported as `needs_attention` for an effect that actually
+   * completed. So the three methods split:
+   *
+   * - `prepare` is **refused**. The effect has not left the process, and refusing it is the whole point: a
+   *   dispatch the grace window abandoned must not start new external work.
+   * - `settle` is **allowed**. The effect already left under a valid claim; refusing its receipt would leave
+   *   a durable row lying about an effect that completed.
+   * - `discard` is **allowed**, for the same reason — it releases a `prepared` claim on a proven
+   *   non-dispatch, and refusing it strands the row exactly as refusing `settle` would.
+   *
+   * The refusal rejects rather than resolves, so a caller that ignores it cannot mistake a refusal for a
+   * durable claim and dispatch anyway.
+   */
+  #fenceEffects(port: EffectDispatchPort, vertexId: string): EffectDispatchPort {
+    const dispatchId = this.#dispatchIdForVertex.get(vertexId) ?? -1;
+    // Delegated method-by-method rather than spread. `{...port}` copies OWN properties only, so a host that
+    // implements `EffectDispatchPort` as a CLASS would arrive here with `settle` and `discard` undefined —
+    // TypeScript's spread-type inference hides it, and both shipping implementations happen to be object
+    // literals, so it would have been latent until the first class-based one.
+    return {
+      settle: (...args: Parameters<EffectDispatchPort['settle']>) => port.settle(...args),
+      discard: (...args: Parameters<EffectDispatchPort['discard']>) => port.discard(...args),
+      prepare: async (...args: Parameters<EffectDispatchPort['prepare']>) => {
+        const refuse = (): never => {
+          throw new EngineStateError(
+            'run_already_terminal',
+            'the run stopped waiting on this dispatch; no new effect may be prepared',
+            { runId: this.runId },
+          );
+        };
+        if (!this.#isLive(vertexId, dispatchId)) refuse();
+        const verdict = await port.prepare(...args);
+        // **Re-checked AFTER the await, and that is the whole point.** The journal write is I/O: the grace
+        // window can elapse and the run can reach its terminal while it is in flight. A verdict computed
+        // before the cutoff and returned after it would hand the caller a `proceed` for a run that has
+        // stopped — and `registry.ts` dispatches the external effect on that verdict with no further check.
+        // A check that only guards the entry to an async call guards nothing at its exit.
+        if (!this.#isLive(vertexId, dispatchId)) refuse();
+        return verdict;
+      },
+    };
+  }
+
+  /**
+   * Run a vertex's attempts against its above-chain node-retry budget (1.S, ADR-0040). The vertex stays
+   * `running` across the whole loop — including the backoff sleep — so it never frees its slot or lets the
+   * run go idle mid-retry. Attempt 1's `node:started` was emitted by `#step`; this loop emits `node:started`
+   * for each re-dispatch. A retryable failure within budget (and admitted by `retry_on`) emits a
+   * non-terminal `node:retrying`, sleeps the backoff (abort-aware — cancel wins), and re-runs; any other
+   * outcome (or an exhausted budget, or a fatal/`retry_on`-excluded failure) settles via `#onOutcome`.
    *
    * Trade-off: a node waiting out its backoff keeps occupying a `max_parallel` slot (it stays `running`), so
    * under a tight cap a long `backoff_ms` can serialize otherwise-ready sibling branches (ADR-0040 A.3 — keep
    * `backoff_ms` modest under a tight cap). Freeing the slot mid-backoff would re-introduce the idle race.
    */
-  async #dispatch(vertex: PlanVertex, firstAttempt: number): Promise<void> {
+  async #dispatchLoop(vertex: PlanVertex, firstAttempt: number): Promise<void> {
     const retry = this.#retryConfig(vertex);
     let attempt = firstAttempt;
     // The node holds its slot from the FIRST attempt's node:started; the terminal durationMs measures the
@@ -1465,6 +1913,7 @@ class RunExecution {
     // approved call does not re-pause the (still-over-budget) node on its very next retry.
     const budgetApproved = this.#budgetApprovedVertices.delete(vertex.id);
     for (;;) {
+      this.#lastAttemptByVertex.set(vertex.id, attempt);
       const outcome = await this.#runAttempt(vertex, attempt, budgetApproved);
       // ADR-0074 §2's other barrier: "the enclosing turn completion waits for the commitment's durability
       // acknowledgement." A commitment made inside this attempt must be durable before the node reaches ANY
@@ -1552,6 +2001,14 @@ class RunExecution {
     attemptNumber: number,
     budgetApproved: boolean,
   ): Promise<NodeOutcome> {
+    // **CAPTURED, not re-read — ADR-0085 §5.** A first version had both fence points call
+    // `#dispatchIdForVertex.get(vertex.id)` at write time, which compares a value against itself: `#dispatch`
+    // writes the same id into both maps, so while any dispatch of the vertex is active the two sides are
+    // equal by construction and the predicate degenerates to `!#settled && has(vertex)` — precisely the
+    // "second boolean latch" §5 rejects, because it cannot tell dispatch N from N+1 and the budget-approved
+    // re-dispatch produces exactly that. Measured: a stale `cost:updated` of 999 999 from dispatch N was
+    // DELIVERED while N+1 was in flight. `#fenceEffects` had it right; these two did not.
+    const dispatchId = this.#dispatchIdForVertex.get(vertex.id) ?? -1;
     try {
       // A just-approved budget gate skips the pre-egress check for the WHOLE approved re-dispatch — every
       // above-chain node-retry attempt of it (H3 × ADR-0040). `budgetApproved` is consumed ONCE per dispatch
@@ -1567,7 +2024,23 @@ class RunExecution {
         secretInputNames: this.#secretInputNames,
         toolPolicy: this.#workflow.workflow.tools ?? {},
         emit: (event) => {
-          this.#nodeEmit(event);
+          // **Fence point 2 (ADR-0085 §5): the cost DELIVERY, not the fold.** A straggler from an abandoned
+          // dispatch must not push a `cost:updated` at subscribers after the terminal has already reported
+          // the run total.
+          //
+          // **But the fold must still happen, and getting that wrong lost real money.** The counter is what
+          // `TurnMoneyPort.record` stamps as `cumulativeCostMicrocents`, and
+          // `refineCostAttemptSettled` rejects a row whose cumulative is below its own `costMicrocents`.
+          // Refusing the fold left the counter behind, so a genuinely billed attempt produced
+          // `cumulative 0 < cost 77` — rejected at the producer gate, which runs in `#bus.next` OUTSIDE
+          // `#emitDurable`'s try, so it threw in the one place the design assumes it cannot and the durable
+          // ledger row was lost entirely. ADR-0045 §5's local-only-cancel position and §5's own money table
+          // both say a charge already incurred is recorded either way; the fold is how that stays true.
+          const live = this.#isLive(vertex.id, dispatchId);
+          if (!live && event.type !== 'cost:updated') {
+            return;
+          }
+          this.#nodeEmit(event, live);
         },
         signal: this.#abort.signal,
         attemptNumber,
@@ -1583,17 +2056,20 @@ class RunExecution {
         ...(this.#effectJournal === undefined
           ? {}
           : {
-              effects: this.#effectJournal({
-                kind: 'run',
-                runId: this.runId,
-                nodeId: vertex.id,
-                attempt: attemptNumber,
-              }),
+              effects: this.#fenceEffects(
+                this.#effectJournal({
+                  kind: 'run',
+                  runId: this.runId,
+                  nodeId: vertex.id,
+                  attempt: attemptNumber,
+                }),
+                vertex.id,
+              ),
             }),
       };
       // After the executor completes, an `output` node with `save_to` writes its produced media to the
       // host (1.AF/D16). A write failure FAILS the node (→ run:failed) — save_to is a real deliverable.
-      return await this.#applySaveTo(vertex, await this.#executor.execute(ctx));
+      return await this.#applySaveTo(vertex, await this.#executor.execute(ctx), dispatchId);
     } catch (error) {
       // A money-durability failure is NOT an anonymous handler throw. Barriers B1 and B2 (ADR-0077) both sit
       // INSIDE the turn, and `throwMappedChainError` has two arms whose only job is to keep the class and its
@@ -1707,6 +2183,36 @@ class RunExecution {
   ): Promise<void> {
     if (this.#settled) {
       return; // terminal already emitted — ignore a late settle (e.g. an aborted straggler)
+    }
+    // **Fence point 1 (ADR-0085 §5), and the predicate is the vertex's own STATUS, not the dispatch token.**
+    // `#settled` alone does not cover the window this item created: a node whose `timeout_ms` tripped is
+    // settled `failed` by `#onNodeDeadline` while `#dispatchLoop` keeps running beside a live sibling, so
+    // its eventual outcome reaches here on a run that has NOT settled and would overwrite the timeout with a
+    // `completed` — a node reporting success for work the engine already told the user had timed out.
+    //
+    // **The dispatch token is the wrong test here, and it is not merely wrong — it is unavailable.** An
+    // earlier version of this comment blamed `#dispatch`'s `finally` releasing the slot on a park; that
+    // stopped being true when the release was narrowed to a node TERMINAL (see `#dispatch`). Three reasons
+    // survive, and none of them is about slot release:
+    //
+    //   1. `#onOutcome` is re-entered OUT OF BAND from three sites that hold no dispatch id at all —
+    //      `#onNodeDeadline`, `#settleMediaJobDone`, and the media-job failure path. There is no token to
+    //      compare, so the predicate could not even be written there.
+    //   2. A cross-process resume rehydrates a parked media job (`#restoreParkedMediaJob`) into a NEW
+    //      `RunExecution` whose `#activeDispatchByVertex` never held that vertex — `#dispatch` is the only
+    //      writer. A token check would refuse every resumed job's completion.
+    //   3. After `#onGraceElapsed` clears the map, an abandoned node's `cancelled` outcome must still land
+    //      here: ADR-0085 §4 requires the node terminal, and §8.16 records what refusing it costs.
+    //
+    // The honest predicate is that a vertex which already reached a TERMINAL node status has had its
+    // outcome; `paused` and `running` have not.
+    const settledStatus = this.#states.get(vertex.id)?.status;
+    if (
+      settledStatus === 'completed' ||
+      settledStatus === 'failed' ||
+      settledStatus === 'skipped'
+    ) {
+      return;
     }
     try {
       switch (outcome.kind) {
@@ -1824,9 +2330,13 @@ class RunExecution {
         ? undefined
         : new Date(Date.parse(this.#host.clock.now()) + gate.timeoutMs).toISOString());
     if (gate.timeoutMs !== undefined && effectiveAction !== undefined) {
-      const disarm = this.#host.setTimer(gate.timeoutMs, () => {
-        void this.#onGateTimeout(gateId, vertex.id, effectiveAction);
-      });
+      const disarm = armLongTimer(
+        gate.timeoutMs,
+        () => {
+          void this.#onGateTimeout(gateId, vertex.id, effectiveAction);
+        },
+        (ms, fire) => this.#host.setTimer(ms, fire, 'work'),
+      );
       this.#gateTimers.set(gateId, disarm);
     }
     if (gate.spentMicrocents !== undefined && gate.limitMicrocents !== undefined) {
@@ -2052,8 +2562,22 @@ class RunExecution {
         units: job.units,
       };
       let status: MediaJobStatus;
+      // **Bound the individual poll CALL, not only the loop (`CR-21c`).** ADR-0045 §7 gives the job an
+      // absolute `deadlineAt`, and it is consulted at the TOP of each tick — twenty-five lines above this
+      // await. Nothing raced the await itself, so a provider whose poll never settles (and ignores its
+      // signal, which is a request rather than a guarantee — ADR-0082 §5) stranded the run past its own
+      // thirty-minute deadline indefinitely. The loop was bounded; one call inside it was not.
+      //
+      // The bound is `MEDIA_JOB_POLL_DEFAULTS.pollCallTimeoutMs`, CLAMPED to whatever is left of
+      // `deadlineAt`. The clamp is what makes the item's title true: bounding the call alone still lets a
+      // job outlive its deadline by up to one call.
+      //
+      // A deadline abort here falls into the catch below, which already classifies a poll fault as the
+      // retryable `provider_unavailable` that ADR-0045 §3/§6 specify — so this adds a bound, not a new
+      // outcome. The scope is disposed on every exit, success included.
+      const pollDeadline = this.#openPollDeadline(job);
       try {
-        status = await this.#executor.pollMediaJob(submission, this.#abort.signal);
+        status = await this.#racePoll(pollDeadline, submission);
       } catch {
         // A cancel (the abort surfaced as a throw) / terminal / cleared job → return silently; the #settle
         // path emits run:cancelled. Only a genuine poll fault on a live job settles node:failed.
@@ -2089,6 +2613,62 @@ class RunExecution {
         // — nothing else re-enters the loop, so without this the run would hang at `run:paused` forever (M1).
         this.#schedule();
       }
+    }
+  }
+
+  /**
+   * Open a deadline for ONE poll call.
+   *
+   * **It always returns one** — unlike `FallbackChain#openDeadline` and `openGenerativeDeadline`, whose
+   * both-or-neither checks are real because THEIR deps are optional. `ExecutionHost.setTimer` and
+   * `.newAbortController` are required members, so there is no host that can reach this without them. An
+   * earlier version declared `| undefined` and had the caller branch on it; the branch was unreachable and
+   * its docblock described a host that cannot exist.
+   *
+   * Clamped to the job's remaining `deadlineAt`. The top-of-tick short-circuit is a strict `>`, so a job at
+   * EXACTLY its deadline still reaches here and arms zero — harmless (the same retryable terminal either
+   * way), and stated because "a job already past it never reaches here" is off by that boundary.
+   */
+  #openPollDeadline(job: ParkedMediaJob): DeadlineScope {
+    const remainingToJobDeadlineMs = Math.max(
+      0,
+      Date.parse(job.deadlineAt) - Date.parse(this.#host.clock.now()),
+    );
+    const boundMs = Math.min(MEDIA_JOB_POLL_DEFAULTS.pollCallTimeoutMs, remainingToJobDeadlineMs);
+    // The KIND is bound here rather than widened into `SetDeadlineTimer`. The shared primitive's signature
+    // stays `(ms, fire) => disarm` — honest about the only two things a deadline needs — and the caller,
+    // which is the only party that knows what role its timer plays, supplies the third argument.
+    return openDeadline(
+      boundMs,
+      this.#host.newAbortController,
+      (ms, fire) => this.#host.setTimer(ms, fire, 'deadline'),
+      this.#abort.signal,
+    );
+  }
+
+  /**
+   * One poll call, raced against its deadline. A trip resolves as a thrown `timeout`, which the caller's
+   * existing catch maps to the retryable `provider_unavailable` — the classification ADR-0045 §3 already
+   * chose for a poll that cannot complete, reached by a new route rather than a new code.
+   */
+  async #racePoll(
+    deadline: DeadlineScope,
+    submission: MediaJobSubmission,
+  ): Promise<MediaJobStatus> {
+    try {
+      const poll = this.#executor.pollMediaJob?.(submission, deadline.signal);
+      if (poll === undefined) {
+        throw new Error('the executor implements no pollMediaJob');
+      }
+      const raced = await deadline.race(poll);
+      if (raced.outcome === 'deadline') {
+        throw new Error(
+          `the media-job poll did not respond within its ${String(MEDIA_JOB_POLL_DEFAULTS.pollCallTimeoutMs)}ms bound`,
+        );
+      }
+      return raced.value;
+    } finally {
+      deadline.dispose();
     }
   }
 
@@ -2472,6 +3052,9 @@ class RunExecution {
     this.#budgetApprovedVertices.clear(); // drop any unconsumed budget-approval (a sibling failure/cancel
     // can settle the run between resume() arming it and the re-dispatch — no stale entry on the retained run)
     this.#disarmRunTimeout();
+    this.#disarmGraceWindow(); // ADR-0085 §3 — a settled run leaves no backstop holding the loop open
+    // Live `keys()` — see the note at the `#onGraceElapsed` sweep for why deleting during iteration is safe.
+    for (const vertexId of this.#nodeDeadlineDisarm.keys()) this.#disarmNodeDeadline(vertexId);
     const durationMs = Math.max(0, this.#elapsedMs());
     let draft: RunEventDraft;
     if (type === 'run:completed') {
@@ -2554,6 +3137,21 @@ class RunExecution {
     this.#settled = true; // no terminal may be emitted after this point, by any path
     this.#stopHeartbeat();
     this.#abort.abort();
+    // ADR-0085 §8.12 requires the grace window disarmed on a FENCED settle as well as a normal one, and it
+    // was not: `#settle` reaches its fenced branch and returns BEFORE its own `#disarmGraceWindow()`. The
+    // cost is concrete rather than theoretical — the CLI deliberately does not `unref` a `deadline` timer,
+    // and sets `process.exitCode` rather than calling `process.exit`, so a fenced `relavium run` sat idle
+    // for the full 10 s after it had finished.
+    this.#disarmGraceWindow();
+    // **And the node deadlines, for the same reason and by the same measurement.** §8.12's grace-window
+    // finding was one instance of a general asymmetry: `#settle` sweeps every timer this run armed, but its
+    // fenced branch returns to `#settleFenced` BEFORE reaching that sweep. A node deadline outlives the
+    // fenced teardown — it is armed for the node's whole life by design, so a node in flight (a slow
+    // provider call, a media park, a gate park) still holds one when the lease is lost. The CLI does not
+    // `unref` a `deadline` timer and sets `process.exitCode` rather than calling `process.exit`, so a fenced
+    // `relavium run` sat idle for the node's full authored `timeout_ms` — minutes, where the grace leak cost
+    // ten seconds.
+    for (const vertexId of this.#nodeDeadlineDisarm.keys()) this.#disarmNodeDeadline(vertexId);
     for (const disarm of this.#gateTimers.values()) disarm();
     this.#gateTimers.clear();
     for (const disarm of this.#mediaJobTimers.values()) disarm();
@@ -2728,7 +3326,11 @@ class RunExecution {
     return outputs;
   }
 
-  #nodeEmit(event: NodeStreamEvent): void {
+  /**
+   * @param deliver false when the fold must still happen but the event must not reach subscribers — a
+   * straggler's `cost:updated` after the terminal. See the call site for why the two are separable.
+   */
+  #nodeEmit(event: NodeStreamEvent, deliver = true): void {
     const runId = this.runId;
     // The non-cost cases all pass through with only the correlation key added — `{ ...event, runId }`
     // distributes the object spread over the case-narrowed union, so a shared fallthrough body keeps
@@ -2744,13 +3346,18 @@ class RunExecution {
         this.#bus.emit({ ...event, runId });
         return;
       case 'cost:updated':
+        // The FOLD is unconditional: it is what keeps `#cumulativeCostMicrocents` a truthful record of money
+        // the provider actually took, and what `TurnMoneyPort.record` stamps onto the durable ledger row.
         this.#cumulativeCostMicrocents += event.costMicrocents;
         this.#budgetGovernor?.updateCost(this.#cumulativeCostMicrocents);
-        this.#bus.emit({
-          ...event,
-          runId,
-          cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
-        });
+        // The DELIVERY is not: a straggler must not re-announce a total the terminal already published.
+        if (deliver) {
+          this.#bus.emit({
+            ...event,
+            runId,
+            cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
+          });
+        }
         return;
       default: {
         // Exhaustiveness guard over `NodeStreamEvent` (`InNodeEventType`): a future in-node event must add a
@@ -3067,6 +3674,23 @@ class RunExecution {
   }
 
   /**
+   * The typed failure both `save_to` fence paths return when the run stopped waiting on this dispatch
+   * (ADR-0085 §5, fence point 3).
+   *
+   * `cancelled` and `retryable: false` deliberately: the cutoff that trips this fence is a cancel or an
+   * elapsed grace window, and cancel-wins precedence means `#settleFailed` leaves an already-recorded
+   * `#failure` alone — so this classifies the NODE without ever overwriting the run's real cause. Message
+   * is path-free and byte-free (I3).
+   */
+  #saveToAbandoned(): NodeFailure {
+    return {
+      code: 'cancelled',
+      message: 'the run stopped waiting on this dispatch before `save_to` was written',
+      retryable: false,
+    };
+  }
+
+  /**
    * Apply an `output` node's `save_to` (1.AF/D16, ADR-0044 §2) once its executor has `completed`: returns
    * the outcome unchanged when there is nothing to write (not an output node, no `save_to`, or a
    * non-`completed` outcome), else writes the produced media and returns the outcome on success or a typed
@@ -3074,7 +3698,11 @@ class RunExecution {
    * — it is NOT best-effort (contrast the retention {@link #recordProducedMedia}). Output nodes carry no
    * node-retry budget ({@link #retryConfig}), so the write runs once.
    */
-  async #applySaveTo(vertex: PlanVertex, outcome: NodeOutcome): Promise<NodeOutcome> {
+  async #applySaveTo(
+    vertex: PlanVertex,
+    outcome: NodeOutcome,
+    dispatchId: number,
+  ): Promise<NodeOutcome> {
     if (outcome.kind !== 'completed') {
       return outcome;
     }
@@ -3082,7 +3710,28 @@ class RunExecution {
     if (config.kind !== 'output' || config.node.save_to === undefined) {
       return outcome;
     }
-    const failure = await this.#performSaveTo(config.node.save_to, outcome.output);
+    // **Fence point 3 (ADR-0085 §5): `save_to`.** Unguarded before this, and the only fence point that
+    // writes BYTES TO THE USER'S FILESYSTEM — on the executor's return, before `#onOutcome`'s `#settled`
+    // latch is ever reached. A dispatch the grace window abandoned must not still deliver a file for a run
+    // that already reported its terminal.
+    //
+    // The check is threaded INTO the write rather than only guarding its entry: `#performSaveTo` resolves a
+    // template, de-inlines media and consults the store before it calls `mediaWrite`, and every one of those
+    // is an await the cutoff can land inside. Guarding only the entry left a TOCTOU whose losing side is a
+    // file on the user's disk.
+    //
+    // **Both fence paths return a FAILURE, not the completed outcome.** Returning `outcome` unchanged was
+    // the first version and it defeated the fence it was part of: `#isLive` goes false the instant
+    // `#onGraceElapsed` clears the dispatch map, which is BEFORE `#settled` is set and before the grace loop
+    // reaches this vertex — so an output node still `running` at that moment passed `#onOutcome`'s status
+    // guard and persisted `node:completed` for a deliverable that was never written. A `save_to` is a real
+    // deliverable ({@link #performSaveTo}), so an unwritten one is a failed node, not a completed one.
+    if (!this.#isLive(vertex.id, dispatchId)) {
+      return { kind: 'failed', error: this.#saveToAbandoned() };
+    }
+    const failure = await this.#performSaveTo(config.node.save_to, outcome.output, () =>
+      this.#isLive(vertex.id, dispatchId),
+    );
     return failure === undefined ? outcome : { kind: 'failed', error: failure };
   }
 
@@ -3092,7 +3741,11 @@ class RunExecution {
    * `MediaStore`, and write through the host media-write port. Returns `undefined` on success, else a typed,
    * secret-free {@link NodeFailure}. The bytes/handle/resolved-path never enter the message (I3).
    */
-  async #performSaveTo(saveTo: string, output: unknown): Promise<NodeFailure | undefined> {
+  async #performSaveTo(
+    saveTo: string,
+    output: unknown,
+    stillOurs: () => boolean,
+  ): Promise<NodeFailure | undefined> {
     const store = this.#host.mediaStore;
     const write = this.#host.mediaWrite;
     if (store === undefined || write === undefined) {
@@ -3133,6 +3786,16 @@ class RunExecution {
         return { code: 'internal', message: 'output node `save_to`: no handle', retryable: false }; // unreachable (length === 1)
       }
       const bytes = await store.get(handle.handle);
+      // **The last check, immediately before the irreversible step.** Everything above is I/O — a template
+      // resolve, a de-inline, a store read — and the cancellation cutoff can land inside any of it. A host
+      // that honours its contract but treats the abort signal as advisory would otherwise write a file for a
+      // run that had already reported its terminal.
+      if (!stillOurs()) {
+        // A FAILURE, not `undefined`. `undefined` is this method's success signal, so returning it here
+        // told `#applySaveTo` the deliverable had been written — the same defect as the entry fence above,
+        // one await later.
+        return this.#saveToAbandoned();
+      }
       await write(relativePath, bytes, this.#abort.signal);
       return undefined;
     } catch (error) {
@@ -3233,6 +3896,31 @@ class RunExecution {
  * crash recovery. Surface-agnostic and platform-free — host concerns (clock, ids, persistence) and
  * node execution are injected ({@link WorkflowEngineDeps}).
  */
+/**
+ * ADR-0085 §3's post-abort grace window, in milliseconds.
+ *
+ * **It bounds how long the engine waits for the EXECUTOR, not how long the terminal takes to become
+ * durable.** That distinction is the whole of §3's scope: terminal durability belongs to ADR-0078's ordered
+ * append and outbox, and a single `persistEvent` has a documented ~25 s worst case under contention
+ * (database-schema.md). A window shorter than one legitimate durable write is correct for what it bounds and
+ * would be absurd as a bound on settling.
+ *
+ * The value follows from what the window is FOR: cooperative unwinding after the executor has already been
+ * told to stop — flushing a stream, closing an iterator, returning a failure. Not 2 000 ms (the CLI's
+ * `FORCE_TEARDOWN_MS`, which waits on a child-process close, while a dispatch may be mid-await on a stream
+ * ADR-0082 gives up to 120 s), and not 30 000 ms (half a minute after a cancel reads as the hang this
+ * removes). It cannot be disabled: "unbounded" is the state being removed.
+ */
+const GRACE_WINDOW_MS = 10_000;
+
+/**
+ * What an abandoned node's `node:failed` says (ADR-0085 §4). Fixed text, not free prose: the code is
+ * `cancelled`, which alone would read as "the user cancelled this node" when what happened is that the
+ * engine stopped waiting for an executor that would not settle.
+ */
+const GRACE_ABANDON_MESSAGE =
+  'the node did not settle within the grace period after the run was aborted; the engine stopped waiting';
+
 export class WorkflowEngine {
   readonly #host: ExecutionHost;
   readonly #executor: NodeExecutor;

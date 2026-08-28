@@ -220,16 +220,58 @@ export const MEDIA_SURFACES = ['chat', 'generative'] as const;
 export type MediaSurface = (typeof MEDIA_SURFACES)[number];
 
 /**
- * The async media-job (generateMedia LRO) poll cadence + deadline DEFAULTS (1.AG/ADR-0045 §7). The single
- * source of these magic numbers — the engine poll loop (Section D) uses them directly: poll at `pollInitialMs`,
- * exponential-back-off (no jitter) capped at `pollMaxMs`, abandon a job past `deadlineMs` (from submit) as a
- * retryable timeout. The `[defaults].media_job_poll_initial_ms` / `_max_ms` / `_deadline_ms` config OVERRIDES
- * exist + validate (config.ts), but the engine does NOT yet read them — wiring the host-resolved overrides into
- * the run loop (the `max_tokens_estimate` pattern) is 1.AH host-wiring, like the other `[defaults].*` reads.
+ * How long ONE `generateMedia` SUBMISSION may take before the engine stops waiting (`CR-21b`).
+ *
+ * A number of its own rather than a borrow, and the borrow was the first attempt. `@relavium/llm`'s
+ * `DEFAULT_ATTEMPT_TIMEOUT_MS` is the obvious candidate — same value — but
+ * [ADR-0085](../../../docs/decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md)
+ * §9 kept it in that package on purpose: "the deadline MECHANISM is generic, this NUMBER is a statement about
+ * provider latency and belongs with the seam that knows about providers." Reaching across for it would have
+ * widened the LLM package's public surface to let the ENGINE bound a media call — and would have coupled
+ * two budgets that answer different questions, so a future change to chat latency would silently move the
+ * media bound. [ADR-0082](../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
+ * §10 named this call and explicitly declined to decide its bound, which is the decision recorded here.
+ *
+ * Set to the same 120 s for the same reason that one is: a generative model's first byte can legitimately be
+ * a long way off, and a too-tight default turns a working model into an unexplained failure — worse than the
+ * unbounded wait it replaces. Equal today, independent by construction.
+ */
+export const MEDIA_GEN_SUBMIT_TIMEOUT_MS = 120_000;
+
+/**
+ * The async media-job poll cadence and bounds (1.AG Section D,
+ * [ADR-0045](../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §7) — the
+ * single source of these magic numbers. The engine poll loop uses them directly: poll at `pollInitialMs`,
+ * exponential back-off (no jitter) capped at `pollMaxMs`, bound each individual call at
+ * `pollCallTimeoutMs`, and abandon a job past `deadlineMs` (from submit) as a retryable timeout.
+ *
+ * The `[defaults].media_job_poll_initial_ms` / `_max_ms` / `_deadline_ms` config OVERRIDES exist and
+ * validate (`config.ts`), but the engine does NOT yet read them — wiring the host-resolved overrides into the
+ * run loop (the `max_tokens_estimate` pattern) is 1.AH host-wiring, like the other `[defaults].*` reads.
  */
 export const MEDIA_JOB_POLL_DEFAULTS = {
   pollInitialMs: 5_000,
   pollMaxMs: 30_000,
+  /**
+   * How long ONE `pollMediaJob` call may take before the engine stops waiting for it (`CR-21c`).
+   *
+   * Distinct from `pollMaxMs`, which is the maximum INTERVAL BETWEEN polls — a different quantity that
+   * happens to carry the same number today. Deriving this from that one was the first proposal and was
+   * withdrawn: it would lock two values that may legitimately diverge, so a later change to the polling
+   * cadence would silently move a liveness bound.
+   *
+   * **Generous on purpose, and the instinct to tighten it is backwards here.** A single failed poll settles
+   * the WHOLE job (`#settleMediaJobFailed`, a retryable `provider_unavailable`), and a parked media node does
+   * not re-enter the node-retry wrapper, so the automatic re-submit is deferred, not shipped. Too tight
+   * converts one slow status check into a dead, already-paid thirty-minute job; too loose only makes the run
+   * wait longer before failing. `LIST_MODELS_TIMEOUT_MS` (15 s) is the closest precedent by SHAPE — a
+   * bounded provider GET on the same seam — and the wrong one by STAKE: a failed `listModels` degrades to
+   * the static catalog.
+   *
+   * Each call is additionally clamped to the job's own remaining `deadlineAt`, which is what stops a job
+   * outliving its deadline by up to one call (the deadline is only consulted at the top of each poll tick).
+   */
+  pollCallTimeoutMs: 30_000,
   deadlineMs: 1_800_000, // 30 min
 } as const;
 

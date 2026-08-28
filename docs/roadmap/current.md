@@ -2,7 +2,7 @@
 
 > Status: Living
 >
-> Last updated: 2026-08-11
+> Last updated: 2026-08-27
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -37,7 +37,8 @@ price ruling.
 **The unified build order across both phases is in
 [Execution order — Phase 2.5.5 + Phase 2.6](#execution-order--phase-255--phase-26-temporary) below** — a
 temporary section, deleted when both phases close. Its baseline step is discharged (PRs #76 and #77 merged)
-and **Wave 0's CI-truth PR is in flight on `development` (PR #80)**.
+and Wave 0 is merged (PR #82), as is Wave 1 (PR #83). The interlude's `W2` (core reliability, six items) is
+on `development` for PR #85.
 
 ## Execution order — Phase 2.5.5 + Phase 2.6 (temporary)
 
@@ -90,7 +91,7 @@ flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
     LEDGER["#W15-1 — realized-cost ledger ✅<br/>ADR-0076 + ADR-0077"]
-    P265["Phase 2.6.5 — Core reliability<br/>47 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1 closed (14)<br/>absorbs the hostile-MCP class"]
+    P265["Phase 2.6.5 — Core reliability<br/>48 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1 merged · W2 closed on `development` (20 of 48)<br/>absorbs the hostile-MCP class"]
     W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
@@ -464,14 +465,14 @@ gaps**: effect journal, stdio MCP consent-before-spawn, run lease, compaction tr
 input admission, event-log ordering. Three separate reviews landing on the same seven points is not opinion.
 
 The full, self-contained work list is
-[phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md) — **47 items**
+[phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md) — **48 items**
 (`CR-01`…`CR-95`) with evidence, fix, acceptance criteria and a decision/ADR/gate register, written so the work
 can be done from that document alone. An adversarial plan review on 2026-08-10 corrected the phase boundary,
 the exit rule and the execution order, and added two items (`CR-17` resume identity, `CR-63` `input_schema`
-docs-only); `CR-64` came from the Batch 1 triage and `CR-21b` from ADR-0082 §10, which is why the total has
-moved since the list was first written.
+docs-only); `CR-64` came from the Batch 1 triage, `CR-21b` from ADR-0082 §10 and `CR-21c` from the `W2`
+document review on 2026-08-25, which is why the total has moved since the list was first written.
 
-> **Live status — 14 of 47 closed. `W0` and `W1` are both done.**
+> **Live status — 20 of 48 closed. `W0`, `W1` and `W2` are done; `W3` is next.**
 >
 > - **Batch 1, merged 2026-08-11 (PR #82)** — the prerequisite (`#W15-1`), the oracle (`CR-90`, `CR-91`) and
 >   all of `W0` (`CR-01`–`CR-03`). `CR-64` was added in the same batch and is open.
@@ -479,8 +480,20 @@ moved since the list was first written.
 >   ADR-0078…ADR-0084. A comprehensive review of the assembled PR found seven further defects, six of them in
 >   the W1 code itself; all seven were fixed and mutation-verified before merge.
 >
-> **Next is `W2` — liveness and deadlines.** Per-item history, the seven post-review findings and the
-> carried-forward gaps live in the phase document.
+> - **`W2` — liveness and deadlines — COMPLETE 2026-08-27**, behind [ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md). All six items closed; the wave's own closing register is in the phase document.
+>   Its document review moved the count twice, and the two moves **cancel**: `CR-21` turns out to have
+>   shipped **with `CR-14`** in PR #83 (ADR-0082 decides both, and the execution graph above already
+>   scheduled them together) and only its heading was stale, while `CR-21c` — an unbounded individual
+>   `pollMediaJob` call — was found during the same review and added. `W2` was therefore still **five** open
+>   items out of six, not four; the phase total moved 47 → 48, not the wave. All five then closed on
+>   2026-08-27 — `CR-22`, `CR-21b`, `CR-21c`, and finally `CR-20` and `CR-23` together, which
+>   [ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) decides as
+>   one because they are one mechanism at one place.
+>
+> **Not to be confused with the 2.5.5 remediation's own `W2`** ("Shut the doors", in the graph above). Same
+> label, different phase: this one is 2.6.5's liveness wave.
+>
+> Per-item history, the seven post-review findings and the carried-forward gaps live in the phase document.
 
 **This is the corrected execution order, and it is what the graph above shows:**
 
@@ -598,7 +611,7 @@ The four Day-1-independent 2.6 workstreams everything downstream sits on — and
 3. **2.6.K** — the shared resume core (security review) → `budget resume` → the gate-decision/`gateType`
    cross-check (#0) → **2.6.G's `engine.reconcile()` wiring (#229), pulled forward** to where its only
    dependency resolves → secret re-provide (**mandatory security review** — it relaxes a fail-closed
-   guarantee) → gate-timeout re-arm → the `run:paused` park distinction.
+   guarantee) → ~~gate-timeout re-arm~~ (closed early in 2.6.5 `CR-22`) → the `run:paused` park distinction.
 4. **2.6.H** — the `applyDerived` exhaustiveness guard (#114) co-landed with resilient per-row parse
    (#277, #282) → step attribution → exact per-node cost + failed/cancelled totals (#118, #232) →
    batched `loadRunEvents` (G12, #273) → the bounded tool trace → gate uniqueness → idempotency.

@@ -1964,3 +1964,101 @@ describe('AgentSession — a restored compaction summary stays out of `system` (
     expect(JSON.stringify(hostile)).toBe(JSON.stringify(benign)); // byte-identical, order included
   });
 });
+
+describe('AgentSession — the ADR-0082 deadline ports actually reach the chain', () => {
+  // **Both branches of `agent-turn.ts`'s `chainCapabilities`, and the second one is the production path.**
+  // When `preEgress` is defined the turn REBUILDS the capabilities object, and the deadline ports survive
+  // only by an object spread. `apps/cli/src/chat/session-host.ts` wires `preEgress` unconditionally (a
+  // closure that delegates to `governor?.preEgress(info)`), so every real CLI chat turn takes the rebuild
+  // branch. Measured: dropping the ports inside that rebuild left all 1335 core tests green — the first
+  // version of this test exercised only the pass-through branch and would never have noticed.
+  for (const variant of [
+    { label: 'no budget governor (the pass-through branch)', preEgress: undefined },
+    {
+      label: 'a budget governor wired (the branch every CLI chat turn takes)',
+      preEgress: () => undefined,
+    },
+  ] as const) {
+    it(`arms the attempt deadline from \`SessionDeps.setTimer\` — ${variant.label}`, async () => {
+      // **The hole this closes is a hole in the GUARD, not in the mechanism.** ADR-0082's deadline is wired
+      // host-side (`session-host.ts`) and pinned there by a source-grep in `effect-journal-wiring.test.ts` —
+      // but the engine-side forwarding is a conditional spread (`#chainCapabilities`), and NOTHING executed it.
+      // Delete the `setTimer` key from that spread and: core is green, both CLI grep guards are green (they
+      // read host source text, not the engine), and every session surface silently reverts to unbounded.
+      // That is strictly larger than the gap the grep was written to close — the ports are wired, and dead.
+      //
+      // Measured, not assumed: with the key removed at BOTH forwarding sites the core suite reports exactly
+      // four reds — this test and its workflow twin in `agent-runner.e2e.test.ts`, each in BOTH of its
+      // branch variants. (It read "exactly two" until the variants below were added; the loop doubled the
+      // count and the adjacent measurement was not revisited, which a review caught.) (An
+      // absolute pass-count is deliberately NOT recorded here — it rots on the next added test, and the
+      // durable facts are which mutation and which tests redden.) An earlier version reddened by TIMING OUT —
+      // honest, and precedented by ADR-0074 §3's hold-release listener test, whose comment in `engine.ts` says
+      // a hang IS the defect stated exactly. But that precedent has no assertable proxy and this one does:
+      // `armed` is already collected, so draining microtasks first turns a 5 s hang into a 3 ms
+      // `expected 0 to be greater than 0`, and separates "the port was not forwarded" from "the turn
+      // deadlocked for some other reason" — which a bare timeout cannot.
+      //
+      // Asserted through BEHAVIOUR, not by reaching into `#chainCapabilities`: a provider that ignores its
+      // signal and never settles is exactly what a cooperative abort cannot rescue, so a turn that completes
+      // at all proves the hard race ran.
+      const armed: number[] = [];
+      // Built with the same shape as `scriptedProvider` (id + `supports: CAPS`) so the chain's capability
+      // pre-skip admits it — a mis-shaped double is SKIPPED, which arms no timer and would make this test
+      // pass for the wrong reason.
+      const hung: LlmProvider = {
+        id: 'anthropic',
+        supports: CAPS,
+        // THROWS rather than hangs, matching this file's convention (`scriptedProvider`). A hanging
+        // `generate` would look like coverage it does not have — this turn only ever calls `stream` — and,
+        // worse, a future change that routed it through `generate` would produce a 5 s timeout
+        // INDISTINGUISHABLE from the "setTimer was not forwarded" red this test documents below.
+        generate: () => {
+          throw new Error('unused — this turn streams');
+        },
+        stream: () => ({
+          [Symbol.asyncIterator]: () => ({ next: () => new Promise<never>(() => undefined) }),
+        }),
+      };
+
+      const { deps, events } = harness([[]], {
+        resolveProvider: () => hung,
+        attemptTimeoutMs: 45_000,
+        ...(variant.preEgress === undefined ? {} : { preEgress: variant.preEgress }),
+        // Trips every armed deadline on the next microtask. Firing only the FIRST one hangs the test: each
+        // chain attempt opens its own scope (ADR-0082 §5 is per attempt), so a retry arms a fresh timer that
+        // nothing would fire — the 5 s vitest timeout, not a product failure.
+        setTimer: (ms: number, onFire: () => void) => {
+          armed.push(ms);
+          queueMicrotask(onFire);
+          return () => undefined;
+        },
+      });
+      const s = session(deps);
+      s.start();
+
+      const turn = s.sendMessage('hello');
+      // Drain bounded microtasks BEFORE awaiting the turn, so a missing timer port reddens on an assertion in
+      // ~0 ms instead of hanging out the 5 s vitest budget. The two failures then read differently: "the port
+      // was not forwarded" (`armed` empty) versus "the turn deadlocked for an unrelated reason" (`armed`
+      // populated, the await never settles) — a bare timeout cannot tell those apart. Same technique as the
+      // deadline tests in `fallback-chain.test.ts`.
+      for (let i = 0; i < 500 && armed.length === 0; i += 1) await Promise.resolve();
+
+      // **A NON-DEFAULT value, and that is the whole point.** Asserting 120_000 here would be hollow:
+      // `DEFAULT_ATTEMPT_TIMEOUT_MS` is exactly what `FallbackChain` falls back to when `attemptTimeoutMs`
+      // is ABSENT (`fallback-chain.ts`), so the assertion would pass whether or not the third port is
+      // forwarded. Measured: with both `attemptTimeoutMs` forwarding lines deleted, the whole core suite —
+      // this test included — stayed green. Asserting a value only the port can deliver break-verifies it.
+      expect(armed.length).toBeGreaterThan(0); // the timer port arrived — the assertion the guard lacked
+      expect(armed.every((ms) => ms === 45_000)).toBe(true); // …and so did the timeout port, intact
+      await turn;
+
+      const terminal = events.find((e) => e.type === 'session:turn_completed');
+      expect(terminal).toBeDefined();
+      expect(terminal?.type === 'session:turn_completed' && terminal.error?.code).toBe(
+        'provider_unavailable',
+      );
+    });
+  }
+});

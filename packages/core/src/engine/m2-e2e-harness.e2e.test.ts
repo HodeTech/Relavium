@@ -33,6 +33,7 @@ import type {
   PricingOverlay,
   ProviderId,
   StreamChunk,
+  MediaGenResult,
 } from '@relavium/llm';
 import {
   RunEventSchema,
@@ -42,6 +43,8 @@ import {
   type DurableWriteContext,
   type MediaStore,
   type RunEvent,
+  MEDIA_JOB_POLL_DEFAULTS,
+  MEDIA_GEN_SUBMIT_TIMEOUT_MS,
 } from '@relavium/shared';
 import { beforeAll, describe, expect, it } from 'vitest';
 
@@ -713,6 +716,14 @@ function buildEngine(
         keyFor: () => 'k',
         sleep: () => Promise.resolve(),
         now: () => 1,
+        // **The deadline ports, mirroring production.** `build-engine.ts` wires both into the agent deps;
+        // this harness wired neither, so `CR-21b`'s bound on the `generateMedia` submission armed nothing
+        // here — the same "the port is forwarded and the test takes the branch that does not use it" shape
+        // `CR-21`'s own close-out had to fix twice. Bound to the `'deadline'` KIND deliberately: every use
+        // of this port is a backstop over an in-flight provider call — ADR-0082's per-attempt deadline and
+        // this submission — never something the run is parked ON, so `fireTimers()` must not sweep it.
+        newAbortController: host.newAbortController,
+        setTimer: (ms: number, fire: () => void) => host.setTimer(ms, fire, 'deadline'),
       },
     }),
   });
@@ -876,6 +887,266 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
 
     assertGapFreeSeq(events);
     assertCanonicalSchema(events);
+  });
+
+  it("a node's `timeout_ms` SURVIVES a media-job park (ADR-0085 §2)", async () => {
+    // **The bound was tied to the dispatch call, and a park is not a node terminal.** `#dispatch` returned
+    // when the job parked and its `finally` disposed the deadline, so an authored `timeout_ms: 1000` node
+    // then ran under ADR-0045's thirty-minute JOB deadline instead — and its eventual failure classified
+    // `provider_unavailable`/retryable rather than `run_timeout`/fatal. The deadline is owned by the run
+    // now and disarmed only at the node's terminal.
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore: stubMediaStore(),
+    });
+    const armedNode: number[] = [];
+    let nodeDeadlineDisarmed = false;
+    const spied: typeof host = {
+      ...host,
+      setTimer: (ms, onFire, kind = 'work') => {
+        const disarm = host.setTimer(ms, onFire, kind);
+        if (kind !== 'deadline' || ms !== 1000) return disarm;
+        // The NODE's own bound. Watching its disarm is what makes this deterministic: `fireDeadlines()`
+        // fires whatever happens to be armed at that instant, so asserting on the terminal alone would be
+        // asserting on the order the park and the dispatch return happened to interleave.
+        armedNode.push(ms);
+        return () => {
+          nodeDeadlineDisarmed = true;
+          disarm();
+        };
+      },
+    };
+    // A generative node that parks on an async job, with an authored one-second bound.
+    const BOUNDED_MEDIA = parseWorkflow(
+      `schema_version: '1.0'
+workflow:
+  id: m2-bounded-generative
+  inputs:
+    - { name: topic, type: string }
+  agents:
+    - id: painter
+      model: gpt-image-1
+      provider: openai
+      system_prompt: You make images.
+  nodes:
+    - { id: in, type: input }
+    - { id: work, type: agent, agent_ref: painter, prompt_template: 'Draw: {{inputs.topic}}', output_modalities: [image], count: 1, timeout_ms: 1000 }
+    - { id: out, type: output }
+  edges:
+    - { from: in, to: work }
+    - { from: work, to: out }
+`,
+    );
+    const job = asyncMediaProvider([{ state: 'pending' }, { state: 'done', media: IMAGE_PART }]);
+    const engine = buildEngine(
+      spied,
+      () => job.provider,
+      () => 'generative',
+    );
+    const handle = engine.start({ workflow: BOUNDED_MEDIA, inputs: INPUTS });
+    const events: RunEvent[] = [];
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        events.push(event);
+        if (event.type === 'run:completed' || event.type === 'run:failed') settled = true;
+      }
+    })();
+    for (let i = 0; i < 400 && !events.some((e) => e.type === 'media_job:submitted'); i += 1) {
+      await Promise.resolve();
+      if (spied.armedCount() > 0) spied.fireTimers();
+    }
+    expect(events.some((e) => e.type === 'media_job:submitted')).toBe(true); // parked
+    expect(armedNode).toEqual([1000]); // the node bound was armed…
+    // Let the dispatch that parked return, so its `finally` has definitely run.
+    for (let i = 0; i < 200; i += 1) await Promise.resolve();
+    // …and it is STILL armed. A deadline owned by the dispatch call would be gone here, and the node would
+    // then run under ADR-0045's thirty-minute JOB deadline instead of its authored one second.
+    expect(nodeDeadlineDisarmed).toBe(false);
+
+    spied.fireDeadlines();
+    for (let i = 0; i < 400 && !settled; i += 1) {
+      await Promise.resolve();
+      if (spied.armedCount() > 0) spied.fireTimers();
+    }
+    await consume;
+    // And it is the NODE's bound that closed the node — `run_timeout`, fatal — not the job's retryable one.
+    const failed = events.find((e) => e.type === 'node:failed');
+    expect(failed?.type === 'node:failed' && failed.error.code).toBe('run_timeout');
+  });
+
+  it('CR-21c: a poll call that never settles is bounded, not waited out forever', async () => {
+    // ADR-0045 §7 gives the job an absolute `deadlineAt` and the loop honours it — at the TOP of each tick.
+    // The `await` on the poll itself was raced by nothing, so a provider whose poll never settles (and
+    // ignores its signal, which ADR-0082 §5 says is a request rather than a guarantee) stranded the run past
+    // its own thirty-minute deadline indefinitely. The loop was bounded; one call inside it was not.
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore: stubMediaStore(),
+    });
+    const hung: LlmProvider = {
+      id: 'openai',
+      supports: { ...MEDIA_CAPS, media: { ...MEDIA_CAPS.media, surface: 'generative' } },
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: (): AsyncIterable<StreamChunk> => {
+        throw new Error('unused');
+      },
+      generateMedia: () => Promise.resolve({ jobId: 'job-1', raw: {} }),
+      // Never settles AND ignores its signal — the only case that matters, since a cooperative provider
+      // needs no race.
+      pollMediaJob: () => new Promise<MediaJobStatus>(() => undefined),
+    };
+    const engine = buildEngine(
+      host,
+      () => hung,
+      () => 'generative',
+    );
+    const handle = engine.start({ workflow: GENERATIVE_OUT, inputs: INPUTS });
+    const events: RunEvent[] = [];
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        events.push(event);
+        if (event.type === 'run:failed' || event.type === 'run:completed') settled = true;
+      }
+    })();
+    // **Drive PAST the submission first.** A first version of this test waited only for
+    // `deadlineCount() > 0` and was hollow: the harness binds the agent's timer port to the same
+    // `'deadline'` kind, so the first backstop to arm is `CR-21b`'s on the SUBMISSION, and firing that
+    // failed the node before a poll ever ran. Removing the poll bound entirely left the test green — my own
+    // break-verify caught it. Waiting for `media_job:submitted` is what makes the observed backstop the
+    // POLL's, which is this test's subject.
+    for (
+      let i = 0;
+      i < 400 &&
+      !(events.some((e) => e.type === 'media_job:submitted') && host.deadlineCount() > 0);
+      i += 1
+    ) {
+      await Promise.resolve();
+      if (host.armedCount() > 0) host.fireTimers();
+    }
+    expect(events.some((e) => e.type === 'media_job:submitted')).toBe(true); // the submission landed…
+    expect(host.deadlineCount()).toBe(1); // …and the POLL call is bounded — the assertion no guard made
+    host.fireDeadlines();
+    for (let i = 0; i < 400 && !settled; i += 1) {
+      await Promise.resolve();
+      if (host.armedCount() > 0) host.fireTimers();
+    }
+    await consume;
+
+    // Classified through the path ADR-0045 §3 already chose for a poll that cannot complete — a bound was
+    // added, not a new outcome.
+    const terminal = events.at(-1);
+    expect(terminal?.type).toBe('run:failed');
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('provider_unavailable');
+    expect(host.deadlineCount()).toBe(0); // …and the backstop is disposed, not leaked
+  });
+
+  it("CR-21c: the poll bound is CLAMPED to the job's remaining deadline", async () => {
+    // The clause the commit called "what makes the item's title true" had zero coverage: every other test
+    // runs with ~1 799 997 ms left of the 1 800 000 ms job deadline, so `pollCallTimeoutMs` always wins the
+    // `min` and deleting the clamp entirely leaves them green. Without it a job outlives its own deadline by
+    // up to one full poll call, which is the defect `CR-21c` names.
+    const store = new InMemoryRunStore();
+    const base = createInMemoryHost({ store, mediaStore: stubMediaStore() });
+    let submittedAt = 0;
+    const armedDeadlines: number[] = [];
+    // Advance the clock to 10 s before the job's own deadline once it has been submitted, so the REMAINING
+    // time is the smaller of the two and the clamp is the thing under test.
+    const host: typeof base = {
+      ...base,
+      clock: {
+        now: () =>
+          submittedAt === 0
+            ? base.clock.now()
+            : new Date(submittedAt + MEDIA_JOB_POLL_DEFAULTS.deadlineMs - 10_000).toISOString(),
+      },
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'deadline') armedDeadlines.push(ms);
+        return base.setTimer(ms, onFire, kind);
+      },
+    };
+    const job = asyncMediaProvider([{ state: 'pending' }, { state: 'done', media: IMAGE_PART }]);
+    const engine = buildEngine(
+      host,
+      () => job.provider,
+      () => 'generative',
+    );
+    const handle = engine.start({ workflow: GENERATIVE_OUT, inputs: INPUTS });
+    const events: RunEvent[] = [];
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        events.push(event);
+        if (event.type === 'media_job:submitted' && submittedAt === 0) {
+          submittedAt = Date.parse(event.startedAt);
+        }
+        if (event.type === 'run:completed' || event.type === 'run:failed') settled = true;
+      }
+    })();
+    for (let i = 0; i < 600 && !settled; i += 1) {
+      await Promise.resolve();
+      if (host.armedCount() > 0) host.fireTimers();
+    }
+    await consume;
+
+    // The poll bound came from the REMAINING deadline, not the 30 s constant.
+    const pollBounds = armedDeadlines.filter((ms) => ms !== MEDIA_GEN_SUBMIT_TIMEOUT_MS);
+    expect(pollBounds.length).toBeGreaterThan(0);
+    expect(Math.max(...pollBounds)).toBeLessThan(MEDIA_JOB_POLL_DEFAULTS.pollCallTimeoutMs);
+    expect(Math.max(...pollBounds)).toBeLessThanOrEqual(10_000);
+  });
+
+  it('CR-21b: a generateMedia submission that never settles is bounded too', async () => {
+    // ADR-0082 §10 NAMED this call and declined to absorb it: not a poll, so ADR-0045's job deadline misses
+    // it; not a chain attempt, so §6's per-attempt deadline misses it too. It was simply awaited.
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore: stubMediaStore(),
+    });
+    const hung: LlmProvider = {
+      id: 'openai',
+      supports: { ...MEDIA_CAPS, media: { ...MEDIA_CAPS.media, surface: 'generative' } },
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: (): AsyncIterable<StreamChunk> => {
+        throw new Error('unused');
+      },
+      generateMedia: () => new Promise<MediaGenResult>(() => undefined),
+    };
+    const engine = buildEngine(
+      host,
+      () => hung,
+      () => 'generative',
+    );
+    const handle = engine.start({ workflow: GENERATIVE_OUT, inputs: INPUTS });
+    const events: RunEvent[] = [];
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        events.push(event);
+        if (event.type === 'run:failed' || event.type === 'run:completed') settled = true;
+      }
+    })();
+    for (let i = 0; i < 400 && host.deadlineCount() === 0; i += 1) {
+      await Promise.resolve();
+      if (host.armedCount() > 0) host.fireTimers();
+    }
+    expect(host.deadlineCount()).toBe(1); // the submission IS bounded
+    host.fireDeadlines();
+    for (let i = 0; i < 400 && !settled; i += 1) {
+      await Promise.resolve();
+      if (host.armedCount() > 0) host.fireTimers();
+    }
+    await consume;
+
+    const terminal = events.at(-1);
+    expect(terminal?.type).toBe('run:failed');
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('provider_unavailable');
+    expect(host.deadlineCount()).toBe(0);
   });
 
   it('async media job: parks, polls (pending then done), de-inlines to a handle, completes (1.AG Section D/ADR-0045)', async () => {

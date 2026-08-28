@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0` and `W1` are closed** (14 of 47 items); `W2` is next
+- **Status**: in progress — **`W0`, `W1` and `W2` are closed** (20 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25); `W3` is next
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -130,6 +130,11 @@ shape.
 > behind **seven** ADRs, since `CR-92` shares `CR-10`'s and `CR-15`/`CR-17` share one. Each item had an Opus
 > and a Sonnet review round folded before the next one started.
 >
+> **A tenth item shipped in this PR and was only recognised on 2026-08-25:** `CR-21` (the per-attempt
+> provider deadline) is decided by ADR-0082 alongside `CR-14` and its code merged here. It is listed in the
+> `W1` closing register and added to the table below, so the batch history and the register agree on what
+> this PR contained.
+>
 > | Item | Closed | ADR |
 > |------|--------|-----|
 > | `CR-10` | 2026-08-11 | [ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) |
@@ -138,6 +143,7 @@ shape.
 > | `CR-12` | 2026-08-18 | [ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) |
 > | `CR-13` | 2026-08-18 | [ADR-0081](../../decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md) |
 > | `CR-14` | 2026-08-19 | [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) |
+> | `CR-21` | 2026-08-19 | with `CR-14`'s — recognised 2026-08-25, see above |
 > | `CR-15` · `CR-17` | 2026-08-19 | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) |
 > | `CR-16` | 2026-08-20 | [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md) |
 >
@@ -261,10 +267,12 @@ to correct.
 | `CR-15` | made (engine-side admission) | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | yes | — |
 | `CR-16` | made (consent before spawn; **lazy connect split out**, see [deferred-tasks.md](../deferred-tasks.md)) | [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md) | yes | hostile MCP |
 | `CR-17` | made (persist and verify resume identity) | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | yes | — |
-| `CR-20` | made (honour `timeout_ms`) | — | no | — |
-| `CR-21` | made (per-attempt deadline) | with `CR-14`'s | no | — |
-| `CR-22` | made (absolute deadlines) | — | no | — |
-| `CR-23` | **open** — grace period length, quarantine policy | new | no | — |
+| `CR-20` | made (honour `timeout_ms`; ABSOLUTE per node, `run_timeout`/`retryable: false`) · ✅ closed 2026-08-27 | [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | no | — |
+| `CR-21` | made (per-attempt deadline) | [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) (with `CR-14`'s) | no | — |
+| `CR-21b` | made (apply ADR-0082 §5's hard race to the submission; bound `MEDIA_GEN_SUBMIT_TIMEOUT_MS`) · ✅ closed 2026-08-27 | — · ADR-0082 §10 **names** it and explicitly declines to decide it; §5 supplies the mechanism | no | — |
+| `CR-21c` | made 2026-08-27 (bound each poll CALL, not only the loop; a new `pollCallTimeoutMs` = 30 000, clamped to the remaining `deadlineAt`) · ✅ closed 2026-08-27 | with `CR-21b`'s | no | — |
+| `CR-22` | made (absolute deadlines) · ✅ closed 2026-08-27 | — | no | — |
+| `CR-23` | made · ✅ closed 2026-08-27 (10 s grace off the abort signal; per-vertex generation fence; **no quarantine**, risk accepted with a named trigger) | [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | no | — |
 | `CR-30` | made — implement [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s accepted no-drop producer-await | none (already decided) | no | — |
 | `CR-31` | **open** — the cap values | — | no | — |
 | `CR-32` | **open** — the bound values | — | no | — |
@@ -895,6 +903,7 @@ reader shares the author's assumptions. Three of the six were only settled by an
 | `CR-12` | [ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) | `packages/db/src/effect-journal-store.ts` + the tiered effect contract wired through `packages/core/src/engine/effect-*` | `effect-journal-store.test.ts`, `effect-resume-gate.test.ts`, `effect-turn-wiring.test.ts` |
 | `CR-13` | [ADR-0081](../../decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md) | `packages/core/src/engine/turn-messages.ts` — the summary rides as DATA in the first user-role message, wrapped `Untrusted`, never as `system` | `agent-session.test.ts`'s compaction cases + the `Untrusted` type-predicate tests. The delimiter alternative was rejected in the ADR because a formatting convention is one the untrusted text can close. |
 | `CR-14` | [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) | `packages/llm/src/stream-grammar.ts` — the terminal is held until EOF confirms it, and commitment is a TURN fact a provider cannot forge | `stream-grammar.test.ts` + the fallback-chain and agent-turn cases that previously counted a truncated stream as success |
+| `CR-21` | with `CR-14`'s | `packages/shared/src/deadline.ts` (`openDeadline` — the merged signal, the hard race, the caller-abort latch; it shipped in `packages/llm/src/attempt-deadline.ts` and moved here on 2026-08-27 under [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §9, which now keeps only the LLM-specific `DEFAULT_ATTEMPT_TIMEOUT_MS`) + `fallback-chain.ts`'s `#openDeadline` / `#raceStep` / `#classifyDeadline`, forwarded through `agent-turn.ts` → `agent-runner.ts` / `agent-session.ts` and wired by both CLI hosts | `attempt-deadline.test.ts`; `fallback-chain.test.ts`'s deadline block **including the content-committed deadline case**; and the two forwarding tests — `agent-session.test.ts` and `agent-runner.e2e.test.ts` — without which deleting the engine-side `setTimer` key at both forwarding sites leaves the whole core suite green except these two, and both host grep guards green as well |
 | `CR-15` | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | `packages/core/src/engine/input-admission.ts` — pure, synchronous, `'admit'` \| `'verify'`, typed refusal codes | `input-admission.test.ts` |
 | `CR-16` | [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md) | `apps/cli/src/engine/mcp-consent.ts` (resolve + fingerprint + the append-only grant log), `mcp-consent-gate.ts` (the chokepoint), `apps/cli/src/mcp/consent-prompt.ts`, and `packages/shared/src/{canonical,declared-env}.ts` | `mcp-consent.test.ts`, `mcp-consent-gate.test.ts`, `consent-prompt.test.ts`, and the spawn-counter cases in `mcp-servers.test.ts` — "nothing spawned" is counted at the process boundary, never read off a flag |
 | `CR-17` | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | `packages/core/src/engine/resume-identity.ts` | `resume-identity.test.ts` + `session-resume.test.ts` |
@@ -905,24 +914,91 @@ records that `CR-16`'s **lazy-connect half was split out** rather than closed: i
 [deferred item](../deferred-tasks.md) with ADR-0052 §3 named as its blocker, because deferring the spawn with
 today's immutable registry would delete the agent's MCP tool grant outright.
 
-## W2 — Liveness and deadlines
+## W2 — Liveness and deadlines · ✅ COMPLETE 2026-08-27
 
-### CR-20 — Agent-node `timeout_ms` is completely inert · High
+All six items closed. Two things this wave established that outlived their own items, recorded here because
+the next wave inherits them:
+
+- **A third `TimerKind`, `'deadline'`.** A backstop over work already in flight is neither `work` (the run is
+  not parked on it) nor `liveness` (firing it does advance the run). Arming the media bounds as `work` broke
+  six tests at once, because a drive-to-quiescence loop fires every armed `work` timer — so a deadline swept
+  into that set trips the instant it is armed. `fireTimers()` no longer sweeps it.
+- **A deadline primitive with one home.** `openDeadline` moved to `@relavium/shared` under
+  [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §9; four
+  bounds now share it — the provider attempt, the media submission, the media poll, and the node deadline.
+
+### CR-20 — Agent-node `timeout_ms` is completely inert · High · ✅ CLOSED 2026-08-27 · **decided** ([ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md))
 The node schema accepts the field, but the runner passes only the run-level signal to the agent turn; no timer,
 controller or deadline consumes `node.timeout_ms`. An authored liveness bound is silently ignored.
 **Fix + acceptance.** Honour it as a real deadline; a node exceeding it fails with a classified timeout, proven
 with a fake clock.
 
-### CR-21 — No Relavium-owned deadline for a normal provider attempt · Medium-High
-The chain awaits generate/stream with the caller's signal only; unlike list-models and key validation, it sets
-no per-attempt timeout. Without a node or run timeout, the vendor SDK default becomes the product's liveness
-semantics — which our security standard forbids for outbound requests.
-**Fix + acceptance.** An injected controller/timer factory; merge caller-abort with deadline-abort. A timeout is
-`kind: 'timeout'`, a user cancel stays `cancelled`. A pre-content timeout may fail over; a content-committed one
-must not. Prove timer cleanup with a fake clock. This is a different timer from `CR-20` — both are needed, and
-the pre/post-content split must agree with `CR-14`'s rule 7, so it lands on that ADR.
+> **"A classified timeout" was the undecided half, and
+> [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §2 settles
+> it — the register row's "made (honour `timeout_ms`)" skipped past a real question.** There is no
+> `node_timeout` in the closed `ErrorCode` taxonomy, so "classified" had no referent. §2 gives the agent node
+> exactly what `#failGateOnTimeout` already gives the human gate's authored `timeout_ms`:
+> `{ code: 'run_timeout', retryable: false }`. Two further corrections the paragraph above does not carry:
+> the bound is **ABSOLUTE per node** (all attempts, backoffs, `save_to` and the money barrier share one
+> budget — a per-attempt reading multiplies by `retry.max`), and the enforcement is a **hard race** on the
+> dispatch, not an abort passed inward, because `NodeExecutor.execute` returns an arbitrary promise.
+> §8 supersedes the one-line acceptance above with a seven-case list.
 
-### CR-21b — `generateMedia()` submission has no deadline either · Medium
+### CR-21 — No Relavium-owned deadline for a normal provider attempt · Medium-High · ✅ CLOSED 2026-08-19 ([ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md))
+
+**The problem statement below is the pre-W1 one and is now FALSE against the tree.** It is kept because the
+acceptance it states is what the implementation was scored against, and struck through in prose rather than
+deleted so the history reads honestly.
+
+> ~~The chain awaits generate/stream with the caller's signal only; unlike list-models and key validation, it
+> sets no per-attempt timeout. Without a node or run timeout, the vendor SDK default becomes the product's
+> liveness semantics — which our security standard forbids for outbound requests.~~
+>
+> **Fix + acceptance.** An injected controller/timer factory; merge caller-abort with deadline-abort. A
+> timeout is `kind: 'timeout'`, a user cancel stays `cancelled`. A pre-content timeout may fail over; a
+> content-committed one must not. Prove timer cleanup with a fake clock. This is a different timer from
+> `CR-20` — both are needed, and the pre/post-content split must agree with `CR-14`'s rule 7, so it lands on
+> that ADR.
+
+**Closed with `CR-14`, not after it.** [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
+says *"**Decides** `CR-14` and `CR-21`"* in its own front matter, the execution-order graph above schedules
+them together as `CR-14+CR-21`, and the decision register already recorded `CR-21`'s decision as made. Both
+shipped in PR #83. Only the heading here was never updated — another instance of exactly the drift exit
+criterion 7 exists to catch, and the reason this item is being closed by reading the code rather than by
+trusting the mark. (An earlier draft of this note called it "a fifth instance". There is no register behind
+that ordinal and it was not counted; the review that caught it found a further one in this very commit, which
+is the point rather than the tally.)
+
+**What was genuinely missing, and is now closed with it.** Two coverage gaps, both mutation-verified:
+
+- **The content-committed DEADLINE case had no test.** Every deadline test timed out PRE-content, and the
+  nearest committed test drove a provider that *throws* after a delta — which lands in the stream loop's
+  `catch`, not in the `step.kind === 'timeout'` branch. Two different lines; only one was pinned. Rule 7's
+  deadline half is now `fallback-chain.test.ts`'s *"a deadline that trips AFTER content is surfaced, never
+  failed over"*.
+- **Nothing executed the engine-side forwarding of the ports.** The deadline is host-wired and pinned by a
+  source-grep over the host files, but `#chainCapabilities` (session) and `chainCapabilities()` (runner) are
+  conditional spreads that no test ever ran. **Measured on this commit: with the `setTimer` key deleted from
+  BOTH forwarding sites the core suite reports four reds — the two new tests, each in both of its branch variants —
+  while both CLI grep guards stay green**, so before them every surface silently reverted to unbounded — a
+  strictly larger hole than the one the grep was written to close, and the same "wired and still dead" shape
+  the phase has hit before. Both paths now have a behavioural test, separately, because the two express
+  "both or neither" differently.
+- **The THIRD port had the same hole, inside the very tests written to close the first two.** A first version
+  asserted the armed duration equalled `120_000` and called it "forwarded intact" — but that is
+  `DEFAULT_ATTEMPT_TIMEOUT_MS`, exactly what the chain falls back to when `attemptTimeoutMs` is ABSENT, so
+  the assertion passed whether or not the port was forwarded. Measured: deleting both `attemptTimeoutMs`
+  forwarding lines left the whole core suite green. Both tests now supply a non-default value and assert it
+  arrives, which break-verifies the third port.
+- **[ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
+  §12 is EIGHTEEN items, not sixteen, and item 18 had no implementation** — the ADR asks for the per-chunk
+  verifier cost to be *"**measured** on a representative token stream, not asserted"*, and its own
+  Consequences add *"the claim should be evidence"*. `packages/llm/src/stream-grammar.perf.test.ts` supplies
+  it (0.543 µs/chunk over a 2 001-chunk turn, logged), shaped after the repo's existing `sandbox.perf.test.ts`
+  precedent. An Accepted ADR carrying an unimplemented acceptance item is the "reads as shipped" failure this
+  phase exists to remove.
+
+### CR-21b — `generateMedia()` submission has no deadline either · Medium · ✅ CLOSED 2026-08-27
 
 Named by [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
 §10 rather than folded into `CR-21`, because it is a different call path and folding it in would have made
@@ -939,23 +1015,273 @@ that `CR-21` exists to remove.
 deadline abort classifies `timeout`, a caller abort stays `cancelled`, cleanup proven with a fake clock. A
 submission that never settles and ignores its signal fails within the deadline rather than hanging the node.
 
-### CR-22 — Gate and run deadlines are not preserved across resume · High
+> **Correction, verified 2026-08-25 — the fix is smaller than this item implies, and one premise is wrong.**
+> `MediaGenRequest.signal` already exists (`packages/llm/src/types.ts`) and `executeGenerativeMedia` already
+> passes `ctx.signal`; both wired adapters already thread it into their vendor SDK. **No seam amendment and
+> no ADR-0011 amendment is required** — the gap is purely that the `await` is not raced. What is genuinely
+> new is packaging: `openDeadline` is not exported from `@relavium/llm`'s `index.ts` and that package
+> exposes only `.` and `./adapters`, so [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §9
+> moves the primitive to `@relavium/shared`.
+
+### CR-21c — a single `pollMediaJob` CALL is unbounded, so the job deadline can be outlived · Medium *(found 2026-08-25)* · ✅ CLOSED 2026-08-27
+
+**Not in the original finding set** — surfaced by the `CR-21b` document review and verified against the tree.
+[ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §7 gives a media job an
+absolute `deadlineAt` (30 min default), and ADR-0082 §11 explicitly leaves the poll LOOP out of scope. Both
+are about the loop. The individual `await this.#executor.pollMediaJob(...)` inside it is raced by nothing,
+and `deadlineAt` is only consulted at the TOP of each poll tick — so a provider whose poll never settles
+strands the run past its own 30-minute deadline indefinitely.
+
+**The two sites, named — because "the same seam" is not the same layer, and an implementer who guesses will
+bound the wrong one.** The awaited call is `packages/core/src/engine/engine.ts` (`#pollMediaJob`'s
+`await this.#executor.pollMediaJob(submission, this.#abort.signal)`), and the executor arm beneath it is
+`packages/core/src/engine/agent-runner.ts` (`return provider.pollMediaJob(job.jobId, key, signal)`), which
+passes the signal cooperatively and races nothing. **Bounding either layer bounds the caller's wait, so this
+is ONE liveness hole, not two** — but the race must land at a stated layer rather than wherever the reader
+happened to look first.
+
+**Why it belongs with `CR-21b` rather than as a separate wave.** Same class of defect on the same seam,
+closed by the same primitive — though a different file from `CR-21b`'s `agent-runner.ts` submission site.
+Splitting them would mean bounding a media job's first call and leaving its next hundred unbounded.
+
+**Fix + acceptance.** Race each poll call against a per-call deadline. A poll that never settles fails the
+job within that bound rather than parking the run forever; the loop's own `deadlineAt` is unchanged, and a
+per-call timeout still classifies as ADR-0045 §3's retryable `provider_unavailable`.
+
+> **The bound value — settled 2026-08-27, and the measurement inverted the reasoning that produced the first
+> proposal.** A new `pollCallTimeoutMs: 30_000` joins `MEDIA_JOB_POLL_DEFAULTS`
+> (`packages/shared/src/constants.ts`), and every call is additionally clamped to
+> `min(pollCallTimeoutMs, deadlineAt − now)`.
+>
+> **Why generous rather than tight, which is the opposite of the instinct.** A single failed poll settles the
+> whole job: `#pollMediaJob`'s catch calls `#settleMediaJobFailed` with a retryable `provider_unavailable`,
+> and a parked media node does **not** re-enter the node-retry wrapper — the automatic re-submit is a
+> [deferred item](../deferred-tasks.md), not shipped. So a bound that is too tight converts one slow status
+> check into a dead, already-paid thirty-minute job with no resubmit, while a bound that is too loose only
+> makes the run wait longer before failing. The defect is *unboundedness*; tightness is lost money. The two
+> directions are not symmetric, so the value leans long.
+>
+> **Why a new constant rather than reusing `media_job_poll_max_ms`**, which this document proposed first and
+> which measurement did not support: `pollMaxMs` is the maximum *interval between* polls, not the duration
+> *of* one. The number it yields happens to be right, but the derivation locks together two quantities that
+> may legitimately diverge, and a later change to the polling cadence would silently move a liveness bound.
+> Naming the quantity costs one constant — and not a user-facing knob, since the three `[defaults].*`
+> overrides that already validate are **not read by the engine at all** yet (1.AH host-wiring).
+>
+> **Why not 15 000, matching `LIST_MODELS_TIMEOUT_MS`** — the closest precedent by *shape* (a bounded
+> provider GET on the same seam) and the wrong one by *stake*: a failed `listModels` degrades to the static
+> catalog, a failed poll destroys paid work.
+>
+> **The clamp is what makes this item's title true.** Bounding the call alone still lets a job outlive its
+> own `deadlineAt` by up to one call, because `deadlineAt` is only consulted at the top of the tick. Taking
+> the remaining time as the ceiling closes that tail; the `remaining <= 0` case is already handled by the
+> existing top-of-tick check, so the clamp adds no new branch of its own.
+
+> **Both closed together, and the work turned up a THIRD timer role nobody had named.**
+>
+> Neither needed a seam amendment. `MediaGenRequest.signal` already existed and `ctx.signal` was already
+> passed; `pollMediaJob` already took a signal. In both cases the only gap was that nothing raced the await
+> — and a signal is a request rather than a guarantee (ADR-0082 §5).
+>
+> **`CR-21b` got its OWN bound rather than the chain's.** Borrowing `DEFAULT_ATTEMPT_TIMEOUT_MS` was the
+> first attempt and the packaging refused it: ADR-0085 §9 keeps that constant inside `@relavium/llm`
+> deliberately, so reaching for it would have widened that package's public surface to let the ENGINE bound
+> a media call, and would have coupled two budgets answering different questions. `MEDIA_GEN_SUBMIT_TIMEOUT_MS`
+> is equal today (120 s) and independent by construction.
+>
+> **`CR-21c` lands at the ENGINE layer**, not the executor arm beneath it, because the clamp needs
+> `deadlineAt` — which only the engine holds. The item named both sites precisely so this would be a choice
+> rather than a guess.
+>
+> **The third timer role.** Arming these as `work` broke six existing media tests at once, and the reason is
+> worth keeping: a drive-to-quiescence loop fires every armed `work` timer to advance the run, so a deadline
+> swept into that set trips the instant it is armed and every media test becomes a timeout test. The run is
+> not waiting ON a deadline — it is waiting on the CALL, and the timer matters only if the call does not come
+> back. `TimerKind` gains `'deadline'`, `fireTimers()` no longer sweeps it, and `fireDeadlines()` trips one
+> deliberately. ADR-0085's node deadline and grace window are the same role and inherit it.
+>
+> **And the `CR-21c` test was hollow on its first pass**, caught by its own break-verify: the harness binds
+> the agent timer port to the same `'deadline'` kind, so the first backstop to arm is `CR-21b`'s on the
+> SUBMISSION. The test observed that one, fired it, and passed with the poll bound removed entirely. It now
+> waits for `media_job:submitted` first, which is what makes the observed backstop the poll's.
+>
+> **One propagation gap closed on the way:** the `m2` harness wired neither deadline port into its agent
+> deps, while `build-engine.ts` wires both — so `CR-21b`'s bound armed nothing there. The same "the port is
+> forwarded and the test takes the branch that does not use it" shape `CR-21`'s close-out had to fix twice.
+
+### CR-22 — Gate and run deadlines are not preserved across resume · High · ✅ CLOSED 2026-08-27
 The checkpoint's pending gate carries gate/node/budget data but not an absolute deadline, and the whole-run
 timeout is re-armed for its full duration on every resume — so a crash extends the cap.
 **Fix + acceptance.** Persist absolute deadlines; resume computes the remaining time. A run crashed and resumed
 repeatedly still times out at its original absolute deadline.
 
-### CR-23 — Exactly-one-terminal is a safety property, not a liveness one · High · **decision open**
+> **Closed — and "persist absolute deadlines" turned out to be half already done.** Both halves needed a fix,
+> but neither needed a new durable field.
+>
+> **The gate half.** `human_gate:paused` has carried `expiresAt` and `timeoutAction` since PR #22, and its
+> schema says in as many words that they ride there "so a Phase-2 crash-resume can re-arm the timer from the
+> persisted log". What was missing sat one layer up: `reconstructCheckpointState`'s fold dropped both fields,
+> so `CheckpointPendingGate` could not carry them and `#seedFromCheckpoint` had nothing to re-arm from. The
+> fold now keeps them (a `budget:paused` companion sharing a gateId must not erase what its sibling
+> recorded), and rehydration re-arms at `expiresAt − now`.
+>
+> **The run half.** `#armRunTimeout` armed the full `timeout_ms` on every call, including both resume paths.
+> The data to fix it was already in hand: `#seedFromCheckpoint` restores `#startEpochMs` from the
+> checkpoint's `startedAtMs` — it always did, so a resumed run's terminal could report total wall-clock — and
+> both resume sites arm AFTER that seeding. The absolute deadline is DERIVED from state the engine already
+> had; nothing new is persisted for it.
+>
+> **A past deadline arms at zero rather than resolving inline**, on both halves. The timer then fires on the
+> next tick and travels the one `#onGateTimeout` / `#onRunTimeout` path, so a past-deadline resume and a
+> live expiry produce identical events in identical order. Refusing or resolving inline would be a second,
+> differently-shaped exit for one condition.
+>
+> **What the tests found, recorded because it changes what "closed" means here.** The gate half had a test
+> pinning the OPPOSITE — *"arms no gate timer on rehydration (re-arm is a Phase-2 reconciliation concern)"* —
+> which is rewritten rather than deleted, keeping the reasoning it replaces, the way `CR-14`'s superseded
+> test was handled. The run half had **no test at all**: reverting it left all 1338 core tests green. Both
+> are now pinned on the ARMED DURATION (15 000 of a 60 000 cap; 250 of a 1 000 gate), because a test that
+> only asserted "a timer was armed" would pass for the full-duration bug it exists to catch.
+>
+> This also closes the long-standing [deferred item](../deferred-tasks.md) *"Re-arm a still-pending gate's
+> timeout on cross-process rehydration"*, whose deferral note correctly predicted no backfill would be
+> needed.
+>
+> **And the fix shipped a regression its own tests could not see — found by the review round, fixed here.**
+> Rehydration armed a timer for EVERY pending gate, the targeted one included, and a past-deadline gate arms
+> at zero. `beginResume` then awaits context resolution and the effect-resume gate BEFORE `resume()` claims
+> the gate, while `#onGateTimeout` still sees it pending. Measured with a macrotask in that window and
+> `timeout_action: approve`: a caller's explicit `rejected` was recorded as
+> `human_gate:resumed{decision:'approved', decidedBy:'timeout'}` — a human's refusal rewritten as an
+> approval attributed to a timer, contradicting [execution-model.md](../../architecture/execution-model.md)'s
+> own *"a decision that arrives first disarms the timer"*. The targeted gate's timer is now disarmed
+> synchronously, before any await; every other gate keeps its deadline, which is the point of the item.
+>
+> Unreachable on today's synchronous better-sqlite3 CLI (both awaits settle in microtasks), and live the
+> moment any of those `Promise`-typed seams does real I/O — which is what Phase-2's Postgres
+> `EffectResumePort` is. The regression test injects exactly that boundary rather than a contrived one.
+>
+> **A second, bounded exposure closed with it:** `expiresAt` is an instant compared against a different
+> machine's clock, so a resuming process running BEHIND the one that parked the gate computed MORE remaining
+> time than the author granted — measured, an hour of skew re-armed a 1 000 ms gate at 3 601 000 ms.
+> `Math.max(0, …)` only ever guarded the other direction. The authored `timeout_ms` now clamps it from
+> above; it was already on `human_gate:paused` and the fold simply dropped it, exactly like its two
+> siblings.
+
+### CR-23 — Exactly-one-terminal is a safety property, not a liveness one · High · ✅ CLOSED 2026-08-27 · **decision settled 2026-08-25** ([ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md))
 Cancel only fires the abort signal, and the terminal waits for the running-node count to reach zero. The node
 executor seam accepts an arbitrary promise; honouring the signal is not guaranteed at the type level. An
 executor that ignores abort and never settles leaves the run without a terminal forever.
-**Open decision.** The grace-period length and whether a quarantined executor is disabled process-wide or per
-run. Settle before starting.
 **Fix + acceptance.** A bounded grace period after cancel/timeout, then a generation token that fences the run
 state from late outcomes, plus executor quarantine. Tests: a never-settling executor and a late-success executor
 both produce exactly one terminal in bounded time, and the late output is not applied.
 
+> **The two open questions are settled, and one of them is settled the other way.**
+> [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §3 fixes the
+> grace period at **10 000 ms**, armed off the abort signal itself rather than per cancel site, and §7
+> **declines executor quarantine** — so the "plus executor quarantine" clause above is NOT delivered, by
+> decision rather than by omission.
+>
+> Three corrections the ADR makes to the paragraph above, recorded here because a later reader will otherwise
+> implement the wrong thing from it:
+>
+> 1. **The window does not bound the terminal, it bounds the wait for the EXECUTOR.** A single
+>    `persistEvent` has a documented ~25 s worst case
+>    ([database-schema.md](../../reference/shared-core/database-schema.md#concurrency--transaction-behavior)),
+>    so "exactly one terminal in bounded time" is not a promise this item can keep on its own; terminal
+>    durability is [ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md)'s.
+> 2. **"A generation token" is under-specified and not implementable as stated.** Under `max_parallel` a
+>    run-wide counter makes one sibling's dispatch stale another's live work. §5 specifies a per-vertex
+>    active-dispatch map instead.
+> 3. **Late-outcome fencing is PARTLY already present** — `#onOutcome` returns early on `#settled`. The
+>    unguarded points are the `cost:updated` fold, `save_to`, the effect journal and the money port, and §5
+>    gives the effect journal a per-method rule so refusing a late `settle` does not strand a row the way
+>    `PR83-04` did.
+
 ---
+
+
+### W2 closing register
+
+Exit criterion 7, for this wave: **per item, the code that closes it — verified by reading the code, not by
+trusting the mark.** `W1`'s register caught two items marked open that had shipped, and a later review still
+found six defects in the code it vouched for. So this table names the test that would fail if each mechanism
+were reverted, and every one of them was confirmed to fail line-precisely.
+
+| Item | The code that closes it | The test that would fail if it were reverted |
+|------|--------------------------|-----------------------------------------------|
+| `CR-20` | `engine.ts`'s `#armNodeDeadline` / `#onNodeDeadline` / `#disarmNodeDeadline` — the authored `agent.timeout_ms`, ABSOLUTE across every attempt AND re-dispatch, wrapping the whole dispatch — the money barrier and the retry backoff included. (Not `save_to`: `timeout_ms` is declared only on the agent and gate nodes and `save_to` only on the output node, so no vertex can carry both — ADR-0085 §2 said otherwise and now carries a dated amendment saying so) | `engine.test.ts` — *"honours an agent node's authored `timeout_ms`"*, which asserts the **authored 4000**, not that some timer armed; plus its negative control, *"a node with no `timeout_ms` arms no node deadline"* |
+| `CR-21` | `packages/shared/src/deadline.ts` (`openDeadline` — the merged signal, the hard race, the caller-abort latch) + `fallback-chain.ts`'s `#openDeadline` / `#raceStep`, forwarded through `agent-turn.ts` and wired by both CLI hosts | `deadline.test.ts` (11 cases) + `attempt-deadline.test.ts` (the two `process.on('unhandledRejection')` cases that cannot live in a `types: []` package) + the two forwarding tests, which run over BOTH `chainCapabilities` branches because production takes the one they originally missed |
+| `CR-21b` | `agent-runner.ts`'s `openGenerativeDeadline` + the race around `provider.generateMedia`, bounded by `MEDIA_GEN_SUBMIT_TIMEOUT_MS` | `m2-e2e-harness.e2e.test.ts` — *"a generateMedia submission that never settles is bounded too"* — and `agent-runner.test.ts`'s *"a cancel during a HUNG generateMedia is `cancelled`"*, which is the one that catches the caller signal going missing |
+| `CR-21c` | `engine.ts`'s `#openPollDeadline` + `#racePoll`, bounded by `MEDIA_JOB_POLL_DEFAULTS.pollCallTimeoutMs` and clamped to the job's remaining `deadlineAt` | `m2-e2e-harness.e2e.test.ts` — *"a poll call that never settles is bounded"* **and** *"the poll bound is CLAMPED to the job's remaining deadline"*. The clamp needed its own test: every other case ran with 1 799 997 ms remaining, so the constant always won the `min` |
+| `CR-22` | `#armRunTimeout`'s remaining-time arithmetic, `#seedFromCheckpoint`'s gate re-arm, and `reconstructCheckpointState` carrying `expiresAt`/`timeoutAction`/`timeoutMs` | `engine.test.ts`'s **seven** resume cases: the remaining-time arithmetic on the gate half and on the run half; the past-deadline clamp on each; the SURVIVING gate — the case the item exists for, and the one the first three tests all missed by resuming a run's only gate; the skew clamp, which stops a resuming clock running BEHIND from granting more patience than the author wrote; and the decision-beats-the-timer race, a regression this item shipped. Plus `checkpoint.test.ts`'s both-pair-orders fold |
+| `CR-23` | `#armGraceWindow` / `#onGraceElapsed` (armed off the abort signal in the constructor, unconditionally), the abandoned-node terminals, `#isLive` + `#fenceEffects`, `#onRunTimeout`'s inverted ordering, and the `.catch` on `#step`'s `void this.#dispatch(...)` | `engine.test.ts` — *"a never-settling executor still produces exactly one terminal"*, and *"the effect fence refuses `prepare` but never `settle` or `discard`"* |
+
+**Two things this register does not claim.** (The heading stood alone for several commits — its first
+paragraph was rewritten into the correction below and its second drifted to the end of the section. Both are
+restored here, because a heading with nothing under it reads as a claim that was made and then quietly
+dropped.)
+
+**It does not claim ADR-0085's acceptance list is fully discharged.** §8.9 and §8 item 8 are **withdrawn**
+against §6 for the reason recorded below; §8 item 5's `save_to` half names a node combination the authored
+schema forbids, so no test can exist for it. Three more of §8's claims were corrected in place on 2026-08-28
+rather than satisfied — §5 item 1 (the token does not subsume `#onOutcome`'s boolean) and items 15/18 (a
+stale dispatch's cost IS folded; only its delivery is fenced). An acceptance list that reads as satisfied
+when three of its clauses were wrong is worse than one that is visibly short.
+
+And `CR-23`'s guarantee is bounded exactly as
+[ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §6 states: run
+liveness with respect to the EXECUTOR. A `RunStore.persistEvent` that never settles still hangs the run, and
+no timer in this wave changes that. It is [tracked](../deferred-tasks.md), not fixed, because bounding a
+durable write raises a question that ADR must not answer in passing.
+
+
+**One thing this register got WRONG and now states correctly.** An earlier version said the `cost:updated`
+fence was defensive — *"removing the guard leaves the straggler test green, because by then the run has
+settled and the bus is closed, so `#settled` is what carries it"*. The bus is **not** closed to subscribers.
+A live `handle.subscribe()` observer receives a stale `cost:updated` of 999 999 after the terminal with the
+guard removed; the old test only looked green because its `for await` capture had already stopped. The fence
+is load-bearing, the test now uses a subscriber, and it is break-verified. Recording a gap that was not real
+is the same failure as missing one that is — it told the next reader to trust something that was doing
+nothing, and to distrust something that was doing the work.
+
+**Five gaps the Step 5 review closed, and one it could only correct.** ADR-0085's §1 obligation had never
+been written at the seam it names; §2's "absolute per node" was absolute per DISPATCH, so an approved budget
+gate handed a node a second full helping of its authored bound; §2's claim that the deadline covers
+`save_to` describes a combination the schema forbids (`timeout_ms` is on the agent and gate nodes, `save_to`
+on the output node); §5's first fence point was unimplemented, and keying it on the dispatch token refused
+every media-job completion — the honest predicate is the vertex's own terminal status; and an abandoned
+node's `node:failed` was hand-rolled, silently dropping the `correlationId` ADR-0036 calls the single
+producer-side translation point, the cost snapshot the schema says is always populated, and the real attempt
+number. **The one that could not be fixed is §8.9**, which asked for a terminal even when the `run:timeout`
+persist never settles: ADR-0078 serialises every emit behind one tail, so the writes queue behind the hung
+one. The acceptance item was asking for more than the ADR claims — it is withdrawn against §6 rather than
+worked around.
+
+**The PR #85 Request-Changes round (2026-08-28), and the one pattern under all five blockers.** A review of
+the branch returned a BLOCK with fourteen findings. Every one was verified against the code before it was
+acted on; none was taken on assertion. The five blockers were not five bugs — they were **one mistake made
+five times: an ownership decision taken at a point in time, guarding work that spans an await.** The node
+deadline was owned by a dispatch that could return while the node was still alive; three fences checked
+liveness on entry to an async call and not on its exit; a slot was released the moment a promise resolved.
+The repairs are correspondingly uniform: move ownership to the run and end it only at the node's terminal,
+invalidate synchronously at the decision instant, and re-check immediately before the irreversible step.
+
+Two of the remaining findings were worth more than their severity labels:
+
+- **The `cost:updated` fence lost real money (High).** Fencing the FOLD as well as the delivery left
+  `#cumulativeCostMicrocents` behind the ledger row that stamps from it, so a genuinely billed attempt
+  produced `cumulative 0 < cost N` — rejected by `refineCostAttemptSettled` at a producer gate that runs
+  OUTSIDE `#emitDurable`'s try. It threw where the design assumes it cannot and the durable row was lost.
+  The rule is now explicit in ADR-0085 §8 items 15/18: **the fold is unconditional, the delivery is fenced.**
+- **A synchronous host fault produced a run with NO terminal (Medium).** `#armNodeDeadline` runs outside
+  `#dispatch`'s `try`, so a host whose `setTimer` throws rejected the promise at `void this.#dispatch(...)`
+  — an `unhandledRejection` and a run that never settles, in the same wave whose subject is
+  exactly-one-terminal. Fixed at the call site by routing any dispatch fault through `#settleFailed`.
+  Measured while fixing it: the in-memory flag alone still hung, because it emits no `node:failed`.
+
+Both regression tests were break-verified line-precisely; the second hangs to a vitest timeout against the
+pre-fix code, which is the only red a liveness defect can produce.
 
 ## W3 — Resource governance and bounds
 

@@ -557,8 +557,17 @@ emits `run:cancelled` and stops dispatch **and aborts the in-flight provider cal
 skipped and a fan-in over it still joins; and **every run terminates in EXACTLY ONE terminal event**
 (`run:completed` | `run:failed` | `run:cancelled`) — including on an **uncaught node-handler exception**
 (inject a throw → assert a single `run:failed`) and on **crash-then-restart of a non-resumable run**
-(reconciliation emits `run:failed`, never a stuck `run:started`) — so a zombie / never-terminating run is
-structurally impossible.
+(reconciliation emits `run:failed`, never a stuck `run:started`).
+
+> **Corrected 2026-08-27 (Phase 2.6.5 `CR-23`,
+> [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md)).** This
+> criterion originally ended *"— so a zombie / never-terminating run is structurally impossible."* It was not.
+> `NodeExecutor.execute` returns an arbitrary promise, `requestCancel()` only aborts a signal, and `#step`
+> settles only once `#countRunning()` reaches zero — so an executor that ignored its signal and never settled
+> left the run with no terminal, forever, and the same gate defeated ADR-0028's run `timeout_ms`. ADR-0085
+> supplies the missing mechanism and makes the claim true **with respect to the executor**; its §6 states the
+> half that stays conditional (a `RunStore` that never settles still hangs the run). The acceptance the three
+> parenthesised cases describe was and remains met — only the unconditional sentence was wrong.
 
 ### 1.O — `AgentRunner` (per-node LLM execution) — *critical path* · ✅ **Done (PR #18, 2026-06-14)**
 

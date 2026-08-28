@@ -111,7 +111,10 @@ We distinguish the two and never leak one as the other:
   distinct from `validation` (an authoring/shape error) so a surface shows the right cause/remediation;
   re-issuing the same blocked content just re-blocks, so it is never retried.
 - **Resource/limit codes are fatal-without-user-action, never silent.** `budget_exceeded`,
-  `run_timeout`, and `turn_limit` (a **hard** agent/session turn/round cap — distinct from
+  `run_timeout` (carried by THREE causes — the workflow `timeout_ms` cap, a `human_gate` node's
+  authored `timeout_ms`, and an `agent` node's, per
+  [ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §2;
+  `error.nodeId` distinguishes them, absent only for the run cap), and `turn_limit` (a **hard** agent/session turn/round cap — distinct from
   the `[chat].max_messages` history-**trim** threshold of
   [config-spec.md](../reference/contracts/config-spec.md), which continues the session and
   emits no error) end the work with a typed event carrying that code — the engine never

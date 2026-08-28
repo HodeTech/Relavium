@@ -19,7 +19,7 @@ import { effortTiersFor, type PricingOverlay } from '@relavium/llm';
 import type { MediaCostEstimate, MediaSurface } from '@relavium/shared';
 
 import { effortWithheldNote, reasoningWithheldByCapFor } from '../chat/effort-notice.js';
-import { hostAbortController, hostAttemptTimer, hostSleep } from '../process/sleep.js';
+import { hostAbortController, hostDeadlineTimer, hostSleep } from '../process/sleep.js';
 import { createCliHost } from './host.js';
 import { createProviderResolver, type ProviderResolver } from './providers.js';
 import { assembleToolEnv } from './tool-host/assemble.js';
@@ -166,7 +166,7 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
     // pre-ADR-0082 unbounded behaviour, and an unbounded wait on a provider that ignores its abort signal
     // is precisely the hang the deadline removes.
     newAbortController: hostAbortController,
-    setTimer: hostAttemptTimer,
+    setTimer: hostDeadlineTimer,
     now: () => Date.now(),
     // Keep the dispatch-context `fsScope` consistent with the tier the fs host jails to (ADR-0055's
     // "three concepts, three channels"); absent ⇒ the engine default `sandboxed`.

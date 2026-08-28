@@ -180,6 +180,20 @@ export function createCliHost(
       // opposite: it re-arms itself forever and advances nothing, so if it were ever the last handle
       // standing it would hang the process instead of letting it exit. It is disarmed on settle and on
       // fence, but `unref` makes a leak impossible rather than merely unlikely.
+      // **Only `liveness` is unref'd. A `deadline` is NOT, and a review had to measure that twice.**
+      //
+      // A first version of the `deadline` kind unref'd it here, reasoning that the in-flight call's own
+      // socket already holds the loop open. `hostDeadlineTimer`'s docblock in `process/sleep.ts` records the
+      // measurement that refutes it, taken against ADR-0082's own motivating provider — a
+      // `new Promise(() => {})` that holds NOTHING: the event loop drained, the process exited with a bare
+      // code, and the deadline never fired. No `timeout` error, no `run:failed`, no settlement, and a run row
+      // left non-terminal for the lease to age out.
+      //
+      // ADR-0085's node deadline and grace window face exactly that shape by construction — a hung executor
+      // is the case they exist for, and it may hold no socket at all. So a deadline IS something the run is
+      // parked on in the only situation that matters, and it must hold the loop open. The `deadline` kind
+      // earns its existence in the TEST harness, where `fireTimers()` must not sweep a backstop over work
+      // still in flight; it changes nothing about production ref-counting.
       if (kind === 'liveness') timer.unref();
       return () => {
         clearTimeout(timer);
