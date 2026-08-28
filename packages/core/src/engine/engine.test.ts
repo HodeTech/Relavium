@@ -2778,6 +2778,181 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     ).toBeGreaterThanOrEqual(999_999);
   });
 
+  it('a fault mid-abandonment still gives every other abandoned node its terminal (ADR-0085 §4)', async () => {
+    // **`#settleFailed` is not the total path its callers assume.** `#emitDurable` absorbs store faults, but
+    // `#bus.next` — which stamps the sequence number and Zod-parses the candidate — runs OUTSIDE that try,
+    // and so does `this.#host.ids.newId()` in the `node:failed` draft. A throw from either aborted
+    // `#onGraceElapsed`'s whole loop: every remaining abandoned node lost its `node:failed` (the omission §4
+    // forbids), the `#failure` fallback was skipped, `#schedule()` was skipped, and the rejection floated
+    // out of `void this.#onGraceElapsed()` — fatal under Node's default `--unhandled-rejections=throw`.
+    //
+    // The fault is injected at `ids.newId()` because that is the one draft-construction call the grace path
+    // makes on a host port, and it is one-shot so only the FIRST abandoned node is hit — which is the whole
+    // point: the second must still get its terminal.
+    const FANOUT = `  id: grace-fanout
+  nodes:
+    - { id: start, type: input }
+    - { id: a, type: transform, transform: 'g' }
+    - { id: b, type: transform, transform: 'g' }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: a }
+    - { from: start, to: b }
+    - { from: a, to: done }
+    - { from: b, to: done }`;
+    const base = createInMemoryHost();
+    let faultedOnce = false;
+    // Armed only just before the grace window fires. `newId()` is called during run setup and on every
+    // node terminal, so an always-on fault kills the run long before the path under test.
+    let armFault = false;
+    const host: typeof base = {
+      ...base,
+      ids: {
+        newId: () => {
+          if (armFault && !faultedOnce) {
+            faultedOnce = true;
+            throw new Error('id source unavailable');
+          }
+          return base.ids.newId();
+        },
+      },
+    };
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+    try {
+      const engine = engineWith(
+        {
+          a: () => new Promise<NodeOutcome>(() => undefined),
+          b: () => new Promise<NodeOutcome>(() => undefined),
+        },
+        host,
+      );
+      const handle = engine.start({ workflow: workflow(FANOUT) });
+      const events: RunEvent[] = [];
+      let settled = false;
+      const consume = (async (): Promise<void> => {
+        for await (const event of handle.events) {
+          events.push(event);
+          if (event.type === 'run:cancelled' || event.type === 'run:failed') settled = true;
+        }
+      })();
+
+      for (
+        let i = 0;
+        i < 400 && events.filter((e) => e.type === 'node:started').length < 3;
+        i += 1
+      ) {
+        await Promise.resolve();
+      }
+      engine.cancel(handle.runId);
+      for (let i = 0; i < 400 && host.deadlineCount() === 0; i += 1) await Promise.resolve();
+      armFault = true;
+      host.fireDeadlines();
+      for (let i = 0; i < 800 && !settled; i += 1) {
+        await Promise.resolve();
+        if (host.armedCount() > 0) host.fireTimers();
+      }
+      await consume;
+
+      // The load-bearing assertions: the run TERMINATES (it hung before), the SECOND abandoned node still
+      // got its terminal even though the first one's draft threw, and nothing floated.
+      expect(terminalsIn(events)).toHaveLength(1);
+      expect(faultedOnce).toBe(true); // the fault really was injected
+      expect(events.filter((e) => e.type === 'node:failed')).toHaveLength(1);
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+  });
+
+  it('a DISARM that throws cannot strand the grace backstop either (ADR-0085 §3)', async () => {
+    // The other half of the abandonment backstop, and it needs its own test because the per-vertex catch
+    // inside the loop does not cover it: `#onGraceElapsed` sweeps the node deadlines BEFORE the loop, so a
+    // host whose disarm function throws rejects the method outside every try it contains. Without the
+    // `.catch` at `void this.#onGraceElapsed()` that is an `unhandledRejection` AND a terminal-less run —
+    // the same pair the `#dispatch` call site guards against, on the one path that is supposed to be the
+    // last line of defence.
+    const BOUND = `  id: disarm-throws
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: start, type: input }
+    - { id: work, type: agent, agent_ref: ag, prompt_template: 'go', timeout_ms: 600000 }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: work }
+    - { from: work, to: done }`;
+    const base = createInMemoryHost();
+    let nodeDeadlineArmed = false;
+    const host: typeof base = {
+      ...base,
+      setTimer: (ms, fire, kind) => {
+        const disarm = base.setTimer(ms, fire, kind);
+        // **Selected by DELAY, not by arm order** — a break-verify caught the order assumption being wrong.
+        // `node:started` is emitted BEFORE `#dispatch` arms the node bound, so a cancel landing in that gap
+        // arms the 10 s grace window FIRST. Picking "the first `'deadline'`" made this test fault the grace
+        // disarm, which `#onGraceElapsed` never calls (it clears `#graceDisarm` without invoking it) — so
+        // the test passed with the production fix reverted. The authored 600 000 is unambiguous.
+        if (kind !== 'deadline' || ms !== 600_000) return disarm;
+        nodeDeadlineArmed = true;
+        return () => {
+          throw new Error('disarm failed');
+        };
+      },
+    };
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+    try {
+      const engine = engineWith({ work: () => new Promise<NodeOutcome>(() => undefined) }, host);
+      const handle = engine.start({ workflow: workflow(BOUND) });
+      const events: RunEvent[] = [];
+      let settled = false;
+      const consume = (async (): Promise<void> => {
+        for await (const event of handle.events) {
+          events.push(event);
+          if (event.type === 'run:cancelled' || event.type === 'run:failed') settled = true;
+        }
+      })();
+
+      for (
+        let i = 0;
+        i < 400 && !events.some((e) => e.type === 'node:started' && e.nodeId === 'work');
+        i += 1
+      ) {
+        await Promise.resolve();
+      }
+      engine.cancel(handle.runId);
+      for (let i = 0; i < 400 && host.deadlineCount() < 2; i += 1) await Promise.resolve();
+      expect(nodeDeadlineArmed).toBe(true); // the node bound is armed, with the throwing disarm attached
+      host.fireDeadlines();
+      for (let i = 0; i < 800 && !settled; i += 1) {
+        await Promise.resolve();
+        if (host.armedCount() > 0) host.fireTimers();
+      }
+      await consume;
+
+      expect(terminalsIn(events)).toHaveLength(1); // it terminates at all — it hung before
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+  });
+
   it('a host whose `setTimer` throws still reaches exactly one terminal — no floating rejection (ADR-0085 §6)', async () => {
     // **A synchronous host fault used to strand the run.** `#armNodeDeadline` runs OUTSIDE `#dispatch`'s
     // `try`, so a host whose `setTimer` throws rejects the promise at `void this.#dispatch(...)`. Un-caught

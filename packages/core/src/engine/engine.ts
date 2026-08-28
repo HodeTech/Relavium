@@ -810,7 +810,23 @@ class RunExecution {
     this.#graceDisarm = this.#host.setTimer(
       GRACE_WINDOW_MS,
       () => {
-        void this.#onGraceElapsed();
+        // Nothing may float out of a timer callback (the same rule `#step`'s `#dispatch` call site follows).
+        // `#onGraceElapsed` is the last thing standing between a hung executor and a run with no terminal,
+        // so it must not itself become the reason there is none: an unhandled rejection here is fatal under
+        // Node's default `--unhandled-rejections=throw`, and it would kill the process mid-run rather than
+        // settle it.
+        void this.#onGraceElapsed().catch(() => {
+          if (!this.#settled && this.#failure === undefined && !this.#cancelling) {
+            this.#failure = {
+              error: {
+                code: 'internal',
+                message: 'the grace-window backstop failed while abandoning the run',
+                retryable: false,
+              },
+            };
+          }
+          this.#schedule();
+        });
       },
       // A backstop over work already in flight, not something the run is parked ON — the same role
       // `CR-21b`/`CR-21c` gave the media bounds, and the reason `TimerKind` has a third member at all.
@@ -900,11 +916,25 @@ class RunExecution {
       // schema comment says "the engine always populates it", and the real attempt number — it hard-coded
       // 1, so a node abandoned on attempt 3 logged attempt 1. An abandoned node's record is the ONLY record
       // it gets; making it the thinnest one in the log is the wrong place to economise.
-      await this.#settleFailed(
-        vertex,
-        { code: 'cancelled', message: GRACE_ABANDON_MESSAGE, retryable: false },
-        this.#lastAttemptByVertex.get(vertexId) ?? 1,
-      );
+      try {
+        await this.#settleFailed(
+          vertex,
+          { code: 'cancelled', message: GRACE_ABANDON_MESSAGE, retryable: false },
+          this.#lastAttemptByVertex.get(vertexId) ?? 1,
+        );
+      } catch {
+        // **One vertex's terminal failing must not abandon the others.** `#settleFailed` is not the total
+        // path its callers assume: `#emitDurable` absorbs store faults, but `#bus.next` — which stamps the
+        // sequence number and Zod-parses the candidate — runs OUTSIDE that try, and so does
+        // `this.#host.ids.newId()` in the draft. A throw from either used to abort this whole loop, leaving
+        // every remaining abandoned node with no `node:failed` (the omission §4 forbids), skipping the
+        // `#failure` fallback below, and skipping `#schedule()` — a run with no terminal at all, produced by
+        // the very backstop whose job is to guarantee one.
+        //
+        // Continuing is safe and is what the invariant wants: `#settleFailed` sets `status = 'failed'` and
+        // records `#failure` BEFORE it emits, both synchronously, so the vertex is already marked and the
+        // run already has a cause. What is lost is one durable event that could not be written anyway.
+      }
     }
     // If nothing set a cause, the run-level `timeout_ms` is what aborted us — say so rather than shipping a
     // terminal with an undefined reason (ADR-0085 §3).
