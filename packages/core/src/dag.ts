@@ -33,6 +33,7 @@ import {
 import { analyzeResolvedAgentTaint } from './interpolation/analyze.js';
 import { nodeReferenceSites } from './interpolation/collect.js';
 import { templateReferences } from './interpolation/references.js';
+import { collectAgentCeilingIssues, collectWorkflowCeilingIssues } from './limits.js';
 import type { JoinStrategy, PlanConfig, PlanVertex, RunPlan } from './run-plan.js';
 
 /** Authored node variants, narrowed from the shared union for the per-type wiring helpers. */
@@ -105,6 +106,14 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
   };
 
   const issues: GraphIssue[] = [];
+  // **Admission ceilings first (ADR-0086 §2).** Counted on the AUTHORED spec and BEFORE the graph is wired,
+  // so a file over a ceiling reports the numbers its author wrote rather than numbers that only exist after
+  // a compile step they never see. They join the same `issues` batch as every other graph fault, so an
+  // author sees all of them at once instead of fixing one per run.
+  collectWorkflowCeilingIssues(def, issues);
+  for (const [agentId, agent] of agentsById) {
+    collectAgentCeilingIssues(agent, issues, `agent \`${agentId}\`.`);
+  }
   validateAndWireEdges(spec, nodesById, agentsById, opts?.agents !== undefined, addEdge, issues);
 
   // 4. Kahn topological order (authored-order tie-break → reproducible plan; deep-equal-testable).

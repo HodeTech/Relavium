@@ -34,7 +34,8 @@ export type GraphIssueKind =
   | 'unknown_edge_target' // an edge / branch / `parallel_of` endpoint names a node that does not exist
   | 'invalid_handle' // a `nodeId:handle` edge names a handle the source node does not expose
   | 'mismatched_branch_target' // a `condition:handle` edge's `to` contradicts that branch's `target_node`
-  | 'dangling_ref'; // an `agent_ref` resolves to no agent (only checked when a resolved-agent registry is supplied)
+  | 'dangling_ref' // an `agent_ref` resolves to no agent (only checked when a resolved-agent registry is supplied)
+  | 'ceiling_exceeded'; // an authored value or graph shape is over an absolute admission ceiling (ADR-0086)
 
 /**
  * One field-named graph problem found by the DAG builder (1.M). Every field is a *name* — a node id,

@@ -19,6 +19,8 @@ import { describe, expect, it } from 'vitest';
 
 import { authoredSystemPrompt } from './authored-system-prompt.js';
 
+import { WorkflowGraphError } from '../errors.js';
+import { ADMISSION_CEILINGS } from '../limits.js';
 import { BUILTIN_TOOLS } from '../tools/builtins.js';
 import { ToolExecutionError } from '../tools/errors.js';
 import { createToolRegistry } from '../tools/registry.js';
@@ -174,6 +176,40 @@ function harness(
   };
   return { deps, events };
 }
+
+describe('ADR-0086 §6 — the session checks the SAME agent ceilings the compiler does', () => {
+  it('rejects an over-ceiling agent before any turn runs', () => {
+    // **The case an admission-only fix would have missed.** `relavium agent run` and `relavium chat` hand an
+    // `Agent` straight to `AgentSession` and never build a workflow graph, so the compiler's ceiling pass
+    // never sees them — and `retry.max` / `fallback_chain` / `max_attempts` are exactly the values this path
+    // consumes. The throw is in the CONSTRUCTOR, which is the session's equivalent of "the run never
+    // starts": no provider call, no tool dispatch, no money spent before the refusal.
+    //
+    // The workflow half of this pair is in `limits.test.ts`. Either alone proves nothing about the shared
+    // validator — one path enforcing and the other not is the drift the shared function exists to prevent.
+    const greedy = AgentSchema.parse({
+      id: 'greedy',
+      model: 'claude-opus-4-8',
+      provider: 'anthropic',
+      system_prompt: 'hi',
+      retry: { max: ADMISSION_CEILINGS.retryMax + 1, backoff: 'exponential' },
+    });
+    const { deps } = harness([[]]);
+    expect(() => session(deps, greedy)).toThrow(WorkflowGraphError);
+  });
+
+  it('admits an agent AT the ceiling — the negative control', () => {
+    const atLimit = AgentSchema.parse({
+      id: 'at-limit',
+      model: 'claude-opus-4-8',
+      provider: 'anthropic',
+      system_prompt: 'hi',
+      retry: { max: ADMISSION_CEILINGS.retryMax, backoff: 'exponential' },
+    });
+    const { deps } = harness([[]]);
+    expect(() => session(deps, atLimit)).not.toThrow();
+  });
+});
 
 const session = (deps: SessionDeps, agent: Agent = AGENT): AgentSession =>
   new AgentSession({ sessionId: 'sess-1', agentRef: agent.id, agent, context: CONTEXT, deps });

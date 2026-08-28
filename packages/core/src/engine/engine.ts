@@ -68,6 +68,7 @@ import { buildRunPlan, type BuildRunPlanOptions } from '../dag.js';
 import { InterpolationError } from '../errors.js';
 import { resolveContext, resolveTemplate } from '../interpolation/resolve.js';
 import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
+import { DEFAULT_MAX_PARALLEL } from '../limits.js';
 import type { PlanVertex, RunPlan } from '../run-plan.js';
 import type { WorkflowDefinition } from '../parser.js';
 import { resolveAndValidateWorkflowInputs } from './input-admission.js';
@@ -1686,7 +1687,11 @@ class RunExecution {
 
   /** Synchronously claim every dispatchable vertex (up to the cap), marking it `running`. */
   #claimReady(alreadyRunning: number): PlanVertex[] {
-    const cap = this.#plan.maxParallel ?? Number.POSITIVE_INFINITY;
+    // **An omitted `max_parallel` is 8, not Infinity (ADR-0086 §3).** `Infinity` is the one value at which a
+    // concurrency cap governs nothing, and it was the default — so every workflow that did not think about
+    // concurrency ran as wide as its graph. The number is a fixed constant on every machine; deriving it
+    // from host capacity would break the spec's guarantee that a file runs identically on every surface.
+    const cap = this.#plan.maxParallel ?? DEFAULT_MAX_PARALLEL;
     const claimed: PlanVertex[] = [];
     let running = alreadyRunning;
     for (const vertexId of this.#plan.order) {

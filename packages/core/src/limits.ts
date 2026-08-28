@@ -1,0 +1,207 @@
+/**
+ * Absolute admission ceilings on authored values
+ * ([ADR-0086](../../../docs/decisions/0086-absolute-admission-ceilings-on-authored-values.md)).
+ *
+ * The engine used to admit anything that parsed. The only limit was a 2 MiB source-text cap
+ * ({@link MAX_SOURCE_CHARS}), and 2 MiB of YAML holds tens of thousands of small nodes — so a file could
+ * declare a graph, a retry budget or a fan-out the engine has no defined behaviour for. These are the
+ * ceilings that end that, and the two validators that enforce them.
+ *
+ * **Three properties this module exists to hold, all of them decided in ADR-0086 rather than here:**
+ *
+ * 1. **A breach is a REJECTION, never a clamp** (§1). Silently narrowing an authored value contradicts
+ *    [ADR-0023](../../../docs/decisions/0023-strict-authored-yaml-validation.md) — a committed workflow must
+ *    never run as something other than what it says — and an author who wrote `max_parallel: 200` and got 8
+ *    would debug the wrong thing. Every issue therefore names the field, the authored value AND the ceiling.
+ * 2. **Both entry points check, through ONE validator** (§6). `relavium agent run` and `relavium chat` hand
+ *    an `Agent` straight to `AgentSession` and never build a graph, so agent-scoped ceilings live
+ *    in {@link collectAgentCeilingIssues} — called by the workflow compiler for every resolved agent AND by
+ *    the session before its first turn. Two copies of eight numbers is how the two surfaces drift, and a
+ *    drift here means the same agent file is admitted by `chat` and rejected by a workflow referencing it.
+ * 3. **The graph ceilings count the AUTHORED file** (§2), before `parallel_of` expansion or any
+ *    de-duplication. An author can act on "you wrote 600 nodes"; they cannot act on a number that exists
+ *    only after a compile step they never see.
+ *
+ * The numbers are ceilings, not recommendations — nothing about a workflow improves by approaching one — and
+ * they are `readonly` constants rather than Zod `.max()` refinements deliberately: a `.max()` would change
+ * `WorkflowSchema`, which is a public API, and the fan-out and edge-count limits are properties of the whole
+ * file rather than of any single field, so half of them have no schema expression at all (§7).
+ */
+
+import type { Agent, Workflow } from '@relavium/shared';
+
+import type { GraphIssue } from './errors.js';
+
+/**
+ * Every absolute ceiling, in one frozen object so a host can read the number it will be judged against
+ * rather than discovering it from a rejection (ADR-0086 §9.3).
+ *
+ * Exported as data, not as eight loose constants, for the same reason `DEFAULT_TOOL_RESULT_LIMITS` is: a
+ * caller that wants to display the limits should not have to know eight identifier names, and a future
+ * host-side override has one shape to override.
+ */
+export const ADMISSION_CEILINGS = {
+  /** Authored nodes in one workflow. */
+  nodes: 500,
+  /** Authored edges in one workflow. */
+  edges: 2000,
+  /** A single node's authored out-degree — the width that becomes concurrent work in one step. */
+  fanOut: 50,
+  /** Entries in one agent's `fallback_chain`; each entry carries its own attempt budget. */
+  fallbackChainEntries: 5,
+  /** `retry.max` — total attempts for one node, including the first. */
+  retryMax: 10,
+  /** `fallback_chain[].max_attempts` — attempts within one chain entry. `retryMax` multiplies this. */
+  chainEntryMaxAttempts: 10,
+  /** An authored `max_parallel`. Distinct from {@link DEFAULT_MAX_PARALLEL}, which applies when omitted. */
+  maxParallel: 64,
+  /** Tool calls in ONE model response. Not a concurrency limit — dispatch is sequential (ADR-0086 §2). */
+  toolCallsPerResponse: 16,
+  /** `node:started` events in one run — the runtime backstop for the multiplication the others permit. */
+  nodeDispatchesPerRun: 500,
+} as const;
+
+/**
+ * What an omitted `max_parallel` means (ADR-0086 §3).
+ *
+ * **A fixed constant on every machine, and that is the decision — not an oversight.** Deriving it from host
+ * capacity was the obvious move and is refused: `workflow-yaml-spec.md` guarantees the same file "parses and
+ * runs **identically** on every surface", and a CPU-derived default would run the same committed workflow
+ * 4-wide on a laptop and 32-wide on a build server, with different cost and different rate-limit behaviour.
+ * `packages/core` also cannot read a CPU count without breaking its zero-platform-import rule, so
+ * "capacity-derived" would have bought a host seam whose only effect is to make a public-API guarantee
+ * conditional.
+ *
+ * It replaces `Infinity`, which is the one value at which a concurrency cap governs nothing.
+ */
+export const DEFAULT_MAX_PARALLEL = 8;
+
+/** Build one ceiling issue. Private so every message reads the same way — field, value, ceiling, in order. */
+function ceilingIssue(field: string, actual: number, ceiling: number, what: string): GraphIssue {
+  return {
+    field,
+    // The authored VALUE is echoed here, unlike most `GraphIssue` messages which stay to names. It is safe
+    // and it is the point: these values are integers the author typed, never a string that could carry a
+    // secret, and a rejection that hides the number leaves the author guessing which of their values tripped.
+    message: `${what} is ${actual}, above the limit of ${ceiling}`,
+    kind: 'ceiling_exceeded',
+  };
+}
+
+/**
+ * The agent-scoped ceilings — `retry.max`, `fallback_chain` length, per-entry `max_attempts`.
+ *
+ * **The shared half of ADR-0086 §6.** Called once per resolved agent by the workflow compiler, and once by
+ * `AgentSession` before its first turn, so the two co-equal entry points ([ADR-0024]) cannot disagree about
+ * which agent files are admissible.
+ *
+ * `where` prefixes the issue field so a workflow says which agent tripped (``agent `writer`.retry.max``)
+ * while a standalone session says only `retry.max` — the session has one agent and naming it adds nothing.
+ * Issues are APPENDED, never thrown: the caller batches them with every other admission fault, so an author
+ * sees all of them at once rather than fixing one per run.
+ */
+export function collectAgentCeilingIssues(agent: Agent, issues: GraphIssue[], where = ''): void {
+  const at = (field: string): string => `${where}${field}`;
+
+  if (agent.retry !== undefined && agent.retry.max > ADMISSION_CEILINGS.retryMax) {
+    issues.push(
+      ceilingIssue(
+        at('retry.max'),
+        agent.retry.max,
+        ADMISSION_CEILINGS.retryMax,
+        'the node-retry budget',
+      ),
+    );
+  }
+
+  const chain = agent.fallback_chain;
+  if (chain !== undefined) {
+    if (chain.length > ADMISSION_CEILINGS.fallbackChainEntries) {
+      issues.push(
+        ceilingIssue(
+          at('fallback_chain'),
+          chain.length,
+          ADMISSION_CEILINGS.fallbackChainEntries,
+          'the fallback chain length',
+        ),
+      );
+    }
+    // Every entry, not the first offender: an author fixing one at a time is the batching this whole
+    // admission path exists to avoid.
+    chain.forEach((entry, i) => {
+      if (entry.max_attempts > ADMISSION_CEILINGS.chainEntryMaxAttempts) {
+        issues.push(
+          ceilingIssue(
+            at(`fallback_chain[${i}].max_attempts`),
+            entry.max_attempts,
+            ADMISSION_CEILINGS.chainEntryMaxAttempts,
+            "the chain entry's attempt budget",
+          ),
+        );
+      }
+    });
+  }
+}
+
+/**
+ * The workflow-scoped ceilings — node count, edge count, per-node fan-out, and an authored `max_parallel`.
+ *
+ * Counted on the AUTHORED spec (ADR-0086 §2), which is also why this runs before the graph is built: a file
+ * over a ceiling never reaches the compiler, so the check is cheap, order-independent, and reports the
+ * numbers the author actually wrote.
+ *
+ * Fan-out is the authored out-degree, counted over plain `edges[]` only. A `condition`'s `branches` are
+ * routing alternatives — exactly one is taken — so counting them as width would reject a wide `switch` that
+ * never runs more than one target, which is not the shape this ceiling is about.
+ */
+export function collectWorkflowCeilingIssues(def: Workflow, issues: GraphIssue[]): void {
+  const spec = def.workflow;
+
+  if (spec.nodes.length > ADMISSION_CEILINGS.nodes) {
+    issues.push(
+      ceilingIssue('workflow.nodes', spec.nodes.length, ADMISSION_CEILINGS.nodes, 'the node count'),
+    );
+  }
+
+  const edges = spec.edges ?? [];
+  if (edges.length > ADMISSION_CEILINGS.edges) {
+    issues.push(
+      ceilingIssue('workflow.edges', edges.length, ADMISSION_CEILINGS.edges, 'the edge count'),
+    );
+  }
+
+  const outDegree = new Map<string, number>();
+  for (const edge of edges) {
+    // The authored `from` may carry a `nodeId:handle` suffix; the DEGREE belongs to the node, so strip it.
+    // Counting `a:true` and `a:false` as two different sources would under-report a condition's width — and
+    // over-report nothing, since a plain edge has no colon.
+    const producer = edge.from.split(':')[0] ?? edge.from;
+    outDegree.set(producer, (outDegree.get(producer) ?? 0) + 1);
+  }
+  // Sorted so a file with several over-wide nodes reports them in a stable order — an unstable order makes
+  // a snapshot test flaky for a reason that has nothing to do with the defect it is guarding.
+  for (const [nodeId, degree] of [...outDegree].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    if (degree > ADMISSION_CEILINGS.fanOut) {
+      issues.push(
+        ceilingIssue(
+          `node \`${nodeId}\` out-degree`,
+          degree,
+          ADMISSION_CEILINGS.fanOut,
+          "the node's fan-out width",
+        ),
+      );
+    }
+  }
+
+  const maxParallel = spec.max_parallel;
+  if (maxParallel !== undefined && maxParallel > ADMISSION_CEILINGS.maxParallel) {
+    issues.push(
+      ceilingIssue(
+        'workflow.max_parallel',
+        maxParallel,
+        ADMISSION_CEILINGS.maxParallel,
+        'the concurrency cap',
+      ),
+    );
+  }
+}

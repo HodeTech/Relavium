@@ -38,6 +38,8 @@ import type {
 } from '@relavium/shared';
 import { unwiredEffectJournal } from '@relavium/shared';
 
+import { WorkflowGraphError, type GraphIssue } from '../errors.js';
+import { collectAgentCeilingIssues } from '../limits.js';
 import { markUntrusted, unwrapUntrusted, type Untrusted } from '../tools/untrusted.js';
 import { authoredSystemPrompt, type AuthoredSystemPrompt } from './authored-system-prompt.js';
 import { buildTurnMessages } from './turn-messages.js';
@@ -526,6 +528,17 @@ export class AgentSession {
   #autoCompactPending: { readonly model: string; readonly inputTokens: number } | undefined;
 
   constructor(params: AgentSessionParams) {
+    // **The session's half of ADR-0086 §6, and it is a CONSTRUCTOR check on purpose.** `relavium agent run`
+    // and `relavium chat` never build a workflow graph, so the compiler's ceiling pass never sees their
+    // agent — and `retry.max` / `fallback_chain` / `max_attempts` are exactly the values this path consumes.
+    // Rejecting here, before any turn, is the session's equivalent of "the run never starts": no provider
+    // call, no tool dispatch, no money. The SAME validator the compiler calls, so an agent file cannot be
+    // admitted by `chat` and rejected by a workflow that references it.
+    const ceilingIssues: GraphIssue[] = [];
+    collectAgentCeilingIssues(params.agent, ceilingIssues);
+    if (ceilingIssues.length > 0) {
+      throw new WorkflowGraphError(ceilingIssues);
+    }
     this.sessionId = params.sessionId;
     this.#agentRef = params.agentRef;
     this.#agent = params.agent;
