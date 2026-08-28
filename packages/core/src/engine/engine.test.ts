@@ -2675,6 +2675,70 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     ).toBeGreaterThanOrEqual(999_999);
   });
 
+  it('a host whose `setTimer` throws still reaches exactly one terminal — no floating rejection (ADR-0085 §6)', async () => {
+    // **A synchronous host fault used to strand the run.** `#armNodeDeadline` runs OUTSIDE `#dispatch`'s
+    // `try`, so a host whose `setTimer` throws rejects the promise at `void this.#dispatch(...)`. Un-caught
+    // that is an `unhandledRejection` AND a terminal-less run: the node stays `running`, `#handleIdle` sees
+    // work in flight forever, and no `run:failed` is ever published. The call site now routes it to
+    // `#failNodeInternal`, the same backstop every other internal fault uses.
+    const FAULTY = `  id: faulty-host
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: start, type: input }
+    - { id: work, type: agent, agent_ref: ag, prompt_template: 'go', timeout_ms: 5000 }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: work }
+    - { from: work, to: done }`;
+    const base = createInMemoryHost();
+    let faultedOnce = false;
+    const host: typeof base = {
+      ...base,
+      setTimer: (ms, fire, kind) => {
+        // ONE-SHOT, and it must be: `'deadline'` is also the kind the abort path's own arms use, so a
+        // permanently faulting host breaks the very settle this test asserts and proves nothing about the
+        // dispatch call site. The first `'deadline'` arm of this run IS `work`'s node deadline — `start` is
+        // an `input` node with no `timeout_ms`.
+        if (kind === 'deadline' && !faultedOnce) {
+          faultedOnce = true;
+          throw new Error('host clock unavailable');
+        }
+        return base.setTimer(ms, fire, kind);
+      },
+    };
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+    try {
+      const engine = engineWith({ work: () => new Promise<NodeOutcome>(() => undefined) }, host);
+      // The run TERMINATES — this `drain` hung forever under the old behaviour, which is the bug.
+      const events = await drain(engine.start({ workflow: workflow(FAULTY) }));
+      const terminal = events.at(-1);
+      expect(terminal?.type).toBe('run:failed');
+      expect(terminal?.type === 'run:failed' && terminal.error.message).toContain(
+        'host clock unavailable',
+      );
+      expect(
+        events.filter((e) => e.type === 'run:failed' || e.type === 'run:completed'),
+      ).toHaveLength(1);
+      // Give any floating rejection a full macrotask to surface before asserting there was none. A REAL
+      // `setTimeout` — the in-memory host's timers are a manual controller that never fires on its own, so
+      // parking on `base.setTimer` here would hang the test rather than yield to the runtime.
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+  });
+
   it("a budget-approved RE-dispatch does not renew the node's `timeout_ms` (ADR-0085 §2)", async () => {
     // **"Absolute per node" was absolute per DISPATCH, and nothing saw it.** An approved budget gate returns
     // the vertex to `pending` (`#claimReady` re-claims it), so the node got a second `#dispatch` — and a

@@ -1606,7 +1606,25 @@ class RunExecution {
       if (this.#noNewDispatch || this.#settled) {
         return;
       }
-      void this.#dispatch(vertex, 1);
+      // **A dispatch may never float its rejection (Medium 9).** `#dispatch` is `async`, so even a
+      // SYNCHRONOUS fault before its `try` — a host whose `setTimer` throws, which `#armNodeDeadline` calls
+      // outside it — surfaces as a rejected promise here. Un-caught that is an `unhandledRejection` AND a
+      // terminal-less run: the node stays `running`, `#handleIdle` sees work in flight forever, and nothing
+      // ever publishes `run:failed`. Route it to the same settle every other node failure takes.
+      void this.#dispatch(vertex, 1).catch(async (cause: unknown) => {
+        const message = `dispatch failed unexpectedly: ${cause instanceof Error ? cause.message : String(cause)}`;
+        try {
+          // The FULL settle, not just the in-memory flag: `#failNodeInternal` marks the state and aborts but
+          // emits no `node:failed`, so the graph never publishes this node's terminal. Measured — with the
+          // flag alone the run still hung.
+          await this.#settleFailed(vertex, { code: 'internal', message, retryable: false });
+        } catch {
+          // The settle itself faulted (the same broken host can fault the abort path's own timer arm).
+          // Fall back to the in-memory backstop — an aborted run still beats a hung one.
+          this.#failNodeInternal(vertex, message);
+        }
+        this.#schedule();
+      });
     }
   }
 
