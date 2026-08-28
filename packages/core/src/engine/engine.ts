@@ -425,6 +425,8 @@ class RunExecution {
   #runTimeoutDisarm: (() => void) | undefined;
   /** ADR-0085 §3's post-abort grace window; armed off the abort signal, disarmed on settle. */
   #graceDisarm: (() => void) | undefined;
+  /** Set synchronously when the grace window elapses: no vertex may be dispatched after this (ADR-0085 §3). */
+  #noNewDispatch = false;
   /** ADR-0085 §5's fence: the dispatch id currently authoritative for each vertex. */
   readonly #activeDispatchByVertex = new Map<string, number>();
   /** The dispatch id a vertex's in-flight work was started under — the value `#isLive` is checked against. */
@@ -436,6 +438,8 @@ class RunExecution {
    * hand the node a second helping of the patience its author granted once.
    */
   readonly #nodeDeadlineStartMs = new Map<string, number>();
+  /** The armed node-deadline timer per vertex — run-owned, disarmed only at the node's terminal. */
+  readonly #nodeDeadlineDisarm = new Map<string, () => void>();
   /** The attempt number a vertex is currently on, so an ABANDONED node logs its real attempt, not 1. */
   readonly #lastAttemptByVertex = new Map<string, number>();
   /** Monotonic per-run dispatch id — see {@link #activeDispatchByVertex}. */
@@ -866,9 +870,13 @@ class RunExecution {
     if (this.#settled) {
       return;
     }
-    // Invalidate every active dispatch BEFORE the first await (ADR-0085 §5), so no straggler can slip a
-    // write in between this decision and the settle.
+    // **Latch FIRST, synchronously, before any await.** Clearing the tokens alone was not a cutoff: `#step`
+    // awaits its `node:started` persist and then calls `#dispatch` without re-reading the run's state, so a
+    // node claimed before the window elapsed could still START after it — a fresh token, an executor invoked
+    // on an already-aborted signal, and a `cost:updated` accepted for work the run had stopped waiting for.
+    this.#noNewDispatch = true;
     this.#activeDispatchByVertex.clear();
+    for (const vertexId of [...this.#nodeDeadlineDisarm.keys()]) this.#disarmNodeDeadline(vertexId);
     for (const [vertexId, state] of this.#states) {
       if (state.status !== 'running') continue;
       const vertex = this.#plan.vertices.get(vertexId);
@@ -1413,6 +1421,7 @@ class RunExecution {
       state.status = 'completed';
       state.output = decision.payload ?? { decision: decision.decision };
     }
+    this.#disarmNodeDeadline(gate.vertexId); // the gate vertex is terminal — its node bound ends here
     // The payload (a gate `input` value, `z.unknown()`) is the one resume event that can carry media. If
     // de-inline cannot make it durable-safe, the emit throws — but the gate is already resolved + the
     // vertex marked completed, so we must NOT skip #schedule() (that would strand the resumed run with no
@@ -1462,6 +1471,7 @@ class RunExecution {
       if (state !== undefined) {
         state.status = 'failed';
       }
+      this.#disarmNodeDeadline(gate.vertexId);
       if (this.#failure === undefined && !this.#cancelling) {
         this.#failure = {
           nodeId: gate.vertexId,
@@ -1546,6 +1556,7 @@ class RunExecution {
     // Emit a durable `node:skipped` for each vertex the loop just dimmed — BEFORE any terminal settle —
     // so the event log is a complete, replayable record (1.R reconstructs a skipped vertex from this).
     for (const { id, reason } of this.#propagateSkips()) {
+      this.#disarmNodeDeadline(id); // a skipped node is terminal too — ADR-0085 §2's bound ends here
       await this.#emitDurable({ type: 'node:skipped', runId: this.runId, nodeId: id, reason });
     }
     const running = this.#countRunning();
@@ -1582,6 +1593,11 @@ class RunExecution {
         nodeId: vertex.id,
         nodeType: vertex.type,
       });
+      // Re-read the latch AFTER the durable `node:started` write above: the grace window may have elapsed
+      // while it was pending, and a dispatch started past the cutoff is exactly what the latch forbids.
+      if (this.#noNewDispatch || this.#settled) {
+        return;
+      }
       void this.#dispatch(vertex, 1);
     }
   }
@@ -1651,32 +1667,115 @@ class RunExecution {
     const dispatchId = (this.#nextDispatchId += 1);
     this.#activeDispatchByVertex.set(vertex.id, dispatchId);
     this.#dispatchIdForVertex.set(vertex.id, dispatchId);
-    // **ADR-0085 §1/§2's node deadline, wrapping the WHOLE dispatch.** Not just `execute()`: `#applySaveTo`
-    // runs on its return, `#joinMoneyDurability` runs after `#runAttempt` returns, and the retry backoff
-    // sits between attempts — a node hung in any of those is still `running` and still holds the run open
-    // with its deadline satisfied. And ABSOLUTE across the whole node, not per attempt: a per-attempt
-    // reading multiplies, since two ordinary retryable failures followed by a timeout spend roughly three
-    // times the authored bound and `retryable: false` only stops the timed-out attempt being retried.
-    const nodeDeadline = this.#openNodeDeadline(vertex);
-    let handedToGrace = false;
+    // **The node deadline is owned by the RUN, not by this call.** It is armed once for the vertex and
+    // disarmed only at the node's TERMINAL — see `#armNodeDeadline`. A first version opened it here and
+    // disposed it in this method's `finally`, which silently dropped the bound on every path where
+    // `#dispatch` returns without the node being finished: a `media_job` park, a human-gate park and a
+    // budget-approval park are all non-terminal outcomes. A node authored `timeout_ms: 1000` that parked on
+    // a media job then ran under ADR-0045's thirty-minute job deadline instead, and its eventual failure
+    // classified `provider_unavailable`/retryable rather than `run_timeout`/fatal.
+    this.#armNodeDeadline(vertex);
     try {
-      handedToGrace = await this.#dispatchBounded(vertex, firstAttempt, nodeDeadline);
+      await this.#dispatchLoop(vertex, firstAttempt);
     } finally {
-      nodeDeadline?.dispose();
       // **Release the slot only if this dispatch is really finished with it.**
       //
-      // On the caller-abort path `#dispatchBounded` returns EARLY while `#dispatchLoop` is still running —
-      // deliberately, so the grace window governs (§3). Releasing here would then un-fence a node that is
-      // still legitimately live: if its executor settles cooperatively inside the window, `#isLive` would
-      // refuse its `cost:updated` fold and, worse, its `save_to` write. The window exists to let exactly
-      // that work land. `#onGraceElapsed` clears the map when it stops waiting, and `#isLive`'s `!#settled`
-      // half still refuses anything after the terminal.
-      //
-      // The ownership check stays for the normal path: a later dispatch of this vertex owns the slot now.
-      if (!handedToGrace && this.#activeDispatchByVertex.get(vertex.id) === dispatchId) {
+      // Not released while the node is still non-terminal: after a cancel the grace window governs and
+      // `#dispatchLoop` may still settle cooperatively, and after a park the node resumes later. Releasing
+      // early un-fences a node that is legitimately live — its `cost:updated` fold and, worse, its `save_to`
+      // write would be refused. `#onGraceElapsed` clears the map when it stops waiting, `#isLive`'s
+      // `!#settled` half refuses anything after the terminal, and the ownership check below keeps a newer
+      // dispatch's claim intact.
+      const status = this.#states.get(vertex.id)?.status;
+      const nodeFinished = status === 'completed' || status === 'failed' || status === 'skipped';
+      if (nodeFinished && this.#activeDispatchByVertex.get(vertex.id) === dispatchId) {
         this.#activeDispatchByVertex.delete(vertex.id);
       }
     }
+  }
+
+  /**
+   * Arm the authored `agent.timeout_ms` for a vertex, once per NODE (ADR-0085 §2).
+   *
+   * Idempotent by vertex: a re-dispatch after a park or a budget approval finds the timer already armed and
+   * leaves it alone, which is what makes the bound absolute across attempts, re-dispatches AND parks rather
+   * than merely across the attempts of one dispatch.
+   *
+   * **It survives the dispatch that armed it, and that is the whole correction.** `paused` and `media_job`
+   * are outcomes, not node terminals; a deadline tied to the dispatch promise vanished at exactly the moment
+   * a node started waiting on something slow.
+   */
+  #armNodeDeadline(vertex: PlanVertex): void {
+    const timeoutMs = vertex.config.kind === 'agent' ? vertex.config.node.timeout_ms : undefined;
+    if (timeoutMs === undefined || this.#nodeDeadlineDisarm.has(vertex.id)) {
+      return;
+    }
+    // ONE clock read: two would lose a tick between them on a per-read clock, so a first dispatch would arm
+    // `timeoutMs - 1` and a test asserting the authored value would be pinning an off-by-one.
+    const nowMs = this.#elapsedMs();
+    const startedAtMs = this.#nodeDeadlineStartMs.get(vertex.id) ?? nowMs;
+    this.#nodeDeadlineStartMs.set(vertex.id, startedAtMs);
+    const remainingMs = Math.max(0, timeoutMs - (nowMs - startedAtMs));
+    this.#nodeDeadlineDisarm.set(
+      vertex.id,
+      this.#host.setTimer(
+        clampTimerDelayMs(remainingMs),
+        () => {
+          void this.#onNodeDeadline(vertex, timeoutMs);
+        },
+        // A backstop over work already in flight — never something the run is parked ON.
+        'deadline',
+      ),
+    );
+  }
+
+  /**
+   * ADR-0085 §5's fence predicate: may a write from `dispatchId` on `vertexId` still be admitted?
+   *
+   * True only while the run has not settled AND this dispatch is still its vertex's active one. Both halves
+   * are needed: `#settled` alone is one boolean on one path, and it cannot tell dispatch N of a vertex from
+   * dispatch N+1 — which is exactly what a budget-approved re-dispatch produces.
+   */
+  #isLive(vertexId: string, dispatchId: number): boolean {
+    return !this.#settled && this.#activeDispatchByVertex.get(vertexId) === dispatchId;
+  }
+
+  #disarmNodeDeadline(vertexId: string): void {
+    const disarm = this.#nodeDeadlineDisarm.get(vertexId);
+    if (disarm !== undefined) {
+      disarm();
+      this.#nodeDeadlineDisarm.delete(vertexId);
+    }
+  }
+
+  /**
+   * The authored node bound elapsed with the node still unfinished.
+   *
+   * **Ownership is dropped SYNCHRONOUSLY, before the failure is persisted.** A first version awaited
+   * `#onOutcome` and only then released the dispatch id, so for the whole duration of that durable write the
+   * timed-out executor's `ctx.emit` cost folds and `ctx.effects.prepare()` calls still passed `#isLive` — a
+   * timeout boundary that was not an ownership cutoff. Invalidating first makes the two the same instant.
+   */
+  async #onNodeDeadline(vertex: PlanVertex, timeoutMs: number): Promise<void> {
+    this.#nodeDeadlineDisarm.delete(vertex.id);
+    const status = this.#states.get(vertex.id)?.status;
+    if (this.#settled || status === 'completed' || status === 'failed' || status === 'skipped') {
+      return; // the node finished first — nothing to bound
+    }
+    this.#activeDispatchByVertex.delete(vertex.id); // the cutoff, before any await
+    await this.#onOutcome(
+      vertex,
+      {
+        kind: 'failed',
+        error: {
+          code: 'run_timeout',
+          message: `node '${vertex.id}' exceeded its ${String(timeoutMs)} ms timeout_ms`,
+          retryable: false,
+        },
+      },
+      this.#elapsedMs(),
+      this.#lastAttemptByVertex.get(vertex.id) ?? 1,
+    );
   }
 
   /**
@@ -1714,99 +1813,24 @@ class RunExecution {
       settle: (...args: Parameters<EffectDispatchPort['settle']>) => port.settle(...args),
       discard: (...args: Parameters<EffectDispatchPort['discard']>) => port.discard(...args),
       prepare: async (...args: Parameters<EffectDispatchPort['prepare']>) => {
-        if (!this.#isLive(vertexId, dispatchId)) {
+        const refuse = (): never => {
           throw new EngineStateError(
             'run_already_terminal',
             'the run stopped waiting on this dispatch; no new effect may be prepared',
             { runId: this.runId },
           );
-        }
-        return port.prepare(...args);
+        };
+        if (!this.#isLive(vertexId, dispatchId)) refuse();
+        const verdict = await port.prepare(...args);
+        // **Re-checked AFTER the await, and that is the whole point.** The journal write is I/O: the grace
+        // window can elapse and the run can reach its terminal while it is in flight. A verdict computed
+        // before the cutoff and returned after it would hand the caller a `proceed` for a run that has
+        // stopped — and `registry.ts` dispatches the external effect on that verdict with no further check.
+        // A check that only guards the entry to an async call guards nothing at its exit.
+        if (!this.#isLive(vertexId, dispatchId)) refuse();
+        return verdict;
       },
     };
-  }
-
-  /**
-   * ADR-0085 §5's fence predicate: may a write from `dispatchId` on `vertexId` still be admitted?
-   *
-   * True only while the run has not settled AND this dispatch is still its vertex's active one. Both halves
-   * are needed: `#settled` alone is one boolean on one path, and it cannot tell dispatch N of a vertex from
-   * dispatch N+1 — which is exactly what a budget-approved re-dispatch produces.
-   */
-  #isLive(vertexId: string, dispatchId: number): boolean {
-    return !this.#settled && this.#activeDispatchByVertex.get(vertexId) === dispatchId;
-  }
-
-  #openNodeDeadline(vertex: PlanVertex): DeadlineScope | undefined {
-    const timeoutMs = vertex.config.kind === 'agent' ? vertex.config.node.timeout_ms : undefined;
-    if (timeoutMs === undefined) {
-      return undefined;
-    }
-    // **Remaining, not full — the bound is absolute across RE-dispatches, not merely across attempts.**
-    // A first version armed the full `timeout_ms` on every `#dispatch`, which made it absolute within one
-    // dispatch (all attempts and backoffs share it) and renewable across dispatches. An approved budget gate
-    // returns the vertex to `pending`, `#claimReady` re-claims it, and the node got a second full helping —
-    // the same shape as `CR-22`'s run cap renewing on every resume, one level down.
-    // ONE clock read. Two would lose a tick between them — the in-memory host's clock advances per read —
-    // so a first dispatch would arm `timeoutMs - 1` and the test asserting the authored value would be
-    // pinning an off-by-one instead of the bound.
-    const nowMs = this.#elapsedMs();
-    const startedAtMs = this.#nodeDeadlineStartMs.get(vertex.id) ?? nowMs;
-    this.#nodeDeadlineStartMs.set(vertex.id, startedAtMs);
-    const remainingMs = Math.max(0, timeoutMs - (nowMs - startedAtMs));
-    return openDeadline(
-      remainingMs,
-      this.#host.newAbortController,
-      (ms, fire) => this.#host.setTimer(ms, fire, 'deadline'),
-      this.#abort.signal,
-    );
-  }
-
-  /** Returns true when it handed an in-flight dispatch to the grace window rather than settling it. */
-  async #dispatchBounded(
-    vertex: PlanVertex,
-    firstAttempt: number,
-    nodeDeadline: DeadlineScope | undefined,
-  ): Promise<boolean> {
-    if (nodeDeadline === undefined) {
-      await this.#dispatchLoop(vertex, firstAttempt);
-      return false;
-    }
-    const raced = await nodeDeadline.race(this.#dispatchLoop(vertex, firstAttempt));
-    if (raced.outcome !== 'deadline') {
-      return false;
-    }
-    // **A caller abort is NOT this node's bound elapsing, and must not be treated as one.** `race()` returns
-    // `{outcome:'deadline'}` for both causes; `classify()` separates them, and the separation is
-    // load-bearing rather than cosmetic.
-    //
-    // Settling here on a caller abort gave a node carrying `timeout_ms` ZERO grace on cancel, while a node
-    // without one got §3's full 10 s window — an asymmetry nobody decided, produced by the presence of an
-    // authored bound that says nothing about cancellation. It also negated §3's own justification for that
-    // window ("would abandon well-behaved work that was seconds from returning") for exactly the nodes an
-    // author had bounded. So a caller abort returns and lets the grace window govern, identically to an
-    // unbounded node: `#dispatchLoop` keeps running and may still settle cooperatively, which is what the
-    // window is for.
-    if (nodeDeadline.classify() === 'caller') {
-      return true; // still running, under the grace window — the slot stays claimed
-    }
-    // The node's OWN bound elapsed with it still in flight.
-    await this.#onOutcome(
-      vertex,
-      {
-        kind: 'failed',
-        error: {
-          code: 'run_timeout',
-          message: `node '${vertex.id}' exceeded its ${String(vertex.config.kind === 'agent' ? vertex.config.node.timeout_ms : 0)} ms timeout_ms`,
-          retryable: false,
-        },
-      },
-      this.#elapsedMs(),
-      // The attempt the node actually died on, not the one it started at — matching the grace path. A node
-      // that timed out on attempt 3 reported attempt 1.
-      this.#lastAttemptByVertex.get(vertex.id) ?? firstAttempt,
-    );
-    return false;
   }
 
   async #dispatchLoop(vertex: PlanVertex, firstAttempt: number): Promise<void> {
@@ -2937,6 +2961,7 @@ class RunExecution {
     // can settle the run between resume() arming it and the re-dispatch — no stale entry on the retained run)
     this.#disarmRunTimeout();
     this.#disarmGraceWindow(); // ADR-0085 §3 — a settled run leaves no backstop holding the loop open
+    for (const vertexId of [...this.#nodeDeadlineDisarm.keys()]) this.#disarmNodeDeadline(vertexId);
     const durationMs = Math.max(0, this.#elapsedMs());
     let draft: RunEventDraft;
     if (type === 'run:completed') {
@@ -3561,10 +3586,17 @@ class RunExecution {
     // writes BYTES TO THE USER'S FILESYSTEM — on the executor's return, before `#onOutcome`'s `#settled`
     // latch is ever reached. A dispatch the grace window abandoned must not still deliver a file for a run
     // that already reported its terminal.
+    //
+    // The check is threaded INTO the write rather than only guarding its entry: `#performSaveTo` resolves a
+    // template, de-inlines media and consults the store before it calls `mediaWrite`, and every one of those
+    // is an await the cutoff can land inside. Guarding only the entry left a TOCTOU whose losing side is a
+    // file on the user's disk.
     if (!this.#isLive(vertex.id, dispatchId)) {
       return outcome;
     }
-    const failure = await this.#performSaveTo(config.node.save_to, outcome.output);
+    const failure = await this.#performSaveTo(config.node.save_to, outcome.output, () =>
+      this.#isLive(vertex.id, dispatchId),
+    );
     return failure === undefined ? outcome : { kind: 'failed', error: failure };
   }
 
@@ -3574,7 +3606,11 @@ class RunExecution {
    * `MediaStore`, and write through the host media-write port. Returns `undefined` on success, else a typed,
    * secret-free {@link NodeFailure}. The bytes/handle/resolved-path never enter the message (I3).
    */
-  async #performSaveTo(saveTo: string, output: unknown): Promise<NodeFailure | undefined> {
+  async #performSaveTo(
+    saveTo: string,
+    output: unknown,
+    stillOurs: () => boolean,
+  ): Promise<NodeFailure | undefined> {
     const store = this.#host.mediaStore;
     const write = this.#host.mediaWrite;
     if (store === undefined || write === undefined) {
@@ -3615,6 +3651,13 @@ class RunExecution {
         return { code: 'internal', message: 'output node `save_to`: no handle', retryable: false }; // unreachable (length === 1)
       }
       const bytes = await store.get(handle.handle);
+      // **The last check, immediately before the irreversible step.** Everything above is I/O — a template
+      // resolve, a de-inline, a store read — and the cancellation cutoff can land inside any of it. A host
+      // that honours its contract but treats the abort signal as advisory would otherwise write a file for a
+      // run that had already reported its terminal.
+      if (!stillOurs()) {
+        return undefined; // the run stopped waiting on this dispatch; the write is not ours to make
+      }
       await write(relativePath, bytes, this.#abort.signal);
       return undefined;
     } catch (error) {

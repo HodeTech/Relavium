@@ -889,6 +889,92 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     assertCanonicalSchema(events);
   });
 
+  it("a node's `timeout_ms` SURVIVES a media-job park (ADR-0085 §2)", async () => {
+    // **The bound was tied to the dispatch call, and a park is not a node terminal.** `#dispatch` returned
+    // when the job parked and its `finally` disposed the deadline, so an authored `timeout_ms: 1000` node
+    // then ran under ADR-0045's thirty-minute JOB deadline instead — and its eventual failure classified
+    // `provider_unavailable`/retryable rather than `run_timeout`/fatal. The deadline is owned by the run
+    // now and disarmed only at the node's terminal.
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore: stubMediaStore(),
+    });
+    const armedNode: number[] = [];
+    let nodeDeadlineDisarmed = false;
+    const spied: typeof host = {
+      ...host,
+      setTimer: (ms, onFire, kind = 'work') => {
+        const disarm = host.setTimer(ms, onFire, kind);
+        if (kind !== 'deadline' || ms !== 1000) return disarm;
+        // The NODE's own bound. Watching its disarm is what makes this deterministic: `fireDeadlines()`
+        // fires whatever happens to be armed at that instant, so asserting on the terminal alone would be
+        // asserting on the order the park and the dispatch return happened to interleave.
+        armedNode.push(ms);
+        return () => {
+          nodeDeadlineDisarmed = true;
+          disarm();
+        };
+      },
+    };
+    // A generative node that parks on an async job, with an authored one-second bound.
+    const BOUNDED_MEDIA = parseWorkflow(
+      `schema_version: '1.0'
+workflow:
+  id: m2-bounded-generative
+  inputs:
+    - { name: topic, type: string }
+  agents:
+    - id: painter
+      model: gpt-image-1
+      provider: openai
+      system_prompt: You make images.
+  nodes:
+    - { id: in, type: input }
+    - { id: work, type: agent, agent_ref: painter, prompt_template: 'Draw: {{inputs.topic}}', output_modalities: [image], count: 1, timeout_ms: 1000 }
+    - { id: out, type: output }
+  edges:
+    - { from: in, to: work }
+    - { from: work, to: out }
+`,
+    );
+    const job = asyncMediaProvider([{ state: 'pending' }, { state: 'done', media: IMAGE_PART }]);
+    const engine = buildEngine(
+      spied,
+      () => job.provider,
+      () => 'generative',
+    );
+    const handle = engine.start({ workflow: BOUNDED_MEDIA, inputs: INPUTS });
+    const events: RunEvent[] = [];
+    let settled = false;
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        events.push(event);
+        if (event.type === 'run:completed' || event.type === 'run:failed') settled = true;
+      }
+    })();
+    for (let i = 0; i < 400 && !events.some((e) => e.type === 'media_job:submitted'); i += 1) {
+      await Promise.resolve();
+      if (spied.armedCount() > 0) spied.fireTimers();
+    }
+    expect(events.some((e) => e.type === 'media_job:submitted')).toBe(true); // parked
+    expect(armedNode).toEqual([1000]); // the node bound was armed…
+    // Let the dispatch that parked return, so its `finally` has definitely run.
+    for (let i = 0; i < 200; i += 1) await Promise.resolve();
+    // …and it is STILL armed. A deadline owned by the dispatch call would be gone here, and the node would
+    // then run under ADR-0045's thirty-minute JOB deadline instead of its authored one second.
+    expect(nodeDeadlineDisarmed).toBe(false);
+
+    spied.fireDeadlines();
+    for (let i = 0; i < 400 && !settled; i += 1) {
+      await Promise.resolve();
+      if (spied.armedCount() > 0) spied.fireTimers();
+    }
+    await consume;
+    // And it is the NODE's bound that closed the node — `run_timeout`, fatal — not the job's retryable one.
+    const failed = events.find((e) => e.type === 'node:failed');
+    expect(failed?.type === 'node:failed' && failed.error.code).toBe('run_timeout');
+  });
+
   it('CR-21c: a poll call that never settles is bounded, not waited out forever', async () => {
     // ADR-0045 §7 gives the job an absolute `deadlineAt` and the loop honours it — at the TOP of each tick.
     // The `await` on the poll itself was raced by nothing, so a provider whose poll never settles (and

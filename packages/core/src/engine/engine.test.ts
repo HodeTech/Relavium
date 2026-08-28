@@ -2726,11 +2726,11 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     }
 
     expect(dispatches).toBe(2); // the approval really did re-dispatch — the premise, not the claim
-    expect(armed).toHaveLength(2);
-    // The first arms the authored bound; the second arms what is LEFT of it. A renewing bound would arm
-    // 5000 twice, which is exactly what the mutation produces.
-    expect(armed[0]).toBe(5000);
-    expect(armed[1]).toBeLessThan(5000);
+    // **Armed ONCE, for the node, and not re-armed by the re-dispatch.** An earlier version expected two
+    // arms with the second smaller, because the deadline was owned by the dispatch call. It is owned by the
+    // RUN now and survives the park, which is the stronger property: a renewing bound would appear here as
+    // a second 5000.
+    expect(armed).toEqual([5000]);
   });
 
   it('a cancel treats a node WITH `timeout_ms` exactly like one without (ADR-0085 §3)', async () => {
