@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0`, `W1` and `W2` are closed** (20 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25); `W3` is next
+- **Status**: in progress — **`W0`, `W1` and `W2` are merged** (20 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25); `W3` is next
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -914,7 +914,7 @@ records that `CR-16`'s **lazy-connect half was split out** rather than closed: i
 [deferred item](../deferred-tasks.md) with ADR-0052 §3 named as its blocker, because deferring the spawn with
 today's immutable registry would delete the agent's MCP tool grant outright.
 
-## W2 — Liveness and deadlines · ✅ COMPLETE 2026-08-27
+## W2 — Liveness and deadlines · ✅ MERGED 2026-08-28 (PR #85; work complete 2026-08-27)
 
 All six items closed. Two things this wave established that outlived their own items, recorded here because
 the next wave inherits them:

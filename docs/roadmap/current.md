@@ -38,7 +38,7 @@ price ruling.
 [Execution order — Phase 2.5.5 + Phase 2.6](#execution-order--phase-255--phase-26-temporary) below** — a
 temporary section, deleted when both phases close. Its baseline step is discharged (PRs #76 and #77 merged)
 and Wave 0 is merged (PR #82), as is Wave 1 (PR #83). The interlude's `W2` (core reliability, six items) is
-on `development` for PR #85.
+merged too (PR #85, 2026-08-28).
 
 ## Execution order — Phase 2.5.5 + Phase 2.6 (temporary)
 
@@ -91,7 +91,7 @@ flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
     LEDGER["#W15-1 — realized-cost ledger ✅<br/>ADR-0076 + ADR-0077"]
-    P265["Phase 2.6.5 — Core reliability<br/>48 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1 merged · W2 closed on `development` (20 of 48)<br/>absorbs the hostile-MCP class"]
+    P265["Phase 2.6.5 — Core reliability<br/>48 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged (20 of 48)<br/>absorbs the hostile-MCP class"]
     W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
@@ -472,7 +472,7 @@ the exit rule and the execution order, and added two items (`CR-17` resume ident
 docs-only); `CR-64` came from the Batch 1 triage, `CR-21b` from ADR-0082 §10 and `CR-21c` from the `W2`
 document review on 2026-08-25, which is why the total has moved since the list was first written.
 
-> **Live status — 20 of 48 closed. `W0`, `W1` and `W2` are done; `W3` is next.**
+> **Live status — 20 of 48 closed. `W0`, `W1` and `W2` are merged; `W3` is next.**
 >
 > - **Batch 1, merged 2026-08-11 (PR #82)** — the prerequisite (`#W15-1`), the oracle (`CR-90`, `CR-91`) and
 >   all of `W0` (`CR-01`–`CR-03`). `CR-64` was added in the same batch and is open.
@@ -480,7 +480,13 @@ document review on 2026-08-25, which is why the total has moved since the list w
 >   ADR-0078…ADR-0084. A comprehensive review of the assembled PR found seven further defects, six of them in
 >   the W1 code itself; all seven were fixed and mutation-verified before merge.
 >
-> - **`W2` — liveness and deadlines — COMPLETE 2026-08-27**, behind [ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md). All six items closed; the wave's own closing register is in the phase document.
+> - **Batch 3, merged 2026-08-28 (PR #85)** — `W2`, liveness and deadlines, behind
+>   [ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md). All six
+>   items closed; the wave's own closing register is in the phase document. The assembled PR drew a
+>   **Request changes** verdict with fourteen findings, five of them blockers, plus a later round of eight;
+>   all were verified against the code before being acted on, and the register records which were fixed and
+>   which were declined with the reason. The five blockers had one root cause — an ownership decision taken
+>   at a point in time, guarding work that spans an await.
 >   Its document review moved the count twice, and the two moves **cancel**: `CR-21` turns out to have
 >   shipped **with `CR-14`** in PR #83 (ADR-0082 decides both, and the execution graph above already
 >   scheduled them together) and only its heading was stale, while `CR-21c` — an unbounded individual
