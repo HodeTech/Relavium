@@ -394,6 +394,16 @@ clamped: a file over a ceiling does not run at all.
 | Fan-out width (a node's out-degree) | 50 | plain edges **plus** `parallel_of` members; a `condition`'s branches are alternatives, not width, and do not count |
 | `max_parallel` | 64 | the authored value (omitted ⇒ **8**) |
 | Node dispatches in one run | 500 | at runtime, counted from `node:started` in the durable log |
+| One node's output | 256 KiB | serialised, at the durable boundary |
+| Total workflow state | 4 MiB | every node output, summed |
+| One durable event | 1 MiB | serialised — **a terminal event is exempt**, see below |
+
+A size breach fails the NODE with a typed `validation` error naming the field, the size and the limit — never
+a truncation, because half an output silently flowing into the next node's template is a wrong answer that
+looks like a right one. **A terminal event is measured and never refused**: a run that cannot publish its
+terminal is worse in every way than one that wrote an oversized final event, and exactly-one-terminal
+([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) outranks every size
+rule here.
 
 Agent-scoped ceilings — `retry.max`, `fallback_chain` length and per-entry `max_attempts` — live with the
 agent that declares them; see [agent-yaml-spec.md](agent-yaml-spec.md). A workflow is checked against them for
