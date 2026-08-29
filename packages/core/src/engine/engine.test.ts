@@ -4,6 +4,7 @@ import type { MediaReferencePort, MediaStore, MediaWritePort, RunEvent } from '@
 
 import { ADMISSION_CEILINGS, DEFAULT_MAX_PARALLEL } from '../limits.js';
 import { parseWorkflow, type WorkflowDefinition } from '../parser.js';
+import { reconstructCheckpointState } from './checkpoint.js';
 import { EngineStateError } from './errors.js';
 import {
   createInMemoryHost,
@@ -2070,6 +2071,53 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     // Never longer than authored, whatever the clocks think.
     expect(armedWork.every((ms) => ms <= 1000)).toBe(true);
     expect(armedWork).not.toContain(3_601_000);
+  });
+
+  it('a resume SEEDS the dispatch count rather than restarting it (ADR-0086 §4)', async () => {
+    // **The seed line is the entire claim of ADR-0086 §4** — "the cap survives a crash-resume" — and it had
+    // no coverage. Restarting the count would hand every resume a fresh 500, which is the exact defect that
+    // disqualified the in-memory retry counters from carrying this cap in the first place: a run crashed and
+    // resumed ten times would get ten times its authored budget.
+    const store = new InMemoryRunStore();
+    const engineA = engineWith(
+      {
+        g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?' } }),
+      },
+      createInMemoryHost({ store }),
+    );
+    const handleA = engineA.start({ workflow: workflow(GATED) });
+    let gateId = '';
+    let dispatchesBefore = 0;
+    for await (const event of handleA.events) {
+      if (event.type === 'node:started') dispatchesBefore += 1;
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+    expect(dispatchesBefore).toBeGreaterThan(0); // the premise: process A really dispatched something
+
+    // A SECOND process rehydrates from the durable log alone.
+    const state = reconstructCheckpointState(store.eventsFor(handleA.runId));
+    expect(state?.nodeDispatches).toBe(dispatchesBefore);
+
+    const engineB = engineWith(
+      { g: () => ({ kind: 'completed', output: 'ok' }) },
+      createInMemoryHost({ store }),
+    );
+    const handleB = await engineB.resumeFromCheckpoint({
+      runId: handleA.runId,
+      workflow: workflow(GATED),
+      gateId,
+      decision: { decision: 'approved', decidedBy: 'tester' },
+    });
+    const after = await drain(handleB);
+
+    // The count CONTINUES: process B's own dispatches are added to what A already spent, which is only
+    // observable because the durable log carries them across the process boundary.
+    const finalState = reconstructCheckpointState(store.eventsFor(handleA.runId));
+    const dispatchesAfter = after.filter((e) => e.type === 'node:started').length;
+    expect(finalState?.nodeDispatches).toBe(dispatchesBefore + dispatchesAfter);
   });
 
   it('the re-armed timer must not beat the decision this resume was handed', async () => {

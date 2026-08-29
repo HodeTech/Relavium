@@ -28,9 +28,10 @@
  * file rather than of any single field, so half of them have no schema expression at all (§7).
  */
 
-import type { Agent, Workflow } from '@relavium/shared';
+import type { Agent, Workflow, WorkflowNode } from '@relavium/shared';
 
 import type { GraphIssue } from './errors.js';
+import { nodeReferenceSites } from './interpolation/collect.js';
 
 /**
  * Every absolute ceiling, in one frozen object so a host can read the number it will be judged against
@@ -86,6 +87,24 @@ function ceilingIssue(field: string, actual: number, ceiling: number, what: stri
     message: `${what} is ${actual}, above the limit of ${ceiling}`,
     kind: 'ceiling_exceeded',
   };
+}
+
+/**
+ * The producers a node depends on through a `{{ run.outputs["<id>"] }}` template reference.
+ *
+ * Mirrors `wireOwnDataEdges` in the DAG builder exactly — same source (`nodeReferenceSites`), same `'node'`
+ * filter — because a ceiling counting a different set of edges than the builder wires would reject or admit
+ * on a number the graph does not have. Duplicates stay in: `addTarget` de-duplicates for fan-out width,
+ * while the edge TOTAL counts wiring attempts, which is what the builder does too.
+ */
+function dataEdgeTargets(node: WorkflowNode): string[] {
+  const producers: string[] = [];
+  for (const site of nodeReferenceSites(node)) {
+    for (const ref of site.references) {
+      if (ref.kind === 'node') producers.push(ref.identifier);
+    }
+  }
+  return producers;
 }
 
 /**
@@ -211,6 +230,9 @@ export function collectWorkflowCeilingIssues(def: Workflow, issues: GraphIssue[]
       // the ceiling bypassable: a 200-member split read as a width of zero.
       for (const member of node.parallel_of) addTarget(node.id, member);
     }
+    // A data reference makes its PRODUCER wider: `{{ run.outputs["a"] }}` in 200 nodes' templates gives `a`
+    // an out-degree of 200 with no `edges[]` entry anywhere.
+    for (const producer of dataEdgeTargets(node)) addTarget(producer, node.id);
   }
   for (const edge of edges) {
     // The authored `from` may carry a `nodeId:handle` suffix; the DEGREE belongs to the node, so strip it.
