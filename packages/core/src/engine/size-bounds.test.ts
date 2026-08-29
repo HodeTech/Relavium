@@ -60,10 +60,16 @@ describe('measureNodeOutput', () => {
     expect(over.bytes).toBeGreaterThan(SIZE_BOUNDS.nodeOutputBytes);
   });
 
-  it('does not refuse an unmeasurable value — that is the emit boundary\u2019s job', () => {
+  it('refuses an unmeasurable value, naming the real problem rather than a size', () => {
+    // **An earlier version asserted the opposite**, on a docstring claim that the emit boundary rejects such
+    // a value. Measured: a node returning a cyclic object ran to `run:completed`, with the value retained in
+    // `#states` and no bound and no error anywhere. A message about a size would be a fabrication — there is
+    // no size — so the message names what actually went wrong.
     const cyclic: { self?: unknown } = {};
     cyclic.self = cyclic;
-    expect(measureNodeOutput('n1', cyclic).breach).toBeUndefined();
+    const breach = measureNodeOutput('n1', cyclic).breach;
+    expect(breach?.what).toContain('not serialisable');
+    expect(describeBreach(breach!)).not.toContain('0 bytes');
   });
 });
 

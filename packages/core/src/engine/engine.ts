@@ -762,9 +762,18 @@ class RunExecution {
         await this.#settle('run:failed');
         return;
       }
-    } catch {
+    } catch (error) {
       // Could not even start the run (e.g. the store rejected) — close with the single terminal event
       // rather than leaving a started-but-never-finished run. Never swallowed: it becomes run:failed.
+      //
+      // **Carry the breach's own message when there is one.** A `RunLoopInvariantError` here already knows
+      // WHICH invariant broke and with what numbers — an oversized `run:started`, or a media-bearing draft
+      // with no store — and discarding it leaves the generic "the run failed", which is the undiagnosable
+      // report the lease branch thirty lines above was written to avoid. The code stays `internal` (the
+      // taxonomy is closed and this is an engine-side fault); only the message gets more useful.
+      if (error instanceof RunLoopInvariantError && this.#failure === undefined) {
+        this.#failure = { error: { code: 'internal', message: error.message, retryable: false } };
+      }
       await this.#settle('run:failed');
       return;
     }
@@ -3570,9 +3579,10 @@ class RunExecution {
     // an oversized event needs and is the same path the media de-inline failure takes.
 
     // Persist the boundary/terminal event, then deliver (ADR-0036 persist-before-deliver, so a crash
-    // can never re-run a completed node or lose its output). This method is **total for store faults** (the
-    // media de-inline below is the one deliberate exception — a NON-terminal de-inline failure re-throws to
-    // the #onOutcome/#begin backstops; see MEDIA DE-INLINE): a store fault
+    // can never re-run a completed node or lose its output). This method is **total for store faults**, with
+    // TWO deliberate exceptions, both of which re-throw to the #onOutcome/#begin backstops for a NON-terminal
+    // event and are exempt for a terminal: the media de-inline (see MEDIA DE-INLINE) and `CR-32`'s
+    // durable-event size bound (below, after the de-inline). A store fault
     // must neither break the exactly-one-terminal-event invariant nor escape as an unhandled rejection
     // out of the fire-and-forget `#loop`. So the `sequenceNumber` is assigned once at the single
     // authoritative point (`next`), and the event is **always delivered** — keeping the stream gap-free
@@ -4577,6 +4587,15 @@ export class WorkflowEngine {
    *
    * The run's OUTCOME is not lost — it is in the durable log, which is where a surface reads a finished
    * run's result from anyway (`relavium logs <runId>`). Only the in-memory shortcut goes.
+   *
+   * **It also drops `resumeFromCheckpoint`'s `run_already_active` guard for that run**, which the first
+   * version of this comment did not say. That is a convenience refusal rather than a safety one, and the
+   * safety it looks like it provides lives elsewhere: `resumeFromCheckpoint` independently refuses a
+   * checkpoint whose `runStatus` is terminal and returns a closed handle. The one shape that slips through
+   * is a run whose terminal WRITE failed — `durability: 'uncertain'`, terminal held in the outbox — where the
+   * checkpoint does not yet read terminal. Re-driving that run is what `reconcile()` exists to do, so the
+   * outcome is the intended recovery rather than a hazard; it is recorded here because a reader deciding
+   * whether eviction is safe should not have to re-derive it.
    *
    * Idempotent on a repeated settle: `#settleFenced` and `#settle` can both reach `onSettled` for the same
    * run, and a second entry would evict a live run one slot early.

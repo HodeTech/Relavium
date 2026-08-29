@@ -38,11 +38,14 @@ export const SIZE_BOUNDS = {
 /**
  * The serialised size of a value in UTF-8 bytes, or `undefined` when it cannot be serialised at all.
  *
- * `undefined` is not "zero" and callers must not treat it as such. A value that `JSON.stringify` refuses —
- * a cycle, a `BigInt` — is a value the durable log could not have carried either, so a size bound is the
- * wrong place to report it: the schema validation at the emit boundary already rejects it with a message
- * about the actual problem. Returning `undefined` lets this module decline to have an opinion rather than
- * inventing a size and possibly passing something that should fail for a different reason.
+ * `undefined` is not "zero" and callers must not treat it as such: it means the value could not be measured
+ * at all — a cycle, a `BigInt`, a function.
+ *
+ * **An earlier version of this comment justified letting such a value through by saying the emit boundary
+ * rejects it. It does not, and that was measured**: a node returning a cyclic object completed its run and
+ * the run finished `run:completed`, with the value retained in `#states` and no bound and no error anywhere.
+ * So {@link measureNodeOutput} now treats unmeasurable as its own breach, with a message about the actual
+ * problem rather than about a size — which is what a caller can act on.
  *
  * `undefined` as the VALUE itself serialises to nothing and is genuinely zero bytes — the common case for a
  * node that produces no output — so that is distinguished here rather than folded in with the failures.
@@ -100,9 +103,16 @@ export interface SizeBreach {
   readonly limit: number;
 }
 
-/** Render a breach as a user-facing, secret-free message: the subject, the size, the limit, in that order. */
+/**
+ * Render a breach as a user-facing, secret-free message: the subject, the size, the limit, in that order.
+ *
+ * A `bytes` of 0 means the value could not be measured at all, and the size clause is dropped — "is 0 bytes,
+ * above the limit of 262144" would be a nonsense sentence pointing an author at the wrong problem.
+ */
 export function describeBreach(breach: SizeBreach): string {
-  return `${breach.what} is ${breach.bytes} bytes, above the limit of ${breach.limit}`;
+  return breach.bytes === 0
+    ? breach.what
+    : `${breach.what} is ${breach.bytes} bytes, above the limit of ${breach.limit}`;
 }
 
 /**
@@ -117,7 +127,16 @@ export function measureNodeOutput(
 ): { readonly bytes: number; readonly breach?: SizeBreach } {
   const bytes = serialisedByteLength(output);
   if (bytes === undefined) {
-    return { bytes: 0 }; // not measurable — the emit boundary's schema validation owns this case
+    // Unmeasurable is its own failure, not a free pass. The message names the real problem — a size figure
+    // would be a fabrication, and there is none to report.
+    return {
+      bytes: 0,
+      breach: {
+        what: `node \`${nodeId}\` output is not serialisable (a cycle, a BigInt or a function)`,
+        bytes: 0,
+        limit: SIZE_BOUNDS.nodeOutputBytes,
+      },
+    };
   }
   return bytes > SIZE_BOUNDS.nodeOutputBytes
     ? {
