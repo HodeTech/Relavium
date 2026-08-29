@@ -78,7 +78,7 @@ function collectCeilingIssues(
   agentsById: ReadonlyMap<string, Agent>,
   issues: GraphIssue[],
 ): void {
-  collectWorkflowCeilingIssues(def, issues);
+  collectWorkflowCeilingIssues(def, agentsById, issues);
   const referenced = new Set(
     def.workflow.nodes.flatMap((node) => (node.type === 'agent' ? [node.agent_ref] : [])),
   );

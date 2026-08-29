@@ -32,6 +32,7 @@ import type { Agent, Workflow, WorkflowNode } from '@relavium/shared';
 
 import type { GraphIssue } from './errors.js';
 import { nodeReferenceSites } from './interpolation/collect.js';
+import { templateReferences } from './interpolation/references.js';
 
 /**
  * Every absolute ceiling, in one frozen object so a host can read the number it will be judged against
@@ -109,6 +110,21 @@ export function byId(a: string, b: string): number {
  * on a number the graph does not have. Duplicates stay in: `addTarget` de-duplicates for fan-out width,
  * while the edge TOTAL counts wiring attempts, which is what the builder does too.
  */
+function agentPromptTargets(
+  node: WorkflowNode,
+  agentsById: ReadonlyMap<string, Agent>,
+  nodeIds: ReadonlySet<string>,
+): string[] {
+  if (node.type !== 'agent') return [];
+  const agent = agentsById.get(node.agent_ref);
+  if (agent === undefined) return [];
+  const producers: string[] = [];
+  for (const ref of templateReferences(agent.system_prompt)) {
+    if (ref.kind === 'node' && nodeIds.has(ref.identifier)) producers.push(ref.identifier);
+  }
+  return producers;
+}
+
 function dataEdgeTargets(node: WorkflowNode, nodeIds: ReadonlySet<string>): string[] {
   const producers: string[] = [];
   for (const site of nodeReferenceSites(node)) {
@@ -212,9 +228,14 @@ export function collectAgentCeilingIssues(agent: Agent, issues: GraphIssue[], wh
  * A `condition`'s branch targets count too: they are alternatives for ROUTING but each is a real dependency
  * edge the builder wires, and the ceiling is about the graph's size rather than its concurrency.
  */
-function countMaterialisedEdges(spec: Workflow['workflow'], nodeIds: ReadonlySet<string>): number {
+function countMaterialisedEdges(
+  spec: Workflow['workflow'],
+  agentsById: ReadonlyMap<string, Agent>,
+  nodeIds: ReadonlySet<string>,
+): number {
   return spec.nodes.reduce((sum, node) => {
-    const data = dataEdgeTargets(node, nodeIds).length;
+    const data =
+      dataEdgeTargets(node, nodeIds).length + agentPromptTargets(node, agentsById, nodeIds).length;
     if (node.type === 'parallel') return sum + node.parallel_of.length + data;
     if (node.type === 'condition') {
       return sum + node.branches.length + (node.default === undefined ? 0 : 1) + data;
@@ -237,6 +258,7 @@ function countMaterialisedEdges(spec: Workflow['workflow'], nodeIds: ReadonlySet
 function buildOutTargets(
   spec: Workflow['workflow'],
   edges: readonly { from: string; to: string }[],
+  agentsById: ReadonlyMap<string, Agent>,
   nodeIds: ReadonlySet<string>,
 ): Map<string, Set<string>> {
   const outTargets = new Map<string, Set<string>>();
@@ -252,6 +274,12 @@ function buildOutTargets(
     // A data reference makes its PRODUCER wider: `{{ run.outputs["a"] }}` in 200 templates gives `a` an
     // out-degree of 200 with no `edges[]` entry anywhere.
     for (const producer of dataEdgeTargets(node, nodeIds)) addTarget(producer, node.id);
+    // **A resolved agent's `system_prompt` references count too.** `validateAgentNode` wires an edge for
+    // each one, so leaving them out let a single agent whose prompt names 250 producers give every one of
+    // them an out-degree of 250 — measured: 62,500 materialised edges admitted against a ceiling of 2000.
+    // The hole was not limited to a host registry; an inline `agents:` entry reaches the same path.
+    for (const producer of agentPromptTargets(node, agentsById, nodeIds))
+      addTarget(producer, node.id);
   }
   for (const edge of edges) {
     // The authored `from` may carry a `nodeId:handle` suffix; the DEGREE belongs to the node, so strip it.
@@ -261,7 +289,11 @@ function buildOutTargets(
   return outTargets;
 }
 
-export function collectWorkflowCeilingIssues(def: Workflow, issues: GraphIssue[]): void {
+export function collectWorkflowCeilingIssues(
+  def: Workflow,
+  agentsById: ReadonlyMap<string, Agent>,
+  issues: GraphIssue[],
+): void {
   const spec = def.workflow;
   const nodeIds = new Set(spec.nodes.map((node) => node.id));
   const edges = spec.edges ?? [];
@@ -272,7 +304,7 @@ export function collectWorkflowCeilingIssues(def: Workflow, issues: GraphIssue[]
     );
   }
 
-  const totalEdges = edges.length + countMaterialisedEdges(spec, nodeIds);
+  const totalEdges = edges.length + countMaterialisedEdges(spec, agentsById, nodeIds);
   if (totalEdges > ADMISSION_CEILINGS.edges) {
     issues.push(
       ceilingIssue('workflow.edges', totalEdges, ADMISSION_CEILINGS.edges, 'the edge count'),
@@ -281,7 +313,9 @@ export function collectWorkflowCeilingIssues(def: Workflow, issues: GraphIssue[]
 
   // Sorted so a file with several over-wide nodes reports them in a stable order — an unstable order makes a
   // snapshot test flaky for a reason that has nothing to do with the defect it guards.
-  const outTargets = [...buildOutTargets(spec, edges, nodeIds)].sort(([a], [b]) => byId(a, b));
+  const outTargets = [...buildOutTargets(spec, edges, agentsById, nodeIds)].sort(([a], [b]) =>
+    byId(a, b),
+  );
   for (const [nodeId, targets] of outTargets) {
     if (targets.size > ADMISSION_CEILINGS.fanOut) {
       issues.push(

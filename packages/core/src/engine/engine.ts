@@ -2021,6 +2021,28 @@ class RunExecution {
         await this.#onOutcome(vertex, outcome, startedAtMs, attempt, budgetApproved);
         return;
       }
+      // **The cap is checked BEFORE the promise and before the wait.** A run with no dispatch headroom cannot
+      // honour a retry, so it must not announce one or sleep for one: `node:retrying` is a promise to the
+      // consumer that another attempt is coming, and `backoff_ms` is schema-unbounded up to the 24 h clamp —
+      // so checking afterwards meant a run could wait a full day to be refused, having told every surface it
+      // was about to try again. Routed through `#onOutcome` so it takes the same settled-status guard and the
+      // same terminal path every other outcome takes.
+      if (this.#nodeDispatches >= ADMISSION_CEILINGS.nodeDispatchesPerRun) {
+        await this.#onOutcome(
+          vertex,
+          {
+            kind: 'failed',
+            error: {
+              code: 'turn_limit',
+              message: `the run made ${this.#nodeDispatches} node dispatches, its limit of ${ADMISSION_CEILINGS.nodeDispatchesPerRun}`,
+              retryable: false,
+            },
+          },
+          startedAtMs,
+          attempt,
+        );
+        return;
+      }
       const delayMs = this.#backoffMs(retry, attempt);
       await this.#emitDurable({
         type: 'node:retrying',
@@ -2053,21 +2075,8 @@ class RunExecution {
         return;
       }
       attempt += 1;
-      // The retry loop's own dispatch, counted by the same rule (ADR-0086 §4): one `node:started`, one
-      // dispatch. A retry that ran uncounted would let the multiplication the cap exists to bound — nodes
-      // times retries — escape through the very path that produces it.
-      if (this.#nodeDispatches >= ADMISSION_CEILINGS.nodeDispatchesPerRun) {
-        await this.#settleFailed(
-          vertex,
-          {
-            code: 'turn_limit',
-            message: `the run made ${this.#nodeDispatches} node dispatches, its limit of ${ADMISSION_CEILINGS.nodeDispatchesPerRun}`,
-            retryable: false,
-          },
-          attempt - 1,
-        );
-        return;
-      }
+      // The retry loop's own dispatch, counted by the same rule as a fresh one (ADR-0086 §4): one
+      // `node:started`, one dispatch. The headroom was checked above, before anything was promised.
       this.#nodeDispatches += 1;
       await this.#emitDurable({
         type: 'node:started',

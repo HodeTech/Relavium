@@ -261,6 +261,46 @@ workflow:
   });
 });
 
+describe("ADR-0086 — a resolved agent's system_prompt references count too", () => {
+  it('refuses a fan-out an agent prompt creates, which admission never saw', () => {
+    // **A bypass wider than a review claimed.** `validateAgentNode` wires an edge for every
+    // `{{ run.outputs["<id>"] }}` in a RESOLVED agent's `system_prompt`, and the ceiling pass counted only a
+    // node's own templates. Measured against the previous commit: 250 producers × 250 agent nodes sharing
+    // one such agent built 62,500 edges and a per-producer fan-out of 250, admitted against ceilings of
+    // 2000 and 50. It works with an INLINE `agents:` entry too — no host registry needed.
+    const producers = Array.from({ length: ADMISSION_CEILINGS.fanOut + 1 }, (_, i) => `p${i}`);
+    const refs = producers.map((p) => `{{ run.outputs["${p}"] }}`).join(' ');
+    const yaml = `schema_version: '1.0'
+workflow:
+  id: prompt-fanout
+  agents:
+    - { id: fanner, model: m, provider: anthropic, system_prompt: 'go ${refs}' }
+  nodes:
+    - { id: start, type: input }
+${producers.map((p) => `    - { id: ${p}, type: transform, transform: 'g' }`).join('\n')}
+    - { id: sink, type: agent, agent_ref: fanner, prompt_template: 'go' }
+  edges:
+    - { from: start, to: ${producers[0]} }
+`;
+    const fields = issuesOf(yaml)
+      .filter((i) => i.kind === 'ceiling_exceeded')
+      .map((i) => i.field);
+    // Every producer the prompt names now carries the edge it really has.
+    expect(fields.some((f) => f.includes('out-degree'))).toBe(false);
+    // …and the EDGE total sees them, which is the half a per-node view cannot.
+    const yamlWide = yaml.replace(
+      `{ id: sink, type: agent, agent_ref: fanner, prompt_template: 'go' }`,
+      Array.from(
+        { length: 40 },
+        (_, i) => `{ id: s${i}, type: agent, agent_ref: fanner, prompt_template: 'go' }`,
+      ).join('\n    - '),
+    );
+    expect(
+      issuesOf(yamlWide).some((i) => i.kind === 'ceiling_exceeded' && i.field === 'workflow.edges'),
+    ).toBe(true);
+  });
+});
+
 describe('ADR-0086 §3 — an omitted `max_parallel`', () => {
   it('is a finite constant, not Infinity', () => {
     // The value itself is the assertion: `Infinity` is the one number at which a concurrency cap governs

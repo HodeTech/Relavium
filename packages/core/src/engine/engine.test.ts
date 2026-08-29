@@ -4536,6 +4536,75 @@ ${edges}
     expect(flakyStarts.length).toBeLessThan(ADMISSION_CEILINGS.retryMax);
   }, 60_000);
 
+  it('at the cap, a retry is refused BEFORE the promise and the sleep (ADR-0086 §4)', async () => {
+    // **The order is the whole finding.** The check used to sit after `node:retrying` and after the backoff,
+    // so a run with no headroom announced a retry it could not honour and then slept for it — and
+    // `backoff_ms` is schema-unbounded up to the 24 h clamp, so that wait could be a day. Two assertions,
+    // because either alone passes against the old code: no `node:retrying` for the refused attempt, and no
+    // backoff timer armed.
+    const CHAIN = ADMISSION_CEILINGS.nodeDispatchesPerRun - 2;
+    const ids = Array.from({ length: CHAIN }, (_, i) => `n${i}`);
+    const nodes = ids
+      .map((id, i) =>
+        i === 0
+          ? `    - { id: ${id}, type: input }`
+          : `    - { id: ${id}, type: transform, transform: 'g' }`,
+      )
+      .join('\n');
+    const edges = ids
+      .slice(1)
+      .map((id, i) => `    - { from: ${ids[i]}, to: ${id} }`)
+      .join('\n');
+    const host = createInMemoryHost();
+    const handle = engineWith(
+      {
+        flaky: () => ({
+          kind: 'failed',
+          error: { code: 'provider_unavailable', message: 'flaky', retryable: true },
+        }),
+      },
+      host,
+    ).start({
+      workflow: workflow(`  id: cap-before-sleep
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+${nodes}
+    - { id: flaky, type: agent, agent_ref: ag, prompt_template: 'go', retry: { max: ${ADMISSION_CEILINGS.retryMax}, backoff: linear, backoff_ms: 86400000 } }
+  edges:
+${edges}
+    - { from: ${ids[ids.length - 1]}, to: flaky }`),
+    });
+
+    const events: RunEvent[] = [];
+    let settled = false;
+    let armedDuringRetry = 0;
+    const pump = (async (): Promise<void> => {
+      while (!settled) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        armedDuringRetry = Math.max(armedDuringRetry, host.armedCount());
+        if (host.armedCount() > 0) host.fireTimers();
+        if (host.deadlineCount() > 0) host.fireDeadlines();
+      }
+    })();
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:failed' || event.type === 'run:completed') settled = true;
+    }
+    await pump;
+
+    const terminal = events.at(-1);
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('turn_limit');
+    // The refused attempt promised nothing: `flaky` started twice (cap reached on the second) and never
+    // announced a third.
+    const retrying = events.filter((e) => e.type === 'node:retrying' && e.nodeId === 'flaky');
+    const starts = events.filter((e) => e.type === 'node:started' && e.nodeId === 'flaky');
+    expect(retrying.length).toBeLessThan(starts.length);
+  }, 60_000);
+
   it('a WIDE ready batch cannot straddle the dispatch cap (ADR-0086 §4)', async () => {
     // **The overshoot both earlier cap tests were blind to.** Each of them uses a linear chain, so
     // `ready.length` is always 1 and the boundary is always crossed one dispatch at a time. `#claimReady`
