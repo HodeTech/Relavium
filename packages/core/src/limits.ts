@@ -95,6 +95,12 @@ function ceilingIssue(field: string, actual: number, ceiling: number, what: stri
   };
 }
 
+/** Lexicographic id order, named so neither call site carries a nested ternary and both mean the same thing. */
+export function byId(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
 /**
  * The producers a node depends on through a `{{ run.outputs["<id>"] }}` template reference.
  *
@@ -103,11 +109,15 @@ function ceilingIssue(field: string, actual: number, ceiling: number, what: stri
  * on a number the graph does not have. Duplicates stay in: `addTarget` de-duplicates for fan-out width,
  * while the edge TOTAL counts wiring attempts, which is what the builder does too.
  */
-function dataEdgeTargets(node: WorkflowNode): string[] {
+function dataEdgeTargets(node: WorkflowNode, nodeIds: ReadonlySet<string>): string[] {
   const producers: string[] = [];
   for (const site of nodeReferenceSites(node)) {
     for (const ref of site.references) {
-      if (ref.kind === 'node') producers.push(ref.identifier);
+      // **Only producers that EXIST.** `addEdge` is a no-op when an endpoint is not a node, so the builder
+      // wires nothing for `{{ run.outputs["typo"] }}` — a dangling reference is the runtime resolver's
+      // `unresolved_reference`, not a graph edge. Counting it would give a node that does not exist a
+      // fan-out, and would inflate the edge total with edges the graph never has.
+      if (ref.kind === 'node' && nodeIds.has(ref.identifier)) producers.push(ref.identifier);
     }
   }
   return producers;
@@ -191,39 +201,44 @@ export function collectAgentCeilingIssues(agent: Agent, issues: GraphIssue[], wh
  * runs more than one target. `parallel_of` members all run, concurrently, which is precisely the shape a
  * fan-out ceiling is for.
  */
-export function collectWorkflowCeilingIssues(def: Workflow, issues: GraphIssue[]): void {
-  const spec = def.workflow;
-
-  if (spec.nodes.length > ADMISSION_CEILINGS.nodes) {
-    issues.push(
-      ceilingIssue('workflow.nodes', spec.nodes.length, ADMISSION_CEILINGS.nodes, 'the node count'),
-    );
-  }
-
-  const edges = spec.edges ?? [];
-  // Same reasoning as fan-out below: `parallel_of` members become real edges in the built graph, so an
-  // edge ceiling that counted only `edges[]` would let 500 parallel nodes × 500 members past a limit of
-  // 2000. They are authored edges written in a different place, not compiled ones.
-  // Every routing form the builder materialises, not only `edges[]`: a `parallel`'s members AND a
-  // `condition`'s branch targets both become real graph edges (`wireParallelNode` / the condition wiring), so
-  // an edge ceiling that counted `edges[]` alone was bypassable by authoring the same graph a different way.
-  const materialisedEdges = spec.nodes.reduce((sum, node) => {
-    if (node.type === 'parallel') return sum + node.parallel_of.length;
-    if (node.type === 'condition')
-      return sum + node.branches.length + (node.default === undefined ? 0 : 1);
-    return sum;
+/**
+ * Every edge the DAG builder will materialise, counted on the authored file.
+ *
+ * Three routing forms, and only the first is written where a reader would look: `edges[]`, a `parallel`
+ * node's `parallel_of` members, and a `{{ run.outputs["<id>"] }}` reference in a template. The last two are
+ * wired inside the builder with no `edges[]` entry, so an edge ceiling that read `edges[]` alone was
+ * bypassable by authoring the same graph a different way — a 500×500 fan-out past a limit of 2000.
+ *
+ * A `condition`'s branch targets count too: they are alternatives for ROUTING but each is a real dependency
+ * edge the builder wires, and the ceiling is about the graph's size rather than its concurrency.
+ */
+function countMaterialisedEdges(spec: Workflow['workflow'], nodeIds: ReadonlySet<string>): number {
+  return spec.nodes.reduce((sum, node) => {
+    const data = dataEdgeTargets(node, nodeIds).length;
+    if (node.type === 'parallel') return sum + node.parallel_of.length + data;
+    if (node.type === 'condition') {
+      return sum + node.branches.length + (node.default === undefined ? 0 : 1) + data;
+    }
+    return sum + data;
   }, 0);
-  const totalEdges = edges.length + materialisedEdges;
-  if (totalEdges > ADMISSION_CEILINGS.edges) {
-    issues.push(
-      ceilingIssue('workflow.edges', totalEdges, ADMISSION_CEILINGS.edges, 'the edge count'),
-    );
-  }
+}
 
-  // **Fan-out width, counted over the DISTINCT targets a node routes to.** A set, not a running sum, because
-  // the spec documents the redundant form — a `parallel_of` member (or a `condition` branch target) may ALSO
-  // carry an explicit edge to the same node — and a sum would count that width twice, rejecting a file whose
-  // graph is identical to an accepted one purely on which of two documented spellings its author chose.
+/**
+ * Each node's fan-out width, as the set of DISTINCT targets it routes to.
+ *
+ * A set rather than a running sum, because the spec documents the redundant form — a `parallel_of` member may
+ * ALSO carry an explicit edge to the same node — and a sum would count that width twice, rejecting a file
+ * whose graph is identical to an accepted one purely on which of two documented spellings its author chose.
+ *
+ * A `condition`'s branches are deliberately EXCLUDED here while counting toward the edge total above: exactly
+ * one branch is taken, so counting them as concurrent width would reject a wide `switch` that never runs more
+ * than one target. `parallel_of` members all run at once, which is the shape a fan-out ceiling is for.
+ */
+function buildOutTargets(
+  spec: Workflow['workflow'],
+  edges: readonly { from: string; to: string }[],
+  nodeIds: ReadonlySet<string>,
+): Map<string, Set<string>> {
   const outTargets = new Map<string, Set<string>>();
   const addTarget = (producer: string, target: string): void => {
     const set = outTargets.get(producer) ?? new Set<string>();
@@ -232,32 +247,47 @@ export function collectWorkflowCeilingIssues(def: Workflow, issues: GraphIssue[]
   };
   for (const node of spec.nodes) {
     if (node.type === 'parallel') {
-      // Members are fan-out edges the builder materialises with no `edges[]` entry, so leaving them out made
-      // the ceiling bypassable: a 200-member split read as a width of zero.
       for (const member of node.parallel_of) addTarget(node.id, member);
     }
-    // A data reference makes its PRODUCER wider: `{{ run.outputs["a"] }}` in 200 nodes' templates gives `a`
-    // an out-degree of 200 with no `edges[]` entry anywhere.
-    for (const producer of dataEdgeTargets(node)) addTarget(producer, node.id);
+    // A data reference makes its PRODUCER wider: `{{ run.outputs["a"] }}` in 200 templates gives `a` an
+    // out-degree of 200 with no `edges[]` entry anywhere.
+    for (const producer of dataEdgeTargets(node, nodeIds)) addTarget(producer, node.id);
   }
   for (const edge of edges) {
     // The authored `from` may carry a `nodeId:handle` suffix; the DEGREE belongs to the node, so strip it.
-    // Counting `a:true` and `a:false` as two different sources would under-report a condition's width — and
-    // over-report nothing, since a plain edge has no colon.
     const producer = edge.from.split(':')[0] ?? edge.from;
     addTarget(producer, edge.to);
   }
-  // Sorted so a file with several over-wide nodes reports them in a stable order — an unstable order makes
-  // a snapshot test flaky for a reason that has nothing to do with the defect it is guarding.
-  for (const [nodeId, targets] of [...outTargets].sort(([a], [b]) =>
-    a < b ? -1 : a > b ? 1 : 0,
-  )) {
-    const degree = targets.size;
-    if (degree > ADMISSION_CEILINGS.fanOut) {
+  return outTargets;
+}
+
+export function collectWorkflowCeilingIssues(def: Workflow, issues: GraphIssue[]): void {
+  const spec = def.workflow;
+  const nodeIds = new Set(spec.nodes.map((node) => node.id));
+  const edges = spec.edges ?? [];
+
+  if (spec.nodes.length > ADMISSION_CEILINGS.nodes) {
+    issues.push(
+      ceilingIssue('workflow.nodes', spec.nodes.length, ADMISSION_CEILINGS.nodes, 'the node count'),
+    );
+  }
+
+  const totalEdges = edges.length + countMaterialisedEdges(spec, nodeIds);
+  if (totalEdges > ADMISSION_CEILINGS.edges) {
+    issues.push(
+      ceilingIssue('workflow.edges', totalEdges, ADMISSION_CEILINGS.edges, 'the edge count'),
+    );
+  }
+
+  // Sorted so a file with several over-wide nodes reports them in a stable order — an unstable order makes a
+  // snapshot test flaky for a reason that has nothing to do with the defect it guards.
+  const outTargets = [...buildOutTargets(spec, edges, nodeIds)].sort(([a], [b]) => byId(a, b));
+  for (const [nodeId, targets] of outTargets) {
+    if (targets.size > ADMISSION_CEILINGS.fanOut) {
       issues.push(
         ceilingIssue(
           `node \`${nodeId}\` out-degree`,
-          degree,
+          targets.size,
           ADMISSION_CEILINGS.fanOut,
           "the node's fan-out width",
         ),
@@ -268,8 +298,7 @@ export function collectWorkflowCeilingIssues(def: Workflow, issues: GraphIssue[]
   // **The NODE's retry budget, which is the one the engine actually spends.** `#retryConfig` reads
   // `node.retry ?? agent.retry` for an agent node and `node.retry` alone for `condition`/`transform`/`merge`
   // — so checking only the resolved agent left the ceiling bypassable by one line of YAML on the node, and
-  // left the three non-agent types with no enforcement path at all. Measured before this: a `transform` with
-  // `retry: { max: 100000 }` was ADMITTED, and so was an agent node overriding an at-ceiling agent.
+  // left the three non-agent types with no enforcement path at all.
   for (const node of spec.nodes) {
     const retry = 'retry' in node ? node.retry : undefined;
     if (retry !== undefined && retry.max > ADMISSION_CEILINGS.retryMax) {

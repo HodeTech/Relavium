@@ -161,13 +161,23 @@ export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
   }
 
   #wakeDrainWaiters(): void {
-    if (this.#closed || !this.#everPulled || this.#buffer.length < this.#capacity) {
-      const waiters = this.#drainWaiters;
+    // A closed or never-pulled stream owes nobody a wait: release everyone.
+    if (this.#closed || !this.#everPulled) {
+      const all = this.#drainWaiters;
       this.#drainWaiters = [];
-      for (const wake of waiters) {
-        wake();
-      }
+      for (const wake of all) wake();
+      return;
     }
+    // **Wake only as many producers as there are free slots.** Releasing every parked waiter when ONE slot
+    // frees lets N concurrent producers each push, so the buffer peaks at `capacity + N - 1` — with a default
+    // `max_parallel` of 8 that is 7 over, and with an authored 64 it is 63. The ceiling is supposed to be a
+    // ceiling. Each woken producer's next act is exactly one `push`, so one slot is worth exactly one wake.
+    const free = this.#capacity - this.#buffer.length;
+    if (free <= 0) {
+      return;
+    }
+    const woken = this.#drainWaiters.splice(0, free);
+    for (const wake of woken) wake();
   }
 
   next(): Promise<IteratorResult<E>> {

@@ -43,9 +43,11 @@ describe('serialisedByteLength', () => {
 
 describe('measureNodeOutput', () => {
   it('admits an output at the bound and refuses the one past it, naming the node', () => {
-    const under = measureNodeOutput('n1', ofSize(SIZE_BOUNDS.nodeOutputBytes - 10));
-    expect(under.breach).toBeUndefined();
-    expect(under.bytes).toBeGreaterThan(0);
+    // EXACTLY at the limit, not near it — the boundary is where an off-by-one lives, and "10 under" would
+    // pass against a `>=` comparison that rejects the legal maximum. The JSON quotes add 2 bytes.
+    const atLimit = measureNodeOutput('n1', ofSize(SIZE_BOUNDS.nodeOutputBytes - 2));
+    expect(atLimit.bytes).toBe(SIZE_BOUNDS.nodeOutputBytes);
+    expect(atLimit.breach).toBeUndefined();
 
     const over = measureNodeOutput('n1', ofSize(SIZE_BOUNDS.nodeOutputBytes + 10));
     expect(over.breach?.what).toContain('n1');
@@ -70,6 +72,23 @@ describe('measureNodeOutput', () => {
     const breach = measureNodeOutput('n1', cyclic).breach;
     expect(breach?.what).toContain('not serialisable');
     expect(describeBreach(breach!)).not.toContain('0 bytes');
+  });
+
+  it('measures a media part as the HANDLE it becomes — and only a media part', () => {
+    // Two halves, and the second is the one a first version got wrong. A media part's base64 is replaced by
+    // a handle-length stand-in, because `deInlineMedia` replaces it before anything is persisted. An
+    // ordinary output that merely LOOKS like `{ kind: 'base64', data }` — a tool returning an encoded blob —
+    // is not de-inlined by anything, so measuring it as a handle would be a hole in the bound rather than an
+    // accuracy in it.
+    const media = {
+      type: 'media',
+      mimeType: 'image/png',
+      source: { kind: 'base64', data: 'A'.repeat(SIZE_BOUNDS.nodeOutputBytes * 2) },
+    };
+    expect(measureNodeOutput('n1', media).breach).toBeUndefined();
+
+    const lookalike = { kind: 'base64', data: 'A'.repeat(SIZE_BOUNDS.nodeOutputBytes * 2) };
+    expect(measureNodeOutput('n1', lookalike).breach?.limit).toBe(SIZE_BOUNDS.nodeOutputBytes);
   });
 });
 
@@ -100,7 +119,11 @@ describe('measureDraft', () => {
     expect(measureDraft('run:completed', huge, true)).toBeUndefined();
   });
 
-  it('admits a non-terminal event at the bound', () => {
-    expect(measureDraft('node:started', { a: ofSize(100) }, false)).toBeUndefined();
+  it('admits a non-terminal event EXACTLY at the bound', () => {
+    // Sized to land on the limit rather than merely under it, for the same reason as the node case above.
+    const envelope = serialisedByteLength({ a: '' }) ?? 0;
+    const draft = { a: ofSize(SIZE_BOUNDS.durableEventBytes - envelope) };
+    expect(serialisedByteLength(draft)).toBe(SIZE_BOUNDS.durableEventBytes);
+    expect(measureDraft('node:started', draft, false)).toBeUndefined();
   });
 });

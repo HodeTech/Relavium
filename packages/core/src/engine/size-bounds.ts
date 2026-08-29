@@ -82,15 +82,31 @@ export function serialisedByteLength(value: unknown): number | undefined {
  */
 const HANDLE_STAND_IN = `media://sha256-${'0'.repeat(64)}`;
 
+/**
+ * Whether a value is the media part `deInlineMedia` rewrites — `{ type: 'media', source: { kind: 'base64' } }`.
+ *
+ * **Narrow on the whole shape, not on `kind === 'base64'` alone.** A first version matched any object with a
+ * `kind: 'base64'` and a `data` key, which is a plausible shape for an ordinary node output — a tool that
+ * returns an encoded blob, say — and nothing de-inlines those. They would have been measured as a hundred-byte
+ * handle and escaped the bound entirely, which is a hole in the bound rather than an inaccuracy in it.
+ *
+ * A type predicate rather than a cast: the project forbids an unsafe `as`, and the first version used one.
+ */
+function isInlineMediaPart(value: unknown): value is { source: { kind: 'base64' } } {
+  if (typeof value !== 'object' || value === null) return false;
+  const part: Record<string, unknown> = { ...value };
+  if (part['type'] !== 'media') return false;
+  const source = part['source'];
+  if (typeof source !== 'object' || source === null) return false;
+  const src: Record<string, unknown> = { ...source };
+  return src['kind'] === 'base64' && typeof src['data'] === 'string';
+}
+
 function inlineMediaReplacer(_key: string, value: unknown): unknown {
-  if (
-    typeof value === 'object' &&
-    value !== null &&
-    'kind' in value &&
-    (value as { kind?: unknown }).kind === 'base64' &&
-    'data' in value
-  ) {
-    return { kind: 'base64', data: HANDLE_STAND_IN };
+  if (isInlineMediaPart(value)) {
+    // Only the SOURCE is replaced; the part's other fields (`mimeType`, any metadata) survive to the durable
+    // form and must keep counting, because they do reach the store.
+    return { ...value, source: { kind: 'base64', data: HANDLE_STAND_IN } };
   }
   return value;
 }

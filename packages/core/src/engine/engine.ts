@@ -1684,6 +1684,10 @@ class RunExecution {
         },
       };
       this.#abort.abort();
+      // **Re-enter the loop, or the terminal waits on the grace deadline.** With nothing running, returning
+      // here leaves `#step` with no reason to be called again — the abort alone does not schedule one — so
+      // the run would sit until the grace window elapsed before `#handleIdle` could publish `run:failed`.
+      this.#schedule();
       return; // decided; claiming anything now would dispatch work the run has already refused
     }
     // **Clamped by the remaining headroom, not only by `max_parallel`.** The cap is a per-DISPATCH bound and

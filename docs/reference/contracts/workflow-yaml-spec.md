@@ -390,8 +390,8 @@ clamped: a file over a ceiling does not run at all.
 | What | Ceiling | Counted on |
 |---|---|---|
 | Nodes | 500 | the authored file |
-| Edges | 2000 | `edges[]` **plus** every `parallel_of` member — those become real fan-out edges |
-| Fan-out width (a node's out-degree) | 50 | plain edges **plus** `parallel_of` members; a `condition`'s branches are alternatives, not width, and do not count |
+| Edges | 2000 | `edges[]` **plus** every `parallel_of` member, every `condition` branch target and its `default`, and every `{{ run.outputs["…"] }}` reference — the builder materialises all four as real edges |
+| Fan-out width (a node's out-degree) | 50 | plain edges, `parallel_of` members and data references. A `condition`'s branches count toward the EDGE total above but **not** toward width: exactly one is taken, so they are alternatives rather than concurrent work |
 | `max_parallel` | 64 | the authored value (omitted ⇒ **8**) |
 | Node dispatches in one run | 500 | at runtime, counted from `node:started` in the durable log |
 | One node's output | 256 KiB | serialised, at the durable boundary |

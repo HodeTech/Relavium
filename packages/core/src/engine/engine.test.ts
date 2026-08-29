@@ -2075,18 +2075,51 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
   });
 
   it('a resume SEEDS the dispatch count rather than restarting it (ADR-0086 §4)', async () => {
-    // **The seed line is the entire claim of ADR-0086 §4** — "the cap survives a crash-resume" — and it had
-    // no coverage. Restarting the count would hand every resume a fresh 500, which is the exact defect that
-    // disqualified the in-memory retry counters from carrying this cap in the first place: a run crashed and
-    // resumed ten times would get ten times its authored budget.
+    // **The seed line is the entire claim of ADR-0086 §4** — "the cap survives a crash-resume". A first
+    // version asserted only that the durable fold continued, which is a property of
+    // `reconstructCheckpointState` rather than of the engine, and stayed green with the seed removed.
+    //
+    // A seed has to CHANGE an outcome to be testable. So process A spends almost the whole cap and parks;
+    // process B's own handful of nodes then crosses it only because the restored count is applied. Without
+    // the seed B starts from zero and finishes.
+    // Node COUNT must stay under its own ceiling (500) while DISPATCHES cross theirs, so the chain is short
+    // of both and the gate + tail make up the difference: 492 + gate + 5 + start + done = 500 nodes exactly.
+    const BEFORE = ADMISSION_CEILINGS.nodes - 8;
+    const beforeIds = Array.from({ length: BEFORE }, (_, i) => `a${i}`);
+    // The tail carries a RETRY, because 500 nodes can only ever produce 500 dispatches: the excess that
+    // crosses the cap has to come from re-dispatches, exactly as it does in a real runaway.
+    const afterIds = ['b0', 'b1', 'b2', 'b3', 'b4'];
+    const RETRIES = ADMISSION_CEILINGS.retryMax; // 10 — enough that the cap trips before the budget does
+    const line = ['start', ...beforeIds, 'g', ...afterIds];
+    const WF = `  id: capped-resume
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: start, type: input }
+${beforeIds.map((id) => `    - { id: ${id}, type: transform, transform: 'g' }`).join('\n')}
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: b0, type: agent, agent_ref: ag, prompt_template: 'go', retry: { max: ${RETRIES}, backoff: linear, backoff_ms: 1 } }
+${afterIds
+  .slice(1)
+  .map((id) => `    - { id: ${id}, type: transform, transform: 'g' }`)
+  .join('\n')}
+    - { id: done, type: output }
+  edges:
+${line
+  .slice(1)
+  .map((id, i) => `    - { from: ${line[i]}, to: ${id} }`)
+  .join('\n')}
+    - { from: ${afterIds[afterIds.length - 1]}, to: done }`;
+
     const store = new InMemoryRunStore();
     const engineA = engineWith(
-      {
-        g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?' } }),
-      },
+      { g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?' } }) },
       createInMemoryHost({ store }),
     );
-    const handleA = engineA.start({ workflow: workflow(GATED) });
+    const handleA = engineA.start({ workflow: workflow(WF) });
     let gateId = '';
     let dispatchesBefore = 0;
     for await (const event of handleA.events) {
@@ -2096,30 +2129,50 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
         break;
       }
     }
-    expect(dispatchesBefore).toBeGreaterThan(0); // the premise: process A really dispatched something
+    // The premise: A really did spend almost the whole cap, and the durable log carries the count.
+    expect(dispatchesBefore).toBeGreaterThan(ADMISSION_CEILINGS.nodeDispatchesPerRun - 10);
+    expect(reconstructCheckpointState(store.eventsFor(handleA.runId))?.nodeDispatches).toBe(
+      dispatchesBefore,
+    );
 
-    // A SECOND process rehydrates from the durable log alone.
-    const state = reconstructCheckpointState(store.eventsFor(handleA.runId));
-    expect(state?.nodeDispatches).toBe(dispatchesBefore);
-
+    // `b0` always fails retryably, so it spends its whole budget and every attempt is a dispatch.
+    const hostB = createInMemoryHost({ store });
     const engineB = engineWith(
-      { g: () => ({ kind: 'completed', output: 'ok' }) },
-      createInMemoryHost({ store }),
+      {
+        b0: () => ({
+          kind: 'failed',
+          error: { code: 'provider_unavailable', message: 'flaky', retryable: true },
+        }),
+      },
+      hostB,
     );
     const handleB = await engineB.resumeFromCheckpoint({
       runId: handleA.runId,
-      workflow: workflow(GATED),
+      workflow: workflow(WF),
       gateId,
       decision: { decision: 'approved', decidedBy: 'tester' },
     });
-    const after = await drain(handleB);
+    // The retry backoff arms a `work` timer, so a plain `drain` would wait on wall-clock that never passes.
+    const events: RunEvent[] = [];
+    let settled = false;
+    const pump = (async (): Promise<void> => {
+      while (!settled) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        if (hostB.armedCount() > 0) hostB.fireTimers();
+        if (hostB.deadlineCount() > 0) hostB.fireDeadlines();
+      }
+    })();
+    for await (const event of handleB.events) {
+      events.push(event);
+      if (event.type === 'run:failed' || event.type === 'run:completed') settled = true;
+    }
+    await pump;
 
-    // The count CONTINUES: process B's own dispatches are added to what A already spent, which is only
-    // observable because the durable log carries them across the process boundary.
-    const finalState = reconstructCheckpointState(store.eventsFor(handleA.runId));
-    const dispatchesAfter = after.filter((e) => e.type === 'node:started').length;
-    expect(finalState?.nodeDispatches).toBe(dispatchesBefore + dispatchesAfter);
-  });
+    // Refused, and that is the assertion: the cap counts the RUN, so what process A already spent bounds
+    // what process B may still dispatch.
+    const terminal = events.at(-1);
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('turn_limit');
+  }, 60_000);
 
   it('the re-armed timer must not beat the decision this resume was handed', async () => {
     // **A regression `CR-22` introduced and its own tests could not see.** Rehydration arms a timer for
