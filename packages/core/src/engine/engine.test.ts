@@ -4186,6 +4186,93 @@ ${edges}
     expect(flakyStarts.length).toBeLessThan(ADMISSION_CEILINGS.retryMax);
   }, 60_000);
 
+  it('a WIDE ready batch cannot straddle the dispatch cap (ADR-0086 §4)', async () => {
+    // **The overshoot both earlier cap tests were blind to.** Each of them uses a linear chain, so
+    // `ready.length` is always 1 and the boundary is always crossed one dispatch at a time. `#claimReady`
+    // claims a whole batch synchronously, up to `max_parallel`, so a tick whose ready set straddles the
+    // boundary used to dispatch every member before the next tick could refuse anything — measured at 512
+    // `node:started` events against a ceiling of 500.
+    //
+    // A chain that stops 4 short, then a 20-wide fan-out: the batch is bigger than the headroom, so the
+    // claim itself must be clamped. Breaking the dispatch loop instead would leave the unclaimed remainder
+    // `running` with nothing behind it — the hang this engine already measured once.
+    // The graph must stay UNDER the node ceiling while its DISPATCHES exceed the run cap, so the excess
+    // comes from retries: 45 agent nodes that each fail 9 times then succeed spend 450 dispatches across 45
+    // nodes. 46 transforms carry it to 496, four short of the cap, and then a 20-wide fan-out asks for 20
+    // more in one batch.
+    const RETRIERS = 45;
+    const PER = ADMISSION_CEILINGS.retryMax; // 10 attempts each: 9 failures then a success
+    const FILLERS = ADMISSION_CEILINGS.nodeDispatchesPerRun - 4 - RETRIERS * PER;
+    const WIDTH = 20;
+    const retriers = Array.from({ length: RETRIERS }, (_, i) => `r${i}`);
+    const fillers = Array.from({ length: FILLERS }, (_, i) => `f${i}`);
+    const branches = Array.from({ length: WIDTH }, (_, i) => `w${i}`);
+    const seen = new Map<string, number>();
+    const flakyThenOk: Handler = (ctx) => {
+      const n = (seen.get(ctx.vertex.id) ?? 0) + 1;
+      seen.set(ctx.vertex.id, n);
+      return n < PER
+        ? {
+            kind: 'failed',
+            error: { code: 'provider_unavailable', message: 'flaky', retryable: true },
+          }
+        : { kind: 'completed', output: null };
+    };
+    const nodes = [
+      `    - { id: start, type: input }`,
+      ...retriers.map(
+        (id) =>
+          `    - { id: ${id}, type: agent, agent_ref: ag, prompt_template: 'go', retry: { max: ${PER}, backoff: linear, backoff_ms: 1 } }`,
+      ),
+      ...fillers.map((id) => `    - { id: ${id}, type: transform, transform: 'g' }`),
+      `    - { id: fan, type: parallel, parallel_of: [${branches.join(', ')}] }`,
+      ...branches.map((b) => `    - { id: ${b}, type: transform, transform: 'g' }`),
+    ].join('\n');
+    const line = ['start', ...retriers, ...fillers, 'fan'];
+    const edges = line
+      .slice(1)
+      .map((id, i) => `    - { from: ${line[i]}, to: ${id} }`)
+      .join('\n');
+
+    const host = createInMemoryHost();
+    const handle = engineWith(
+      Object.fromEntries(retriers.map((id) => [id, flakyThenOk])),
+      host,
+    ).start({
+      workflow: workflow(`  id: wide-straddle
+  max_parallel: 24
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+${nodes}
+  edges:
+${edges}`),
+    });
+    const events: RunEvent[] = [];
+    let settled = false;
+    const pump = (async (): Promise<void> => {
+      while (!settled) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        if (host.armedCount() > 0) host.fireTimers();
+        if (host.deadlineCount() > 0) host.fireDeadlines();
+      }
+    })();
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:failed' || event.type === 'run:completed') settled = true;
+    }
+    await pump;
+
+    // The bound is a bound: not one dispatch past it, whatever the batch width.
+    const starts = events.filter((e) => e.type === 'node:started');
+    expect(starts.length).toBeLessThanOrEqual(ADMISSION_CEILINGS.nodeDispatchesPerRun);
+    // …and the run still terminates exactly once rather than hanging on a half-claimed batch.
+    expect(terminalsIn(events)).toHaveLength(1);
+  }, 60_000);
+
   it('an OMITTED max_parallel caps at the default, not Infinity (ADR-0086 §3)', async () => {
     // **The change nothing guarded.** Reverting `?? DEFAULT_MAX_PARALLEL` to `?? Number.POSITIVE_INFINITY`
     // left the whole suite green, because every other concurrency test AUTHORS a cap. This one omits it,

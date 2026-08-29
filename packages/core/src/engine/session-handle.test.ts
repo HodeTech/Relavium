@@ -170,7 +170,10 @@ describe('SessionHandle — the producer-await bound (CR-30, ADR-0036)', () => {
     handle.subscribe(() => undefined); // the only consumer, exactly like the CLI persister
 
     for (let i = 0; i < 10; i += 1) b.emit(turnStarted());
-    expect(handle.bufferedCount).toBeGreaterThan(handle.highWaterMark); // it really is over the ceiling
+    // Two properties, and the pair is the point — the first fix held one and broke the other, then the
+    // second held that one and lost the first. The buffer is BOUNDED (an un-pulled stream declines past its
+    // ceiling rather than growing for as long as the model talks) and the producer is NOT PARKED.
+    expect(handle.bufferedCount).toBeLessThanOrEqual(handle.highWaterMark);
 
     let resolved = false;
     void handle.whenConsumersReady().then(() => {
@@ -178,6 +181,26 @@ describe('SessionHandle — the producer-await bound (CR-30, ADR-0036)', () => {
     });
     for (let i = 0; i < 50; i += 1) await Promise.resolve();
     expect(resolved).toBe(true);
+  });
+
+  it('an un-pulled stream is BOUNDED, not merely un-parked — CR-30 for the session path', () => {
+    // **The half the deadlock fix lost, and the reason both halves need their own assertion.** Making
+    // `whenDrained` resolve for an un-pulled stream stopped the freeze — and let the buffer grow for as long
+    // as the model talked, which is the memory bound CR-30 exists to close. Every CLI session attaches with
+    // `subscribe()` only, so this IS the production shape, not an edge case.
+    //
+    // An un-pulled stream keeps the EARLIEST `capacity` events and declines the rest: `run:started` and the
+    // opening events are what a consumer attaching in the same tick needs, and a later attacher never had
+    // the declined ones anyway. The `sequenceNumber` jump is ADR-0036's own resync signal.
+    const CEILING = 4;
+    const b = bus();
+    const handle = createSessionHandle(b, 'sess-1', () => undefined, CEILING);
+    handle.subscribe(() => undefined);
+
+    for (let i = 0; i < 200; i += 1) b.emit(turnStarted());
+
+    expect(handle.bufferedCount).toBe(CEILING);
+    expect(handle.unpulledOverflow).toBe(200 - CEILING);
   });
 
   it('a fast producer that awaits never exceeds the ceiling, and skips no sequence number', async () => {

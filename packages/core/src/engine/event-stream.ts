@@ -54,6 +54,8 @@ export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
    * a ceiling of 4 and 10 events pushed, `whenConsumersReady()` never resolved.
    */
   #everPulled = false;
+  /** Events declined because nobody had pulled and the buffer was full — see {@link push}. */
+  #unpulledOverflow = 0;
 
   constructor(capacity: number, onClose?: () => void) {
     this.#capacity = capacity;
@@ -77,7 +79,24 @@ export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
     return this.#buffer.length;
   }
 
-  /** Offer an event to the consumer (hand to a waiting `next()`, else buffer). Never drops. */
+  /**
+   * Offer an event to the consumer: hand it to a waiting `next()`, else buffer it.
+   *
+   * **Never drops for a consumer that exists. Bounded for one that does not.** Those are different
+   * promises, and conflating them is what produced both of this class's defects in turn. A stream someone
+   * iterates buffers without limit and pushes back through {@link whenDrained} — that is ADR-0036's no-drop
+   * policy and it is unchanged. A stream nobody has EVER pulled has no consumer to owe events to, and the
+   * first attempt to protect it by parking the producer deadlocked every CLI session; the second, by letting
+   * the producer run free, reopened the unbounded buffer `CR-30` exists to close.
+   *
+   * So an un-pulled stream stops accepting past the ceiling, keeping the EARLIEST `capacity` events. Keeping
+   * the earliest rather than the latest is deliberate: `run:started` and the opening `node:started`s are what
+   * a consumer attaching in the same tick needs, and every test that drains a handle depends on them. A
+   * consumer that attaches after the ceiling sees a `sequenceNumber` jump, which
+   * [ADR-0036](../../../docs/decisions/0036-run-loop-substrate-event-bus-and-execution-host.md) already
+   * defines as the resync signal — and it never had those events in the first place, because nothing was
+   * holding them for it.
+   */
   push(event: E): void {
     if (this.#closed) {
       return;
@@ -88,7 +107,21 @@ export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
       resolve({ value: event, done: false });
       return;
     }
+    if (!this.#everPulled && this.#buffer.length >= this.#capacity) {
+      this.#unpulledOverflow += 1;
+      return;
+    }
     this.#buffer.push(event);
+  }
+
+  /**
+   * How many events an un-pulled stream declined past its ceiling — zero for every stream anyone reads.
+   *
+   * Exposed so the bound is ASSERTABLE and so a surface can tell a late attacher it has a gap, rather than
+   * letting the gap show up only as a `sequenceNumber` jump it has to infer.
+   */
+  get unpulledOverflow(): number {
+    return this.#unpulledOverflow;
   }
 
   /** Signal end-of-stream — drains what is buffered, then the iteration completes. */

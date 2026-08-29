@@ -1651,8 +1651,18 @@ class RunExecution {
         },
       };
       this.#abort.abort();
+      return; // decided; claiming anything now would dispatch work the run has already refused
     }
-    const ready = this.#claimReady(running);
+    // **Clamped by the remaining headroom, not only by `max_parallel`.** The cap is a per-DISPATCH bound and
+    // `#claimReady` claims a whole batch synchronously, so a tick whose ready set straddles the boundary
+    // used to drain in full before the next tick could refuse anything — measured at 512 `node:started`
+    // events against a ceiling of 500, overshooting by the batch width (up to 64).
+    //
+    // Clamping the CLAIM rather than breaking the dispatch loop is the fix that works: a mid-loop bail would
+    // leave the already-claimed remainder `running` with nothing behind it, which is the hang this file's
+    // comment above records as a measured 60 s timeout.
+    const headroom = Math.max(0, ADMISSION_CEILINGS.nodeDispatchesPerRun - this.#nodeDispatches);
+    const ready = this.#claimReady(running, headroom);
     if (ready.length === 0) {
       await this.#handleIdle(running);
       return;
@@ -1717,7 +1727,7 @@ class RunExecution {
   }
 
   /** Synchronously claim every dispatchable vertex (up to the cap), marking it `running`. */
-  #claimReady(alreadyRunning: number): PlanVertex[] {
+  #claimReady(alreadyRunning: number, headroom = Number.POSITIVE_INFINITY): PlanVertex[] {
     // **An omitted `max_parallel` is 8, not Infinity (ADR-0086 §3).** `Infinity` is the one value at which a
     // concurrency cap governs nothing, and it was the default — so every workflow that did not think about
     // concurrency ran as wide as its graph. The number is a fixed constant on every machine; deriving it
@@ -1726,7 +1736,9 @@ class RunExecution {
     const claimed: PlanVertex[] = [];
     let running = alreadyRunning;
     for (const vertexId of this.#plan.order) {
-      if (running >= cap) {
+      // Two independent bounds, and both must hold before a vertex is marked `running`: the authored
+      // concurrency width, and the run's remaining dispatch headroom (ADR-0086 §4).
+      if (running >= cap || claimed.length >= headroom) {
         break;
       }
       const vertex = this.#plan.vertices.get(vertexId);

@@ -81,6 +81,8 @@ export interface SessionHandle {
   readonly highWaterMark: number;
   /** Events buffered for the primary consumer right now — the other half of an assertable bound. */
   readonly bufferedCount: number;
+  /** Events an UN-PULLED stream declined past its ceiling; zero for any stream someone iterates. */
+  readonly unpulledOverflow: number;
 }
 
 /**
@@ -153,6 +155,9 @@ export function createSessionHandle(
     get bufferedCount() {
       // A GETTER — the depth moves as the consumer pulls; a snapshot taken here would report 0 forever.
       return primary.bufferedCount;
+    },
+    get unpulledOverflow() {
+      return primary.unpulledOverflow;
     },
   };
 }
