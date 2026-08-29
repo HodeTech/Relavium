@@ -182,6 +182,12 @@ export interface CheckpointState {
    * one `node:started` (the first from `#step`, each re-dispatch from the retry loop), persisted before
    * delivery. So the cap survives a resume, an approval and a cross-process handover — which is the whole
    * reason it needed its own definition rather than reusing one of theirs.
+   *
+   * **Adding it carries no migration obligation**, and that is a property of this type rather than luck:
+   * {@link CHECKPOINT_SCHEMA_VERSION} versions the DERIVATION, not a stored blob — a `CheckpointState` is
+   * always rebuilt by replaying the durable log (`reconstructCheckpointState(store.eventsFor(runId))`) and
+   * is never persisted. An "old checkpoint missing this field" therefore cannot exist: a run recorded before
+   * this field existed is folded by today's code from events that already carry everything it needs.
    */
   readonly nodeDispatches: number;
   readonly cumulativeCostMicrocents: number;
