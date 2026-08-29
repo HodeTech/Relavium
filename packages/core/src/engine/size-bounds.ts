@@ -52,12 +52,44 @@ export function serialisedByteLength(value: unknown): number | undefined {
     return 0;
   }
   try {
-    const json = JSON.stringify(value);
+    const json = JSON.stringify(value, inlineMediaReplacer);
     // `JSON.stringify` returns `undefined` (not a throw) for a function or a bare symbol.
     return json === undefined ? undefined : utf8ByteLength(json);
   } catch {
     return undefined;
   }
+}
+
+/**
+ * A `JSON.stringify` replacer that measures an inline media part as the HANDLE it becomes, not as the base64
+ * it currently is.
+ *
+ * **This is the difference between bounding the durable boundary and bounding something that never reaches
+ * it**, and getting it wrong broke every media-producing node. A node that generates an image returns
+ * `{ kind: 'base64', data }` in flight; `deInlineMedia` replaces that with a `media://sha256-…` handle of
+ * about a hundred bytes before anything is persisted or delivered, and `state.output` keeps the raw form only
+ * because the de-inline is non-mutating. Measuring the raw form therefore failed a 200 KiB image against a
+ * 256 KiB "durable event" bound whose real payload was ~100 bytes — with a `validation` error the author
+ * could not act on, because they cannot make a model return fewer bytes.
+ *
+ * The substitute is a fixed-length stand-in rather than the real digest: the handle's length is constant
+ * (`media://` + a hex sha256), the value is not known until the store writes it, and a size estimate does not
+ * need it. Inline bytes are bounded elsewhere and deliberately — `INLINE_MEDIA_CEILING` governs what may be
+ * ingested, and generated media is exempt there precisely because the engine de-inlines it.
+ */
+const HANDLE_STAND_IN = `media://sha256-${'0'.repeat(64)}`;
+
+function inlineMediaReplacer(_key: string, value: unknown): unknown {
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    'kind' in value &&
+    (value as { kind?: unknown }).kind === 'base64' &&
+    'data' in value
+  ) {
+    return { kind: 'base64', data: HANDLE_STAND_IN };
+  }
+  return value;
 }
 
 /** A size breach, shaped so a caller can build its own typed error without re-deriving the numbers. */

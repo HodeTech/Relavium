@@ -3557,10 +3557,7 @@ class RunExecution {
     // Thrown rather than returned: this method's callers already route a non-terminal fault to the
     // `#onOutcome` / `#begin` backstops that map it to a single `run:failed`, which is exactly the handling
     // an oversized event needs and is the same path the media de-inline failure takes.
-    const sizeBreach = measureDraft(draft.type, draft, TERMINAL_TYPES.has(draft.type));
-    if (sizeBreach !== undefined) {
-      throw new RunLoopInvariantError('event_too_large', describeBreach(sizeBreach));
-    }
+
     // Persist the boundary/terminal event, then deliver (ADR-0036 persist-before-deliver, so a crash
     // can never re-run a completed node or lose its output). This method is **total for store faults** (the
     // media de-inline below is the one deliberate exception — a NON-terminal de-inline failure re-throws to
@@ -3614,6 +3611,21 @@ class RunExecution {
         throw error;
       }
     }
+    // **`CR-32`'s durable-event bound, measured on the DE-INLINED draft.** Measuring `draft` here was the
+    // same mistake as measuring a node's raw output: an in-flight media part is base64 until this point and
+    // a `media://` handle after it, so the pre-de-inline size is not the size anything writes or receives.
+    //
+    // A terminal is exempt. A run that cannot publish its terminal is worse in every way than one that wrote
+    // an oversized final event — the stream never closes, the lease is never released, and no surface can
+    // tell whether the run finished. ADR-0078 §6 draws the same line for a store fault. A non-terminal
+    // breach is safe to refuse because refusing it fails the run, which produces a terminal; it is thrown so
+    // the `#onOutcome` / `#begin` backstops map it to a single `run:failed`, the same path a de-inline
+    // failure takes.
+    const sizeBreach = measureDraft(durable.type, durable, TERMINAL_TYPES.has(durable.type));
+    if (sizeBreach !== undefined) {
+      throw new RunLoopInvariantError('event_too_large', describeBreach(sizeBreach));
+    }
+
     const event = this.#bus.next(durable);
     // Record the run's reference for every produced durable media handle (1.AF/D12c), then release the
     // run's references at its terminal event (D11 sweep). Best-effort + synchronous-to-the-stream: a

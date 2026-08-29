@@ -4143,6 +4143,32 @@ describe('WorkflowEngine — CR-32 size bounds at the durable boundary (ADR-0086
     expect(terminalsIn(events)).toHaveLength(1);
   });
 
+  it('a large GENERATED image is not refused — the bound measures the handle, not the base64', async () => {
+    // **The regression the first version of CR-32 shipped, and the sharpest kind: an error the author cannot
+    // act on.** A media node returns `{ kind: 'base64', data }` in flight; `deInlineMedia` replaces that with
+    // a ~100-byte `media://` handle before anything is persisted or delivered, and `state.output` keeps the
+    // raw form only because the de-inline is non-mutating. Measuring the raw form failed every image over
+    // ~192 KiB decoded against a bound whose real payload was a hundred bytes — reproduced before the fix as
+    // `node \`work\` output is 280098 bytes, above the limit of 262144`. The author cannot make a model
+    // return fewer bytes, so there was no workaround.
+    //
+    // Every media fixture in this file is 8 bytes of base64, which is why nothing here could see it.
+    const { store: mediaStore } = stubMediaStore();
+    const huge = {
+      type: 'media' as const,
+      mimeType: 'image/png',
+      source: { kind: 'base64' as const, data: 'A'.repeat(SIZE_BOUNDS.nodeOutputBytes + 20_000) },
+    };
+    const events = await drain(
+      engineWith(
+        { big: () => ({ kind: 'completed', output: { text: '', media: [huge] } }) },
+        createInMemoryHost({ store: new InMemoryRunStore(), mediaStore }),
+      ).start({ workflow: workflow(SIMPLE) }),
+    );
+    expect(events.some((e) => e.type === 'node:completed' && e.nodeId === 'big')).toBe(true);
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
   it('admits an output just under the bound — the negative control', async () => {
     const events = await drain(
       engineWith({
