@@ -1172,6 +1172,11 @@ class RunExecution {
           ? {}
           : { selectedTargets: new Set(node.selectedTargets) }),
       });
+      // **`CR-32`'s state total is seeded, not restarted.** A resume rehydrates every settled node's output
+      // into `#states` above — that memory is real and already held — so starting the counter at zero would
+      // hand a resumed run the whole 4 MiB again on top of what it just restored. It is the same defect
+      // `nodeDispatches` has its own seed for, one bound over.
+      this.#workflowStateBytes += measureNodeOutput(id, node.output).bytes;
     }
     for (const gate of cp.pendingGates) {
       this.#pendingGates.set(gate.gateId, {

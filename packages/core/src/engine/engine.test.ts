@@ -4153,6 +4153,61 @@ describe('WorkflowEngine — CR-32 size bounds at the durable boundary (ADR-0086
     expect(terminalsIn(events)[0]?.type).toBe('run:completed');
   });
 
+  it('a resume SEEDS the workflow-state total rather than restarting it', async () => {
+    // **The same defect the dispatch counter has its own seed for, one bound over.** A resume rehydrates
+    // every settled node's output into `#states` — that memory is real and already held — so a counter
+    // starting at zero would hand the resumed run the whole 4 MiB again on top of what it just restored.
+    //
+    // Process A settles two nodes carrying a known payload, then parks. Process B rehydrates and its total
+    // must already reflect them, which is only observable through what B will still accept.
+    const per = SIZE_BOUNDS.nodeOutputBytes - 1000;
+    const store = new InMemoryRunStore();
+    const WF = `  id: resumed-state
+  nodes:
+    - { id: start, type: input }
+    - { id: a, type: transform, transform: 'g' }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: a }
+    - { from: a, to: g }
+    - { from: g, to: done }`;
+    const engineA = engineWith(
+      {
+        a: () => ({ kind: 'completed', output: 'x'.repeat(per) }),
+        g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?' } }),
+      },
+      createInMemoryHost({ store }),
+    );
+    const handleA = engineA.start({ workflow: workflow(WF) });
+    let gateId = '';
+    for await (const event of handleA.events) {
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+
+    const cp = reconstructCheckpointState(store.eventsFor(handleA.runId));
+    // The premise: the checkpoint really carries the settled node's output, so process B restores it.
+    expect(cp?.nodeStates.get('a')?.output).toBeDefined();
+
+    const engineB = engineWith(
+      { g: () => ({ kind: 'completed', output: 'ok' }) },
+      createInMemoryHost({ store }),
+    );
+    const events = await drain(
+      await engineB.resumeFromCheckpoint({
+        runId: handleA.runId,
+        workflow: workflow(WF),
+        gateId,
+        decision: { decision: 'approved', decidedBy: 'tester' },
+      }),
+    );
+    // The resumed run completes — the seed accounts for `a` without double-counting it into a breach.
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
   it('fails the run when the accumulated workflow STATE exceeds its own bound', async () => {
     // Each output is individually legal; together they are not. A single shared number would make the
     // per-node bound either useless or absurd, which is why these are two bounds and not one.
