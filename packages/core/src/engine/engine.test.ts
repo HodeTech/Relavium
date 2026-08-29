@@ -4044,6 +4044,76 @@ describe('WorkflowEngine — node retry budget above the chain (1.S)', () => {
 
 // --- concurrency cap --------------------------------------------------------------------------
 
+describe('WorkflowEngine — CR-33 settled-run retention (ADR-0086)', () => {
+  const TINY = `  id: tiny
+  nodes:
+    - { id: start, type: input }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: done }`;
+
+  it('keeps the last N settled runs addressable and evicts older ones', async () => {
+    // `WorkflowEngine` kept every completed run forever, so a long-lived process running many workflows grew
+    // without limit. Count-based rather than age-based on purpose: an age policy needs a clock, and a clock
+    // in `packages/core` is a new host seam for a bound a count expresses exactly as well — and this way the
+    // eviction is deterministic enough to assert rather than wait for.
+    const engine = engineWith();
+    const N = ADMISSION_CEILINGS.retainedSettledRuns;
+    const ids: string[] = [];
+    for (let i = 0; i < N + 3; i += 1) {
+      const handle = engine.start({ workflow: workflow(TINY) });
+      ids.push(handle.runId);
+      await drain(handle);
+    }
+
+    // **What eviction costs, asserted rather than assumed.** A retained settled run exists so `cancel` can
+    // answer `run_already_terminal` instead of `unknown_run`; after eviction it reports `unknown_run`, a
+    // less specific answer about a run that finished long ago. The run's OUTCOME is not lost — it is in the
+    // durable log, which is where a surface reads a finished run's result from anyway.
+    // The CODE is the assertion, not the error class — both cases throw `EngineStateError`, so asserting the
+    // class alone passes whether or not anything is ever evicted. (It did: the first version of this test
+    // stayed green with eviction removed entirely.)
+    const codeOf = (runId: string): string => {
+      try {
+        engine.cancel(runId);
+        return 'no-throw';
+      } catch (error) {
+        return error instanceof EngineStateError ? error.code : 'not-an-engine-error';
+      }
+    };
+    expect(codeOf(ids[0] ?? '')).toBe('unknown_run');
+    // …and the most recent is still retained, still answering the specific way.
+    expect(codeOf(ids[ids.length - 1] ?? '')).not.toBe('unknown_run');
+  });
+
+  it('does not evict a run that is merely PARKED — that is live work', async () => {
+    // Only a run that actually settled enters the queue. A run waiting on a human gate is work this process
+    // still owns, and evicting one would strand it: `resume` would report `unknown_run` for a gate the user
+    // is looking at.
+    const PARKED = `  id: parked
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: done }`;
+    const engine = engineWith({
+      g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?' } }),
+    });
+    const parked = engine.start({ workflow: workflow(PARKED) });
+    for await (const event of parked.events) {
+      if (event.type === 'run:paused') break;
+    }
+    // Settle far more than the retention bound around it.
+    for (let i = 0; i < ADMISSION_CEILINGS.retainedSettledRuns + 5; i += 1) {
+      await drain(engineWith().start({ workflow: workflow(TINY) }));
+    }
+    // The parked run is still addressable in ITS engine — it never settled, so it never queued.
+    expect(() => engine.cancel(parked.runId)).not.toThrow();
+  });
+});
+
 describe('WorkflowEngine — CR-32 size bounds at the durable boundary (ADR-0086)', () => {
   const SIMPLE = `  id: sized
   nodes:

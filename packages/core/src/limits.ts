@@ -60,6 +60,12 @@ export const ADMISSION_CEILINGS = {
   toolCallsPerResponse: 16,
   /** `node:started` events in one run — the runtime backstop for the multiplication the others permit. */
   nodeDispatchesPerRun: 500,
+  /**
+   * Settled runs a `WorkflowEngine` keeps addressable in memory (`CR-33`). Not an admission ceiling like
+   * its siblings — nothing is rejected — but it lives here because it is the same kind of promise: a number
+   * a host can read rather than a growth nobody bounded.
+   */
+  retainedSettledRuns: 100,
 } as const;
 
 /**

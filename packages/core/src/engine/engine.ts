@@ -4057,6 +4057,20 @@ export class WorkflowEngine {
   readonly #onLegacyMediaJobHold: ((nodeIds: readonly string[]) => void) | undefined;
   readonly #runs = new Map<string, RunExecution>();
   /**
+   * Settled run ids in settle order — `CR-33`'s retention queue
+   * ([ADR-0086](../../../docs/decisions/0086-absolute-admission-ceilings-on-authored-values.md)).
+   *
+   * **Count-based rather than age-based, and that is the decision.** An age policy needs a clock, and a
+   * clock in `packages/core` means a new host seam for a bound that a count expresses exactly as well —
+   * "the last N runs stay addressable" is a promise a caller can reason about, where "runs younger than T"
+   * depends on how busy the process was. It also makes the eviction deterministic, so a test asserts it
+   * rather than waiting for one.
+   *
+   * Only a run that actually SETTLED enters this queue. A parked run — waiting on a human gate or a media
+   * job — is still live work this process owns, and evicting one would strand it.
+   */
+  readonly #settledOrder: string[] = [];
+  /**
    * This engine instance's opaque identity as a lease holder (ADR-0079 §1).
    *
    * From `host.ids.newId()` rather than a process id: the engine is platform-free and has no notion of a
@@ -4128,10 +4142,7 @@ export class WorkflowEngine {
       executor: this.#executor,
       bus,
       capacity: this.#capacity,
-      onSettled: () => {
-        /* settled runs are retained so resume/cancel can report run_already_terminal; a long-lived
-           host may prune them on a TTL — out of 1.N scope. */
-      },
+      onSettled: (settledRunId) => this.#retainSettled(settledRunId),
       ownerId: this.#ownerId,
       ...(this.#effectJournalFactory === undefined
         ? {}
@@ -4364,9 +4375,7 @@ export class WorkflowEngine {
           executor: this.#executor,
           bus,
           capacity: this.#capacity,
-          onSettled: () => {
-            /* retained like a started run (see start) */
-          },
+          onSettled: (settledRunId) => this.#retainSettled(settledRunId),
           resolverCapabilities: this.#resolverCapabilities,
           maxTokensEstimate: this.#maxTokensEstimate,
           ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
@@ -4526,6 +4535,35 @@ export class WorkflowEngine {
   /** Epoch-ms now, derived from the host's ISO clock — core has no second notion of time (ADR-0079 §6). */
   #nowMs(): number {
     return Date.parse(this.#host.clock.now());
+  }
+
+  /**
+   * Retain a settled run, and evict the oldest once more than
+   * {@link ADMISSION_CEILINGS.retainedSettledRuns} are held (`CR-33`).
+   *
+   * **What eviction costs, stated rather than discovered.** A retained settled run exists so `resume` and
+   * `cancel` can answer `run_already_terminal` instead of `unknown_run` — that is the whole reason the map
+   * kept them. After eviction those calls report `unknown_run`, which is a less specific answer to a
+   * question about a run that finished long ago. That is the trade a bound buys: without it a long-lived
+   * host running many workflows grows forever, and "forever" is not a nicer answer to anything.
+   *
+   * The run's OUTCOME is not lost — it is in the durable log, which is where a surface reads a finished
+   * run's result from anyway (`relavium logs <runId>`). Only the in-memory shortcut goes.
+   *
+   * Idempotent on a repeated settle: `#settleFenced` and `#settle` can both reach `onSettled` for the same
+   * run, and a second entry would evict a live run one slot early.
+   */
+  #retainSettled(runId: string): void {
+    if (this.#settledOrder.includes(runId)) {
+      return;
+    }
+    this.#settledOrder.push(runId);
+    while (this.#settledOrder.length > ADMISSION_CEILINGS.retainedSettledRuns) {
+      const evicted = this.#settledOrder.shift();
+      if (evicted !== undefined) {
+        this.#runs.delete(evicted);
+      }
+    }
   }
 
   async #claimForReconcile(runId: string): Promise<RunFence | undefined> {
