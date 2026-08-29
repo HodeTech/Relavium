@@ -4105,11 +4105,14 @@ describe('WorkflowEngine — CR-33 settled-run retention (ADR-0086)', () => {
     for await (const event of parked.events) {
       if (event.type === 'run:paused') break;
     }
-    // Settle far more than the retention bound around it.
+    // **On the SAME engine, or the test exerts no pressure at all.** The first version settled these on 105
+    // throwaway engines, so the engine under test never had one settled run in its queue and stayed green
+    // with eviction removed entirely — a test that cannot fail for the thing it is named after.
     for (let i = 0; i < ADMISSION_CEILINGS.retainedSettledRuns + 5; i += 1) {
-      await drain(engineWith().start({ workflow: workflow(TINY) }));
+      await drain(engine.start({ workflow: workflow(TINY) }));
     }
-    // The parked run is still addressable in ITS engine — it never settled, so it never queued.
+    // The parked run is still addressable: it never settled, so it never entered the queue and eviction —
+    // which has definitely run by now, 5 times over — never reached it.
     expect(() => engine.cancel(parked.runId)).not.toThrow();
   });
 });
@@ -4138,8 +4141,11 @@ describe('WorkflowEngine — CR-32 size bounds at the durable boundary (ADR-0086
     expect(failed?.type === 'node:failed' && failed.error.message).toContain(
       String(SIZE_BOUNDS.nodeOutputBytes),
     );
-    // The oversized value never reached the log: `node:completed` for `big` was never emitted.
+    // The oversized value never reached the log: `node:completed` for `big` was never emitted — and the node
+    // is reported FAILED rather than silently skipped, which is the ordering the production comment claims
+    // (check before retain, before emit) and which nothing else pins.
     expect(events.some((e) => e.type === 'node:completed' && e.nodeId === 'big')).toBe(false);
+    expect(events.some((e) => e.type === 'node:failed' && e.nodeId === 'big')).toBe(true);
     expect(terminalsIn(events)).toHaveLength(1);
   });
 
@@ -4186,21 +4192,37 @@ describe('WorkflowEngine — CR-32 size bounds at the durable boundary (ADR-0086
     //
     // Process A settles two nodes carrying a known payload, then parks. Process B rehydrates and its total
     // must already reflect them, which is only observable through what B will still accept.
+    // **The seed has to CHANGE an outcome, or the test cannot fail.** A first version asserted only that the
+    // resumed run completed, which it did with the seed removed too — the resumed half was tiny. So process A
+    // settles most of the budget and process B adds enough that the SUM breaches while B's own share does
+    // not: with the seed the resumed run is correctly refused, without it B sees a fresh 4 MiB and finishes.
     const per = SIZE_BOUNDS.nodeOutputBytes - 1000;
+    const beforeCount = Math.floor((SIZE_BOUNDS.workflowStateBytes * 0.75) / per);
+    const afterCount = Math.ceil((SIZE_BOUNDS.workflowStateBytes * 0.5) / per);
     const store = new InMemoryRunStore();
+    const beforeIds = Array.from({ length: beforeCount }, (_, i) => `a${i}`);
+    const afterIds = Array.from({ length: afterCount }, (_, i) => `b${i}`);
+    const line = ['start', ...beforeIds, 'g', ...afterIds];
     const WF = `  id: resumed-state
   nodes:
     - { id: start, type: input }
-    - { id: a, type: transform, transform: 'g' }
+${beforeIds.map((id) => `    - { id: ${id}, type: transform, transform: 'g' }`).join('\n')}
     - { id: g, type: human_gate, gate_type: approval }
+${afterIds.map((id) => `    - { id: ${id}, type: transform, transform: 'g' }`).join('\n')}
     - { id: done, type: output }
   edges:
-    - { from: start, to: a }
-    - { from: a, to: g }
-    - { from: g, to: done }`;
+${line
+  .slice(1)
+  .map((id, i) => `    - { from: ${line[i]}, to: ${id} }`)
+  .join('\n')}
+    - { from: ${line[line.length - 1]}, to: done }`;
+    const payload = (): { kind: 'completed'; output: string } => ({
+      kind: 'completed',
+      output: 'x'.repeat(per),
+    });
     const engineA = engineWith(
       {
-        a: () => ({ kind: 'completed', output: 'x'.repeat(per) }),
+        ...Object.fromEntries(beforeIds.map((id) => [id, payload])),
         g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?' } }),
       },
       createInMemoryHost({ store }),
@@ -4216,10 +4238,10 @@ describe('WorkflowEngine — CR-32 size bounds at the durable boundary (ADR-0086
 
     const cp = reconstructCheckpointState(store.eventsFor(handleA.runId));
     // The premise: the checkpoint really carries the settled node's output, so process B restores it.
-    expect(cp?.nodeStates.get('a')?.output).toBeDefined();
+    expect(cp?.nodeStates.get(beforeIds[0] ?? '')?.output).toBeDefined();
 
     const engineB = engineWith(
-      { g: () => ({ kind: 'completed', output: 'ok' }) },
+      Object.fromEntries(afterIds.map((id) => [id, payload])),
       createInMemoryHost({ store }),
     );
     const events = await drain(
@@ -4230,8 +4252,10 @@ describe('WorkflowEngine — CR-32 size bounds at the durable boundary (ADR-0086
         decision: { decision: 'approved', decidedBy: 'tester' },
       }),
     );
-    // The resumed run completes — the seed accounts for `a` without double-counting it into a breach.
-    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+    // Refused, and that is the assertion: the state bound is a RUN bound, so what process A already spent
+    // counts against what process B may still add. Without the seed, B would see a fresh budget and finish.
+    const failed = events.find((e) => e.type === 'node:failed');
+    expect(failed?.type === 'node:failed' && failed.error.message).toContain('workflow state');
   });
 
   it('fails the run when the accumulated workflow STATE exceeds its own bound', async () => {

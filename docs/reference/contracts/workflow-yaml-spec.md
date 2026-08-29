@@ -398,9 +398,13 @@ clamped: a file over a ceiling does not run at all.
 | Total workflow state | 4 MiB | every node output, summed |
 | One durable event | 1 MiB | serialised — **a terminal event is exempt**, see below |
 
-A size breach fails the NODE with a typed `validation` error naming the field, the size and the limit — never
-a truncation, because half an output silently flowing into the next node's template is a wrong answer that
-looks like a right one. **A terminal event is measured and never refused**: a run that cannot publish its
+An output or state breach fails the NODE with a typed `validation` error naming the field, the size and the
+limit — never a truncation, because half an output silently flowing into the next node's template is a wrong
+answer that looks like a right one. The durable-EVENT breach is different in shape and worth stating rather
+than glossing: it is raised at the emit choke point, where no node is in scope, so it fails the RUN through
+the engine's internal backstop and surfaces as `run:failed` with `internal` rather than as a per-node
+`validation`. All three sizes are measured on the value that reaches the boundary — an inline media part
+counts as the `media://` handle it becomes, not as its base64. **A terminal event is measured and never refused**: a run that cannot publish its
 terminal is worse in every way than one that wrote an oversized final event, and exactly-one-terminal
 ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) outranks every size
 rule here.

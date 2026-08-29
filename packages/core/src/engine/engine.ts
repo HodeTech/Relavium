@@ -1485,10 +1485,21 @@ class RunExecution {
     // concurrent #step (e.g. a sibling gate's timeout firing during this persist) never sees this gate as
     // still `paused` while it is already out of #pendingGates, which would mis-read the run as stalled.
     const state = this.#states.get(gate.vertexId);
+    const gateOutput = decision.payload ?? { decision: decision.decision };
     if (state !== undefined) {
       state.status = 'completed';
-      state.output = decision.payload ?? { decision: decision.decision };
+      state.output = gateOutput;
     }
+    // **A gate payload is a node output and counts as one (`CR-32`).** It is caller-supplied — a human typed
+    // or a surface uploaded it — so it is exactly the input a size bound is for, and it took the one path
+    // into `#states` that did not pass through `#settleCompleted`. Leaving it out also made the totals
+    // DIVERGE across a resume, since `#seedFromCheckpoint` counts every restored output including this one:
+    // a run that gated twice would come back holding more state than it had ever been charged for.
+    //
+    // Counted rather than refused: the gate is already resolved and the vertex already marked completed by
+    // the lines above, so refusing here would strand a resumed run mid-settle. The run-level total is what
+    // catches an abusive payload, at the next node that tries to add to it.
+    this.#workflowStateBytes += measureNodeOutput(gate.vertexId, gateOutput).bytes;
     this.#disarmNodeDeadline(gate.vertexId); // the gate vertex is terminal — its node bound ends here
     // The payload (a gate `input` value, `z.unknown()`) is the one resume event that can carry media. If
     // de-inline cannot make it durable-safe, the emit throws — but the gate is already resolved + the
