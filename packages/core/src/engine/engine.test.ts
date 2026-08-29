@@ -4539,10 +4539,20 @@ ${edges}
   it('at the cap, a retry is refused BEFORE the promise and the sleep (ADR-0086 §4)', async () => {
     // **The order is the whole finding.** The check used to sit after `node:retrying` and after the backoff,
     // so a run with no headroom announced a retry it could not honour and then slept for it — and
-    // `backoff_ms` is schema-unbounded up to the 24 h clamp, so that wait could be a day. Two assertions,
-    // because either alone passes against the old code: no `node:retrying` for the refused attempt, and no
-    // backoff timer armed.
+    // `backoff_ms` is schema-unbounded up to the 24 h clamp, so that wait could be a day.
+    //
+    // The assertion that CATCHES the regression is the count comparison below: with the check in its old
+    // position the refused attempt is still announced, so `node:retrying` equals `node:started` instead of
+    // trailing it (measured: `expected 2 to be less than 2`). The terminal code does NOT discriminate — the
+    // old code also ended `turn_limit`, just a day later.
+    //
+    // The backoff-arm count is a second, weaker invariant kept alongside it: the engine never sleeps for an
+    // attempt it did not announce. It holds in both versions, so it is not what reddens here; it is here
+    // because an arm without an announcement would be a different defect nothing else would see. It counts
+    // arms at exactly the fixture's 24 h delay, which `armedCount()` cannot isolate — that aggregate also
+    // carries the lease heartbeat, media polls and the grace window.
     const CHAIN = ADMISSION_CEILINGS.nodeDispatchesPerRun - 2;
+    const BACKOFF_MS = 86_400_000; // the 24 h clamp — the point of the finding
     const ids = Array.from({ length: CHAIN }, (_, i) => `n${i}`);
     const nodes = ids
       .map((id, i) =>
@@ -4555,7 +4565,19 @@ ${edges}
       .slice(1)
       .map((id, i) => `    - { from: ${ids[i]}, to: ${id} }`)
       .join('\n');
-    const host = createInMemoryHost();
+    // The backoff is the ONLY timer this fixture arms at 24 h, so counting arms at exactly that delay
+    // isolates it — `armedCount()` cannot, because it aggregates the lease heartbeat, media polls and the
+    // grace window along with it. Delegated method-by-method: `base` is a class-bearing object and a spread
+    // would drop its prototype.
+    const base = createInMemoryHost();
+    let backoffArms = 0;
+    const host: typeof base = {
+      ...base,
+      setTimer: (ms, fire, kind) => {
+        if (ms === BACKOFF_MS) backoffArms += 1;
+        return base.setTimer(ms, fire, kind);
+      },
+    };
     const handle = engineWith(
       {
         flaky: () => ({
@@ -4573,7 +4595,7 @@ ${edges}
       system_prompt: hi
   nodes:
 ${nodes}
-    - { id: flaky, type: agent, agent_ref: ag, prompt_template: 'go', retry: { max: ${ADMISSION_CEILINGS.retryMax}, backoff: linear, backoff_ms: 86400000 } }
+    - { id: flaky, type: agent, agent_ref: ag, prompt_template: 'go', retry: { max: ${ADMISSION_CEILINGS.retryMax}, backoff: linear, backoff_ms: ${BACKOFF_MS} } }
   edges:
 ${edges}
     - { from: ${ids[ids.length - 1]}, to: flaky }`),
@@ -4581,11 +4603,9 @@ ${edges}
 
     const events: RunEvent[] = [];
     let settled = false;
-    let armedDuringRetry = 0;
     const pump = (async (): Promise<void> => {
       while (!settled) {
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
-        armedDuringRetry = Math.max(armedDuringRetry, host.armedCount());
         if (host.armedCount() > 0) host.fireTimers();
         if (host.deadlineCount() > 0) host.fireDeadlines();
       }
@@ -4603,6 +4623,8 @@ ${edges}
     const retrying = events.filter((e) => e.type === 'node:retrying' && e.nodeId === 'flaky');
     const starts = events.filter((e) => e.type === 'node:started' && e.nodeId === 'flaky');
     expect(retrying.length).toBeLessThan(starts.length);
+    // Never a sleep the consumer was not told about.
+    expect(backoffArms).toBe(retrying.length);
   }, 60_000);
 
   it('a WIDE ready batch cannot straddle the dispatch cap (ADR-0086 §4)', async () => {
