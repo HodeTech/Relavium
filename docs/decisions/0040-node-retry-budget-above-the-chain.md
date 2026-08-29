@@ -115,6 +115,17 @@ mapping, owned by `@relavium/core`.
   slot for the **whole** backoff sleep (it stays `running` so the run never idles mid-retry — freeing it would
   re-introduce the idle race), so under a tight cap a long `backoff_ms` can serialize otherwise-ready sibling
   branches: keep `backoff_ms` modest under a tight cap.
+
+  > **Superseded on the "intentionally unbounded" clause, 2026-08-28, by
+  > [ADR-0086](0086-absolute-admission-ceilings-on-authored-values.md).** `retry.max` AND `max_attempts` per
+  > chain entry now carry an absolute ceiling of **10**, enforced at admission — both, because the sentence
+  > above rests them on the same reasoning and they multiply. The reasoning bounds how long one node WAITS and
+  > not how much work the run DOES: `retry: { max: 100000, backoff_ms: 1 }` is schema-valid under this ADR,
+  > and every one of those attempts is a real provider call, real money and a possible external effect.
+  > `window_size`, also named in that sentence, is deliberately NOT covered — ADR-0086 §Decision says why.
+  > The 24 h `MAX_NODE_RETRY_BACKOFF_MS` clamp stays and keeps its own job; so does everything else here, and
+  > **this ADR's Status remains Accepted** — only that one sentence is replaced. ADR-0086 §8 records why a
+  > partial supersede, following the pattern ADR-0072 and ADR-0081 already set.
 - **Which authored schemas gain `retry`** (a `@relavium/shared` change): it joins `agent` (which already has it)
   on the node types that can produce a *retryable* failure — **`condition`, `transform`, `merge`** (their
   `merge_fn`/expression runs in the sandbox, whose wall-clock-timeout is retryable). **Excluded:**
@@ -252,5 +263,10 @@ is the in-memory engine semantics + this key discipline; the surface trigger (a 
   `agent.ts:33` (`RetrySchema` comment), `agent-yaml-spec.md` :37 / :62 / :69 ("same model" retry) and :85
   (the "primary model (with retry) → fallback" resolution order). `run-plan.md:62` and `node-types.md:128`
   already describe the new model and need no change.
+
+  > **Discharged — verified 2026-08-28.** `RetrySchema`'s comment now reads "Total attempts, including the
+  > first", and `agent-yaml-spec.md` contains no "same model" retry language. The list is left as written
+  > because it is the record of what landing this ADR owed; this note is what says the debt was paid, so a
+  > reader does not have to go and check four files to find out.
 - A non-idempotent node's re-run is heavier (bounded by the idempotency key); a node with external side effects
   must be idempotent or guarded — the same constraint 1.R imposes on crash re-runs.

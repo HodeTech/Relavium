@@ -41,3 +41,44 @@ describe('BoundedEventStream — onClose cleanup hook (1.W)', () => {
     await first;
   });
 });
+
+describe('BoundedEventStream — one freed slot wakes one producer (CR-30)', () => {
+  it('never lets N concurrent producers overshoot the ceiling by N-1', async () => {
+    // Releasing EVERY parked waiter when one slot frees let each woken producer push, so the buffer peaked at
+    // `capacity + N - 1` — 7 over at the default `max_parallel` of 8, and 63 over at an authored 64. A
+    // ceiling that a legal number of producers can exceed is not a ceiling.
+    const CAPACITY = 2;
+    const PRODUCERS = 6;
+    const stream = new BoundedEventStream<number>(CAPACITY);
+    // Fill FIRST, then pull once. A pull on an empty stream parks as a waiting consumer and the next push is
+    // handed straight to it, so pulling first would leave the buffer under capacity and every producer would
+    // sail through `whenDrained` — the setup would test nothing.
+    // Also: an un-pulled stream DECLINES past its ceiling, so the fill has to happen in two stages.
+    for (let i = 0; i < CAPACITY; i += 1) stream.push(i);
+    await stream.next(); // marks it pulled; buffer drops to CAPACITY - 1
+    stream.push(99); // back to exactly CAPACITY, now with `#everPulled` set
+
+    let peak = stream.bufferedCount;
+    expect(peak).toBe(CAPACITY); // the premise: producers really do park
+    const producers = Array.from({ length: PRODUCERS }, (_, i) =>
+      stream.whenDrained().then(() => {
+        stream.push(100 + i);
+        peak = Math.max(peak, stream.bufferedCount);
+      }),
+    );
+    await Promise.resolve();
+
+    // One pull frees exactly one slot. Every parked producer being woken is the defect.
+    await stream.next();
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    expect(peak).toBeLessThanOrEqual(CAPACITY);
+
+    // Drain the rest so the pending producers settle and the test leaves nothing parked.
+    for (let i = 0; i < PRODUCERS + CAPACITY; i += 1) {
+      void stream.next();
+      for (let j = 0; j < 5; j += 1) await Promise.resolve();
+    }
+    stream.close();
+    await Promise.all(producers);
+  });
+});

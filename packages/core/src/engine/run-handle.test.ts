@@ -72,26 +72,58 @@ describe('RunHandle — the async-iterable event stream', () => {
     }
   });
 
-  it('applies producer-await backpressure once the buffer exceeds capacity, then drains', async () => {
+  it('a fast producer that awaits never exceeds the ceiling, and skips no sequence number (CR-30)', async () => {
+    // **ADR-0036's acceptance, and the test it replaces asserted the opposite.** The previous version built
+    // a capacity-2 stream, pushed FOUR events (its own comment read `buffer = 4 > capacity 2`), then
+    // asserted only that `whenDrained()` resolved after two pulls — it demonstrated the ceiling being
+    // exceeded and named that "producer-await backpressure", so a green suite read as though CR-30 were
+    // already closed. The two properties the item actually requires are asserted directly here.
+    //
+    // Break-verified twice, and the numbers are the point: reverting `whenDrained`'s predicate to `<=`
+    // gives `expected 5 to be less than or equal to 4` (the off-by-one), and removing the producer's await
+    // gives `expected 199 to be less than or equal to 4` — the unbounded growth the item describes.
+    const CEILING = 4;
+    const TOTAL = 200;
     const b = bus();
-    const handle = createRunHandle(b, 'run-1', () => undefined, 2); // capacity 2
-    b.emit(started('a'));
-    b.emit(started('b'));
-    b.emit(started('c'));
-    b.emit(started('d')); // buffer = 4 > capacity 2
+    const handle = createRunHandle(b, 'run-1', () => undefined, CEILING);
 
-    let drained = false;
-    const ready = handle.whenConsumersReady().then(() => {
-      drained = true;
-    });
+    const seen: RunEvent[] = [];
+    let peakBuffered = 0;
+    // A SLOW consumer: it yields to the microtask queue between pulls, so a producer that did not await
+    // would run far ahead of it. Started first so the stream has a live iteration throughout.
+    const consumer = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        seen.push(event);
+        await Promise.resolve();
+      }
+    })();
     await Promise.resolve();
-    expect(drained).toBe(false); // still over capacity
 
-    const iterator = handle.events[Symbol.asyncIterator]();
-    await iterator.next();
-    await iterator.next(); // buffer back down to 2 (<= capacity)
-    await ready;
-    expect(drained).toBe(true);
+    // The FAST producer, honouring the contract: await the drain before every emit, exactly as the agent
+    // turn's chunk loop now does.
+    for (let i = 0; i < TOTAL; i += 1) {
+      await handle.whenConsumersReady();
+      b.emit(started(`n${i}`));
+      peakBuffered = Math.max(peakBuffered, handle.bufferedCount);
+    }
+    await handle.whenConsumersReady();
+    b.emit(completed());
+    await consumer;
+
+    // Property 1 — the ceiling is a bound, not a hint.
+    expect(peakBuffered).toBeLessThanOrEqual(CEILING);
+    // Property 2 — no-drop: every event arrived, and the sequence is gap-free and monotonic. A drop policy
+    // would satisfy property 1 trivially, which is why ADR-0036 refuses one and why this half is asserted.
+    expect(seen).toHaveLength(TOTAL + 1);
+    expect(seen.map((e) => e.sequenceNumber)).toEqual(
+      Array.from({ length: TOTAL + 1 }, (_, i) => i),
+    );
+  });
+
+  it('exposes the ceiling it was built with, so the bound is assertable rather than inferred', () => {
+    const handle = createRunHandle(bus(), 'run-1', () => undefined, 7);
+    expect(handle.highWaterMark).toBe(7);
+    expect(handle.bufferedCount).toBe(0);
   });
 
   it('subscribe attaches a passive observer that sees the same stamped events', async () => {

@@ -33,6 +33,7 @@ import {
 import { analyzeResolvedAgentTaint } from './interpolation/analyze.js';
 import { nodeReferenceSites } from './interpolation/collect.js';
 import { templateReferences } from './interpolation/references.js';
+import { byId, collectAgentCeilingIssues, collectWorkflowCeilingIssues } from './limits.js';
 import type { JoinStrategy, PlanConfig, PlanVertex, RunPlan } from './run-plan.js';
 
 /** Authored node variants, narrowed from the shared union for the per-type wiring helpers. */
@@ -59,6 +60,35 @@ export interface BuildRunPlanOptions {
 /** Mirrors parser.ts: only a value matching its field's schema charset is echoed into an error. */
 const SAFE_ID_LABEL = /^[a-z0-9]+(?:-[a-z0-9]+)*$/; // kebab ids (mirrors kebabIdSchema)
 const SAFE_NAME_LABEL = /^[A-Za-z0-9_-]+$/; // condition handles / interpolation names
+
+/**
+ * ADR-0086's admission ceilings, gathered before the graph is wired.
+ *
+ * Extracted from {@link buildRunPlan} to keep that function's complexity under the project threshold, and it
+ * reads better here anyway: the ceilings are one concern with one reason to change.
+ *
+ * **Only the agents this workflow REFERENCES.** `agentsById` also carries the host's whole registry, and
+ * iterating it made one over-ceiling agent file anywhere in a workspace reject every unrelated workflow —
+ * including workflows with no agent node at all — and made the issue order depend on the host's Map
+ * insertion order rather than on the file. Sorted with an explicit comparator so the report is stable and so
+ * the ordering is not the default `sort()`'s UTF-16 code-unit rule, which a reader has to look up.
+ */
+function collectCeilingIssues(
+  def: Workflow,
+  agentsById: ReadonlyMap<string, Agent>,
+  issues: GraphIssue[],
+): void {
+  collectWorkflowCeilingIssues(def, agentsById, issues);
+  const referenced = new Set(
+    def.workflow.nodes.flatMap((node) => (node.type === 'agent' ? [node.agent_ref] : [])),
+  );
+  for (const agentId of [...referenced].sort(byId)) {
+    const agent = agentsById.get(agentId);
+    if (agent !== undefined) {
+      collectAgentCeilingIssues(agent, issues, `agent \`${agentId}\`.`);
+    }
+  }
+}
 
 /**
  * Build the {@link RunPlan} from a validated workflow. Throws {@link WorkflowGraphError} on a graph
@@ -105,6 +135,11 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
   };
 
   const issues: GraphIssue[] = [];
+  // **Admission ceilings first (ADR-0086 §2).** Counted on the AUTHORED spec and BEFORE the graph is wired,
+  // so a file over a ceiling reports the numbers its author wrote rather than numbers that only exist after
+  // a compile step they never see. They join the same `issues` batch as every other graph fault, so an
+  // author sees all of them at once instead of fixing one per run.
+  collectCeilingIssues(def, agentsById, issues);
   validateAndWireEdges(spec, nodesById, agentsById, opts?.agents !== undefined, addEdge, issues);
 
   // 4. Kahn topological order (authored-order tie-break → reproducible plan; deep-equal-testable).

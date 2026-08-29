@@ -796,6 +796,55 @@ describe('reconstructCheckpointState', () => {
   });
 });
 
+describe('nodeDispatches — ADR-0086 §4 folded from the durable log', () => {
+  const nodeStarted = (seq: number, nodeId: string, attemptNumber?: number): RunEvent => ({
+    type: 'node:started',
+    ...base(seq),
+    nodeId,
+    nodeType: 'transform',
+    ...(attemptNumber === undefined ? {} : { attemptNumber }),
+  });
+  const retrying = (seq: number, nodeId: string): RunEvent => ({
+    type: 'node:retrying',
+    ...base(seq),
+    nodeId,
+    attemptNumber: 2,
+    error: { code: 'provider_unavailable', message: 'flaky', retryable: true },
+    delayMs: 1,
+  });
+
+  it('counts one per `node:started`, including every re-dispatch', () => {
+    // **The mechanism ADR-0086 §4 is entirely about, and it had no coverage at all.** No in-memory counter
+    // can carry this cap: ADR-0040 defines two `attemptNumber` families that "do not join", and ADR-0080
+    // records that `retryCount` resets on a crash-resume and again on a budget approval. A durable event
+    // does not reset — which is only true if the fold really counts every one of them.
+    const state = reconstructCheckpointState([
+      started,
+      nodeStarted(1, 'a'),
+      completed(2, 'a', null),
+      nodeStarted(3, 'b'),
+      nodeStarted(4, 'b', 2), // a re-dispatch: its own event, its own dispatch
+      nodeStarted(5, 'b', 3),
+    ]);
+    expect(state?.nodeDispatches).toBe(4);
+  });
+
+  it('does NOT count `node:retrying` — a retry emits its own `node:started`', () => {
+    // Counting both would double every retry, which for a cap of 500 halves it silently.
+    const state = reconstructCheckpointState([
+      started,
+      nodeStarted(1, 'a'),
+      retrying(2, 'a'),
+      nodeStarted(3, 'a', 2),
+    ]);
+    expect(state?.nodeDispatches).toBe(2);
+  });
+
+  it('is zero for a run with no dispatches', () => {
+    expect(reconstructCheckpointState([started])?.nodeDispatches).toBe(0);
+  });
+});
+
 describe('createInMemoryCheckpointer', () => {
   it('loads reconstructed state from an InMemoryRunStore event log', async () => {
     const store = new InMemoryRunStore();

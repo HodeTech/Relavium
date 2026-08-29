@@ -68,6 +68,13 @@ import { buildRunPlan, type BuildRunPlanOptions } from '../dag.js';
 import { InterpolationError } from '../errors.js';
 import { resolveContext, resolveTemplate } from '../interpolation/resolve.js';
 import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
+import { ADMISSION_CEILINGS, DEFAULT_MAX_PARALLEL } from '../limits.js';
+import {
+  describeBreach,
+  measureDraft,
+  measureNodeOutput,
+  measureWorkflowState,
+} from './size-bounds.js';
 import type { PlanVertex, RunPlan } from '../run-plan.js';
 import type { WorkflowDefinition } from '../parser.js';
 import { resolveAndValidateWorkflowInputs } from './input-admission.js';
@@ -529,6 +536,16 @@ class RunExecution {
   /** Ends the handle's iteration without a terminal — the fenced path only (ADR-0079 §5). */
   #closeStream: (() => void) | undefined;
   #startEpochMs = 0;
+  /**
+   * Node dispatches this run has made — ADR-0086 §4's runtime backstop, and the one W3 ceiling that cannot
+   * be checked at admission because it is a property of what a run DOES, not of what it says.
+   *
+   * Incremented where `node:started` is emitted, and seeded from the checkpoint on resume, so it counts the
+   * run rather than this process's slice of it.
+   */
+  #nodeDispatches = 0;
+  /** Serialised bytes of every node output kept so far — `CR-32`'s workflow-state bound. */
+  #workflowStateBytes = 0;
   #cumulativeCostMicrocents = 0;
   #totalInputTokens = 0;
   #totalOutputTokens = 0;
@@ -745,9 +762,18 @@ class RunExecution {
         await this.#settle('run:failed');
         return;
       }
-    } catch {
+    } catch (error) {
       // Could not even start the run (e.g. the store rejected) — close with the single terminal event
       // rather than leaving a started-but-never-finished run. Never swallowed: it becomes run:failed.
+      //
+      // **Carry the breach's own message when there is one.** A `RunLoopInvariantError` here already knows
+      // WHICH invariant broke and with what numbers — an oversized `run:started`, or a media-bearing draft
+      // with no store — and discarding it leaves the generic "the run failed", which is the undiagnosable
+      // report the lease branch thirty lines above was written to avoid. The code stays `internal` (the
+      // taxonomy is closed and this is an engine-side fault); only the message gets more useful.
+      if (error instanceof RunLoopInvariantError && this.#failure === undefined) {
+        this.#failure = { error: { code: 'internal', message: error.message, retryable: false } };
+      }
       await this.#settle('run:failed');
       return;
     }
@@ -1155,6 +1181,11 @@ class RunExecution {
           ? {}
           : { selectedTargets: new Set(node.selectedTargets) }),
       });
+      // **`CR-32`'s state total is seeded, not restarted.** A resume rehydrates every settled node's output
+      // into `#states` above — that memory is real and already held — so starting the counter at zero would
+      // hand a resumed run the whole 4 MiB again on top of what it just restored. It is the same defect
+      // `nodeDispatches` has its own seed for, one bound over.
+      this.#workflowStateBytes += measureNodeOutput(id, node.output).bytes;
     }
     for (const gate of cp.pendingGates) {
       this.#pendingGates.set(gate.gateId, {
@@ -1167,6 +1198,9 @@ class RunExecution {
     // checkpoint's known spend, and its reservation must exist before the first re-armed poll/schedule can run.
     this.#totalInputTokens = cp.totalInputTokens;
     this.#totalOutputTokens = cp.totalOutputTokens;
+    // Seeded, not restarted: the cap counts the RUN. Restarting here would hand every resume a fresh 500,
+    // which is the same defect that disqualified the in-memory retry counters from carrying this at all.
+    this.#nodeDispatches = cp.nodeDispatches;
     this.#cumulativeCostMicrocents = cp.cumulativeCostMicrocents;
     this.#budgetGovernor?.updateCost(cp.cumulativeCostMicrocents);
     // ADR-0074 §2: BOTH totals restored before any resumed work is scheduled. Without the conservative half the
@@ -1460,10 +1494,21 @@ class RunExecution {
     // concurrent #step (e.g. a sibling gate's timeout firing during this persist) never sees this gate as
     // still `paused` while it is already out of #pendingGates, which would mis-read the run as stalled.
     const state = this.#states.get(gate.vertexId);
+    const gateOutput = decision.payload ?? { decision: decision.decision };
     if (state !== undefined) {
       state.status = 'completed';
-      state.output = decision.payload ?? { decision: decision.decision };
+      state.output = gateOutput;
     }
+    // **A gate payload is a node output and counts as one (`CR-32`).** It is caller-supplied — a human typed
+    // or a surface uploaded it — so it is exactly the input a size bound is for, and it took the one path
+    // into `#states` that did not pass through `#settleCompleted`. Leaving it out also made the totals
+    // DIVERGE across a resume, since `#seedFromCheckpoint` counts every restored output including this one:
+    // a run that gated twice would come back holding more state than it had ever been charged for.
+    //
+    // Counted rather than refused: the gate is already resolved and the vertex already marked completed by
+    // the lines above, so refusing here would strand a resumed run mid-settle. The run-level total is what
+    // catches an abusive payload, at the next node that tries to add to it.
+    this.#workflowStateBytes += measureNodeOutput(gate.vertexId, gateOutput).bytes;
     this.#disarmNodeDeadline(gate.vertexId); // the gate vertex is terminal — its node bound ends here
     // The payload (a gate `input` value, `z.unknown()`) is the one resume event that can carry media. If
     // de-inline cannot make it durable-safe, the emit throws — but the gate is already resolved + the
@@ -1621,7 +1666,40 @@ class RunExecution {
       return;
     }
 
-    const ready = this.#claimReady(running);
+    // **ADR-0086 §4's run-level dispatch cap, checked BEFORE anything is CLAIMED.** Placement is the whole
+    // correctness of it: `#claimReady` marks a vertex `running` synchronously, so refusing after the claim
+    // left those vertices running with no dispatch behind them — `#handleIdle` then saw work in flight
+    // forever and the run never terminated. Measured: a 60 s test timeout, not a slow test.
+    //
+    // It is the backstop for the multiplication the per-value ceilings still permit — a 500-node graph whose
+    // nodes each retry 10 times is 5000 attempts, every one a real provider call.
+    if (this.#nodeDispatches >= ADMISSION_CEILINGS.nodeDispatchesPerRun && !this.#settled) {
+      this.#failure = {
+        error: {
+          // `turn_limit` is the taxonomy's limit-family code, and the taxonomy carries an explicit
+          // anti-widening precedent (ADR-0082 §9) — a run-level cap is the same family as a turn cap.
+          code: 'turn_limit',
+          message: `the run reached its limit of ${ADMISSION_CEILINGS.nodeDispatchesPerRun} node dispatches`,
+          retryable: false,
+        },
+      };
+      this.#abort.abort();
+      // **Re-enter the loop, or the terminal waits on the grace deadline.** With nothing running, returning
+      // here leaves `#step` with no reason to be called again — the abort alone does not schedule one — so
+      // the run would sit until the grace window elapsed before `#handleIdle` could publish `run:failed`.
+      this.#schedule();
+      return; // decided; claiming anything now would dispatch work the run has already refused
+    }
+    // **Clamped by the remaining headroom, not only by `max_parallel`.** The cap is a per-DISPATCH bound and
+    // `#claimReady` claims a whole batch synchronously, so a tick whose ready set straddles the boundary
+    // used to drain in full before the next tick could refuse anything — measured at 512 `node:started`
+    // events against a ceiling of 500, overshooting by the batch width (up to 64).
+    //
+    // Clamping the CLAIM rather than breaking the dispatch loop is the fix that works: a mid-loop bail would
+    // leave the already-claimed remainder `running` with nothing behind it, which is the hang this file's
+    // comment above records as a measured 60 s timeout.
+    const headroom = Math.max(0, ADMISSION_CEILINGS.nodeDispatchesPerRun - this.#nodeDispatches);
+    const ready = this.#claimReady(running, headroom);
     if (ready.length === 0) {
       await this.#handleIdle(running);
       return;
@@ -1630,6 +1708,7 @@ class RunExecution {
     // make a later step see a transient "nothing running" view.
     for (const vertex of ready) {
       await this.handle.whenConsumersReady(); // coarse backpressure (no-drop)
+      this.#nodeDispatches += 1;
       await this.#emitDurable({
         type: 'node:started',
         runId: this.runId,
@@ -1685,12 +1764,18 @@ class RunExecution {
   }
 
   /** Synchronously claim every dispatchable vertex (up to the cap), marking it `running`. */
-  #claimReady(alreadyRunning: number): PlanVertex[] {
-    const cap = this.#plan.maxParallel ?? Number.POSITIVE_INFINITY;
+  #claimReady(alreadyRunning: number, headroom = Number.POSITIVE_INFINITY): PlanVertex[] {
+    // **An omitted `max_parallel` is 8, not Infinity (ADR-0086 §3).** `Infinity` is the one value at which a
+    // concurrency cap governs nothing, and it was the default — so every workflow that did not think about
+    // concurrency ran as wide as its graph. The number is a fixed constant on every machine; deriving it
+    // from host capacity would break the spec's guarantee that a file runs identically on every surface.
+    const cap = this.#plan.maxParallel ?? DEFAULT_MAX_PARALLEL;
     const claimed: PlanVertex[] = [];
     let running = alreadyRunning;
     for (const vertexId of this.#plan.order) {
-      if (running >= cap) {
+      // Two independent bounds, and both must hold before a vertex is marked `running`: the authored
+      // concurrency width, and the run's remaining dispatch headroom (ADR-0086 §4).
+      if (running >= cap || claimed.length >= headroom) {
         break;
       }
       const vertex = this.#plan.vertices.get(vertexId);
@@ -1936,6 +2021,28 @@ class RunExecution {
         await this.#onOutcome(vertex, outcome, startedAtMs, attempt, budgetApproved);
         return;
       }
+      // **The cap is checked BEFORE the promise and before the wait.** A run with no dispatch headroom cannot
+      // honour a retry, so it must not announce one or sleep for one: `node:retrying` is a promise to the
+      // consumer that another attempt is coming, and `backoff_ms` is schema-unbounded up to the 24 h clamp —
+      // so checking afterwards meant a run could wait a full day to be refused, having told every surface it
+      // was about to try again. Routed through `#onOutcome` so it takes the same settled-status guard and the
+      // same terminal path every other outcome takes.
+      if (this.#nodeDispatches >= ADMISSION_CEILINGS.nodeDispatchesPerRun) {
+        await this.#onOutcome(
+          vertex,
+          {
+            kind: 'failed',
+            error: {
+              code: 'turn_limit',
+              message: `the run made ${this.#nodeDispatches} node dispatches, its limit of ${ADMISSION_CEILINGS.nodeDispatchesPerRun}`,
+              retryable: false,
+            },
+          },
+          startedAtMs,
+          attempt,
+        );
+        return;
+      }
       const delayMs = this.#backoffMs(retry, attempt);
       await this.#emitDurable({
         type: 'node:retrying',
@@ -1968,6 +2075,9 @@ class RunExecution {
         return;
       }
       attempt += 1;
+      // The retry loop's own dispatch, counted by the same rule as a fresh one (ADR-0086 §4): one
+      // `node:started`, one dispatch. The headroom was checked above, before anything was promised.
+      this.#nodeDispatches += 1;
       await this.#emitDurable({
         type: 'node:started',
         runId: this.runId,
@@ -2042,6 +2152,11 @@ class RunExecution {
           }
           this.#nodeEmit(event, live);
         },
+        // **ADR-0036's producer-await, handed to the executor (`CR-30`).** The run's own consumer ceiling,
+        // so an executor that streams thousands of token deltas between node boundaries throttles instead
+        // of growing the buffer. `#step` still awaits it once per node — that call bounds the run loop
+        // itself; this one bounds a single node's stream, which is the unbounded case.
+        whenReady: () => this.handle.whenConsumersReady(),
         signal: this.#abort.signal,
         attemptNumber,
         ...(preEgress === undefined ? {} : { preEgress }),
@@ -2250,6 +2365,29 @@ class RunExecution {
   ): Promise<void> {
     // Update status SYNCHRONOUSLY before emitting, so `#countRunning` is consistent the instant this
     // vertex settles — a concurrent step never sees it as still running.
+    // **`CR-32`'s bounds, checked BEFORE the output is retained or emitted.** Retaining first would put the
+    // oversized value in `#states` for the rest of the run — the memory this bound exists to refuse — and
+    // emitting first would hand it to the store. A breach fails the NODE, which is what makes it safe: the
+    // failure is itself a terminal, so a size rule can never leave a run unable to end.
+    //
+    // Rejection rather than truncation, unlike the tool-result bound: half a node's output silently flowing
+    // into the next node's template is a wrong answer that looks like a right one.
+    const measured = measureNodeOutput(vertex.id, outcome.output);
+    const stateBreach =
+      measured.breach === undefined
+        ? measureWorkflowState(this.#workflowStateBytes + measured.bytes)
+        : undefined;
+    const breach = measured.breach ?? stateBreach;
+    if (breach !== undefined) {
+      await this.#settleFailed(
+        vertex,
+        { code: 'validation', message: describeBreach(breach), retryable: false },
+        attemptNumber,
+      );
+      return;
+    }
+    this.#workflowStateBytes += measured.bytes;
+
     const state = this.#states.get(vertex.id);
     if (state !== undefined) {
       state.status = 'completed';
@@ -3443,10 +3581,21 @@ class RunExecution {
 
   async #emitDurable(draft: RunEventDraft, opts?: { readonly handOff?: boolean }): Promise<void> {
     const handOff = opts?.handOff === true;
+    // **`CR-32`'s durable-event bound, and the terminal is exempt.** A run that cannot publish its terminal
+    // is worse in every way than one that wrote an oversized final event: the stream never closes, the lease
+    // is never released, and no surface can tell whether the run finished. ADR-0078 §6 draws the same line
+    // for a store fault. A non-terminal breach is safe to refuse precisely because refusing it fails the run,
+    // which produces a terminal.
+    //
+    // Thrown rather than returned: this method's callers already route a non-terminal fault to the
+    // `#onOutcome` / `#begin` backstops that map it to a single `run:failed`, which is exactly the handling
+    // an oversized event needs and is the same path the media de-inline failure takes.
+
     // Persist the boundary/terminal event, then deliver (ADR-0036 persist-before-deliver, so a crash
-    // can never re-run a completed node or lose its output). This method is **total for store faults** (the
-    // media de-inline below is the one deliberate exception — a NON-terminal de-inline failure re-throws to
-    // the #onOutcome/#begin backstops; see MEDIA DE-INLINE): a store fault
+    // can never re-run a completed node or lose its output). This method is **total for store faults**, with
+    // TWO deliberate exceptions, both of which re-throw to the #onOutcome/#begin backstops for a NON-terminal
+    // event and are exempt for a terminal: the media de-inline (see MEDIA DE-INLINE) and `CR-32`'s
+    // durable-event size bound (below, after the de-inline). A store fault
     // must neither break the exactly-one-terminal-event invariant nor escape as an unhandled rejection
     // out of the fire-and-forget `#loop`. So the `sequenceNumber` is assigned once at the single
     // authoritative point (`next`), and the event is **always delivered** — keeping the stream gap-free
@@ -3496,6 +3645,21 @@ class RunExecution {
         throw error;
       }
     }
+    // **`CR-32`'s durable-event bound, measured on the DE-INLINED draft.** Measuring `draft` here was the
+    // same mistake as measuring a node's raw output: an in-flight media part is base64 until this point and
+    // a `media://` handle after it, so the pre-de-inline size is not the size anything writes or receives.
+    //
+    // A terminal is exempt. A run that cannot publish its terminal is worse in every way than one that wrote
+    // an oversized final event — the stream never closes, the lease is never released, and no surface can
+    // tell whether the run finished. ADR-0078 §6 draws the same line for a store fault. A non-terminal
+    // breach is safe to refuse because refusing it fails the run, which produces a terminal; it is thrown so
+    // the `#onOutcome` / `#begin` backstops map it to a single `run:failed`, the same path a de-inline
+    // failure takes.
+    const sizeBreach = measureDraft(durable.type, durable, TERMINAL_TYPES.has(durable.type));
+    if (sizeBreach !== undefined) {
+      throw new RunLoopInvariantError('event_too_large', describeBreach(sizeBreach));
+    }
+
     const event = this.#bus.next(durable);
     // Record the run's reference for every produced durable media handle (1.AF/D12c), then release the
     // run's references at its terminal event (D11 sweep). Best-effort + synchronous-to-the-stream: a
@@ -3944,6 +4108,20 @@ export class WorkflowEngine {
   readonly #onLegacyMediaJobHold: ((nodeIds: readonly string[]) => void) | undefined;
   readonly #runs = new Map<string, RunExecution>();
   /**
+   * Settled run ids in settle order — `CR-33`'s retention queue
+   * ([ADR-0086](../../../docs/decisions/0086-absolute-admission-ceilings-on-authored-values.md)).
+   *
+   * **Count-based rather than age-based, and that is the decision.** An age policy needs a clock, and a
+   * clock in `packages/core` means a new host seam for a bound that a count expresses exactly as well —
+   * "the last N runs stay addressable" is a promise a caller can reason about, where "runs younger than T"
+   * depends on how busy the process was. It also makes the eviction deterministic, so a test asserts it
+   * rather than waiting for one.
+   *
+   * Only a run that actually SETTLED enters this queue. A parked run — waiting on a human gate or a media
+   * job — is still live work this process owns, and evicting one would strand it.
+   */
+  readonly #settledOrder: string[] = [];
+  /**
    * This engine instance's opaque identity as a lease holder (ADR-0079 §1).
    *
    * From `host.ids.newId()` rather than a process id: the engine is platform-free and has no notion of a
@@ -4015,10 +4193,7 @@ export class WorkflowEngine {
       executor: this.#executor,
       bus,
       capacity: this.#capacity,
-      onSettled: () => {
-        /* settled runs are retained so resume/cancel can report run_already_terminal; a long-lived
-           host may prune them on a TTL — out of 1.N scope. */
-      },
+      onSettled: (settledRunId) => this.#retainSettled(settledRunId),
       ownerId: this.#ownerId,
       ...(this.#effectJournalFactory === undefined
         ? {}
@@ -4251,9 +4426,7 @@ export class WorkflowEngine {
           executor: this.#executor,
           bus,
           capacity: this.#capacity,
-          onSettled: () => {
-            /* retained like a started run (see start) */
-          },
+          onSettled: (settledRunId) => this.#retainSettled(settledRunId),
           resolverCapabilities: this.#resolverCapabilities,
           maxTokensEstimate: this.#maxTokensEstimate,
           ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
@@ -4413,6 +4586,44 @@ export class WorkflowEngine {
   /** Epoch-ms now, derived from the host's ISO clock — core has no second notion of time (ADR-0079 §6). */
   #nowMs(): number {
     return Date.parse(this.#host.clock.now());
+  }
+
+  /**
+   * Retain a settled run, and evict the oldest once more than
+   * {@link ADMISSION_CEILINGS.retainedSettledRuns} are held (`CR-33`).
+   *
+   * **What eviction costs, stated rather than discovered.** A retained settled run exists so `resume` and
+   * `cancel` can answer `run_already_terminal` instead of `unknown_run` — that is the whole reason the map
+   * kept them. After eviction those calls report `unknown_run`, which is a less specific answer to a
+   * question about a run that finished long ago. That is the trade a bound buys: without it a long-lived
+   * host running many workflows grows forever, and "forever" is not a nicer answer to anything.
+   *
+   * The run's OUTCOME is not lost — it is in the durable log, which is where a surface reads a finished
+   * run's result from anyway (`relavium logs <runId>`). Only the in-memory shortcut goes.
+   *
+   * **It also drops `resumeFromCheckpoint`'s `run_already_active` guard for that run**, which the first
+   * version of this comment did not say. That is a convenience refusal rather than a safety one, and the
+   * safety it looks like it provides lives elsewhere: `resumeFromCheckpoint` independently refuses a
+   * checkpoint whose `runStatus` is terminal and returns a closed handle. The one shape that slips through
+   * is a run whose terminal WRITE failed — `durability: 'uncertain'`, terminal held in the outbox — where the
+   * checkpoint does not yet read terminal. Re-driving that run is what `reconcile()` exists to do, so the
+   * outcome is the intended recovery rather than a hazard; it is recorded here because a reader deciding
+   * whether eviction is safe should not have to re-derive it.
+   *
+   * Idempotent on a repeated settle: `#settleFenced` and `#settle` can both reach `onSettled` for the same
+   * run, and a second entry would evict a live run one slot early.
+   */
+  #retainSettled(runId: string): void {
+    if (this.#settledOrder.includes(runId)) {
+      return;
+    }
+    this.#settledOrder.push(runId);
+    while (this.#settledOrder.length > ADMISSION_CEILINGS.retainedSettledRuns) {
+      const evicted = this.#settledOrder.shift();
+      if (evicted !== undefined) {
+        this.#runs.delete(evicted);
+      }
+    }
   }
 
   async #claimForReconcile(runId: string): Promise<RunFence | undefined> {

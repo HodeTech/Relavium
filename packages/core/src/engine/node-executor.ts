@@ -181,6 +181,17 @@ export interface NodeExecContext {
   readonly toolPolicy: ToolPolicy;
   /** Emit a streaming event mid-execution; the engine stamps the envelope and routes it to the bus. */
   emit: (event: NodeStreamEvent) => void;
+  /**
+   * The producer-await half of ADR-0036's no-drop, bounded-per-consumer buffering (`CR-30`): resolves once
+   * the run's consumer has drained to its ceiling. An executor that emits an unbounded number of events —
+   * a streaming agent turn is the only one today — must await this between them, or the "bounded per
+   * consumer" the ADR guarantees is not enforced by anything.
+   *
+   * `emit` stays synchronous on purpose: making it async would push a contract change through every
+   * executor to bound one producer. Optional so a test double that emits nothing need not supply it;
+   * absent means "never throttle", which is the pre-`CR-30` behaviour.
+   */
+  readonly whenReady?: () => Promise<void>;
   /** Aborts when the run is cancelled, fails elsewhere, or times out — thread it into provider/tool calls. */
   readonly signal: AbortSignalLike;
   /** 1-based attempt number for this dispatch (always 1 in 1.N; node-level retry is 1.S). */

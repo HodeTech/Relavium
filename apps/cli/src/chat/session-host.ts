@@ -567,14 +567,23 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     // The session runs against the EFFECTIVE agent: its grant unioned with the discovered MCP tool ids (2.R)
     // and then narrowed by the 2.5.A advertise-filter to the tools whose ToolHost arm is actually wired (an
     // unwired tool is never offered). The ORIGINAL `agent` is what we return + persist (see {@link BuiltChatSession.agent}).
+    // **The producer-await knob, late-bound (`CR-30`, ADR-0036).** The handle is created FROM the session
+    // (it closes over `session.cancel()`), so the session cannot hold it at construction. `whenReady` is
+    // only ever called during a turn, long after both exist, so a thunk that reads this slot is safe — and
+    // it resolves immediately while the slot is still empty, which is the correct answer for "no consumer
+    // has attached yet".
+    const attached: { handle?: SessionHandle } = {};
+    const whenReady = (): Promise<void> =>
+      attached.handle?.whenConsumersReady() ?? Promise.resolve();
     const session = new AgentSession({
       sessionId,
       agentRef: agent.id,
       agent: narrowToWired(withMcpGrant(agent, mcp), host, deps.tools),
       context,
-      deps,
+      deps: { ...deps, whenReady },
     });
     const handle = createSessionHandle(bus, sessionId, () => session.cancel());
+    attached.handle = handle;
     return {
       session,
       handle,
@@ -767,17 +776,25 @@ export async function buildResumedChatSession(
   try {
     const { bus, deps, emit, host, governor, attachDurabilityProbe, attachEffectJournal } =
       buildSessionRuntime(opts, record.id, mcp, context);
+    // The same late-bound producer-await slot as the fresh-session path (`CR-30`), declared again because
+    // this is a separate function. A resumed session streams exactly like a new one, so leaving it out
+    // would have shipped the bound on one of the two ways a chat starts.
+    const attached: { handle?: SessionHandle } = {};
     const session = AgentSession.resume(
       {
         sessionId: record.id,
         agentRef: agent.id,
         agent: narrowToWired(withMcpGrant(agent, mcp), host, deps.tools),
         context,
-        deps,
+        deps: {
+          ...deps,
+          whenReady: () => attached.handle?.whenConsumersReady() ?? Promise.resolve(),
+        },
       },
       resumeState,
     );
     const handle = createSessionHandle(bus, record.id, () => session.cancel());
+    attached.handle = handle;
     // Seed the persister one past the persisted MAX(sequence_number) — a fold (not `Math.max(...spread)`, which
     // would overflow the argument-count limit on a very long transcript) over the durable rows, so it is
     // order-independent and starts an empty transcript at 0 (reduce of `[]` from -1, +1 = 0). NOTE: this is a

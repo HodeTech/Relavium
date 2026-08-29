@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-08-27 — the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
+> Last updated: 2026-08-28 — the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
 > review added the deliberately-unscheduled block at the end, and Phase 2.6.5's `W1` and `W2` residual
 > sections were appended as those waves closed.
 >

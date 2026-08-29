@@ -44,6 +44,14 @@ cap; the budget is enforced *pre-egress* — estimate-and-block, not count-after
   outcome.
 - **Concurrency cap.** A configurable maximum number of in-flight provider calls bounds a wide
   fan-out so it cannot trigger a rate-limit/cost storm.
+
+  > **Amended 2026-08-28 by [ADR-0086](0086-absolute-admission-ceilings-on-authored-values.md) — a
+  > refinement, not a reversal.** This bullet says the cap is configurable and never says what an OMITTED
+  > value means; it meant `Infinity`, which is the one value at which the cap governs nothing. ADR-0086 makes
+  > an omitted `max_parallel` **8** — a fixed constant on every machine, because
+  > [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md) guarantees a file runs identically
+  > on every surface — and gives the field an absolute ceiling of **64**. "Configurable" is unchanged; it now
+  > has a floor of meaning and a roof.
 - **Events.** New `budget:warning`, `budget:paused` (human-gate-shaped, resumable via the
   `resume_budget` IPC command + the `relavium budget resume` CLI / `relavium.resumeBudget` VS Code
   paths), and `run:timeout` events join the canonical stream

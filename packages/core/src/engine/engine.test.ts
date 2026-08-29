@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import type { MediaReferencePort, MediaStore, MediaWritePort, RunEvent } from '@relavium/shared';
 
+import { ADMISSION_CEILINGS, DEFAULT_MAX_PARALLEL } from '../limits.js';
 import { parseWorkflow, type WorkflowDefinition } from '../parser.js';
+import { reconstructCheckpointState } from './checkpoint.js';
+import { SIZE_BOUNDS } from './size-bounds.js';
 import { EngineStateError } from './errors.js';
 import {
   createInMemoryHost,
@@ -2071,6 +2074,106 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     expect(armedWork).not.toContain(3_601_000);
   });
 
+  it('a resume SEEDS the dispatch count rather than restarting it (ADR-0086 §4)', async () => {
+    // **The seed line is the entire claim of ADR-0086 §4** — "the cap survives a crash-resume". A first
+    // version asserted only that the durable fold continued, which is a property of
+    // `reconstructCheckpointState` rather than of the engine, and stayed green with the seed removed.
+    //
+    // A seed has to CHANGE an outcome to be testable. So process A spends almost the whole cap and parks;
+    // process B's own handful of nodes then crosses it only because the restored count is applied. Without
+    // the seed B starts from zero and finishes.
+    // Node COUNT must stay under its own ceiling (500) while DISPATCHES cross theirs, so the chain is short
+    // of both and the gate + tail make up the difference: 492 + gate + 5 + start + done = 500 nodes exactly.
+    const BEFORE = ADMISSION_CEILINGS.nodes - 8;
+    const beforeIds = Array.from({ length: BEFORE }, (_, i) => `a${i}`);
+    // The tail carries a RETRY, because 500 nodes can only ever produce 500 dispatches: the excess that
+    // crosses the cap has to come from re-dispatches, exactly as it does in a real runaway.
+    const afterIds = ['b0', 'b1', 'b2', 'b3', 'b4'];
+    const RETRIES = ADMISSION_CEILINGS.retryMax; // 10 — enough that the cap trips before the budget does
+    const line = ['start', ...beforeIds, 'g', ...afterIds];
+    const WF = `  id: capped-resume
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: start, type: input }
+${beforeIds.map((id) => `    - { id: ${id}, type: transform, transform: 'g' }`).join('\n')}
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: b0, type: agent, agent_ref: ag, prompt_template: 'go', retry: { max: ${RETRIES}, backoff: linear, backoff_ms: 1 } }
+${afterIds
+  .slice(1)
+  .map((id) => `    - { id: ${id}, type: transform, transform: 'g' }`)
+  .join('\n')}
+    - { id: done, type: output }
+  edges:
+${line
+  .slice(1)
+  .map((id, i) => `    - { from: ${line[i]}, to: ${id} }`)
+  .join('\n')}
+    - { from: ${afterIds[afterIds.length - 1]}, to: done }`;
+
+    const store = new InMemoryRunStore();
+    const engineA = engineWith(
+      { g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?' } }) },
+      createInMemoryHost({ store }),
+    );
+    const handleA = engineA.start({ workflow: workflow(WF) });
+    let gateId = '';
+    let dispatchesBefore = 0;
+    for await (const event of handleA.events) {
+      if (event.type === 'node:started') dispatchesBefore += 1;
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+    // The premise: A really did spend almost the whole cap, and the durable log carries the count.
+    expect(dispatchesBefore).toBeGreaterThan(ADMISSION_CEILINGS.nodeDispatchesPerRun - 10);
+    expect(reconstructCheckpointState(store.eventsFor(handleA.runId))?.nodeDispatches).toBe(
+      dispatchesBefore,
+    );
+
+    // `b0` always fails retryably, so it spends its whole budget and every attempt is a dispatch.
+    const hostB = createInMemoryHost({ store });
+    const engineB = engineWith(
+      {
+        b0: () => ({
+          kind: 'failed',
+          error: { code: 'provider_unavailable', message: 'flaky', retryable: true },
+        }),
+      },
+      hostB,
+    );
+    const handleB = await engineB.resumeFromCheckpoint({
+      runId: handleA.runId,
+      workflow: workflow(WF),
+      gateId,
+      decision: { decision: 'approved', decidedBy: 'tester' },
+    });
+    // The retry backoff arms a `work` timer, so a plain `drain` would wait on wall-clock that never passes.
+    const events: RunEvent[] = [];
+    let settled = false;
+    const pump = (async (): Promise<void> => {
+      while (!settled) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        if (hostB.armedCount() > 0) hostB.fireTimers();
+        if (hostB.deadlineCount() > 0) hostB.fireDeadlines();
+      }
+    })();
+    for await (const event of handleB.events) {
+      events.push(event);
+      if (event.type === 'run:failed' || event.type === 'run:completed') settled = true;
+    }
+    await pump;
+
+    // Refused, and that is the assertion: the cap counts the RUN, so what process A already spent bounds
+    // what process B may still dispatch.
+    const terminal = events.at(-1);
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('turn_limit');
+  }, 60_000);
+
   it('the re-armed timer must not beat the decision this resume was handed', async () => {
     // **A regression `CR-22` introduced and its own tests could not see.** Rehydration arms a timer for
     // EVERY pending gate — including the one this resume targets — and a past-deadline gate arms at zero.
@@ -3994,6 +4097,254 @@ describe('WorkflowEngine — node retry budget above the chain (1.S)', () => {
 
 // --- concurrency cap --------------------------------------------------------------------------
 
+describe('WorkflowEngine — CR-33 settled-run retention (ADR-0086)', () => {
+  const TINY = `  id: tiny
+  nodes:
+    - { id: start, type: input }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: done }`;
+
+  it('keeps the last N settled runs addressable and evicts older ones', async () => {
+    // `WorkflowEngine` kept every completed run forever, so a long-lived process running many workflows grew
+    // without limit. Count-based rather than age-based on purpose: an age policy needs a clock, and a clock
+    // in `packages/core` is a new host seam for a bound a count expresses exactly as well — and this way the
+    // eviction is deterministic enough to assert rather than wait for.
+    const engine = engineWith();
+    const N = ADMISSION_CEILINGS.retainedSettledRuns;
+    const ids: string[] = [];
+    for (let i = 0; i < N + 3; i += 1) {
+      const handle = engine.start({ workflow: workflow(TINY) });
+      ids.push(handle.runId);
+      await drain(handle);
+    }
+
+    // **What eviction costs, asserted rather than assumed.** A retained settled run exists so `cancel` can
+    // answer `run_already_terminal` instead of `unknown_run`; after eviction it reports `unknown_run`, a
+    // less specific answer about a run that finished long ago. The run's OUTCOME is not lost — it is in the
+    // durable log, which is where a surface reads a finished run's result from anyway.
+    // The CODE is the assertion, not the error class — both cases throw `EngineStateError`, so asserting the
+    // class alone passes whether or not anything is ever evicted. (It did: the first version of this test
+    // stayed green with eviction removed entirely.)
+    const codeOf = (runId: string): string => {
+      try {
+        engine.cancel(runId);
+        return 'no-throw';
+      } catch (error) {
+        return error instanceof EngineStateError ? error.code : 'not-an-engine-error';
+      }
+    };
+    expect(codeOf(ids[0] ?? '')).toBe('unknown_run');
+    // …and the most recent is still retained, still answering the specific way.
+    expect(codeOf(ids[ids.length - 1] ?? '')).not.toBe('unknown_run');
+  });
+
+  it('does not evict a run that is merely PARKED — that is live work', async () => {
+    // Only a run that actually settled enters the queue. A run waiting on a human gate is work this process
+    // still owns, and evicting one would strand it: `resume` would report `unknown_run` for a gate the user
+    // is looking at.
+    const PARKED = `  id: parked
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: done }`;
+    const engine = engineWith({
+      g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?' } }),
+    });
+    const parked = engine.start({ workflow: workflow(PARKED) });
+    for await (const event of parked.events) {
+      if (event.type === 'run:paused') break;
+    }
+    // **On the SAME engine, or the test exerts no pressure at all.** The first version settled these on 105
+    // throwaway engines, so the engine under test never had one settled run in its queue and stayed green
+    // with eviction removed entirely — a test that cannot fail for the thing it is named after.
+    for (let i = 0; i < ADMISSION_CEILINGS.retainedSettledRuns + 5; i += 1) {
+      await drain(engine.start({ workflow: workflow(TINY) }));
+    }
+    // The parked run is still addressable: it never settled, so it never entered the queue and eviction —
+    // which has definitely run by now, 5 times over — never reached it.
+    expect(() => engine.cancel(parked.runId)).not.toThrow();
+  });
+});
+
+describe('WorkflowEngine — CR-32 size bounds at the durable boundary (ADR-0086)', () => {
+  const SIMPLE = `  id: sized
+  nodes:
+    - { id: start, type: input }
+    - { id: big, type: transform, transform: 'g' }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: big }
+    - { from: big, to: done }`;
+
+  it('fails the node whose output exceeds the bound, and never retains it', async () => {
+    // Rejection, not truncation: half a node's output silently flowing into the next node's template is a
+    // wrong answer that looks like a right one. The failure is itself a terminal, which is what makes a size
+    // rule safe here — it can refuse without leaving the run unable to end.
+    const events = await drain(
+      engineWith({
+        big: () => ({ kind: 'completed', output: 'x'.repeat(SIZE_BOUNDS.nodeOutputBytes + 1000) }),
+      }).start({ workflow: workflow(SIMPLE) }),
+    );
+    const failed = events.find((e) => e.type === 'node:failed');
+    expect(failed?.type === 'node:failed' && failed.error.code).toBe('validation');
+    expect(failed?.type === 'node:failed' && failed.error.message).toContain(
+      String(SIZE_BOUNDS.nodeOutputBytes),
+    );
+    // The oversized value never reached the log: `node:completed` for `big` was never emitted — and the node
+    // is reported FAILED rather than silently skipped, which is the ordering the production comment claims
+    // (check before retain, before emit) and which nothing else pins.
+    expect(events.some((e) => e.type === 'node:completed' && e.nodeId === 'big')).toBe(false);
+    expect(events.some((e) => e.type === 'node:failed' && e.nodeId === 'big')).toBe(true);
+    expect(terminalsIn(events)).toHaveLength(1);
+  });
+
+  it('a large GENERATED image is not refused — the bound measures the handle, not the base64', async () => {
+    // **The regression the first version of CR-32 shipped, and the sharpest kind: an error the author cannot
+    // act on.** A media node returns `{ kind: 'base64', data }` in flight; `deInlineMedia` replaces that with
+    // a ~100-byte `media://` handle before anything is persisted or delivered, and `state.output` keeps the
+    // raw form only because the de-inline is non-mutating. Measuring the raw form failed every image over
+    // ~192 KiB decoded against a bound whose real payload was a hundred bytes — reproduced before the fix as
+    // `node \`work\` output is 280098 bytes, above the limit of 262144`. The author cannot make a model
+    // return fewer bytes, so there was no workaround.
+    //
+    // Every media fixture in this file is 8 bytes of base64, which is why nothing here could see it.
+    const { store: mediaStore } = stubMediaStore();
+    const huge = {
+      type: 'media' as const,
+      mimeType: 'image/png',
+      source: { kind: 'base64' as const, data: 'A'.repeat(SIZE_BOUNDS.nodeOutputBytes + 20_000) },
+    };
+    const events = await drain(
+      engineWith(
+        { big: () => ({ kind: 'completed', output: { text: '', media: [huge] } }) },
+        createInMemoryHost({ store: new InMemoryRunStore(), mediaStore }),
+      ).start({ workflow: workflow(SIMPLE) }),
+    );
+    expect(events.some((e) => e.type === 'node:completed' && e.nodeId === 'big')).toBe(true);
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
+  it('admits an output just under the bound — the negative control', async () => {
+    const events = await drain(
+      engineWith({
+        big: () => ({ kind: 'completed', output: 'x'.repeat(SIZE_BOUNDS.nodeOutputBytes - 1000) }),
+      }).start({ workflow: workflow(SIMPLE) }),
+    );
+    expect(events.some((e) => e.type === 'node:completed' && e.nodeId === 'big')).toBe(true);
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
+  it('a resume SEEDS the workflow-state total rather than restarting it', async () => {
+    // **The same defect the dispatch counter has its own seed for, one bound over.** A resume rehydrates
+    // every settled node's output into `#states` — that memory is real and already held — so a counter
+    // starting at zero would hand the resumed run the whole 4 MiB again on top of what it just restored.
+    //
+    // Process A settles two nodes carrying a known payload, then parks. Process B rehydrates and its total
+    // must already reflect them, which is only observable through what B will still accept.
+    // **The seed has to CHANGE an outcome, or the test cannot fail.** A first version asserted only that the
+    // resumed run completed, which it did with the seed removed too — the resumed half was tiny. So process A
+    // settles most of the budget and process B adds enough that the SUM breaches while B's own share does
+    // not: with the seed the resumed run is correctly refused, without it B sees a fresh 4 MiB and finishes.
+    const per = SIZE_BOUNDS.nodeOutputBytes - 1000;
+    const beforeCount = Math.floor((SIZE_BOUNDS.workflowStateBytes * 0.75) / per);
+    const afterCount = Math.ceil((SIZE_BOUNDS.workflowStateBytes * 0.5) / per);
+    const store = new InMemoryRunStore();
+    const beforeIds = Array.from({ length: beforeCount }, (_, i) => `a${i}`);
+    const afterIds = Array.from({ length: afterCount }, (_, i) => `b${i}`);
+    const line = ['start', ...beforeIds, 'g', ...afterIds];
+    const WF = `  id: resumed-state
+  nodes:
+    - { id: start, type: input }
+${beforeIds.map((id) => `    - { id: ${id}, type: transform, transform: 'g' }`).join('\n')}
+    - { id: g, type: human_gate, gate_type: approval }
+${afterIds.map((id) => `    - { id: ${id}, type: transform, transform: 'g' }`).join('\n')}
+    - { id: done, type: output }
+  edges:
+${line
+  .slice(1)
+  .map((id, i) => `    - { from: ${line[i]}, to: ${id} }`)
+  .join('\n')}
+    - { from: ${line[line.length - 1]}, to: done }`;
+    const payload = (): { kind: 'completed'; output: string } => ({
+      kind: 'completed',
+      output: 'x'.repeat(per),
+    });
+    const engineA = engineWith(
+      {
+        ...Object.fromEntries(beforeIds.map((id) => [id, payload])),
+        g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?' } }),
+      },
+      createInMemoryHost({ store }),
+    );
+    const handleA = engineA.start({ workflow: workflow(WF) });
+    let gateId = '';
+    for await (const event of handleA.events) {
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+
+    const cp = reconstructCheckpointState(store.eventsFor(handleA.runId));
+    // The premise: the checkpoint really carries the settled node's output, so process B restores it.
+    expect(cp?.nodeStates.get(beforeIds[0] ?? '')?.output).toBeDefined();
+
+    const engineB = engineWith(
+      Object.fromEntries(afterIds.map((id) => [id, payload])),
+      createInMemoryHost({ store }),
+    );
+    const events = await drain(
+      await engineB.resumeFromCheckpoint({
+        runId: handleA.runId,
+        workflow: workflow(WF),
+        gateId,
+        decision: { decision: 'approved', decidedBy: 'tester' },
+      }),
+    );
+    // Refused, and that is the assertion: the state bound is a RUN bound, so what process A already spent
+    // counts against what process B may still add. Without the seed, B would see a fresh budget and finish.
+    const failed = events.find((e) => e.type === 'node:failed');
+    expect(failed?.type === 'node:failed' && failed.error.message).toContain('workflow state');
+  });
+
+  it('fails the run when the accumulated workflow STATE exceeds its own bound', async () => {
+    // Each output is individually legal; together they are not. A single shared number would make the
+    // per-node bound either useless or absurd, which is why these are two bounds and not one.
+    const per = SIZE_BOUNDS.nodeOutputBytes - 1000;
+    const count = Math.ceil(SIZE_BOUNDS.workflowStateBytes / per) + 1;
+    const ids = Array.from({ length: count }, (_, i) => `s${i}`);
+    const nodes = ids
+      .map((id) => `    - { id: ${id}, type: transform, transform: 'g' }`)
+      .join('\n');
+    const line = ['start', ...ids];
+    const edges = line
+      .slice(1)
+      .map((id, i) => `    - { from: ${line[i]}, to: ${id} }`)
+      .join('\n');
+    const events = await drain(
+      engineWith(
+        Object.fromEntries(
+          ids.map((id) => [id, () => ({ kind: 'completed' as const, output: 'x'.repeat(per) })]),
+        ),
+      ).start({
+        workflow: workflow(`  id: statey
+  nodes:
+    - { id: start, type: input }
+${nodes}
+  edges:
+${edges}`),
+      }),
+    );
+    const failed = events.find((e) => e.type === 'node:failed');
+    expect(failed?.type === 'node:failed' && failed.error.message).toContain('workflow state');
+    expect(terminalsIn(events)).toHaveLength(1);
+  });
+});
+
 describe('WorkflowEngine — max_parallel concurrency cap', () => {
   it('never runs more than max_parallel branches concurrently, yet runs them all', async () => {
     let live = 0;
@@ -4031,6 +4382,375 @@ describe('WorkflowEngine — max_parallel concurrency cap', () => {
     );
     expect(completedBranches).toHaveLength(3);
     assertGapFreeSeq(events); // gap-free even under concurrent fan-out
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
+  it('fails the run at the node-dispatch cap, with the limit-family code (ADR-0086 §4)', async () => {
+    // The runtime backstop for the multiplication the per-value ceilings still permit. Crossing it needs a
+    // graph that is otherwise entirely LEGAL — every per-value ceiling respected — which is the point: this
+    // cap exists for exactly the workflow no single ceiling refuses.
+    //
+    // 495 succeeding nodes, then one agent node with a legal `retry.max: 10` that always fails retryably:
+    // 495 + 10 = 505 dispatches against a cap of 500. The discriminator is the CODE — without the cap the
+    // run still fails, but as `provider_unavailable` from an exhausted retry budget.
+    const CHAIN = ADMISSION_CEILINGS.nodeDispatchesPerRun - 5;
+    const ids = Array.from({ length: CHAIN }, (_, i) => `n${i}`);
+    const nodes = ids
+      .map((id, i) =>
+        i === 0
+          ? `    - { id: ${id}, type: input }`
+          : `    - { id: ${id}, type: transform, transform: 'g' }`,
+      )
+      .join('\n');
+    const edges = ids
+      .slice(1)
+      .map((id, i) => `    - { from: ${ids[i]}, to: ${id} }`)
+      .join('\n');
+    const last = ids[ids.length - 1];
+
+    const host = createInMemoryHost();
+    const engine = engineWith(
+      {
+        flaky: () => ({
+          kind: 'failed',
+          error: { code: 'provider_unavailable', message: 'flaky', retryable: true },
+        }),
+      },
+      host,
+    );
+    const handle = engine.start({
+      workflow: workflow(`  id: dispatch-cap
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+${nodes}
+    - { id: flaky, type: agent, agent_ref: ag, prompt_template: 'go', retry: { max: ${ADMISSION_CEILINGS.retryMax}, backoff: linear, backoff_ms: 1 } }
+  edges:
+${edges}
+    - { from: ${last}, to: flaky }`),
+    });
+    // The drain is the MAIN loop and the timer pump is the side one — the reverse hung, because a pump that
+    // yields only to microtasks never lets a 495-node chain's consumer make progress.
+    const events: RunEvent[] = [];
+    let settled = false;
+    const pump = (async (): Promise<void> => {
+      while (!settled) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        if (host.armedCount() > 0) host.fireTimers(); // the retry backoff
+        // AND the deadlines: the cap aborts, which arms the grace window (a `deadline` timer). Firing only
+        // `work` left the aborted run waiting on a backstop nothing would trip — a 60 s timeout, measured.
+        if (host.deadlineCount() > 0) host.fireDeadlines();
+      }
+    })();
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:failed' || event.type === 'run:completed') settled = true;
+    }
+    await pump;
+
+    const terminal = events.at(-1);
+    expect(terminal?.type).toBe('run:failed');
+    // **The load-bearing assertion.** Without the cap this run still fails — as `provider_unavailable`, from
+    // an exhausted retry budget. `turn_limit` is the only thing that distinguishes the cap firing.
+    //
+    // The cap has TWO check sites — before `#claimReady` and inside the retry loop — and each covers a case
+    // the other cannot: the first refuses a fresh node, the second refuses a re-dispatch of one already
+    // running. Removing either alone leaves this test green, because the other still fires; that is not a
+    // hollow test but it IS an incomplete one, so `retry loop` below pins the second site on its own.
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('turn_limit');
+    expect(events.filter((e) => e.type === 'node:started').length).toBeLessThanOrEqual(
+      ADMISSION_CEILINGS.nodeDispatchesPerRun,
+    );
+    expect(terminalsIn(events)).toHaveLength(1);
+    // A heavy test on purpose: crossing a 500-dispatch cap needs ~500 real dispatches, and no smaller
+    // construction exercises it — every per-value ceiling is legal here, which is the case the cap is for.
+  }, 60_000);
+
+  it('the retry loop is capped on its own, not only the fresh-dispatch path (ADR-0086 §4)', async () => {
+    // The second check site, pinned separately. A run whose graph is tiny but whose ONE node retries cannot
+    // be stopped by the pre-claim check — that path runs once, for a node already claimed. Here the whole
+    // budget lives in the retry loop, so this reddens when the loop's own check is removed and stays green
+    // when the pre-claim one is.
+    //
+    // 498 succeeding nodes leave 2 dispatches of headroom, so the flaky node's FIRST attempt lands at 499
+    // and its first re-dispatch is what the cap must refuse.
+    const CHAIN = ADMISSION_CEILINGS.nodeDispatchesPerRun - 2;
+    const ids = Array.from({ length: CHAIN }, (_, i) => `n${i}`);
+    const nodes = ids
+      .map((id, i) =>
+        i === 0
+          ? `    - { id: ${id}, type: input }`
+          : `    - { id: ${id}, type: transform, transform: 'g' }`,
+      )
+      .join('\n');
+    const edges = ids
+      .slice(1)
+      .map((id, i) => `    - { from: ${ids[i]}, to: ${id} }`)
+      .join('\n');
+    const host = createInMemoryHost();
+    const engine = engineWith(
+      {
+        flaky: () => ({
+          kind: 'failed',
+          error: { code: 'provider_unavailable', message: 'flaky', retryable: true },
+        }),
+      },
+      host,
+    );
+    const handle = engine.start({
+      workflow: workflow(`  id: retry-cap
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+${nodes}
+    - { id: flaky, type: agent, agent_ref: ag, prompt_template: 'go', retry: { max: ${ADMISSION_CEILINGS.retryMax}, backoff: linear, backoff_ms: 1 } }
+  edges:
+${edges}
+    - { from: ${ids[ids.length - 1]}, to: flaky }`),
+    });
+    const events: RunEvent[] = [];
+    let settled = false;
+    const pump = (async (): Promise<void> => {
+      while (!settled) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        if (host.armedCount() > 0) host.fireTimers();
+        if (host.deadlineCount() > 0) host.fireDeadlines();
+      }
+    })();
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:failed' || event.type === 'run:completed') settled = true;
+    }
+    await pump;
+
+    const terminal = events.at(-1);
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('turn_limit');
+    // The flaky node started but never exhausted its authored budget of 10 — the cap stopped it first.
+    const flakyStarts = events.filter((e) => e.type === 'node:started' && e.nodeId === 'flaky');
+    expect(flakyStarts.length).toBeLessThan(ADMISSION_CEILINGS.retryMax);
+  }, 60_000);
+
+  it('at the cap, a retry is refused BEFORE the promise and the sleep (ADR-0086 §4)', async () => {
+    // **The order is the whole finding.** The check used to sit after `node:retrying` and after the backoff,
+    // so a run with no headroom announced a retry it could not honour and then slept for it — and
+    // `backoff_ms` is schema-unbounded up to the 24 h clamp, so that wait could be a day.
+    //
+    // The assertion that CATCHES the regression is the count comparison below: with the check in its old
+    // position the refused attempt is still announced, so `node:retrying` equals `node:started` instead of
+    // trailing it (measured: `expected 2 to be less than 2`). The terminal code does NOT discriminate — the
+    // old code also ended `turn_limit`, just a day later.
+    //
+    // The backoff-arm count is a second, weaker invariant kept alongside it: the engine never sleeps for an
+    // attempt it did not announce. It holds in both versions, so it is not what reddens here; it is here
+    // because an arm without an announcement would be a different defect nothing else would see. It counts
+    // arms at exactly the fixture's 24 h delay, which `armedCount()` cannot isolate — that aggregate also
+    // carries the lease heartbeat, media polls and the grace window.
+    const CHAIN = ADMISSION_CEILINGS.nodeDispatchesPerRun - 2;
+    const BACKOFF_MS = 86_400_000; // the 24 h clamp — the point of the finding
+    const ids = Array.from({ length: CHAIN }, (_, i) => `n${i}`);
+    const nodes = ids
+      .map((id, i) =>
+        i === 0
+          ? `    - { id: ${id}, type: input }`
+          : `    - { id: ${id}, type: transform, transform: 'g' }`,
+      )
+      .join('\n');
+    const edges = ids
+      .slice(1)
+      .map((id, i) => `    - { from: ${ids[i]}, to: ${id} }`)
+      .join('\n');
+    // The backoff is the ONLY timer this fixture arms at 24 h, so counting arms at exactly that delay
+    // isolates it — `armedCount()` cannot, because it aggregates the lease heartbeat, media polls and the
+    // grace window along with it. Delegated method-by-method: `base` is a class-bearing object and a spread
+    // would drop its prototype.
+    const base = createInMemoryHost();
+    let backoffArms = 0;
+    const host: typeof base = {
+      ...base,
+      setTimer: (ms, fire, kind) => {
+        if (ms === BACKOFF_MS) backoffArms += 1;
+        return base.setTimer(ms, fire, kind);
+      },
+    };
+    const handle = engineWith(
+      {
+        flaky: () => ({
+          kind: 'failed',
+          error: { code: 'provider_unavailable', message: 'flaky', retryable: true },
+        }),
+      },
+      host,
+    ).start({
+      workflow: workflow(`  id: cap-before-sleep
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+${nodes}
+    - { id: flaky, type: agent, agent_ref: ag, prompt_template: 'go', retry: { max: ${ADMISSION_CEILINGS.retryMax}, backoff: linear, backoff_ms: ${BACKOFF_MS} } }
+  edges:
+${edges}
+    - { from: ${ids[ids.length - 1]}, to: flaky }`),
+    });
+
+    const events: RunEvent[] = [];
+    let settled = false;
+    const pump = (async (): Promise<void> => {
+      while (!settled) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        if (host.armedCount() > 0) host.fireTimers();
+        if (host.deadlineCount() > 0) host.fireDeadlines();
+      }
+    })();
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:failed' || event.type === 'run:completed') settled = true;
+    }
+    await pump;
+
+    const terminal = events.at(-1);
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('turn_limit');
+    // The refused attempt promised nothing: `flaky` started twice (cap reached on the second) and never
+    // announced a third.
+    const retrying = events.filter((e) => e.type === 'node:retrying' && e.nodeId === 'flaky');
+    const starts = events.filter((e) => e.type === 'node:started' && e.nodeId === 'flaky');
+    expect(retrying.length).toBeLessThan(starts.length);
+    // Never a sleep the consumer was not told about.
+    expect(backoffArms).toBe(retrying.length);
+  }, 60_000);
+
+  it('a WIDE ready batch cannot straddle the dispatch cap (ADR-0086 §4)', async () => {
+    // **The overshoot both earlier cap tests were blind to.** Each of them uses a linear chain, so
+    // `ready.length` is always 1 and the boundary is always crossed one dispatch at a time. `#claimReady`
+    // claims a whole batch synchronously, up to `max_parallel`, so a tick whose ready set straddles the
+    // boundary used to dispatch every member before the next tick could refuse anything — measured at 512
+    // `node:started` events against a ceiling of 500.
+    //
+    // A chain that stops 4 short, then a 20-wide fan-out: the batch is bigger than the headroom, so the
+    // claim itself must be clamped. Breaking the dispatch loop instead would leave the unclaimed remainder
+    // `running` with nothing behind it — the hang this engine already measured once.
+    // The graph must stay UNDER the node ceiling while its DISPATCHES exceed the run cap, so the excess
+    // comes from retries: 45 agent nodes that each fail 9 times then succeed spend 450 dispatches across 45
+    // nodes. 46 transforms carry it to 496, four short of the cap, and then a 20-wide fan-out asks for 20
+    // more in one batch.
+    const RETRIERS = 45;
+    const PER = ADMISSION_CEILINGS.retryMax; // 10 attempts each: 9 failures then a success
+    const FILLERS = ADMISSION_CEILINGS.nodeDispatchesPerRun - 4 - RETRIERS * PER;
+    const WIDTH = 20;
+    const retriers = Array.from({ length: RETRIERS }, (_, i) => `r${i}`);
+    const fillers = Array.from({ length: FILLERS }, (_, i) => `f${i}`);
+    const branches = Array.from({ length: WIDTH }, (_, i) => `w${i}`);
+    const seen = new Map<string, number>();
+    const flakyThenOk: Handler = (ctx) => {
+      const n = (seen.get(ctx.vertex.id) ?? 0) + 1;
+      seen.set(ctx.vertex.id, n);
+      return n < PER
+        ? {
+            kind: 'failed',
+            error: { code: 'provider_unavailable', message: 'flaky', retryable: true },
+          }
+        : { kind: 'completed', output: null };
+    };
+    const nodes = [
+      `    - { id: start, type: input }`,
+      ...retriers.map(
+        (id) =>
+          `    - { id: ${id}, type: agent, agent_ref: ag, prompt_template: 'go', retry: { max: ${PER}, backoff: linear, backoff_ms: 1 } }`,
+      ),
+      ...fillers.map((id) => `    - { id: ${id}, type: transform, transform: 'g' }`),
+      `    - { id: fan, type: parallel, parallel_of: [${branches.join(', ')}] }`,
+      ...branches.map((b) => `    - { id: ${b}, type: transform, transform: 'g' }`),
+    ].join('\n');
+    const line = ['start', ...retriers, ...fillers, 'fan'];
+    const edges = line
+      .slice(1)
+      .map((id, i) => `    - { from: ${line[i]}, to: ${id} }`)
+      .join('\n');
+
+    const host = createInMemoryHost();
+    const handle = engineWith(
+      Object.fromEntries(retriers.map((id) => [id, flakyThenOk])),
+      host,
+    ).start({
+      workflow: workflow(`  id: wide-straddle
+  max_parallel: 24
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+${nodes}
+  edges:
+${edges}`),
+    });
+    const events: RunEvent[] = [];
+    let settled = false;
+    const pump = (async (): Promise<void> => {
+      while (!settled) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        if (host.armedCount() > 0) host.fireTimers();
+        if (host.deadlineCount() > 0) host.fireDeadlines();
+      }
+    })();
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:failed' || event.type === 'run:completed') settled = true;
+    }
+    await pump;
+
+    // The bound is a bound: not one dispatch past it, whatever the batch width.
+    const starts = events.filter((e) => e.type === 'node:started');
+    expect(starts.length).toBeLessThanOrEqual(ADMISSION_CEILINGS.nodeDispatchesPerRun);
+    // …and the run still terminates exactly once rather than hanging on a half-claimed batch.
+    expect(terminalsIn(events)).toHaveLength(1);
+  }, 60_000);
+
+  it('an OMITTED max_parallel caps at the default, not Infinity (ADR-0086 §3)', async () => {
+    // **The change nothing guarded.** Reverting `?? DEFAULT_MAX_PARALLEL` to `?? Number.POSITIVE_INFINITY`
+    // left the whole suite green, because every other concurrency test AUTHORS a cap. This one omits it,
+    // which is the case the ADR is about: an unbounded default meant a run's width was decided entirely by
+    // how wide its author happened to draw the graph.
+    const width = DEFAULT_MAX_PARALLEL + 4;
+    const ids = Array.from({ length: width }, (_, i) => `b${i}`);
+    let live = 0;
+    let maxLive = 0;
+    const branch: Handler = async () => {
+      live += 1;
+      maxLive = Math.max(maxLive, live);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      live -= 1;
+      return { kind: 'completed', output: null };
+    };
+    const handlers = Object.fromEntries(ids.map((id) => [id, branch]));
+    const events = await drain(
+      engineWith(handlers).start({
+        workflow: workflow(`  id: default-cap
+  nodes:
+    - { id: start, type: input }
+    - { id: fan, type: parallel, parallel_of: [${ids.join(', ')}] }
+${ids.map((id) => `    - { id: ${id}, type: transform, transform: '${id}' }`).join('\n')}
+    - { id: join, type: merge, merge_strategy: concat }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: fan }
+${ids.map((id) => `    - { from: ${id}, to: join }`).join('\n')}
+    - { from: join, to: out }`),
+      }),
+    );
+    // The bound, and the proof the run was actually wider than it: without the default this reaches `width`.
+    expect(maxLive).toBeLessThanOrEqual(DEFAULT_MAX_PARALLEL);
+    expect(
+      events.filter((e) => e.type === 'node:completed' && ids.includes(e.nodeId)),
+    ).toHaveLength(width);
     expect(terminalsIn(events)[0]?.type).toBe('run:completed');
   });
 });

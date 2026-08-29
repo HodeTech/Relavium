@@ -73,11 +73,19 @@ The order is computed by **Kahn's algorithm** with an **authored-order tie-break
 
 ## What the builder validates
 
-The builder owns the structural checks the pure parser defers (it has the full node graph; the parser sees one file). Each fault becomes a field-named, secret-free `GraphIssue` (`kind`: `cycle` | `unknown_edge_target` | `invalid_handle` | `dangling_ref`), collected and thrown together as a **`WorkflowGraphError`** (code `invalid_graph`) — a sibling of `WorkflowValidationError`, so an unrunnable graph is rejected before a run starts:
+The builder owns the structural checks the pure parser defers (it has the full node graph; the parser sees one file). Each fault becomes a field-named, secret-free `GraphIssue` (`kind`: `cycle` | `unknown_edge_target` | `invalid_handle` | `mismatched_branch_target` | `dangling_ref` | `ceiling_exceeded`), collected and thrown together as a **`WorkflowGraphError`** (code `invalid_graph`) — a sibling of `WorkflowValidationError`, so an unrunnable graph is rejected before a run starts:
 
 - **Cycle** — the dependency graph has a directed cycle; the message names it (`a → b → c → a`).
 - **Unknown edge target** — an `edges[]` endpoint, a `condition` `branches[].target_node` / `default`, or a `parallel_of` member names a node that does not exist.
 - **Invalid handle** — a `nodeId:handle` edge whose source is not a `condition`, or whose handle matches no branch `when` value (the only named output handles in v1.0; `fan_out` uses plain edges); **also** a *plain* (handle-less) edge whose `from` is a `condition` node — a condition routes only via `branches[].target_node` + the `nodeId:when` handle form, so a handle-less edge from it is rejected (redundant with a branch target, or a node the branch selection never activates).
+- **Mismatched branch target** — a `condition:handle` edge whose `to` contradicts that branch's
+  `target_node`. (This kind shipped with the builder and was missing from this list until 2026-08-28; the
+  code has always been the authority, and this document is now what it says.)
+- **Ceiling exceeded** — an authored value or graph shape is over an absolute admission ceiling
+  ([ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md) §2). The issue names the
+  field, the authored value and the ceiling; nothing is clamped. Counted on the **authored** file, where "authored" includes every place the
+  author wrote an edge: `edges[]` **and** each `parallel_of` member (which the builder materialises as a
+  fan-out edge). A `condition`'s branches are routing alternatives and do not count toward fan-out.
 - **Dangling ref** — an `agent_ref` resolves to no agent. Only checked when a **resolved-agent registry** is supplied (`agent_ref` resolution against the workspace registry is a host concern — the pure builder never reads files); otherwise resolution is deferred. When resolution was deferred and an `agent` vertex reaches dispatch with **no** `resolvedAgent`, the `AgentRunner` (1.O) fails the node with `code: 'validation'` naming the unresolved `agent_ref` — never a crash ([agent-runner.md](agent-runner.md)).
 
 Separately, a resolved `$ref`/registry agent's `system_prompt` is re-run through the secret-taint gate (a `$ref` agent's prompt lives in another file the pure parser never reads): a secret reaching it throws **`WorkflowSecretLeakError`** (ADR-0029(c)), exactly as for an inline agent.

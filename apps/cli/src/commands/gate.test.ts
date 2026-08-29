@@ -67,6 +67,9 @@ function emptyHandle(runId: string): RunHandle {
     subscribe: () => () => {},
     cancel: () => {},
     whenConsumersReady: () => Promise.resolve(),
+    // A closed stream buffers nothing and throttles nobody (mirrors `createClosedRunHandle`).
+    highWaterMark: 256,
+    bufferedCount: 0,
     durability: () => 'durable' as const,
     terminalError: () => undefined,
   };
@@ -889,6 +892,7 @@ describe('selectGate', () => {
     runStatus: 'paused',
     workflowId: 'wf',
     startedAtMs: 0,
+    nodeDispatches: 0,
     admittedInputs: {},
     executionMode: 'local',
     nodeStates: new Map(),

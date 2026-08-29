@@ -39,7 +39,7 @@ workflow:
   tools: ToolPolicy          # workflow-wide tool guardrails (command/domain allowlists)
   budget: Budget             # optional cost/time/concurrency guardrails (see Resource governance)
   timeout_ms: number         # optional whole-run wall-clock cap
-  max_parallel: number       # optional cap on concurrent in-flight LLM calls
+  max_parallel: number       # concurrent in-flight LLM calls; OMITTED ⇒ 8, absolute ceiling 64 (ADR-0086)
   nodes: Node[]              # execution-graph nodes
   edges: Edge[]              # directed connections between nodes
 ```
@@ -56,7 +56,7 @@ workflow:
 | `context` | no | Named values (possibly interpolated) available as `{{ctx.key}}`. |
 | `agents` | yes (if any agent node) | Inline definitions or refs to agent files. |
 | `tools` | required to use `run_command` / `http_request` | Workflow-wide tool guardrails — exact-match `allowedCommands` and exact-FQDN `allowedDomains` (each empty/absent ⇒ that tool is disabled). See [Tool policy](#tool-policy-spectools). |
-| `budget` / `timeout_ms` / `max_parallel` | no | Resource guardrails — a pre-egress cost cap, a whole-run timeout, and a concurrency cap. See [Resource governance](#resource-governance-specbudget) and [ADR-0028](../../decisions/0028-workflow-resource-governance.md). |
+| `budget` / `timeout_ms` / `max_parallel` | no | Resource guardrails — a pre-egress cost cap, a whole-run timeout, and a concurrency cap. An omitted `max_parallel` is **8**; an authored one may not exceed **64** ([ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md)). See [Resource governance](#resource-governance-specbudget) and [ADR-0028](../../decisions/0028-workflow-resource-governance.md). |
 | `nodes` | yes | The graph. |
 | `edges` | yes | The connections. |
 
@@ -374,10 +374,44 @@ workflow:
     on_exceed: pause_for_approval    # fail | pause_for_approval | warn
     strict_cost_cap: false           # ADR-0071 §K7: refuse a turn on a model with no price (default false)
   timeout_ms: 300000                 # whole-run wall-clock cap
-  max_parallel: 4                    # max concurrent in-flight LLM calls (bounds a wide fan-out)
+  max_parallel: 4                    # max concurrent in-flight LLM calls (omitted ⇒ 8; ceiling 64)
 ```
 
 The cost cap is **pre-egress**: before each LLM call the engine checks `cumulative + worstCaseNextEstimate(maxTokens)` against `max_cost_microcents` and applies `on_exceed` — `fail` stops the run, `pause_for_approval` suspends it like a human gate (resumed via `resume_budget`), `warn` proceeds after a `budget:warning` event. An **unpriced model** (a custom `base_url`, or one the catalog does not carry) is a hole in the cap: the governor cannot estimate a turn's cost, so it **degrades to `allow` with a one-time notice** (ADR-0071 §K7) rather than hard-failing an otherwise-valid run. `strict_cost_cap: true` inverts that — an unpriced model is refused pre-egress, for a run that must not proceed on a model it cannot bound. This is a **BYOK-local** safety rail, distinct from Phase-2 managed-mode billing ([ADR-0014](../../decisions/0014-managed-metering-quota-and-billing.md)). The `budget:warning` / `budget:paused` / `run:timeout` events are defined in [sse-event-schema.md](sse-event-schema.md).
+
+### Admission ceilings
+
+Beyond the guardrails above, the engine refuses a workflow whose shape exceeds an absolute ceiling
+([ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md)). These are **engine
+limits, not schema fields** — they are checked when the file is admitted, not by `WorkflowSchema` — and a
+breach is a loud `WorkflowGraphError` naming the field, the authored value and the ceiling. Nothing is
+clamped: a file over a ceiling does not run at all.
+
+| What | Ceiling | Counted on |
+|---|---|---|
+| Nodes | 500 | the authored file |
+| Edges | 2000 | `edges[]` **plus** every `parallel_of` member, every `condition` branch target and its `default`, and every `{{ run.outputs["…"] }}` reference — the builder materialises all four as real edges |
+| Fan-out width (a node's out-degree) | 50 | plain edges, `parallel_of` members and data references. A `condition`'s branches count toward the EDGE total above but **not** toward width: exactly one is taken, so they are alternatives rather than concurrent work |
+| `max_parallel` | 64 | the authored value (omitted ⇒ **8**) |
+| Node dispatches in one run | 500 | at runtime, counted from `node:started` in the durable log |
+| One node's output | 256 KiB | serialised, at the durable boundary |
+| Total workflow state | 4 MiB | every node output, summed |
+| One durable event | 1 MiB | serialised — **a terminal event is exempt**, see below |
+
+An output or state breach fails the NODE with a typed `validation` error naming the field, the size and the
+limit — never a truncation, because half an output silently flowing into the next node's template is a wrong
+answer that looks like a right one. The durable-EVENT breach is different in shape and worth stating rather
+than glossing: it is raised at the emit choke point, where no node is in scope, so it fails the RUN through
+the engine's internal backstop and surfaces as `run:failed` with `internal` rather than as a per-node
+`validation`. All three sizes are measured on the value that reaches the boundary — an inline media part
+counts as the `media://` handle it becomes, not as its base64. **A terminal event is measured and never refused**: a run that cannot publish its
+terminal is worse in every way than one that wrote an oversized final event, and exactly-one-terminal
+([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) outranks every size
+rule here.
+
+Agent-scoped ceilings — `retry.max`, `fallback_chain` length and per-entry `max_attempts` — live with the
+agent that declares them; see [agent-yaml-spec.md](agent-yaml-spec.md). A workflow is checked against them for
+every agent it resolves, so an agent file rejected by `relavium chat` is rejected by a workflow too.
 
 ## Edges
 

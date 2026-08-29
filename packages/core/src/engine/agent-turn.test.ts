@@ -9,6 +9,7 @@ import type {
 import type { ContentPart } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
+import { ADMISSION_CEILINGS } from '../limits.js';
 import type { CommitmentOrigin } from './budget-governor.js';
 import {
   ToolCancelledError,
@@ -250,6 +251,79 @@ describe('runAgentTurn — streaming + cost', () => {
     const params = baseParams(provider);
     await runAgentTurn(params);
     expect(eventsOf(params).some((e) => e.type === 'agent:reasoning')).toBe(false);
+  });
+});
+
+describe('runAgentTurn — CR-30: the producer awaits between chunks (ADR-0036)', () => {
+  it('awaits `whenReady` once per chunk, BEFORE the chunk is folded and emitted', async () => {
+    // **The wiring no test covered, and the gap is why a deadlock shipped.** The two handle-level CR-30
+    // tests act as their OWN producer — they await `whenConsumersReady()` in the test's own loop — so
+    // deleting every `whenReady` line from `agent-turn.ts`, `engine.ts`, `agent-session.ts` and the CLI
+    // host left the entire suite green. This is the test that fails when the production await is removed.
+    //
+    // The ORDER matters as much as the count: the await is before the fold, so the ceiling is respected on
+    // the way in. Checking afterwards would admit the event that breaches it.
+    const order: string[] = [];
+    const provider = scriptedProvider('anthropic', [
+      [{ type: 'text_delta', text: 'a' }, { type: 'text_delta', text: 'b' }, STOP()],
+    ]);
+    const params = baseParams(provider, {
+      whenReady: () => {
+        order.push('await');
+        return Promise.resolve();
+      },
+      emit: (e) => {
+        if (e.type === 'agent:token') order.push(`emit:${e.token}`);
+      },
+    });
+
+    await runAgentTurn(params);
+
+    // One await per chunk — three chunks, so three awaits — and each precedes its own emit.
+    expect(order.filter((o) => o === 'await')).toHaveLength(3);
+    expect(order.slice(0, 4)).toEqual(['await', 'emit:a', 'await', 'emit:b']);
+  });
+
+  it('refuses a response with too many tool calls BEFORE dispatching any of them (ADR-0086 §2)', async () => {
+    // The ceiling whose subject is a provider RESPONSE, not an authored file — so it cannot live at
+    // admission; the model chooses this width. The load-bearing half is the ORDER: checking per-call would
+    // leave the first sixteen executed, and for a tier-3 effect that is the duplicate the effect journal
+    // exists to prevent. A refusal after the fact refuses nothing.
+    const n = ADMISSION_CEILINGS.toolCallsPerResponse + 1;
+    const calls = Array.from({ length: n }, (_, i) => [
+      { type: 'tool_call_start' as const, id: `c${i}`, name: 'echo' },
+      { type: 'tool_call_end' as const, id: `c${i}` },
+    ]).flat();
+    let dispatched = 0;
+    const provider = scriptedProvider('anthropic', [[...calls, STOP('tool_use')]]);
+    const params = baseParams(provider, {
+      registry: stubRegistry((call) => {
+        dispatched += 1;
+        return {
+          output: 'OK',
+          truncated: false,
+          toolResult: markUntrusted({
+            type: 'tool_result' as const,
+            toolCallId: call.id,
+            result: 'OK',
+          }),
+          events: {
+            call: { toolId: 'echo', toolInput: {} },
+            result: { toolId: 'echo', success: true, outputSummary: 'OK', durationMs: 1 },
+          },
+        };
+      }),
+    });
+
+    await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'turn_limit' });
+    expect(dispatched).toBe(0); // not one effect fired
+  });
+
+  it('runs unchanged when no `whenReady` is supplied — absent means never throttle', () => {
+    // The field is optional so a test double or a host with no consumer needs no wiring, and absent must be
+    // the pre-CR-30 behaviour rather than a crash.
+    const provider = scriptedProvider('anthropic', [[{ type: 'text_delta', text: 'x' }, STOP()]]);
+    return expect(runAgentTurn(baseParams(provider))).resolves.toMatchObject({ text: 'x' });
   });
 });
 

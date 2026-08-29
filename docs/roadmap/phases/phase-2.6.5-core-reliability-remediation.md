@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0`, `W1` and `W2` are closed** (20 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25); `W3` is next
+- **Status**: in progress — **`W0`, `W1` and `W2` are merged; `W3` is complete on `development`** (25 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28); `W4` is next
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -273,10 +273,10 @@ to correct.
 | `CR-21c` | made 2026-08-27 (bound each poll CALL, not only the loop; a new `pollCallTimeoutMs` = 30 000, clamped to the remaining `deadlineAt`) · ✅ closed 2026-08-27 | with `CR-21b`'s | no | — |
 | `CR-22` | made (absolute deadlines) · ✅ closed 2026-08-27 | — | no | — |
 | `CR-23` | made · ✅ closed 2026-08-27 (10 s grace off the abort signal; per-vertex generation fence; **no quarantine**, risk accepted with a named trigger) | [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | no | — |
-| `CR-30` | made — implement [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s accepted no-drop producer-await | none (already decided) | no | — |
-| `CR-31` | **open** — the cap values | — | no | — |
-| `CR-32` | **open** — the bound values | — | no | — |
-| `CR-33` | **open** — retention policy shape | — | no | — |
+| `CR-30` | made — implement [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s accepted no-drop producer-await; **placement settled 2026-08-28: the await goes in the turn's chunk loop**, `NodeExecContext.emit` stays synchronous | none (already decided) | no | — |
+| `CR-31` | made 2026-08-28 — default concurrency **8** (omitted `max_parallel`), and absolute ceilings: **500** nodes · **2000** edges · fan-out **50** · fallback-chain **5** entries · `retry.max` **10** · per-entry `max_attempts` **10** · `max_parallel` **64** · **16** tool calls in one model response · **500** node dispatches per run. Over-ceiling is a REJECTION, never a clamp | [ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md) | no | — |
+| `CR-32` | made 2026-08-28 — **256 KiB** node output, **4 MiB** total workflow state, **1 MiB** per durable event; typed `validation` REJECTION, never a truncation (half an output flowing into the next template is a wrong answer that looks right). **A terminal event is measured and never refused** — exactly-one-terminal ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) outranks every size rule, and [ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §6 draws the same line for a store fault. The three are separate bounds because one shared number is either useless at the state limit or absurd per node | — | no | — |
+| `CR-33` | made 2026-08-28 — **count-based, N = 100** settled runs, FIFO eviction (no clock, so engine purity is untouched); the `#executor` quarantine half stays a `W2` residual and is NOT claimed by this bound | — | no | — |
 | `CR-40` | made (forward signal + deadline) | with `CR-16`'s | no | hostile MCP |
 | `CR-41` | made (apply the built-in egress floor) | with `CR-16`'s | no | hostile MCP |
 | `CR-42` | **open** — the ingress bounds | with `CR-16`'s | no | hostile MCP |
@@ -914,7 +914,7 @@ records that `CR-16`'s **lazy-connect half was split out** rather than closed: i
 [deferred item](../deferred-tasks.md) with ADR-0052 §3 named as its blocker, because deferring the spawn with
 today's immutable registry would delete the agent's MCP tool grant outright.
 
-## W2 — Liveness and deadlines · ✅ COMPLETE 2026-08-27
+## W2 — Liveness and deadlines · ✅ MERGED 2026-08-28 (PR #85; work complete 2026-08-27)
 
 All six items closed. Two things this wave established that outlived their own items, recorded here because
 the next wave inherits them:
@@ -1283,11 +1283,42 @@ Two of the remaining findings were worth more than their severity labels:
 Both regression tests were break-verified line-precisely; the second hangs to a vitest timeout against the
 pre-fix code, which is the only red a liveness defect can produce.
 
-## W3 — Resource governance and bounds
+## W3 — Resource governance and bounds · ✅ COMPLETE 2026-08-29 ([ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md))
 
-### CR-30 — The accepted no-drop bounded stream is not implemented · High
+All four items closed. Three things this wave established that outlived their own items:
+
+- **A ceiling is only as good as the forms it counts.** `CR-31`'s fan-out and edge limits had to learn three
+  separate routing forms before they bounded anything: `edges[]`, a `parallel` node's `parallel_of` members,
+  and a `{{ run.outputs["<id>"] }}` template reference. Each materialises a real graph edge and only the
+  first is written where a reader would look. Two of the three were found by measuring a bypass, not by
+  reading the schema.
+- **A bound needs a durable counter or it is a per-process bound.** `CR-31`'s run-level dispatch cap and
+  `CR-32`'s workflow-state total both had to be folded from — or seeded by — the checkpoint, because the
+  in-memory counters this engine already had all reset on a resume. Every cap that is not seeded silently
+  becomes "per process", which for a crash-looping run is no cap at all.
+- **Refusing is not free.** `CR-30`'s producer-await deadlocked every CLI session on its first attempt, and
+  `CR-33`'s eviction trades a specific error code for a bound. A refusal has to be checked against what it
+  refuses AND against what still has to happen afterwards — a run must still reach exactly one terminal.
+
+
+### CR-30 — The accepted no-drop bounded stream is not implemented · High · ✅ CLOSED 2026-08-29
 `push()` appends without a capacity check; `whenDrained` is advisory and only awaited at node boundaries, while
 token deltas are emitted synchronously. A single provider stream can grow memory without a hard bound.
+
+**Widened 2026-08-28, before implementation: this is true of the RUN path and worse on the SESSION path.**
+"Only awaited at node boundaries" describes `engine.ts`'s single `whenConsumersReady()` call. `SessionHandle`
+wires the same knob (`session-handle.ts` — `whenConsumersReady: () => primary.whenDrained()`) and **no producer
+ever awaits it**: `AgentSession` has zero backpressure, not advisory backpressure. `AgentSession` is a
+co-equal first-class entry point ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)),
+so a fix that covers only the workflow path leaves half the product unbounded. Both paths share
+`AgentTurnParams`, so one await point in the turn's chunk loop covers both — which is why the placement
+decision above is the cheap one.
+
+**One existing test asserts the opposite of this item and must be replaced, not left beside the fix.**
+`run-handle.test.ts` — *"applies producer-await backpressure once the buffer exceeds capacity, then drains"* —
+builds a handle at capacity 2, pushes four events (its own comment reads `buffer = 4 > capacity 2`) and
+asserts only that `whenDrained()` resolves after two pulls. It demonstrates the ceiling being **violated** and
+names that backpressure, so a green suite currently reads as though `CR-30` were already closed.
 
 **This is not an open choice.** [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)
 already decided it: *"buffering is bounded per consumer with a producer-await (no-drop) policy"*, because the
@@ -1298,21 +1329,68 @@ ADR-0036, and nothing found here argues for one.
 producer against a slow consumer and asserts the buffer never exceeds the ceiling **and** that no sequence
 number is skipped.
 
-### CR-31 — No safe default concurrency and no absolute graph/retry caps · High · **cap values open**
-An omitted `max_parallel_nodes` means `Infinity`. There is no absolute cap on authored nodes, edges, fan-out
-width, fallback-chain length, retry counts, parallel tools or total attempts; the parser's text-size limit does
-not stop many small ones.
+### CR-31 — No safe default concurrency and no absolute graph/retry caps · High · ✅ CLOSED 2026-08-29 ([ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md))
+An omitted `max_parallel` means `Infinity` (`engine.ts` — `this.#plan.maxParallel ?? Number.POSITIVE_INFINITY`).
+There is no absolute cap on authored nodes, edges, fan-out width, fallback-chain length, retry counts, parallel
+tools or total attempts; the parser's text-size limit does not stop many small ones. *(The field was written
+here as `max_parallel_nodes`, which exists nowhere in the repo — corrected 2026-08-28, because a
+grep-based reader looking for the thing to fix would have found nothing. The authored field is `max_parallel`
+on the workflow spec; the compiled field is `maxParallel` on the run plan.)*
 **Fix + acceptance.** A small capacity-derived default concurrency that an authored value may only narrow, plus
 explicit absolute caps enforced at parse/compile admission with typed errors. The numbers are a maintainer call.
 
-### CR-32 — Workflow output, state and durable event size are unbounded · High · **bound values open**
+**Settled 2026-08-28 by [ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md),
+which corrects this paragraph on two points.** "Capacity-derived" is refused: `workflow-yaml-spec.md`
+guarantees a file "parses and runs **identically** on every surface", and a CPU-derived default breaks that —
+so the default is a fixed **8** on every machine. "An authored value may only narrow" describes a silent
+clamp, which contradicts [ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md); an over-ceiling
+value is **rejected** at admission instead, naming the field, the value and the ceiling. The item also needed
+an ADR, which this register's ADR column said it did not: capping `retry.max` reverses ADR-0040's explicit
+"intentionally unbounded" decision, and a reversal cannot be an in-place amendment.
+
+### CR-32 — Workflow output, state and durable event size are unbounded · High · ✅ CLOSED 2026-08-29
 **Fix + acceptance.** Bound them at the durable boundary with a typed rejection, the same way tool output is
 already bounded. The numbers are a maintainer call.
 
-### CR-33 — Finished runs are retained forever in memory · Medium-High · **policy shape open**
+### CR-33 — Finished runs are retained forever in memory · Medium-High · ✅ CLOSED 2026-08-29
 `WorkflowEngine` keeps completed runs indefinitely.
 **Fix + acceptance.** A retention policy with an explicit bound; a long-lived process running many workflows
 does not grow without limit. Whether retention is count-, age- or memory-based is a maintainer call.
+
+### W3 closing register
+
+Exit criterion 7, for this wave: **per item, the code that closes it — verified by reading the code, not by
+trusting the mark.** Every test named below was confirmed to FAIL with its production change reverted, and
+the mutation was confirmed to have landed before the red was trusted.
+
+| Item | The code that closes it | The test that would fail if it were reverted |
+|------|--------------------------|-----------------------------------------------|
+| `CR-30` | `event-stream.ts`'s strictly-below `whenDrained` predicate, its `#everPulled` distinction and its un-pulled overflow guard; the per-chunk `await params.whenReady?.()` in `agent-turn.ts`'s stream loop, wired from `NodeExecContext` (workflow) and `SessionDeps` (session) | `run-handle.test.ts` — *"a fast producer that awaits never exceeds the ceiling, and skips no sequence number"*; `session-handle.test.ts` — *"does NOT park a producer when nobody iterates"* and *"an un-pulled stream is BOUNDED, not merely un-parked"*; `agent-turn.test.ts` — *"awaits `whenReady` once per chunk, BEFORE the chunk is folded"*, which is the only one that touches the production wiring at all |
+| `CR-31` | `limits.ts`'s `ADMISSION_CEILINGS` + `collectAgentCeilingIssues` / `collectWorkflowCeilingIssues` (called by the compiler AND by `AgentSession`'s constructor), `DEFAULT_MAX_PARALLEL` in `#claimReady`, the headroom clamp, and the two dispatch-cap check sites | `limits.test.ts`'s fourteen cases; `agent-session.test.ts` — *"rejects an over-ceiling agent before any turn runs"* and *"a RESUME is not re-admitted"*; `engine.test.ts` — *"an OMITTED max_parallel caps at the default"*, *"a WIDE ready batch cannot straddle the dispatch cap"*, *"the retry loop is capped on its own"*, *"a resume SEEDS the dispatch count"* |
+| `CR-32` | `size-bounds.ts` + its three wiring points: the pre-retain check in `#settleCompleted`, the running `#workflowStateBytes` total (seeded on resume), and the non-terminal guard at the top of `#emitDurable` | `size-bounds.test.ts` (9 cases, including *"never refuses a TERMINAL event, however large"*); `engine.test.ts` — *"fails the node whose output exceeds the bound, and never retains it"*, its negative control, the accumulated-state case, and *"a resume SEEDS the workflow-state total"* |
+| `CR-33` | `engine.ts`'s `#retainSettled` + `#settledOrder`, wired to both `onSettled` sites | `engine.test.ts` — *"keeps the last N settled runs addressable and evicts older ones"* (asserting the error CODE, because both cases throw the same class) and *"does not evict a run that is merely PARKED"* |
+
+**Six defects this wave found by measurement rather than by reading**, recorded because the ratio is the
+point — three came from review rounds and three from self-review, and every one was reproduced before it was
+believed:
+
+1. The session producer-await **deadlocked**: no CLI surface iterates `SessionHandle.events` (they attach with
+   `subscribe()`, a separate bus subscription), so `whenDrained` stopped resolving after `capacity` and
+   `relavium chat` would have frozen mid-reply. 10 events buffered against a ceiling of 4.
+2. `whenDrained`'s `<=` predicate let a perfectly-behaved producer exceed the ceiling by one every cycle.
+3. `retry.max` was checked on the resolved AGENT only, while `#retryConfig` spends `node.retry ?? agent.retry`
+   — so the ceiling was avoidable with one line of YAML, and `condition`/`transform`/`merge` had no
+   enforcement path at all.
+4. `parallel_of` members bypassed the fan-out ceiling entirely: a 200-member split read as a width of zero.
+5. The dispatch cap was per-TICK while `#claimReady` claims a whole batch, so a wide batch straddling the
+   boundary drained in full — 512 dispatches against a cap of 500.
+6. `#workflowStateBytes` restarted on resume, handing a resumed run the whole budget again on top of the
+   state it had just rehydrated.
+
+**And one the fix itself caused, which is the lesson worth keeping.** Making `whenDrained` resolve for an
+un-pulled stream cured the deadlock and reopened the unbounded buffer `CR-30` exists to close.
+Never-drops-for-a-consumer-that-exists and bounded-for-one-that-does-not are different promises; the first fix
+held one and broke the other, the second held that one and lost the first. They have one assertion each now.
 
 ---
 
@@ -1662,13 +1740,28 @@ final generation. The user approves a projection they saw, but the approval mean
 **Fix + acceptance.** Make the approval an immutable numeric lease bound to money/token/attempt scope, model and
 expiry, consumed atomically by each egress. An approved node that exceeds its lease pauses again.
 
-### CR-95 — A mid-tool-loop budget pause replays the whole loop · High (Blocker while CR-12 is open)
+### CR-95 — A mid-tool-loop budget pause replays the whole loop · High · ⚠️ SHORT-TERM HALF CLOSED 2026-08-18 ([ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) §10)
 A budget pause becomes a paused outcome; on approval the node is reset to pending and dispatched from the start.
 The code already acknowledges that this repeats earlier provider and tool calls.
 **Fix + acceptance.** **Short term (non-deferrable): forbid a mid-loop budget pause — fail closed.** Long term:
 checkpoint the continuation — provider messages, tool call/result pairs, round index — and resume from that
 point. A mid-loop pause plus approval must not repeat a mutation. The short-term fix closes the claim; the long
 term may be deferred with its trigger named.
+
+**Closed — the code that closes it, per exit criterion 7.** The short-term fail-closed half shipped with the
+durability spine in commit `de4e19c3` (2026-08-18) and has carried an OPEN heading here ever since — the third
+time this register has recorded a shipped item as open, after `CR-14` and `CR-92` (see the `W1` closing
+register). The code is `agent-turn.ts`'s `turnCommitted = toolTurn > 0` guard, which refuses a
+`BudgetPauseError` once the turn has dispatched tools; the tests that would fail if it were reverted are
+`agent-turn.test.ts` — *"CR-95: a budget pause AFTER a tool round fails closed instead of pausing"* and its
+negative control, *"a budget pause BEFORE any tool round still pauses"*.
+[ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md)'s **Decides** line
+already named `CR-95`'s short-term fix, which is what makes the stale heading detectable at all.
+
+**The LONG-TERM half stays open** and keeps this item on the board: checkpointing the continuation so an
+approved mid-loop pause resumes rather than replays. Its trigger is any surface that pauses a tool-using turn
+on budget and expects it to continue — today the fail-closed refusal is the honest answer, and it is
+disruptive by design.
 
 ---
 

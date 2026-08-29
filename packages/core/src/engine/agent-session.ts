@@ -38,6 +38,8 @@ import type {
 } from '@relavium/shared';
 import { unwiredEffectJournal } from '@relavium/shared';
 
+import { WorkflowGraphError, type GraphIssue } from '../errors.js';
+import { collectAgentCeilingIssues } from '../limits.js';
 import { markUntrusted, unwrapUntrusted, type Untrusted } from '../tools/untrusted.js';
 import { authoredSystemPrompt, type AuthoredSystemPrompt } from './authored-system-prompt.js';
 import { buildTurnMessages } from './turn-messages.js';
@@ -248,6 +250,20 @@ export interface SessionDeps {
   readonly newAbortController: () => AbortControllerLike;
   /** The emission port — 1.V emits session/in-turn bodies here; 1.W wires it onto the `RunEventBus`. */
   readonly emit: SessionEventSink;
+  /**
+   * The producer-await half of ADR-0036's no-drop, bounded-per-consumer buffering, for the SESSION path
+   * (`CR-30`). Resolves once this session's consumer has drained to its ceiling.
+   *
+   * **This path had no backpressure at all, not merely advisory backpressure.** `SessionHandle` has always
+   * exposed `whenConsumersReady`, and nothing ever awaited it — so a long streamed reply grew the buffer for
+   * as long as the model talked. The workflow path at least throttled once per node. `AgentSession` is a
+   * co-equal first-class entry point (ADR-0024), so the bound has to reach it too.
+   *
+   * Late-bound by construction on every host: the handle is created FROM the session (it closes over
+   * `session.cancel()`), so the session cannot hold it at construction. A host therefore passes a thunk that
+   * reads the handle once it exists. Optional — absent means "never throttle", the pre-`CR-30` behaviour.
+   */
+  readonly whenReady?: () => Promise<void>;
   /**
    * Builds this session's effect journal from a correlation (ADR-0080) — a FACTORY, not a port, because the
    * correlation carries the TURN and only the session knows which turn it is on.
@@ -511,7 +527,28 @@ export class AgentSession {
    */
   #autoCompactPending: { readonly model: string; readonly inputTokens: number } | undefined;
 
-  constructor(params: AgentSessionParams) {
+  constructor(params: AgentSessionParams, opts?: { readonly admit?: boolean }) {
+    // **The session's half of ADR-0086 §6, and it is a CONSTRUCTOR check on purpose.** `relavium agent run`
+    // and `relavium chat` never build a workflow graph, so the compiler's ceiling pass never sees their
+    // agent — and `retry.max` / `fallback_chain` / `max_attempts` are exactly the values this path consumes.
+    // Rejecting here, before any turn, is the session's equivalent of "the run never starts": no provider
+    // call, no tool dispatch, no money. The SAME validator the compiler calls, so an agent file cannot be
+    // admitted by `chat` and rejected by a workflow that references it.
+    //
+    // **A RESUME does not re-admit, and that is not a loophole — it is the only humane answer.** A resumed
+    // session runs the agent SNAPSHOT frozen at session start: the file it came from may have changed or be
+    // gone, so an author has nothing to edit. Applying a ceiling here would make every transcript persisted
+    // before this ADR permanently unopenable, with no lever for the user and no warning. Admission governs
+    // what is ADMITTED; ADR-0083 draws the same line for a run resume, which verifies what it was admitted
+    // with rather than admitting it again. The snapshot keeps its old budget; every ceiling still applies to
+    // the next session the user starts.
+    if (opts?.admit !== false) {
+      const ceilingIssues: GraphIssue[] = [];
+      collectAgentCeilingIssues(params.agent, ceilingIssues);
+      if (ceilingIssues.length > 0) {
+        throw new WorkflowGraphError(ceilingIssues);
+      }
+    }
     this.sessionId = params.sessionId;
     this.#agentRef = params.agentRef;
     this.#agent = params.agent;
@@ -531,7 +568,9 @@ export class AgentSession {
    * **replaces** {@link start}: the returned session is past `created`, so calling `start()` on it throws.
    */
   static resume(params: AgentSessionParams, state: SessionResumeState): AgentSession {
-    const session = new AgentSession(params);
+    // `admit: false` — see the constructor. A resume continues a session that was already admitted, on a
+    // frozen snapshot its user cannot edit; re-admitting it would strand their transcript.
+    const session = new AgentSession(params, { admit: false });
     session.#messages.push(...state.messages);
     session.#turnCount = state.turnCount;
     // **`#userCommandSeq` is deliberately NOT restored, and the reason is a limitation rather than a choice.**
@@ -1075,6 +1114,10 @@ export class AgentSession {
         emit: (event) => {
           if (event.type === 'cost:updated') this.#onTurnEmit(event);
         },
+        // Compaction drops every streaming event except `cost:updated`, so this turn cannot flood a
+        // consumer — the await is wired anyway so the two turn sites cannot drift, and it costs one
+        // already-resolved microtask per chunk.
+        ...(this.#deps.whenReady === undefined ? {} : { whenReady: this.#deps.whenReady }),
         signal: abort.signal,
         registry: this.#deps.registry,
         dispatchContext: this.#buildDispatchContext(new Set(), undefined),
@@ -1301,6 +1344,9 @@ export class AgentSession {
       emit: (event) => {
         this.#onTurnEmit(event);
       },
+      // The session path's producer-await (`CR-30`) — this is the turn that streams a reply, so this is the
+      // one that could grow a consumer's buffer without a bound.
+      ...(this.#deps.whenReady === undefined ? {} : { whenReady: this.#deps.whenReady }),
       signal,
       registry: this.#deps.registry,
       dispatchContext,

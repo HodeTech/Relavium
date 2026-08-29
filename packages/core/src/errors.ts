@@ -34,7 +34,8 @@ export type GraphIssueKind =
   | 'unknown_edge_target' // an edge / branch / `parallel_of` endpoint names a node that does not exist
   | 'invalid_handle' // a `nodeId:handle` edge names a handle the source node does not expose
   | 'mismatched_branch_target' // a `condition:handle` edge's `to` contradicts that branch's `target_node`
-  | 'dangling_ref'; // an `agent_ref` resolves to no agent (only checked when a resolved-agent registry is supplied)
+  | 'dangling_ref' // an `agent_ref` resolves to no agent (only checked when a resolved-agent registry is supplied)
+  | 'ceiling_exceeded'; // an authored value or graph shape is over an absolute admission ceiling (ADR-0086)
 
 /**
  * One field-named graph problem found by the DAG builder (1.M). Every field is a *name* — a node id,
@@ -43,6 +44,12 @@ export type GraphIssueKind =
  * (those messages stay positional, `edge #n`); a *matched* condition branch handle is echoed only when
  * it is a short, simple label, else it too stays positional — so a secret-shaped handle never rides a
  * message.
+ *
+ * **One deliberate exception, added with `ceiling_exceeded`
+ * ([ADR-0086](../../../docs/decisions/0086-absolute-admission-ceilings-on-authored-values.md)):** a ceiling
+ * issue echoes the authored NUMBER. The invariant above exists because an authored *string* can carry a
+ * secret; a schema-validated `positiveInt` cannot. And the number is the actionable half — a rejection that
+ * hides which value tripped leaves the author guessing across eight ceilings.
  */
 export interface GraphIssue {
   /** Human field/locator — e.g. ``edge `merge`→`gate```, ``node `gate`.branches[0].target_node``. */
