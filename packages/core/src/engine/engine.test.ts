@@ -5,6 +5,7 @@ import type { MediaReferencePort, MediaStore, MediaWritePort, RunEvent } from '@
 import { ADMISSION_CEILINGS, DEFAULT_MAX_PARALLEL } from '../limits.js';
 import { parseWorkflow, type WorkflowDefinition } from '../parser.js';
 import { reconstructCheckpointState } from './checkpoint.js';
+import { SIZE_BOUNDS } from './size-bounds.js';
 import { EngineStateError } from './errors.js';
 import {
   createInMemoryHost,
@@ -4042,6 +4043,79 @@ describe('WorkflowEngine — node retry budget above the chain (1.S)', () => {
 });
 
 // --- concurrency cap --------------------------------------------------------------------------
+
+describe('WorkflowEngine — CR-32 size bounds at the durable boundary (ADR-0086)', () => {
+  const SIMPLE = `  id: sized
+  nodes:
+    - { id: start, type: input }
+    - { id: big, type: transform, transform: 'g' }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: big }
+    - { from: big, to: done }`;
+
+  it('fails the node whose output exceeds the bound, and never retains it', async () => {
+    // Rejection, not truncation: half a node's output silently flowing into the next node's template is a
+    // wrong answer that looks like a right one. The failure is itself a terminal, which is what makes a size
+    // rule safe here — it can refuse without leaving the run unable to end.
+    const events = await drain(
+      engineWith({
+        big: () => ({ kind: 'completed', output: 'x'.repeat(SIZE_BOUNDS.nodeOutputBytes + 1000) }),
+      }).start({ workflow: workflow(SIMPLE) }),
+    );
+    const failed = events.find((e) => e.type === 'node:failed');
+    expect(failed?.type === 'node:failed' && failed.error.code).toBe('validation');
+    expect(failed?.type === 'node:failed' && failed.error.message).toContain(
+      String(SIZE_BOUNDS.nodeOutputBytes),
+    );
+    // The oversized value never reached the log: `node:completed` for `big` was never emitted.
+    expect(events.some((e) => e.type === 'node:completed' && e.nodeId === 'big')).toBe(false);
+    expect(terminalsIn(events)).toHaveLength(1);
+  });
+
+  it('admits an output just under the bound — the negative control', async () => {
+    const events = await drain(
+      engineWith({
+        big: () => ({ kind: 'completed', output: 'x'.repeat(SIZE_BOUNDS.nodeOutputBytes - 1000) }),
+      }).start({ workflow: workflow(SIMPLE) }),
+    );
+    expect(events.some((e) => e.type === 'node:completed' && e.nodeId === 'big')).toBe(true);
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+  });
+
+  it('fails the run when the accumulated workflow STATE exceeds its own bound', async () => {
+    // Each output is individually legal; together they are not. A single shared number would make the
+    // per-node bound either useless or absurd, which is why these are two bounds and not one.
+    const per = SIZE_BOUNDS.nodeOutputBytes - 1000;
+    const count = Math.ceil(SIZE_BOUNDS.workflowStateBytes / per) + 1;
+    const ids = Array.from({ length: count }, (_, i) => `s${i}`);
+    const nodes = ids
+      .map((id) => `    - { id: ${id}, type: transform, transform: 'g' }`)
+      .join('\n');
+    const line = ['start', ...ids];
+    const edges = line
+      .slice(1)
+      .map((id, i) => `    - { from: ${line[i]}, to: ${id} }`)
+      .join('\n');
+    const events = await drain(
+      engineWith(
+        Object.fromEntries(
+          ids.map((id) => [id, () => ({ kind: 'completed' as const, output: 'x'.repeat(per) })]),
+        ),
+      ).start({
+        workflow: workflow(`  id: statey
+  nodes:
+    - { id: start, type: input }
+${nodes}
+  edges:
+${edges}`),
+      }),
+    );
+    const failed = events.find((e) => e.type === 'node:failed');
+    expect(failed?.type === 'node:failed' && failed.error.message).toContain('workflow state');
+    expect(terminalsIn(events)).toHaveLength(1);
+  });
+});
 
 describe('WorkflowEngine — max_parallel concurrency cap', () => {
   it('never runs more than max_parallel branches concurrently, yet runs them all', async () => {

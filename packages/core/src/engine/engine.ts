@@ -69,6 +69,12 @@ import { InterpolationError } from '../errors.js';
 import { resolveContext, resolveTemplate } from '../interpolation/resolve.js';
 import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
 import { ADMISSION_CEILINGS, DEFAULT_MAX_PARALLEL } from '../limits.js';
+import {
+  describeBreach,
+  measureDraft,
+  measureNodeOutput,
+  measureWorkflowState,
+} from './size-bounds.js';
 import type { PlanVertex, RunPlan } from '../run-plan.js';
 import type { WorkflowDefinition } from '../parser.js';
 import { resolveAndValidateWorkflowInputs } from './input-admission.js';
@@ -538,6 +544,8 @@ class RunExecution {
    * run rather than this process's slice of it.
    */
   #nodeDispatches = 0;
+  /** Serialised bytes of every node output kept so far — `CR-32`'s workflow-state bound. */
+  #workflowStateBytes = 0;
   #cumulativeCostMicrocents = 0;
   #totalInputTokens = 0;
   #totalOutputTokens = 0;
@@ -2319,6 +2327,29 @@ class RunExecution {
   ): Promise<void> {
     // Update status SYNCHRONOUSLY before emitting, so `#countRunning` is consistent the instant this
     // vertex settles — a concurrent step never sees it as still running.
+    // **`CR-32`'s bounds, checked BEFORE the output is retained or emitted.** Retaining first would put the
+    // oversized value in `#states` for the rest of the run — the memory this bound exists to refuse — and
+    // emitting first would hand it to the store. A breach fails the NODE, which is what makes it safe: the
+    // failure is itself a terminal, so a size rule can never leave a run unable to end.
+    //
+    // Rejection rather than truncation, unlike the tool-result bound: half a node's output silently flowing
+    // into the next node's template is a wrong answer that looks like a right one.
+    const measured = measureNodeOutput(vertex.id, outcome.output);
+    const stateBreach =
+      measured.breach === undefined
+        ? measureWorkflowState(this.#workflowStateBytes + measured.bytes)
+        : undefined;
+    const breach = measured.breach ?? stateBreach;
+    if (breach !== undefined) {
+      await this.#settleFailed(
+        vertex,
+        { code: 'validation', message: describeBreach(breach), retryable: false },
+        attemptNumber,
+      );
+      return;
+    }
+    this.#workflowStateBytes += measured.bytes;
+
     const state = this.#states.get(vertex.id);
     if (state !== undefined) {
       state.status = 'completed';
@@ -3512,6 +3543,19 @@ class RunExecution {
 
   async #emitDurable(draft: RunEventDraft, opts?: { readonly handOff?: boolean }): Promise<void> {
     const handOff = opts?.handOff === true;
+    // **`CR-32`'s durable-event bound, and the terminal is exempt.** A run that cannot publish its terminal
+    // is worse in every way than one that wrote an oversized final event: the stream never closes, the lease
+    // is never released, and no surface can tell whether the run finished. ADR-0078 §6 draws the same line
+    // for a store fault. A non-terminal breach is safe to refuse precisely because refusing it fails the run,
+    // which produces a terminal.
+    //
+    // Thrown rather than returned: this method's callers already route a non-terminal fault to the
+    // `#onOutcome` / `#begin` backstops that map it to a single `run:failed`, which is exactly the handling
+    // an oversized event needs and is the same path the media de-inline failure takes.
+    const sizeBreach = measureDraft(draft.type, draft, TERMINAL_TYPES.has(draft.type));
+    if (sizeBreach !== undefined) {
+      throw new RunLoopInvariantError('event_too_large', describeBreach(sizeBreach));
+    }
     // Persist the boundary/terminal event, then deliver (ADR-0036 persist-before-deliver, so a crash
     // can never re-run a completed node or lose its output). This method is **total for store faults** (the
     // media de-inline below is the one deliberate exception — a NON-terminal de-inline failure re-throws to
