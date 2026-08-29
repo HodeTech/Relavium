@@ -27,7 +27,7 @@ pending); Phase 2.5 (CLI Consolidation) is complete (M2.5-4, 2026-07-08); Phase 
 (Conversational Authoring and the First-Class CLI) is in progress, with an interlude —
 Phase 2.6.5 (Core reliability remediation) — running between remediation Waves 1 and 2:
 25 of 48 items closed — all eight P0 blockers (ADR-0078–ADR-0084, merged 2026-08-24) and the `W2`
-liveness-and-deadlines wave (ADR-0085, merged 2026-08-28 as PR #85), plus `W3` resource governance and bounds (ADR-0086) complete on `development`; `W4` is next.**
+liveness-and-deadlines wave (ADR-0085, merged 2026-08-28 as PR #85), plus `W3` resource governance and bounds (ADR-0086), merged 2026-08-30 as PR #86 **with a live blocker and nine open findings** — see the `W3` residuals in docs/roadmap/deferred-tasks.md.**
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 
 ## The non-negotiable rules

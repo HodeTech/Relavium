@@ -65,11 +65,14 @@ MCP spawn. **`W2` — liveness and deadlines — merged 2026-08-28 (PR #85)** be
 agent `timeout_ms` now bounds the node, every media call is bounded, a resume re-arms the run cap and a
 pending gate at their REMAINING time rather than renewing them (the node bound is the deliberate exception —
 ADR-0085 §2 records why), and an executor that ignores its signal can no longer leave a run without a
-terminal. **`W3` — resource governance and bounds — is complete on `development`** behind
-[ADR-0086](docs/decisions/0086-absolute-admission-ceilings-on-authored-values.md): ADR-0036's no-drop bounded
-stream is finally enforced on both entry points, authored values carry absolute admission ceilings, node
-output / workflow state / durable events are size-bounded, and a long-lived engine no longer retains every
-finished run. No new product surface — only the invariants an existing surface already claims.
+terminal. **`W3` — resource governance and bounds — merged 2026-08-30 (PR #86) behind
+[ADR-0086](docs/decisions/0086-absolute-admission-ceilings-on-authored-values.md)**: authored values carry
+absolute admission ceilings, node output / workflow state / durable events are size-bounded, and a long-lived
+engine no longer retains every finished run. **It merged with a live blocker** — an un-pulled event stream
+drops the terminal event, breaching ADR-0036's gap-free contract — plus nine verified findings, all recorded
+in the `W3` residuals of [deferred-tasks.md](docs/roadmap/deferred-tasks.md).
+[ADR-0087](docs/decisions/0087-consumed-streams-size-bounds-and-run-retention.md) records the fix and is
+**Proposed, not Accepted**. No new product surface — only the invariants an existing surface already claims.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);

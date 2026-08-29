@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0`, `W1` and `W2` are merged; `W3` is complete on `development`** (25 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28); `W4` is next
+- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker** (25 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28); `W4` is next
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -1283,7 +1283,24 @@ Two of the remaining findings were worth more than their severity labels:
 Both regression tests were break-verified line-precisely; the second hangs to a vitest timeout against the
 pre-fix code, which is the only red a liveness defect can produce.
 
-## W3 — Resource governance and bounds · ✅ COMPLETE 2026-08-29 ([ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md))
+## W3 — Resource governance and bounds · ⚠️ MERGED 2026-08-30 (PR #86) WITH A LIVE BLOCKER
+
+**Merged, not closed, and the distinction is deliberate.** The wave's four items all landed, but the review
+round that ran alongside the merge left one reproduced blocker and nine verified findings open on `main`. The
+item marks below say CLOSED because their mechanisms shipped; this heading says otherwise because the wave as
+a whole does not yet keep what it claims. Marking it complete would repeat the exact failure this phase's
+exit criterion 7 exists to catch — the register recording a state the code does not hold.
+
+> **The live blocker: an un-pulled stream drops the terminal event.** Reproduced on `main` today —
+> `BoundedEventStream` at capacity 2, three pushes, `close()`: the consumer receives a clean EOF and never
+> sees the terminal, with no `sequenceNumber` gap to signal the loss. That is a direct breach of
+> [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s gap-free contract.
+> It is the third defect in one chain, each the cure for the last: the producer-await deadlocked every CLI
+> session; letting an un-pulled stream through cured that and reopened the unbounded buffer; bounding the
+> buffer cured that and started dropping. [ADR-0087](../../decisions/0087-consumed-streams-size-bounds-and-run-retention.md)
+> §1 records the real fix — a handle declares whether its stream is consumed — and is **Proposed, not
+> Accepted**: it merged unapproved and §1 and §3 are unimplemented.
+
 
 All four items closed. Three things this wave established that outlived their own items:
 
@@ -1369,6 +1386,13 @@ the mutation was confirmed to have landed before the red was trusted.
 | `CR-31` | `limits.ts`'s `ADMISSION_CEILINGS` + `collectAgentCeilingIssues` / `collectWorkflowCeilingIssues` (called by the compiler AND by `AgentSession`'s constructor), `DEFAULT_MAX_PARALLEL` in `#claimReady`, the headroom clamp, and the two dispatch-cap check sites | `limits.test.ts`'s fourteen cases; `agent-session.test.ts` — *"rejects an over-ceiling agent before any turn runs"* and *"a RESUME is not re-admitted"*; `engine.test.ts` — *"an OMITTED max_parallel caps at the default"*, *"a WIDE ready batch cannot straddle the dispatch cap"*, *"the retry loop is capped on its own"*, *"a resume SEEDS the dispatch count"* |
 | `CR-32` | `size-bounds.ts` + its three wiring points: the pre-retain check in `#settleCompleted`, the running `#workflowStateBytes` total (seeded on resume), and the non-terminal guard at the top of `#emitDurable` | `size-bounds.test.ts` (9 cases, including *"never refuses a TERMINAL event, however large"*); `engine.test.ts` — *"fails the node whose output exceeds the bound, and never retains it"*, its negative control, the accumulated-state case, and *"a resume SEEDS the workflow-state total"* |
 | `CR-33` | `engine.ts`'s `#retainSettled` + `#settledOrder`, wired to both `onSettled` sites | `engine.test.ts` — *"keeps the last N settled runs addressable and evicts older ones"* (asserting the error CODE, because both cases throw the same class) and *"does not evict a run that is merely PARKED"* |
+
+**What the closing register does NOT cover, added 2026-08-30 with the merge.** The table above was written
+before the PR review round finished, and it vouches for four items whose mechanisms shipped — which is true,
+and is not the same as the wave being sound. Ten findings went in open, one of them a reproduced blocker
+against ADR-0036's gap-free contract, and they are enumerated with severity, trigger and narrowed claim in
+[deferred-tasks.md](../deferred-tasks.md)'s `W3` residuals. A register that reads clean over an open blocker
+is the failure mode exit criterion 7 exists to prevent, and this note is what keeps it from being one.
 
 **Six defects this wave found by measurement rather than by reading**, recorded because the ratio is the
 point — three came from review rounds and three from self-review, and every one was reproduced before it was
