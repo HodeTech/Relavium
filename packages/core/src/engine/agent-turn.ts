@@ -53,6 +53,7 @@ import {
   type ToolDef as LlmToolDef,
 } from '@relavium/llm';
 
+import { ADMISSION_CEILINGS } from '../limits.js';
 import { ToolDispatchError } from '../tools/errors.js';
 import type { ToolCallPart, ToolDispatchContext, ToolRegistry } from '../tools/types.js';
 import { unwrapUntrusted } from '../tools/untrusted.js';
@@ -681,6 +682,22 @@ async function dispatchToolCalls(
   /** The running effect-slot ordinal for the TURN — see `dispatchToolUseTurn`'s `slotBase`. */
   slotBase: number,
 ): Promise<{ messages: LlmMessage[]; correctable: boolean }> {
+  // **ADR-0086 §2's tool-call ceiling, checked BEFORE the first dispatch.** It is the one ceiling whose
+  // subject is a provider RESPONSE rather than an authored file, so it cannot live at admission — the model
+  // chooses this width, not the author. Checking it per-call would leave the first sixteen already executed,
+  // and for a tier-3 effect that is exactly the duplicate the effect journal exists to prevent: a refusal
+  // after the fact refuses nothing. Fatal rather than truncating, because silently dropping calls 17+ would
+  // hand the model a turn whose results do not match what it asked for.
+  //
+  // Not a concurrency limit, despite an earlier draft of the ADR calling it one — the loop below is strictly
+  // sequential, one `await` per call, because each takes the next effect-journal slot.
+  if (toolCalls.length > ADMISSION_CEILINGS.toolCallsPerResponse) {
+    throw new AgentTurnError(
+      'turn_limit',
+      `the model requested ${toolCalls.length} tool calls in one response, its limit of ${ADMISSION_CEILINGS.toolCallsPerResponse}`,
+      false,
+    );
+  }
   const results: LlmMessage[] = [];
   let correctable = false;
   // INDEXED, and the index is the effect slot (ADR-0080). One model response can contain several tool calls,

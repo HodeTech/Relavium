@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { MediaReferencePort, MediaStore, MediaWritePort, RunEvent } from '@relavium/shared';
 
-import { DEFAULT_MAX_PARALLEL } from '../limits.js';
+import { ADMISSION_CEILINGS, DEFAULT_MAX_PARALLEL } from '../limits.js';
 import { parseWorkflow, type WorkflowDefinition } from '../parser.js';
 import { EngineStateError } from './errors.js';
 import {
@@ -4034,6 +4034,157 @@ describe('WorkflowEngine — max_parallel concurrency cap', () => {
     assertGapFreeSeq(events); // gap-free even under concurrent fan-out
     expect(terminalsIn(events)[0]?.type).toBe('run:completed');
   });
+
+  it('fails the run at the node-dispatch cap, with the limit-family code (ADR-0086 §4)', async () => {
+    // The runtime backstop for the multiplication the per-value ceilings still permit. Crossing it needs a
+    // graph that is otherwise entirely LEGAL — every per-value ceiling respected — which is the point: this
+    // cap exists for exactly the workflow no single ceiling refuses.
+    //
+    // 495 succeeding nodes, then one agent node with a legal `retry.max: 10` that always fails retryably:
+    // 495 + 10 = 505 dispatches against a cap of 500. The discriminator is the CODE — without the cap the
+    // run still fails, but as `provider_unavailable` from an exhausted retry budget.
+    const CHAIN = ADMISSION_CEILINGS.nodeDispatchesPerRun - 5;
+    const ids = Array.from({ length: CHAIN }, (_, i) => `n${i}`);
+    const nodes = ids
+      .map((id, i) =>
+        i === 0
+          ? `    - { id: ${id}, type: input }`
+          : `    - { id: ${id}, type: transform, transform: 'g' }`,
+      )
+      .join('\n');
+    const edges = ids
+      .slice(1)
+      .map((id, i) => `    - { from: ${ids[i]}, to: ${id} }`)
+      .join('\n');
+    const last = ids[ids.length - 1];
+
+    const host = createInMemoryHost();
+    const engine = engineWith(
+      {
+        flaky: () => ({
+          kind: 'failed',
+          error: { code: 'provider_unavailable', message: 'flaky', retryable: true },
+        }),
+      },
+      host,
+    );
+    const handle = engine.start({
+      workflow: workflow(`  id: dispatch-cap
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+${nodes}
+    - { id: flaky, type: agent, agent_ref: ag, prompt_template: 'go', retry: { max: ${ADMISSION_CEILINGS.retryMax}, backoff: linear, backoff_ms: 1 } }
+  edges:
+${edges}
+    - { from: ${last}, to: flaky }`),
+    });
+    // The drain is the MAIN loop and the timer pump is the side one — the reverse hung, because a pump that
+    // yields only to microtasks never lets a 495-node chain's consumer make progress.
+    const events: RunEvent[] = [];
+    let settled = false;
+    const pump = (async (): Promise<void> => {
+      while (!settled) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        if (host.armedCount() > 0) host.fireTimers(); // the retry backoff
+        // AND the deadlines: the cap aborts, which arms the grace window (a `deadline` timer). Firing only
+        // `work` left the aborted run waiting on a backstop nothing would trip — a 60 s timeout, measured.
+        if (host.deadlineCount() > 0) host.fireDeadlines();
+      }
+    })();
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:failed' || event.type === 'run:completed') settled = true;
+    }
+    await pump;
+
+    const terminal = events.at(-1);
+    expect(terminal?.type).toBe('run:failed');
+    // **The load-bearing assertion.** Without the cap this run still fails — as `provider_unavailable`, from
+    // an exhausted retry budget. `turn_limit` is the only thing that distinguishes the cap firing.
+    //
+    // The cap has TWO check sites — before `#claimReady` and inside the retry loop — and each covers a case
+    // the other cannot: the first refuses a fresh node, the second refuses a re-dispatch of one already
+    // running. Removing either alone leaves this test green, because the other still fires; that is not a
+    // hollow test but it IS an incomplete one, so `retry loop` below pins the second site on its own.
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('turn_limit');
+    expect(events.filter((e) => e.type === 'node:started').length).toBeLessThanOrEqual(
+      ADMISSION_CEILINGS.nodeDispatchesPerRun,
+    );
+    expect(terminalsIn(events)).toHaveLength(1);
+    // A heavy test on purpose: crossing a 500-dispatch cap needs ~500 real dispatches, and no smaller
+    // construction exercises it — every per-value ceiling is legal here, which is the case the cap is for.
+  }, 60_000);
+
+  it('the retry loop is capped on its own, not only the fresh-dispatch path (ADR-0086 §4)', async () => {
+    // The second check site, pinned separately. A run whose graph is tiny but whose ONE node retries cannot
+    // be stopped by the pre-claim check — that path runs once, for a node already claimed. Here the whole
+    // budget lives in the retry loop, so this reddens when the loop's own check is removed and stays green
+    // when the pre-claim one is.
+    //
+    // 498 succeeding nodes leave 2 dispatches of headroom, so the flaky node's FIRST attempt lands at 499
+    // and its first re-dispatch is what the cap must refuse.
+    const CHAIN = ADMISSION_CEILINGS.nodeDispatchesPerRun - 2;
+    const ids = Array.from({ length: CHAIN }, (_, i) => `n${i}`);
+    const nodes = ids
+      .map((id, i) =>
+        i === 0
+          ? `    - { id: ${id}, type: input }`
+          : `    - { id: ${id}, type: transform, transform: 'g' }`,
+      )
+      .join('\n');
+    const edges = ids
+      .slice(1)
+      .map((id, i) => `    - { from: ${ids[i]}, to: ${id} }`)
+      .join('\n');
+    const host = createInMemoryHost();
+    const engine = engineWith(
+      {
+        flaky: () => ({
+          kind: 'failed',
+          error: { code: 'provider_unavailable', message: 'flaky', retryable: true },
+        }),
+      },
+      host,
+    );
+    const handle = engine.start({
+      workflow: workflow(`  id: retry-cap
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+${nodes}
+    - { id: flaky, type: agent, agent_ref: ag, prompt_template: 'go', retry: { max: ${ADMISSION_CEILINGS.retryMax}, backoff: linear, backoff_ms: 1 } }
+  edges:
+${edges}
+    - { from: ${ids[ids.length - 1]}, to: flaky }`),
+    });
+    const events: RunEvent[] = [];
+    let settled = false;
+    const pump = (async (): Promise<void> => {
+      while (!settled) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        if (host.armedCount() > 0) host.fireTimers();
+        if (host.deadlineCount() > 0) host.fireDeadlines();
+      }
+    })();
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:failed' || event.type === 'run:completed') settled = true;
+    }
+    await pump;
+
+    const terminal = events.at(-1);
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('turn_limit');
+    // The flaky node started but never exhausted its authored budget of 10 — the cap stopped it first.
+    const flakyStarts = events.filter((e) => e.type === 'node:started' && e.nodeId === 'flaky');
+    expect(flakyStarts.length).toBeLessThan(ADMISSION_CEILINGS.retryMax);
+  }, 60_000);
 
   it('an OMITTED max_parallel caps at the default, not Infinity (ADR-0086 §3)', async () => {
     // **The change nothing guarded.** Reverting `?? DEFAULT_MAX_PARALLEL` to `?? Number.POSITIVE_INFINITY`

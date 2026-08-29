@@ -172,6 +172,18 @@ export interface CheckpointState {
    * (`cost:updated` is also folded when present, but it is streamed, not persisted, so it never appears in a
    * real durable log.)
    */
+  /**
+   * How many node dispatches this run has made — one per `node:started`
+   * ([ADR-0086](../../../../docs/decisions/0086-absolute-admission-ceilings-on-authored-values.md) §4).
+   *
+   * **Folded from the durable log because no in-memory counter can answer it.** ADR-0040 defines two
+   * `attemptNumber` families that "do not join", and ADR-0080 records that `retryCount` resets to 1 on a
+   * crash-resume and again on a budget approval. A durable event does not reset: every attempt emits exactly
+   * one `node:started` (the first from `#step`, each re-dispatch from the retry loop), persisted before
+   * delivery. So the cap survives a resume, an approval and a cross-process handover — which is the whole
+   * reason it needed its own definition rather than reusing one of theirs.
+   */
+  readonly nodeDispatches: number;
   readonly cumulativeCostMicrocents: number;
   /**
    * The run-wide durable **conservative** total (integer micro-cents) — money a provider may already have billed
@@ -220,6 +232,7 @@ interface ReconAccumulator {
   lastSequenceNumber: number;
   totalInputTokens: number;
   totalOutputTokens: number;
+  nodeDispatches: number;
   cumulativeCostMicrocents: number;
   conservativeCostMicrocents: number;
   readonly nodeStates: Map<string, CheckpointNodeState>;
@@ -317,9 +330,17 @@ function applyNodeEvent(acc: ReconAccumulator, event: RunEvent): void {
     case 'node:skipped':
       acc.nodeStates.set(event.nodeId, { status: 'skipped' });
       break;
+    case 'node:started':
+      // Non-state-bearing for `nodeStates` — a node running at the crash is deliberately ABSENT so the
+      // rehydrating engine seeds it `pending` and re-runs it. But it IS the run's dispatch counter
+      // (ADR-0086 §4): one event per attempt, durable, so the count survives the resume that resets every
+      // in-memory retry counter.
+      acc.nodeDispatches += 1;
+      break;
     default:
-      // node:started (running at crash → omit, re-run) and node:retrying (a non-terminal retry attempt,
-      // 1.S/ADR-0040 — the terminal is a later node:failed/node:completed) are non-state-bearing here.
+      // node:retrying is a non-terminal retry attempt (1.S/ADR-0040 — the terminal is a later
+      // node:failed/node:completed) and bears no state here. Its re-dispatch emits its own `node:started`,
+      // which is what the counter above reads, so counting it too would double every retry.
       break;
   }
 }
@@ -463,6 +484,7 @@ export function reconstructCheckpointState(
     lastSequenceNumber: -1,
     totalInputTokens: 0,
     totalOutputTokens: 0,
+    nodeDispatches: 0,
     cumulativeCostMicrocents: 0,
     conservativeCostMicrocents: 0,
     nodeStates: new Map(),
@@ -541,6 +563,7 @@ export function reconstructCheckpointState(
     lastSequenceNumber: acc.lastSequenceNumber,
     totalInputTokens: acc.totalInputTokens,
     totalOutputTokens: acc.totalOutputTokens,
+    nodeDispatches: acc.nodeDispatches,
     cumulativeCostMicrocents: acc.cumulativeCostMicrocents,
     conservativeCostMicrocents: acc.conservativeCostMicrocents,
   };

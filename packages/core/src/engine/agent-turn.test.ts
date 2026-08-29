@@ -9,6 +9,7 @@ import type {
 import type { ContentPart } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
+import { ADMISSION_CEILINGS } from '../limits.js';
 import type { CommitmentOrigin } from './budget-governor.js';
 import {
   ToolCancelledError,
@@ -281,6 +282,41 @@ describe('runAgentTurn — CR-30: the producer awaits between chunks (ADR-0036)'
     // One await per chunk — three chunks, so three awaits — and each precedes its own emit.
     expect(order.filter((o) => o === 'await')).toHaveLength(3);
     expect(order.slice(0, 4)).toEqual(['await', 'emit:a', 'await', 'emit:b']);
+  });
+
+  it('refuses a response with too many tool calls BEFORE dispatching any of them (ADR-0086 §2)', async () => {
+    // The ceiling whose subject is a provider RESPONSE, not an authored file — so it cannot live at
+    // admission; the model chooses this width. The load-bearing half is the ORDER: checking per-call would
+    // leave the first sixteen executed, and for a tier-3 effect that is the duplicate the effect journal
+    // exists to prevent. A refusal after the fact refuses nothing.
+    const n = ADMISSION_CEILINGS.toolCallsPerResponse + 1;
+    const calls = Array.from({ length: n }, (_, i) => [
+      { type: 'tool_call_start' as const, id: `c${i}`, name: 'echo' },
+      { type: 'tool_call_end' as const, id: `c${i}` },
+    ]).flat();
+    let dispatched = 0;
+    const provider = scriptedProvider('anthropic', [[...calls, STOP('tool_use')]]);
+    const params = baseParams(provider, {
+      registry: stubRegistry((call) => {
+        dispatched += 1;
+        return {
+          output: 'OK',
+          truncated: false,
+          toolResult: markUntrusted({
+            type: 'tool_result' as const,
+            toolCallId: call.id,
+            result: 'OK',
+          }),
+          events: {
+            call: { toolId: 'echo', toolInput: {} },
+            result: { toolId: 'echo', success: true, outputSummary: 'OK', durationMs: 1 },
+          },
+        };
+      }),
+    });
+
+    await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'turn_limit' });
+    expect(dispatched).toBe(0); // not one effect fired
   });
 
   it('runs unchanged when no `whenReady` is supplied — absent means never throttle', () => {

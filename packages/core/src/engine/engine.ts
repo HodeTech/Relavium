@@ -68,7 +68,7 @@ import { buildRunPlan, type BuildRunPlanOptions } from '../dag.js';
 import { InterpolationError } from '../errors.js';
 import { resolveContext, resolveTemplate } from '../interpolation/resolve.js';
 import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
-import { DEFAULT_MAX_PARALLEL } from '../limits.js';
+import { ADMISSION_CEILINGS, DEFAULT_MAX_PARALLEL } from '../limits.js';
 import type { PlanVertex, RunPlan } from '../run-plan.js';
 import type { WorkflowDefinition } from '../parser.js';
 import { resolveAndValidateWorkflowInputs } from './input-admission.js';
@@ -530,6 +530,14 @@ class RunExecution {
   /** Ends the handle's iteration without a terminal — the fenced path only (ADR-0079 §5). */
   #closeStream: (() => void) | undefined;
   #startEpochMs = 0;
+  /**
+   * Node dispatches this run has made — ADR-0086 §4's runtime backstop, and the one W3 ceiling that cannot
+   * be checked at admission because it is a property of what a run DOES, not of what it says.
+   *
+   * Incremented where `node:started` is emitted, and seeded from the checkpoint on resume, so it counts the
+   * run rather than this process's slice of it.
+   */
+  #nodeDispatches = 0;
   #cumulativeCostMicrocents = 0;
   #totalInputTokens = 0;
   #totalOutputTokens = 0;
@@ -1168,6 +1176,9 @@ class RunExecution {
     // checkpoint's known spend, and its reservation must exist before the first re-armed poll/schedule can run.
     this.#totalInputTokens = cp.totalInputTokens;
     this.#totalOutputTokens = cp.totalOutputTokens;
+    // Seeded, not restarted: the cap counts the RUN. Restarting here would hand every resume a fresh 500,
+    // which is the same defect that disqualified the in-memory retry counters from carrying this at all.
+    this.#nodeDispatches = cp.nodeDispatches;
     this.#cumulativeCostMicrocents = cp.cumulativeCostMicrocents;
     this.#budgetGovernor?.updateCost(cp.cumulativeCostMicrocents);
     // ADR-0074 §2: BOTH totals restored before any resumed work is scheduled. Without the conservative half the
@@ -1622,6 +1633,25 @@ class RunExecution {
       return;
     }
 
+    // **ADR-0086 §4's run-level dispatch cap, checked BEFORE anything is CLAIMED.** Placement is the whole
+    // correctness of it: `#claimReady` marks a vertex `running` synchronously, so refusing after the claim
+    // left those vertices running with no dispatch behind them — `#handleIdle` then saw work in flight
+    // forever and the run never terminated. Measured: a 60 s test timeout, not a slow test.
+    //
+    // It is the backstop for the multiplication the per-value ceilings still permit — a 500-node graph whose
+    // nodes each retry 10 times is 5000 attempts, every one a real provider call.
+    if (this.#nodeDispatches >= ADMISSION_CEILINGS.nodeDispatchesPerRun && !this.#settled) {
+      this.#failure = {
+        error: {
+          // `turn_limit` is the taxonomy's limit-family code, and the taxonomy carries an explicit
+          // anti-widening precedent (ADR-0082 §9) — a run-level cap is the same family as a turn cap.
+          code: 'turn_limit',
+          message: `the run reached its limit of ${ADMISSION_CEILINGS.nodeDispatchesPerRun} node dispatches`,
+          retryable: false,
+        },
+      };
+      this.#abort.abort();
+    }
     const ready = this.#claimReady(running);
     if (ready.length === 0) {
       await this.#handleIdle(running);
@@ -1631,6 +1661,7 @@ class RunExecution {
     // make a later step see a transient "nothing running" view.
     for (const vertex of ready) {
       await this.handle.whenConsumersReady(); // coarse backpressure (no-drop)
+      this.#nodeDispatches += 1;
       await this.#emitDurable({
         type: 'node:started',
         runId: this.runId,
@@ -1973,6 +2004,22 @@ class RunExecution {
         return;
       }
       attempt += 1;
+      // The retry loop's own dispatch, counted by the same rule (ADR-0086 §4): one `node:started`, one
+      // dispatch. A retry that ran uncounted would let the multiplication the cap exists to bound — nodes
+      // times retries — escape through the very path that produces it.
+      if (this.#nodeDispatches >= ADMISSION_CEILINGS.nodeDispatchesPerRun) {
+        await this.#settleFailed(
+          vertex,
+          {
+            code: 'turn_limit',
+            message: `the run made ${this.#nodeDispatches} node dispatches, its limit of ${ADMISSION_CEILINGS.nodeDispatchesPerRun}`,
+            retryable: false,
+          },
+          attempt - 1,
+        );
+        return;
+      }
+      this.#nodeDispatches += 1;
       await this.#emitDurable({
         type: 'node:started',
         runId: this.runId,
