@@ -1,10 +1,15 @@
+import type { AbortSignalLike } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import type { DiscoveredTool, McpConnection, McpToolResult } from './connection.js';
 import { startMcpClient } from './manager.js';
 
 interface FakeOpts {
-  readonly onCall?: (name: string, args: unknown) => Promise<McpToolResult>;
+  readonly onCall?: (
+    name: string,
+    args: unknown,
+    signal?: AbortSignalLike,
+  ) => Promise<McpToolResult>;
   readonly onClose?: () => void;
   readonly listThrows?: boolean;
 }
@@ -13,9 +18,9 @@ function fakeConnection(tools: readonly DiscoveredTool[], opts: FakeOpts = {}): 
   return {
     listTools: () =>
       opts.listThrows ? Promise.reject(new Error('tools/list failed')) : Promise.resolve(tools),
-    callTool: (name, args) =>
+    callTool: (name, args, signal) =>
       opts.onCall
-        ? opts.onCall(name, args)
+        ? opts.onCall(name, args, signal)
         : Promise.resolve({ content: [{ type: 'text', text: name }], isError: false }),
     close: () => {
       opts.onClose?.();
@@ -178,5 +183,58 @@ describe('startMcpClient', () => {
     await client.close();
     await client.close(); // closeAll snapshots + clears the map, so the second call is a no-op
     expect(closeCount).toBe(1);
+  });
+});
+
+describe('McpCapability.call — cancellation reaches the connection (ADR-0088 §1.2)', () => {
+  it('forwards the engine signal to callTool, so an aborted call can actually stop', async () => {
+    // **Measurement 2, inverted into an assertion.** The capability closure used to be written `(input) =>`,
+    // silently dropping its second parameter, and `McpConnection.callTool(name, args)` had nowhere to put one
+    // — so an aborted call was measured still pending 500 ms later. Asserting the signal ARRIVES is the only
+    // way to catch a regression to that shape: a test that merely awaited the call would pass against it.
+    let seen: AbortSignalLike | undefined;
+    const client = await startMcpClient([
+      {
+        id: 's',
+        open: () =>
+          Promise.resolve(
+            fakeConnection([t('go')], {
+              onCall: (_name, _args, signal) => {
+                seen = signal;
+                return Promise.resolve({ content: [], isError: false });
+              },
+            }),
+          ),
+      },
+    ]);
+    const controller = new AbortController();
+    await client.capability.call({ server: 's', tool: 'go', args: {} }, controller.signal);
+    expect(seen).toBe(controller.signal);
+    await client.close();
+  });
+
+  it('an ALREADY-aborted signal is visible to the connection before it does any work', async () => {
+    // The engine can cancel between dispatch and the call. The connection must be able to see that rather
+    // than discover it only after a round-trip it should never have started.
+    const controller = new AbortController();
+    controller.abort();
+    let abortedAtCall: boolean | undefined;
+    const client = await startMcpClient([
+      {
+        id: 's',
+        open: () =>
+          Promise.resolve(
+            fakeConnection([t('go')], {
+              onCall: (_name, _args, signal) => {
+                abortedAtCall = signal?.aborted;
+                return Promise.resolve({ content: [], isError: false });
+              },
+            }),
+          ),
+      },
+    ]);
+    await client.capability.call({ server: 's', tool: 'go', args: {} }, controller.signal);
+    expect(abortedAtCall).toBe(true);
+    await client.close();
   });
 });

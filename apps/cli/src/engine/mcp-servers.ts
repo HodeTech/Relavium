@@ -145,6 +145,9 @@ export function resolveMcpServerRef(
     ...(reg.allow_local_endpoint === undefined
       ? {}
       : { allow_local_endpoint: reg.allow_local_endpoint }),
+    // The registration owns the connection, so it owns the connect deadline too (ADR-0088 §1.4) — the schema
+    // refuses an inline `connect_timeout_ms` alongside a `ref`, so there is nothing to reconcile here.
+    ...(reg.connect_timeout_ms === undefined ? {} : { connect_timeout_ms: reg.connect_timeout_ms }),
     ...(entry.tools_allowlist === undefined ? {} : { tools_allowlist: entry.tools_allowlist }),
   };
 }
@@ -177,7 +180,10 @@ export interface ServerOpeners {
 
 /** The network transports — all take the same `{ url }` connect spec, so the dispatch is a keyed lookup. */
 type NetworkTransport = 'http' | 'sse' | 'websocket';
-type NetworkOpener = (serverId: string, spec: { readonly url: string }) => Promise<McpConnection>;
+type NetworkOpener = (
+  serverId: string,
+  spec: { readonly url: string; readonly connectTimeoutMs?: number },
+) => Promise<McpConnection>;
 type NetworkOpeners = Record<NetworkTransport, NetworkOpener>;
 
 /**
@@ -271,7 +277,16 @@ function buildStdioConfig(
   return {
     id: serverId,
     ...toolsAllowlistFields(ref),
-    open: () => openStdio(serverId, { command, env, cwd, ...(args === undefined ? {} : { args }) }),
+    open: () =>
+      openStdio(serverId, {
+        command,
+        env,
+        cwd,
+        ...(args === undefined ? {} : { args }),
+        ...(ref.connect_timeout_ms === undefined
+          ? {}
+          : { connectTimeoutMs: ref.connect_timeout_ms }),
+      }),
   };
 }
 
@@ -302,7 +317,16 @@ function buildNetworkConfig(
   // remote (ADR-0053). The connect-by-validated-IP dialer upgrade (DNS-rebind) is the tracked follow-up.
   assertSafeNetworkEndpoint(serverId, url, ref.allow_local_endpoint === true);
   const open = openers[transport]; // `http` (Streamable HTTP) | `sse` (legacy HTTP+SSE alias) | `websocket`
-  return { id: serverId, ...toolsAllowlistFields(ref), open: () => open(serverId, { url }) };
+  const connectTimeoutMs = ref.connect_timeout_ms;
+  return {
+    id: serverId,
+    ...toolsAllowlistFields(ref),
+    open: () =>
+      open(serverId, {
+        url,
+        ...(connectTimeoutMs === undefined ? {} : { connectTimeoutMs }),
+      }),
+  };
 }
 
 /**
@@ -631,6 +655,11 @@ function serverFingerprint(ref: McpServerRef): string {
     e: env,
     w: allowlist,
     l: ref.allow_local_endpoint ?? false,
+    // Part of the identity for the SAME reason `allow_local_endpoint` is (ADR-0088 §1.4): a same-id pair
+    // differing only in its connect deadline would otherwise collapse first-wins, silently giving BOTH
+    // declarations a bound neither author wrote. It is deliberately NOT in the ADR-0084 consent digest —
+    // that answers "is this the same PROGRAM", and a timeout changes nothing about what executes.
+    d: ref.connect_timeout_ms ?? null,
   });
 }
 

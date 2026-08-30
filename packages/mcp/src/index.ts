@@ -33,9 +33,15 @@ export type {
   McpNonTextContent,
 } from './connection.js';
 export { McpError, McpConnectError, McpHostUnavailableError } from './errors.js';
+export {
+  MCP_DEADLINES,
+  McpAbortedError,
+  McpDeadlineError,
+  type McpDeadlinePhase,
+} from './deadlines.js';
 export { shapeToolResult } from './result.js';
 export { buildServerToolDefs, type ServerToolDefs, type SkippedTool } from './tool-mapping.js';
-export { openStdioConnection, type StdioServerSpec } from './sdk-stdio.js';
+export { openStdioConnection, type ConnectBound, type StdioServerSpec } from './sdk-stdio.js';
 export { openHttpConnection, type HttpServerSpec } from './sdk-http.js';
 export { openSseConnection, type SseServerSpec } from './sdk-sse.js';
 export { openWebSocketConnection, type WebSocketServerSpec } from './sdk-websocket.js';

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { AgentSchema, McpServerRefSchema, MemorySchema } from './agent.js';
+import { MCP_CONNECT_TIMEOUT_CEILING_MS } from './constants.js';
 
 /** The reference agent example from docs/reference/contracts/agent-yaml-spec.md. */
 const summarizer = {
@@ -266,6 +267,42 @@ describe('McpServerRefSchema', () => {
     ).toBe(true);
   });
 
+  it('admits `connect_timeout_ms` up to the ceiling and REJECTS above it (ADR-0088 §1.4)', () => {
+    // The field exists because a cold `npx` outruns any sane default (`#205`); the ceiling exists because the
+    // field would otherwise be a way to write "wait forever", which is the unbounded connect ADR-0088 closes.
+    const stdio = (ms: number): unknown => ({
+      id: 'gh',
+      transport: 'stdio',
+      command: 'npx',
+      connect_timeout_ms: ms,
+    });
+    // EXACTLY at the ceiling, not near it — the boundary is where an off-by-one lives, and "10 under" would
+    // pass against a `<` comparison that rejects the legal maximum.
+    expect(McpServerRefSchema.safeParse(stdio(MCP_CONNECT_TIMEOUT_CEILING_MS)).success).toBe(true);
+    expect(McpServerRefSchema.safeParse(stdio(MCP_CONNECT_TIMEOUT_CEILING_MS + 1)).success).toBe(
+      false,
+    );
+    // Over-ceiling is a REJECTION, never a clamp (the ADR-0086 admission shape): silently running under a
+    // limit the author did not write is how a bound becomes a surprise instead of a contract.
+    const over = McpServerRefSchema.safeParse(stdio(MCP_CONNECT_TIMEOUT_CEILING_MS * 2));
+    expect(over.success).toBe(false);
+    // Not a duration at all — zero and negative are refused rather than treated as "no timeout".
+    expect(McpServerRefSchema.safeParse(stdio(0)).success).toBe(false);
+    expect(McpServerRefSchema.safeParse(stdio(-1)).success).toBe(false);
+    expect(McpServerRefSchema.safeParse(stdio(1.5)).success).toBe(false);
+  });
+
+  it('accepts `connect_timeout_ms` on a NETWORK transport too — a cold container is slow as well', () => {
+    expect(
+      McpServerRefSchema.safeParse({
+        id: 'docs',
+        transport: 'http',
+        url: 'https://docs.example/mcp',
+        connect_timeout_ms: 45_000,
+      }).success,
+    ).toBe(true);
+  });
+
   it('rejects the stdio-only fields `command`/`args` on a network transport (strict + symmetric)', () => {
     // A network transport spawns no child, so command/args are inert; rejecting them keeps the schema strict
     // and symmetric with the stdio branch (which rejects url/allow_local) and keeps the dedup fingerprint clean.
@@ -359,6 +396,9 @@ describe('McpServerRefSchema', () => {
         { env: { TOKEN: 'x' } },
         { url: 'https://h/mcp' },
         { allow_local_endpoint: true },
+        // A CONNECTION property, not a preference (ADR-0088 §1.4) — the registration owns the connection, so
+        // an inline override alongside `ref` is refused at parse rather than resolved by a precedence rule.
+        { connect_timeout_ms: 30_000 },
       ]) {
         expect(McpServerRefSchema.safeParse({ ref: 'github', ...inline }).success).toBe(false);
       }

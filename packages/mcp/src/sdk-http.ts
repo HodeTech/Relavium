@@ -1,7 +1,10 @@
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 
+import type { AbortSignalLike } from '@relavium/shared';
+
 import type { McpConnection } from './connection.js';
+import { MCP_DEADLINES } from './deadlines.js';
 import { McpConnectError } from './errors.js';
 import { connectSdkTransport } from './sdk-stdio.js';
 
@@ -18,12 +21,15 @@ import { connectSdkTransport } from './sdk-stdio.js';
 /** The explicit spec for a Streamable HTTP MCP server — a host-validated absolute `http(s)` url. */
 export interface HttpServerSpec {
   readonly url: string;
+  /** The authored `connect_timeout_ms` (ADR-0088 §1.4). Absent ⇒ {@link MCP_DEADLINES.networkConnectMs}. */
+  readonly connectTimeoutMs?: number;
 }
 
 /** Connect a Streamable HTTP MCP server and run the initialize handshake; returns the live connection. */
 export async function openHttpConnection(
   serverId: string,
   spec: HttpServerSpec,
+  signal?: AbortSignalLike,
 ): Promise<McpConnection> {
   let endpoint: URL;
   try {
@@ -41,5 +47,8 @@ export async function openHttpConnection(
   const transport: Pick<Transport, 'start' | 'send' | 'close'> = new StreamableHTTPClientTransport(
     endpoint,
   );
-  return connectSdkTransport(serverId, transport);
+  return connectSdkTransport(serverId, transport, {
+    timeoutMs: spec.connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs,
+    ...(signal === undefined ? {} : { signal }),
+  });
 }

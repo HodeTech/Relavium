@@ -107,15 +107,22 @@ export async function startMcpClient(servers: readonly McpServerConfig[]): Promi
   }
 
   const capability: McpCapability = {
-    // The `signal` is intentionally not forwarded to the in-flight `tools/call` yet — the engine's
-    // `AbortSignalLike` does not match the SDK transport's `AbortSignal`; mid-call abort propagation to the
-    // server is a tracked refinement (deferred-tasks.md). A run/turn cancel still tears the connection down.
-    call: (input) => {
+    /**
+     * The engine's `signal` reaches the in-flight `tools/call`
+     * ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §1.2).
+     *
+     * It was measured dropped: this closure took `(input)` and ignored its second parameter, and
+     * `McpConnection.callTool(name, args)` had nowhere to put one — so an aborted call was still pending
+     * 500 ms later and the only cancellation available was tearing the whole connection down, which
+     * invalidates every other call to that server for the rest of the session. The adapter bridges the
+     * platform-free signal to the SDK's `AbortSignal` at the fence.
+     */
+    call: (input, signal) => {
       const connection = connections.get(input.server);
       if (connection === undefined) {
         return Promise.reject(new McpError(`no MCP connection for server "${input.server}"`));
       }
-      return connection.callTool(input.tool, input.args);
+      return connection.callTool(input.tool, input.args, signal);
     },
   };
 

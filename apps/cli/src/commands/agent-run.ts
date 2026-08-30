@@ -9,6 +9,7 @@ import { cassetteResolver, loadCassette } from '../chat/fixture.js';
 import { onceEffortNotice } from '../chat/effort-notice.js';
 import { buildChatSession, type BuiltChatSession } from '../chat/session-host.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
+import { guardMcpTeardown } from '../engine/mcp-signal-teardown.js';
 import type { StdioConsentGate } from '../engine/mcp-servers.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { loadResolvedConfig } from '../config/load.js';
@@ -166,6 +167,13 @@ export async function agentRunCommand(
     await built.closeMcp?.().catch(() => undefined);
     throw cause;
   }
+  // **A signal does not run `finally`** ([ADR-0088](../../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md)
+  // §1.3, `#21`) — measured: a host that spawned a child the way the MCP SDK does, sent `SIGTERM`, printed no
+  // teardown line and left the child alive with `ppid 1`. Every path below unwinds through a `finally`; a
+  // Ctrl-C, a `kill`, or a closed terminal window does not, and this is what reaps the children then.
+  const closeMcp = built.closeMcp;
+  const unguardMcp =
+    closeMcp === undefined ? undefined : guardMcpTeardown(() => closeMcp().then(() => undefined));
   try {
     built.attachEffectJournal((correlation) =>
       createEffectJournalPort(
@@ -178,6 +186,8 @@ export async function agentRunCommand(
     const turnErrorCode = await runOneShotTurn(built, message, deps);
     return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;
   } finally {
+    // Removed first: from here `runOneShotTurn`'s own teardown owns the children on every unwinding path.
+    unguardMcp?.();
     journalStore.close();
   }
 }

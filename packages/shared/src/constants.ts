@@ -239,6 +239,23 @@ export type MediaSurface = (typeof MEDIA_SURFACES)[number];
 export const MEDIA_GEN_SUBMIT_TIMEOUT_MS = 120_000;
 
 /**
+ * The absolute ceiling on an authored `connect_timeout_ms` for an MCP server
+ * ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §1.4).
+ *
+ * The field exists because the canonical authored example is `command: npx`, and a cold `npx` resolution
+ * routinely outruns any sane default before the child speaks MCP at all — so an author needs a way to say
+ * "this one is slow". The ceiling exists because the field would otherwise be a way to say "wait forever",
+ * which is the unbounded connect this ADR closes.
+ *
+ * Ten minutes: far above any real cold start, far below "the user has walked away". Over-ceiling is a
+ * **rejection at admission, never a clamp** — the shape
+ * [ADR-0086](../../../docs/decisions/0086-absolute-admission-ceilings-on-authored-values.md) established, and
+ * for its reason: silently running a workflow under a limit its author did not write is how a bound becomes
+ * a surprise instead of a contract.
+ */
+export const MCP_CONNECT_TIMEOUT_CEILING_MS = 600_000;
+
+/**
  * The async media-job poll cadence and bounds (1.AG Section D,
  * [ADR-0045](../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §7) — the
  * single source of these magic numbers. The engine poll loop uses them directly: poll at `pollInitialMs`,

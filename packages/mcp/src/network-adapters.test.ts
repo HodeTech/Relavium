@@ -3,6 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
+import { MCP_DEADLINES } from './deadlines.js';
 import { McpError } from './errors.js';
 import { openHttpConnection } from './sdk-http.js';
 import { openSseConnection } from './sdk-sse.js';
@@ -38,7 +39,9 @@ describe('connectSdkTransport (the success path every network adapter delegates 
     );
     await server.connect(serverTransport);
 
-    const conn = await connectSdkTransport('mem', clientTransport);
+    const conn = await connectSdkTransport('mem', clientTransport, {
+      timeoutMs: MCP_DEADLINES.networkConnectMs,
+    });
     try {
       const tools = await conn.listTools();
       expect(tools.map((t) => t.name)).toEqual(['echo']);

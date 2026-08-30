@@ -46,6 +46,7 @@ import type { GatePrompter } from '../gate/prompter.js';
 import { selectGatePrompter } from '../gate/select-prompter.js';
 import type { OpenedHistory } from '../history/open.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
+import { guardMcpTeardown } from '../engine/mcp-signal-teardown.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
@@ -178,6 +179,9 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
   // the store cannot be opened until the definition it must freeze is known.
   let opened: OpenedHistory | undefined;
   let mcpRuntime: WorkflowMcpRuntime | undefined;
+  // The signal guard's unsubscribe. Registered only once children actually exist; removed on the normal path,
+  // where the `finally` below already owns the teardown (ADR-0088 §1.3).
+  let unguardMcp: (() => void) | undefined;
   try {
     // Inbound MCP (2.R Step 3b): aggregate the `mcp_servers` declared by the workflow's INLINE agents, start
     // them fail-loud (a connect/discovery failure is an exit-2 CliError, cause stripped), and rewrite the
@@ -202,7 +206,14 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
         }),
       ...(deps.startMcpClient === undefined ? {} : { startMcpClient: deps.startMcpClient }),
     });
-    if (mcpRuntime !== undefined) surfaceMcpSkipped(deps.io, mcpRuntime.client.skipped);
+    if (mcpRuntime !== undefined) {
+      surfaceMcpSkipped(deps.io, mcpRuntime.client.skipped);
+      // **A signal does not run `finally`** — measured: a host that spawned a child the way the MCP SDK does,
+      // sent `SIGTERM`, printed no teardown line and left the child alive with `ppid 1` (`#21`). The guard is
+      // what reaps those children on Ctrl-C, a `kill`, or a closed terminal window.
+      const client = mcpRuntime.client;
+      unguardMcp = guardMcpTeardown(() => client.close());
+    }
     const runWorkflow = mcpRuntime?.workflow ?? def;
 
     // Durable history (2.H): open `~/.relavium/history.db` and run THIS workflow on a host backed by the
@@ -401,6 +412,10 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // Present only when an inline agent declared a server; idempotent. A teardown error must never mask the run
     // outcome (closeAll swallows per-connection; the db close is best-effort here too).
     try {
+      // Remove the signal guard FIRST: from here the teardown below owns the children, and leaving the guard
+      // registered would close a second time (harmless — `close()` is idempotent) and hold a listener on a
+      // process that is exiting normally.
+      unguardMcp?.();
       opened?.close();
     } finally {
       await mcpRuntime?.client.close();

@@ -1,6 +1,9 @@
 import { WebSocketClientTransport } from '@modelcontextprotocol/sdk/client/websocket.js';
 
+import type { AbortSignalLike } from '@relavium/shared';
+
 import type { McpConnection } from './connection.js';
+import { MCP_DEADLINES } from './deadlines.js';
 import { McpConnectError, McpError } from './errors.js';
 import { connectSdkTransport } from './sdk-stdio.js';
 
@@ -21,12 +24,15 @@ import { connectSdkTransport } from './sdk-stdio.js';
 /** The explicit spec for a WebSocket MCP server — a host-validated absolute `ws(s)` url. */
 export interface WebSocketServerSpec {
   readonly url: string;
+  /** The authored `connect_timeout_ms` (ADR-0088 §1.4). Absent ⇒ {@link MCP_DEADLINES.networkConnectMs}. */
+  readonly connectTimeoutMs?: number;
 }
 
 /** Connect a WebSocket MCP server and run the initialize handshake; returns the live connection. */
 export async function openWebSocketConnection(
   serverId: string,
   spec: WebSocketServerSpec,
+  signal?: AbortSignalLike,
 ): Promise<McpConnection> {
   if (typeof globalThis.WebSocket !== 'function') {
     throw new McpError(
@@ -40,5 +46,8 @@ export async function openWebSocketConnection(
   } catch (err) {
     throw new McpConnectError(serverId, { cause: err });
   }
-  return connectSdkTransport(serverId, new WebSocketClientTransport(endpoint));
+  return connectSdkTransport(serverId, new WebSocketClientTransport(endpoint), {
+    timeoutMs: spec.connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs,
+    ...(signal === undefined ? {} : { signal }),
+  });
 }
