@@ -131,6 +131,7 @@ flowchart TD
 | 0085 | [The node executor owes liveness, the engine enforces it, and a late dispatch is fenced](0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | Accepted | 2026-08-25 |
 | 0086 | [Authored values get absolute admission ceilings, and an omitted concurrency cap is finite](0086-absolute-admission-ceilings-on-authored-values.md) | Accepted | 2026-08-28 |
 | 0087 | [A stream is bounded by whether anyone reads it; outputs and events are bounded by size; finished runs are bounded by count](0087-consumed-streams-size-bounds-and-run-retention.md) | Proposed | 2026-08-29 |
+| 0088 | [The MCP boundary is hostile — a remote server is pinned and bounded, an unbounded one must be local and opted into](0088-the-mcp-boundary-is-hostile.md) | Accepted | 2026-08-30 |
 
 ## Creating a new ADR
 

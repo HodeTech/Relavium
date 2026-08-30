@@ -4,6 +4,14 @@
 - **Date**: 2026-06-10
 - **Related**: [ADR-0006](0006-os-keychain-for-api-keys.md), [ADR-0011](0011-internal-llm-abstraction.md), [ADR-0019](0019-cli-node-keychain-library.md), [ADR-0029](0029-tool-policy-hardening.md), [mcp-integration.md](../reference/shared-core/mcp-integration.md), [architectural-principles.md](../standards/architectural-principles.md)
 
+> **Amended 2026-08-30 by [ADR-0088](0088-the-mcp-boundary-is-hostile.md).** Guardrail g2's "MCP `url`
+> endpoints pass the one shared SSRF primitive" is honoured by **extending** that primitive, not by a second
+> path beside it: `connectValidated` was HTTPS-only, and the documented local-dev endpoint is plaintext
+> `http://localhost`. It gains a single bound local-endpoint policy — the private-range block and the
+> plaintext permission lift **together, and only** for a target that resolves private AND matches the authored
+> `host:port`. A narrow second parser for the local case was the alternative, and it is the shape g2 exists to
+> refuse. g2 is unchanged in substance; ADR-0088 §4 records how it is kept.
+
 > **Amended 2026-08-20 by [ADR-0084](0084-consent-before-a-local-mcp-spawn.md).** Guardrail g5's "declared
 > env + a curated minimal base, never a blanket copy" describes what the child **inherits**, not what a
 > declaration may **set**. The SDK spawns with `{ ...getDefaultEnvironment(), ...spec.env }`, so a declared
