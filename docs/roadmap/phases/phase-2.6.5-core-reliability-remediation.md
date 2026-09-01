@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` is REVIEW-BLOCKED on PR #87** — a systematic review found five merge blockers in it, all reproduced, all now fixed on the branch and awaiting re-review (28 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28)
+- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` (media correctness) is next (28 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28)
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -1418,7 +1418,7 @@ held one and broke the other, the second held that one and lost the first. They 
 
 ---
 
-## W4 — MCP hostile boundary · ✅ COMPLETE 2026-09-01 ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md))
+## W4 — MCP hostile boundary · ✅ MERGED 2026-09-01 (PR #87, [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md))
 
 Executes Wave 2's MCP queue (see [Phase boundary](#phase-boundary)). One security sitting covers this group
 plus `CR-16`.
