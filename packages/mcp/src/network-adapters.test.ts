@@ -10,7 +10,7 @@ import { MCP_DEADLINES, McpDeadlineError, openWindow, raceDeadline } from './dea
 import { McpError } from './errors.js';
 import { openHttpConnection, type HttpServerSpec } from './sdk-http.js';
 import { openSseConnection } from './sdk-sse.js';
-import { connectSdkTransport, MAX_TOOL_PAGES } from './sdk-stdio.js';
+import { connectSdkTransport, MAX_TOOL_PAGES, setMcpClientVersion } from './sdk-stdio.js';
 import { openWebSocketConnection } from './sdk-websocket.js';
 
 /**
@@ -70,6 +70,35 @@ describe('connectSdkTransport (the success path every network adapter delegates 
       const result = await conn.callTool('echo', { text: 'hi' });
       expect(result.isError).toBe(false);
       expect(result.content).toEqual([{ type: 'text', text: 'hi' }]);
+    } finally {
+      await conn.close();
+      await server.close();
+    }
+  });
+});
+
+describe('the client version reaches the HANDSHAKE (ADR-0088 §9, `#208`)', () => {
+  /**
+   * **The register claimed `errors.test.ts` covered this; it does not, and neither did anything else.** The
+   * CLI sets `setMcpClientVersion(CLI_VERSION)` at its composition root, and a server sees the result in
+   * `initialize`'s `clientInfo` — so a deleted call, or a composition-root rewire that stops making it, is
+   * invisible to every test in the repository. Asserted where a server actually reads it.
+   */
+  it('sends the host-supplied version in initialize’s clientInfo', async () => {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = new McpServer({ name: 'ver', version: '1.0.0' });
+    await server.connect(serverTransport);
+
+    setMcpClientVersion('9.9.9-test');
+    const conn = await connectSdkTransport('ver', clientTransport, {
+      timeoutMs: MCP_DEADLINES.networkConnectMs,
+    });
+    try {
+      // The SDK exposes what the peer sent at handshake — this is the server's view of us.
+      expect(server.server.getClientVersion()).toMatchObject({
+        name: 'relavium',
+        version: '9.9.9-test',
+      });
     } finally {
       await conn.close();
       await server.close();

@@ -1160,6 +1160,24 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   `RunEventSchema.superRefine` (where the runId/sessionId cross-check already lives). Low value, left
   for the consumer that needs the guarantee.
 
+- [ ] **The MCP schema compiler's denylist silently DROPS unsupported assertions** *(High · pre-existing ·
+  surfaced by the PR #87 review, 2026-09-01)* — `compileJsonSchemaToZod` refuses a finite list of unsupported
+  constructs and passes everything else through, so a keyword it does not implement is ignored rather than
+  refused. Reproduced: `{ "type": "number", "exclusiveMinimum": 0 }` compiles **ok** and the resulting
+  validator **accepts `0`**. Same for any sibling assertion outside the list (`multipleOf`, `pattern` on a
+  non-string, `minItems`, …).
+
+  This contradicts [ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md)'s
+  "an `inputSchema` outside the supported subset **drops the tool at discovery** (fail closed)": the tool is
+  admitted, and our dispatch gate is weaker than the schema the server published. The server still validates
+  on its own side, so this is a weaker gate rather than an open door — which is why it is recorded rather than
+  rushed.
+
+  **Not a `W4` regression** and deliberately not fixed inside it: the correct shape is a per-type **supported-key
+  allowlist**, which starts REFUSING schemas that work today, so it needs its own change with its own
+  compatibility review. Scoped that way, or an explicit ADR note narrowing ADR-0052's claim to the keys the
+  compiler actually implements.
+
 ## Test depth
 
 - [ ] **dist-resolution packaging test** — the migration runner is tested only from `src/`; add

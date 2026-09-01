@@ -68,6 +68,7 @@ import type {
   ToolId,
   ToolRegistry,
 } from '../tools/types.js';
+import { modelVisibleDescription } from '../tools/types.js';
 import {
   AgentTurnError,
   DEFAULT_AGENT_TURN_LIMITS,
@@ -1547,9 +1548,11 @@ function buildLlmTools(
   for (const def of defs) {
     if (!granted.has(def.id)) continue;
     if (advertise !== undefined && !advertise(def.id)) continue; // mode advertise-filter (ADR-0057)
+    // The model-visible description carries a provenance line for a server-supplied tool (ADR-0088 §7.2).
+    const description = modelVisibleDescription(def);
     const parsed = ToolDefSchema.safeParse({
       name: def.id,
-      ...(def.description.length > 0 ? { description: def.description } : {}),
+      ...(description.length > 0 ? { description } : {}),
       parameters: def.llmVisibleParams,
     });
     if (!parsed.success) {

@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` complete on `development` 2026-09-01, in review as PR #87** (28 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28)
+- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` is REVIEW-BLOCKED on PR #87** — a systematic review found five merge blockers in it, all reproduced, all now fixed on the branch and awaiting re-review (28 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28)
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -1535,14 +1535,15 @@ derived from the caught error's SHAPE, never from its text.
 | Item | Closed by | The test that fails if it is reverted |
 |------|-----------|----------------------------------------|
 | `CR-40` | the connect window opens before any I/O and races the whole `client.connect()`; the signal reaches `RequestOptions.signal` | `deadlines.test.ts` — a transport whose `start()` never settles; `network-adapters.test.ts` — a real `McpServer` observing its own cancellation |
-| `CR-41` | `http`/`sse` take a host-injected validated `fetch`; a redirect is refused; a remote `websocket` is refused at admission; the local opt-in is one bound policy | `mcp-fetch.test.ts` (rebind, redirect, sibling port); `mcp-servers.test.ts` (the dialer is handed over, the narrowing holds) |
-| `CR-42` | seven bounds at two levels; the aggregate is order-stable; the diagnostic is bounded too | `ingress-bounds.test.ts` — the measured 50 000-tool catalogue, refused |
-| `#21` | a cooperative signal teardown plus a synchronous `process.on('exit')` reap | `mcp-orphan.e2e.test.ts` — a real `SIGTERM`-trapping child, asserted against the process table |
-| `#202` | presentation sanitized at discovery, semantic fields fail-closed | `tool-mapping.test.ts` |
+| `CR-41` | `http`/`sse` REQUIRE a host-injected validated `fetch` (it was optional); a redirect is refused; a remote `websocket` is refused at admission; the local opt-in is one bound policy and may not name a provider metadata endpoint | `mcp-fetch.test.ts` (rebind, redirect, sibling port, the JSON-body bound); `mcp-servers.test.ts` (the dialer is handed over, one window across preflight + connect); `content.test.ts` (AWS IMDS v6, Alibaba) |
+| `CR-42` | seven bounds at two levels; the aggregate is order-stable; **paging stops** at it; the diagnostic is bounded without bounding the traversal | `ingress-bounds.test.ts` — the measured 50 000-tool catalogue, refused; the paging-stops group; the allowlist-behind-decoys case |
+| `#21` | a cooperative signal teardown plus a **process-scoped** synchronous reap over a spawn-time child registry | `mcp-orphan.e2e.test.ts` (mechanism) **and `tools/cli-smoke/check.mjs`** — a real signalled `agent run` subprocess, asserted against the process table. The e2e alone could not catch this: every in-process test injects `exit` |
+| `#202` | presentation sanitized at discovery (including INSIDE the schema), semantic fields fail-closed on any C0/C1 or bidi byte; provenance stated to the model (§7.2) | `tool-mapping.test.ts`; `agent-session.test.ts` for the provenance, asserted on the request a provider receives |
 | `G19` | a cross-layer (and same-layer) name collision refuses | `resolve.test.ts` |
 | `#35`, `G32`, `#205` | four named deadlines; authored `connect_timeout_ms` with an admission ceiling | `deadlines.test.ts`, `agent.test.ts`, `config.test.ts` |
 | `G33`, `#201`, `#209`, `#288` | the transport message bound, the discovery budget, the schema string bounds, the result text bound | `mcp-fetch.test.ts`, `ingress-bounds.test.ts`, `schema-compiler.test.ts` |
-| `#203`, `#204`, `#206`, `#207`, `#208` | structured fields, a `reason` from the error's shape, fail-loud args, a reportable teardown, a host-supplied version | `errors.test.ts` |
+| `#203`, `#204`, `#206`, `#207` | structured fields, a `reason` from the error's shape (every egress code, not four-of-six wrong), fail-loud args, a teardown a real adapter can actually report | `errors.test.ts`, `mcp-egress-taxonomy.test.ts` (cross-package exhaustiveness), `manager.test.ts` (a rejecting close reaches `onCloseError`) |
+| `#208` | the host-supplied client version | `network-adapters.test.ts` — read back from a real server's handshake. **This row named `errors.test.ts` and that file has no version test**; nothing covered it until the PR #87 review said so |
 | `#287` | is `CR-41` | as above |
 
 **What this wave cost that a reader should know.** Two previously-working configurations are now refused, and
@@ -1561,7 +1562,26 @@ resolution a LAN-adjacent attacker steers, narrowed but not eliminated by the di
 metadata answer. `#297` (per-file adapter coverage) is satisfied incidentally by the tests above rather than
 by a coverage threshold, and is left as a coverage-gate question rather than claimed.
 
-**The PR #87 review round (2026-09-01)** found nine more, and their distribution repeats the wave's own
+**The PR #87 systematic review (2026-09-01) found five MERGE BLOCKERS, and the honest reading is that `W4`
+claimed more than it had.** Not one of them is a subtle interaction: a signalled `agent run` orphaned its MCP
+child at `ppid 1` (reproduced against a real subprocess, twice, for two independent reasons); the validated
+`fetch` that carries all three §2 guarantees was OPTIONAL on a public opener; a JSON body defeated the 4 MiB
+transport bound entirely by padding with blank lines; discovery paged a hostile catalogue to exhaustion before
+the budget was consulted, which §5.2 explicitly forbids and which one of this wave's own tests had contracted
+as required behaviour; and the local opt-in could name two real cloud metadata endpoints (AWS IMDS over IPv6,
+Alibaba's `100.100.100.200`) because both sit inside the private ranges the opt-in lifts.
+
+Four more mechanisms were live in the type system and dead in practice: `onCloseError` (unreachable — every
+real adapter closed through a swallowing helper), the connect-error taxonomy (four of six egress codes
+reported "the endpoint redirected", including the byte bound firing), the §7.2 provenance (decided in the ADR,
+dropped by the lowering, so a server's text reached the model unmarked), and the §7.1 classification, which
+was inverted in BOTH directions — a newline in a tool name was admitted while a poisoned nested `description`
+dropped the whole tool.
+
+The pattern is the wave's own, one level up: **the mechanisms were built and the bindings between them were
+assumed.** Every blocker sat at a seam where two correct pieces met.
+
+**The earlier PR #87 round (2026-09-01)** found nine more, and their distribution repeats the wave's own
 lesson rather than departing from it. Two were live gaps in the boundaries the ADR claims: a `required`-only
 property name escaped `schemaPropertyNameBytes` entirely (refused at 257 bytes through the `properties` door,
 admitted at 200 KiB through the other), and `relavium run` released the signal guard BEFORE awaiting the MCP

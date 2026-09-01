@@ -58,6 +58,7 @@ import { resolveTemplate } from '../interpolation/resolve.js';
 import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
 import type { AgentPlanConfig } from '../run-plan.js';
 import { authoredSystemPrompt, type AuthoredSystemPrompt } from './authored-system-prompt.js';
+import { modelVisibleDescription } from '../tools/types.js';
 import type { ToolDef, ToolDispatchContext, ToolRegistry } from '../tools/types.js';
 import {
   AgentTurnError,
@@ -980,9 +981,11 @@ function buildLlmTools(defs: readonly ToolDef[], granted: ReadonlySet<string>): 
   const out: LlmToolDef[] = [];
   for (const def of defs) {
     if (!granted.has(def.id)) continue;
+    // The model-visible description carries a provenance line for a server-supplied tool (ADR-0088 §7.2).
+    const description = modelVisibleDescription(def);
     const parsed = ToolDefSchema.safeParse({
       name: def.id,
-      ...(def.description.length > 0 ? { description: def.description } : {}),
+      ...(description.length > 0 ? { description } : {}),
       parameters: def.llmVisibleParams,
     });
     if (!parsed.success) {
