@@ -64,7 +64,6 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
     await connectValidated(
       'https://api.example.com/p?q=1',
       {
-        allowPrivate: false,
         method: 'POST',
         headers: { authorization: 'Bearer X' },
         body: '{"a":1}',
@@ -88,7 +87,6 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
     await connectValidated(
       'https://api.example.com/x',
       {
-        allowPrivate: false,
         method: 'GET',
         // A model could set these to reroute an allowlisted, correctly-pinned request to a DIFFERENT vhost at
         // the same shared IP — the mechanism must drop them so the wire Host derives from the validated host.
@@ -119,7 +117,6 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
     await connectValidated(
       'https://api.example.com/x',
       {
-        allowPrivate: false,
         method: 'POST',
         // A model-set Content-Length that MISMATCHES the body length is a request-smuggling primitive (the
         // surplus body bytes are parsed as a second, forged request on a keep-alive socket) — the mechanism must
@@ -170,7 +167,6 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
     await connectValidated(
       'https://api.example.com/x',
       {
-        allowPrivate: false,
         method: 'GET',
         headers: {
           'X-Forwarded-Host': 'evil-backend.example', // forwarding header → vhost reroute
@@ -208,20 +204,10 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
       openConnection: () => Promise.reject(new Error('must not connect')),
     };
     await expect(
-      connectValidated(
-        'http://api.example.com/x',
-        { allowPrivate: false, method: 'GET' },
-        deps,
-        sig(),
-      ),
+      connectValidated('http://api.example.com/x', { method: 'GET' }, deps, sig()),
     ).rejects.toMatchObject({ code: 'insecure_url' });
     await expect(
-      connectValidated(
-        'https://u:p@api.example.com/x',
-        { allowPrivate: false, method: 'GET' },
-        deps,
-        sig(),
-      ),
+      connectValidated('https://u:p@api.example.com/x', { method: 'GET' }, deps, sig()),
     ).rejects.toMatchObject({ code: 'insecure_url' });
     expect(resolved).toBe(false); // the url gate runs before the resolver
   });
@@ -229,49 +215,88 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
   it('blocks a private IP among MANY resolved answers (one bad answer fails the whole fetch)', async () => {
     const deps = fakeDeps({ resolve: { 'evil.example.com': ['203.0.113.5', '127.0.0.1'] } });
     await expect(
-      connectValidated(
-        'https://evil.example.com/x',
-        { allowPrivate: false, method: 'GET' },
-        deps,
-        sig(),
-      ),
+      connectValidated('https://evil.example.com/x', { method: 'GET' }, deps, sig()),
     ).rejects.toMatchObject({ code: 'blocked_host' });
   });
 
   it('blocks a resolver that returns a NON-IP (it would defeat connect-by-validated-IP)', async () => {
     const deps = fakeDeps({ resolve: { 'evil.example.com': ['cdn.internal.corp'] } });
     await expect(
-      connectValidated(
-        'https://evil.example.com/x',
-        { allowPrivate: false, method: 'GET' },
-        deps,
-        sig(),
-      ),
+      connectValidated('https://evil.example.com/x', { method: 'GET' }, deps, sig()),
     ).rejects.toMatchObject({ code: 'blocked_host' });
   });
 
   it('blocks an empty DNS result (fail-closed — never pins the unvalidated hostname)', async () => {
     const deps = fakeDeps({ resolve: { 'nx.example.com': [] } });
     await expect(
+      connectValidated('https://nx.example.com/x', { method: 'GET' }, deps, sig()),
+    ).rejects.toMatchObject({ code: 'blocked_host' });
+  });
+
+  it('a localEndpoint permits exactly its own host:port (the BYOK local-endpoint opt-in)', async () => {
+    let opened = false;
+    const deps = fakeDeps({ resolve: { localhost: ['127.0.0.1'] }, onOpen: () => (opened = true) });
+    await connectValidated(
+      'https://localhost:4000/x',
+      { method: 'GET', localEndpoint: { host: 'localhost', port: 4000 } },
+      deps,
+      sig(),
+    );
+    expect(opened).toBe(true);
+  });
+
+  it('refuses a SIBLING PORT on the permitted host — the SEC-EGRESS-3 decision, made', async () => {
+    // The reason the opt-in is a `host:port` and not a boolean. An `allowPrivate: true` that meant "private
+    // is fine" would have let a server opted in for `localhost:4000` reach `localhost:6379` (Redis),
+    // `:5432` (Postgres), `:22` or a container socket — the hole ADR-0053 §3 requires any wiring of this to
+    // close before it ships.
+    const deps = fakeDeps({ resolve: { localhost: ['127.0.0.1'] } });
+    await expect(
       connectValidated(
-        'https://nx.example.com/x',
-        { allowPrivate: false, method: 'GET' },
+        'https://localhost:6379/x',
+        { method: 'GET', localEndpoint: { host: 'localhost', port: 4000 } },
         deps,
         sig(),
       ),
     ).rejects.toMatchObject({ code: 'blocked_host' });
   });
 
-  it('allowPrivate:true permits a loopback target (the BYOK local-endpoint opt-in)', async () => {
-    let opened = false;
-    const deps = fakeDeps({ resolve: { localhost: ['127.0.0.1'] }, onOpen: () => (opened = true) });
-    await connectValidated(
-      'https://localhost/x',
-      { allowPrivate: true, method: 'GET' },
+  it('permits PLAINTEXT for the authored local endpoint, and only for it', async () => {
+    // The two relaxations lift together. A local-dev MCP server is typically `http://localhost:4000`, which
+    // is why plaintext is needed at all — and it is scoped to that one endpoint.
+    const deps = fakeDeps({ resolve: { localhost: ['127.0.0.1'] } });
+    const hop = await connectValidated(
+      'http://localhost:4000/mcp',
+      { method: 'GET', localEndpoint: { host: 'localhost', port: 4000 } },
       deps,
       sig(),
     );
-    expect(opened).toBe(true);
+    expect(hop.status).toBeGreaterThan(0);
+    // A DIFFERENT plaintext host is still refused, opt-in or not — the rule ADR-0053 §3 states and a pair of
+    // independent flags would have inverted: a remote endpoint is always https.
+    await expect(
+      connectValidated(
+        'http://public.example/x',
+        { method: 'GET', localEndpoint: { host: 'localhost', port: 4000 } },
+        deps,
+        sig(),
+      ),
+    ).rejects.toMatchObject({ code: 'insecure_url' });
+  });
+
+  it('refuses a declared local endpoint that RESOLVES PUBLIC, rather than downgrading it', async () => {
+    // The opt-in narrows; it never widens. Without this, an author (or a hostile registry entry) could point
+    // `allow_local_endpoint` at a name that resolves to a public address and get a plaintext, range-unchecked
+    // connection to it — the inversion the bound policy exists to prevent.
+    const deps = fakeDeps({ resolve: { 'not-really-local': ['93.184.216.34'] } });
+    await expect(
+      connectValidated(
+        'http://not-really-local:4000/x',
+        { method: 'GET', localEndpoint: { host: 'not-really-local', port: 4000 } },
+        deps,
+        sig(),
+      ),
+    ).rejects.toMatchObject({ code: 'blocked_host' });
   });
 });
 
@@ -404,6 +429,7 @@ describe('nodeEgressDeps.openConnection — the concrete body/headers wire path 
     const request: HopRequest = {
       url: 'https://api.example.com/p',
       hostname: 'api.example.com',
+      scheme: 'https',
       pinnedIp: '203.0.113.5',
       method: 'POST',
       headers: { authorization: 'Bearer SECRET-VALUE' },
@@ -425,6 +451,7 @@ describe('nodeEgressDeps.openConnection — the concrete body/headers wire path 
       {
         url: 'https://api.example.com/x',
         hostname: 'api.example.com',
+        scheme: 'https',
         pinnedIp: '203.0.113.5',
         method: 'GET',
       },
@@ -454,6 +481,7 @@ describe('nodeEgressDeps.openConnection — the concrete body/headers wire path 
       {
         url: 'https://api.example.com/x',
         hostname: 'api.example.com',
+        scheme: 'https',
         pinnedIp: '2606:2800:220:1:248:1893:25c8:1946',
         method: 'GET',
       },
@@ -476,6 +504,7 @@ describe('nodeEgressDeps.openConnection — the concrete body/headers wire path 
       {
         url: 'https://api.example.com/x',
         hostname: 'api.example.com',
+        scheme: 'https',
         pinnedIp: '203.0.113.5',
         method: 'GET',
       },

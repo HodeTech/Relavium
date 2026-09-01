@@ -8,6 +8,7 @@ import {
   SafeEgressError,
   withEgressTimeout,
   type EgressDeps,
+  type LocalEndpoint,
 } from './safe-egress.js';
 
 /**
@@ -52,10 +53,17 @@ export interface FetchMediaBytesOptions {
    */
   readonly signal?: AbortSignalLike;
   /**
-   * Allow a private/loopback target — the BYOK explicit local-endpoint opt-in (security-review.md).
-   * Default `false`: private/loopback/link-local/metadata addresses are blocked.
+   * The ONE authored local endpoint this fetch may reach — the BYOK explicit local-endpoint opt-in
+   * ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §4, which resolves the
+   * "behind a fresh ADR" deferral [ADR-0053](../../../docs/decisions/0053-mcp-network-transport-egress-security.md)
+   * §3 left for exactly this seam). Absent — the default, and every caller today — blocks
+   * private/loopback/link-local/metadata addresses.
+   *
+   * It replaced a bare `allowPrivate: boolean` when MCP became the first real consumer: a boolean says
+   * "private is fine", which is one flag away from also saying "plaintext to anywhere is fine". A
+   * `host:port` says which private endpoint, which is the port-allow-list decision `SEC-EGRESS-3` requires.
    */
-  readonly allowPrivate?: boolean;
+  readonly localEndpoint?: LocalEndpoint;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -72,7 +80,7 @@ export async function fetchMediaBytes(
   deps: EgressDeps = nodeEgressDeps,
 ): Promise<Uint8Array> {
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
-  const allowPrivate = options.allowPrivate ?? false;
+  const localEndpoint = options.localEndpoint;
   return withEgressTimeout(
     options.signal,
     options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -87,7 +95,10 @@ export async function fetchMediaBytes(
         }
         const response = await connectValidated(
           target,
-          { allowPrivate, method: 'GET' },
+          {
+            method: 'GET',
+            ...(localEndpoint === undefined ? {} : { localEndpoint }),
+          },
           deps,
           signal,
         );

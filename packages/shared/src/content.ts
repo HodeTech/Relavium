@@ -1280,6 +1280,90 @@ function ipv4FromGroups(hi: number, lo: number): string {
  *  for the two URL policy helpers below, so their scheme + capture can never drift apart. */
 const HTTPS_AUTHORITY_PATTERN = /^https:\/\/([^/?#]+)/i;
 
+/** The `http`/`https` authority, with the scheme captured. Same shape, one scheme wider — see
+ *  {@link extractEgressAuthority} for why the plaintext form exists at all. */
+const HTTP_AUTHORITY_PATTERN = /^(https?):\/\/([^/?#]+)/i;
+
+/** An egress target's scheme, host and port — the shape a connect-by-validated-IP dialer needs. */
+export interface EgressAuthority {
+  /** `'https'` or `'http'`, lowercased. */
+  readonly scheme: 'http' | 'https';
+  /** Lowercased, brackets stripped, trailing FQDN dots removed. */
+  readonly host: string;
+  /** The explicit port, or the scheme default (443 / 80). */
+  readonly port: number;
+  readonly hasCredentials: boolean;
+}
+
+/**
+ * Parse an `http(s)` URL's authority into scheme + host + **port**.
+ *
+ * **The port is why this exists.** `extractHttpsHost` deliberately drops it, which is right for an
+ * exact-FQDN allowlist and wrong for the one place a policy is scoped to a `host:port` pair: the MCP
+ * `allow_local_endpoint` opt-in, where relaxing the private-range block for `localhost:4000` must NOT also
+ * reach `localhost:6379` or `localhost:22` (`SEC-EGRESS-3`,
+ * [ADR-0053](../../../docs/decisions/0053-mcp-network-transport-egress-security.md) §3,
+ * [ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §2.2/§4).
+ *
+ * **The plaintext scheme is the other half**, and it is admitted here rather than in a caller because a
+ * second URL parser beside this one is precisely what [ADR-0029](../../../docs/decisions/0029-tool-policy-hardening.md) (d)'s
+ * one-primitive rule exists to prevent. Admitting `http` at the PARSE level grants nothing: the policy that
+ * decides whether plaintext is acceptable lives in the dialer, which permits it only for a target that
+ * resolves private AND matches an authored `host:port`.
+ *
+ * Returns `null` for a non-`http(s)` scheme or a malformed authority — the same fail-closed answer, and for
+ * the same reasons, as its HTTPS-only sibling: a smuggling character or a percent-encoded authority is never
+ * a literal host.
+ */
+export function extractEgressAuthority(url: string): EgressAuthority | null {
+  const match = HTTP_AUTHORITY_PATTERN.exec(url);
+  if (match === null) {
+    return null;
+  }
+  const scheme = (match[1] ?? '').toLowerCase() === 'http' ? 'http' : 'https';
+  const rawAuthority = match[2] ?? '';
+  if (hasSmugglingChar(rawAuthority) || rawAuthority.includes('%')) {
+    return null;
+  }
+  let authority = rawAuthority;
+  let hasCredentials = false;
+  const at = authority.lastIndexOf('@');
+  if (at !== -1) {
+    hasCredentials = true;
+    authority = authority.slice(at + 1);
+  }
+  let host: string;
+  let portPart: string;
+  if (authority.startsWith('[')) {
+    const end = authority.indexOf(']');
+    if (end === -1) {
+      return null; // unmatched IPv6 bracket — malformed authority, fail closed
+    }
+    host = authority.slice(1, end);
+    const rest = authority.slice(end + 1);
+    if (rest !== '' && !rest.startsWith(':')) {
+      return null; // trailing junk after the bracket is not a port — fail closed
+    }
+    portPart = rest.startsWith(':') ? rest.slice(1) : '';
+  } else {
+    const colon = authority.indexOf(':');
+    host = colon === -1 ? authority : authority.slice(0, colon);
+    portPart = colon === -1 ? '' : authority.slice(colon + 1);
+  }
+  if (host === '') {
+    return null;
+  }
+  const defaultPort = scheme === 'https' ? 443 : 80;
+  let port = defaultPort;
+  if (portPart !== '') {
+    // Digits only: a `:80abc` or a `:` with nothing after it is a malformed authority, not a default.
+    if (!/^[0-9]+$/.test(portPart)) return null;
+    port = Number.parseInt(portPart, 10);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  }
+  return { scheme, host: stripTrailingDots(host.toLowerCase()), port, hasCredentials };
+}
+
 /**
  * Returns `true` when an HTTPS URL string contains credentials (`user:pass@`) in its authority
  * component. Used by the SSRF policy to reject URLs that embed secrets in the URL itself
@@ -1303,35 +1387,14 @@ export function urlHasCredentials(url: string): boolean {
  * ({@link refineInFlightMediaPart}) and the engine's `enforceHttpEgress`.
  */
 export function extractHttpsHost(url: string): { host: string; hasCredentials: boolean } | null {
-  const match = HTTPS_AUTHORITY_PATTERN.exec(url);
-  if (match === null) {
+  // ONE parser. This was a near-copy of {@link extractEgressAuthority}'s body until the local-endpoint
+  // policy needed the port; keeping both would have been the second URL parser ADR-0029 (d) forbids, and
+  // the two would have drifted at the first fix applied to only one of them.
+  const authority = extractEgressAuthority(url);
+  if (authority === null || authority.scheme !== 'https') {
     return null;
   }
-  const rawAuthority = match[1] ?? '';
-  if (hasSmugglingChar(rawAuthority) || rawAuthority.includes('%')) {
-    // A percent-encoded authority is never a literal host — fail closed rather than decode/normalize here
-    // (a WHATWG client would percent-decode it, which could mask a blocked address).
-    return null;
-  }
-  let authority = rawAuthority;
-  let hasCredentials = false;
-  const at = authority.lastIndexOf('@');
-  if (at !== -1) {
-    hasCredentials = true;
-    authority = authority.slice(at + 1);
-  }
-  let host: string;
-  if (authority.startsWith('[')) {
-    const end = authority.indexOf(']');
-    if (end === -1) {
-      return null; // unmatched IPv6 bracket — malformed authority, fail closed
-    }
-    host = authority.slice(1, end);
-  } else {
-    const colon = authority.indexOf(':');
-    host = colon === -1 ? authority : authority.slice(0, colon);
-  }
-  return { host: stripTrailingDots(host.toLowerCase()), hasCredentials };
+  return { host: authority.host, hasCredentials: authority.hasCredentials };
 }
 
 /**

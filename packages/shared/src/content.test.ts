@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  extractEgressAuthority,
   collectDurableMediaHandles,
   containsDurableUnsafeMedia,
   containsInlineMediaBytes,
@@ -1005,5 +1006,71 @@ describe('collectDurableMediaHandles (1.AF/D12c — produced-handle reference co
 
   it('returns [] for a value with no media', () => {
     expect(collectDurableMediaHandles({ text: 'hi', n: [1, 2, 3] })).toEqual([]);
+  });
+});
+
+describe('extractEgressAuthority', () => {
+  /**
+   * The port half is the whole reason this exists: it is what lets a policy be scoped to a `host:port` pair
+   * rather than a host, so relaxing the private-range block for `localhost:4000` does not also reach
+   * `localhost:6379` or `localhost:22` (`SEC-EGRESS-3`, ADR-0088 §2.2/§4). `extractHttpsHost` is now built
+   * on this, so these cases also pin the parser that primitive delegates to.
+   */
+  it('returns the scheme, lowercased host and EXPLICIT port', () => {
+    expect(extractEgressAuthority('https://Example.COM:8443/mcp')).toEqual({
+      scheme: 'https',
+      host: 'example.com',
+      port: 8443,
+      hasCredentials: false,
+    });
+  });
+
+  it('defaults the port per scheme, so an unported url still compares against a host:port policy', () => {
+    expect(extractEgressAuthority('https://example.com/x')?.port).toBe(443);
+    expect(extractEgressAuthority('http://localhost/x')?.port).toBe(80);
+  });
+
+  it('admits plaintext at the PARSE level, which grants nothing on its own', () => {
+    // The decision about whether plaintext is acceptable belongs to the dialer, which permits it only for a
+    // target that resolves private AND matches an authored `host:port`. Refusing it here would have forced a
+    // second URL parser for the local-endpoint case — the shape ADR-0029 (d) exists to prevent.
+    expect(extractEgressAuthority('http://localhost:4000/mcp')).toMatchObject({
+      scheme: 'http',
+      host: 'localhost',
+      port: 4000,
+    });
+  });
+
+  it('reads an IPv6 authority and its port, and refuses junk after the bracket', () => {
+    expect(extractEgressAuthority('https://[::1]:9000/x')).toMatchObject({
+      host: '::1',
+      port: 9000,
+    });
+    expect(extractEgressAuthority('https://[::1]/x')).toMatchObject({ host: '::1', port: 443 });
+    expect(extractEgressAuthority('https://[::1]junk/x')).toBeNull();
+    expect(extractEgressAuthority('https://[::1/x')).toBeNull();
+  });
+
+  it('fails closed on a malformed port rather than silently using the default', () => {
+    // `:80abc` reading as "port 443" would let a crafted authority compare EQUAL to an authored `host:443`
+    // policy while a real client dialled something else.
+    expect(extractEgressAuthority('https://host:80abc/x')).toBeNull();
+    expect(extractEgressAuthority('https://host:0/x')).toBeNull();
+    expect(extractEgressAuthority('https://host:70000/x')).toBeNull();
+    // …but an EMPTY port is the scheme default, not malformed. RFC 3986 permits it, WHATWG normalizes it
+    // away, and Node's `new URL('https://host:/x').port` is `''` — so a parser that refused it would read a
+    // url DIFFERENTLY from the client that dials it, which for a host:port policy is the dangerous direction.
+    expect(extractEgressAuthority('https://host:/x')?.port).toBe(443);
+  });
+
+  it('keeps the fail-closed rules its HTTPS-only sibling had', () => {
+    expect(extractEgressAuthority('ftp://example.com/x')).toBeNull();
+    expect(extractEgressAuthority('https://exa\u0000mple.com/x')).toBeNull(); // smuggling char
+    expect(extractEgressAuthority('https://ex%41mple.com/x')).toBeNull(); // percent-encoded authority
+    expect(extractEgressAuthority('https://host./x')?.host).toBe('host'); // trailing FQDN dot stripped
+    expect(extractEgressAuthority('https://u:p@example.com/x')).toMatchObject({
+      host: 'example.com',
+      hasCredentials: true,
+    });
   });
 });

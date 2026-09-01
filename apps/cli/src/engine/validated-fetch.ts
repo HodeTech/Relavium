@@ -44,7 +44,9 @@ export function createValidatedFetch(deps: EgressDeps = nodeEgressDeps): FetchLi
       const hop = await connectValidated(
         req.url,
         {
-          allowPrivate: false, // a custom base_url resolving to a private/loopback/metadata address is REFUSED
+          // No `localEndpoint`: a custom `base_url` resolving to a private/loopback/metadata address is
+          // REFUSED. ADR-0088 §4 turned the old `allowPrivate: false` into an absent policy — the same
+          // answer, without a boolean that a future edit could flip to "private is fine, anywhere".
           method: req.method,
           ...(req.headers === undefined ? {} : { headers: req.headers }),
           ...(req.body === undefined ? {} : { body: req.body }),

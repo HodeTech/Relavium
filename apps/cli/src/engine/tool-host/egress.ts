@@ -70,7 +70,9 @@ export function createNodeEgressCapability(
           const response = await connectValidated(
             request.url,
             {
-              allowPrivate: false, // BYOK local-endpoint opt-in is deferred — fail-closed on private targets
+              // No `localEndpoint`: this arm is model-facing, so there is no author to have opted one in.
+              // Fail-closed on private targets, unchanged (ADR-0088 §4 replaced the old `allowPrivate: false`
+              // with an absent policy, which says the same thing without a flag one edit away from `true`).
               method: request.method,
               headers,
               ...(request.body === undefined ? {} : { body: request.body }),

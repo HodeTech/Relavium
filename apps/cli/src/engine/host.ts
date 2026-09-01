@@ -207,9 +207,11 @@ export function createCliHost(
     // text-only run never invokes it); `signal` is spread conditionally so an absent one is OMITTED, not
     // assigned `undefined` (which `exactOptionalPropertyTypes` rejects).
     fetchMedia: (url, maxBytes, signal) =>
+      // No `localEndpoint`: media bytes come from a url the model or a provider produced, so there is no
+      // authored opt-in to honour. Private/loopback/metadata targets stay blocked (ADR-0088 §4 replaced the
+      // old `allowPrivate: false` with an absent policy — the same answer, one fewer flag to flip).
       fetchMediaBytes(url, {
         maxBytes,
-        allowPrivate: false,
         ...(signal === undefined ? {} : { signal }),
       }),
     // The media ports (2.S), each spread in only when its config (above) was supplied — `undefined` is OMITTED,

@@ -1,12 +1,14 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
+import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 
 import {
-  extractHttpsHost,
+  extractEgressAuthority,
   isPrivateOrLocalHost,
   urlHasCredentials,
   type AbortSignalLike,
+  type EgressAuthority,
 } from '@relavium/shared';
 
 /**
@@ -57,6 +59,12 @@ export type EgressMethod = 'GET' | 'POST' | 'PUT' | 'DELETE';
 export interface HopRequest {
   readonly url: string;
   readonly hostname: string;
+  /**
+   * The validated scheme. `'http'` reaches here ONLY for an authored local endpoint that resolved private
+   * (ADR-0088 §4) — an opener must dispatch on it rather than assuming HTTPS, and must not treat it as
+   * permission to downgrade anything else.
+   */
+  readonly scheme: 'http' | 'https';
   /** The pre-validated IP the connection MUST be pinned to (TOCTOU defense — never re-resolve here). */
   readonly pinnedIp: string;
   readonly method: EgressMethod;
@@ -90,38 +98,74 @@ export function isRedirectStatus(status: number): boolean {
 }
 
 /**
- * Validate an egress URL's scheme + authority via the shared SSRF policy primitives and return its
- * lowercased host. Throws `insecure_url` for a non-HTTPS scheme, a malformed authority, or embedded
- * credentials — never a second hand-rolled parser.
+ * The ONE local-endpoint relaxation — a `host:port` a caller has explicitly authored and opted in to
+ * ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §4,
+ * [ADR-0053](../../../docs/decisions/0053-mcp-network-transport-egress-security.md) §3's `SEC-EGRESS-3`).
+ *
+ * **One bound policy, not two independent booleans, and the difference is a real hole.** A first design had
+ * `allowPrivate` and `allowPlaintext` as separate flags set together for any server carrying
+ * `allow_local_endpoint`. Set both, and `http://public.example` with that flag becomes a plaintext
+ * connection to a REMOTE host — inverting ADR-0053 §3's own "a remote endpoint is always `https`/`wss`"
+ * rule, which the pre-connect floor had always enforced correctly.
+ *
+ * So the two relaxations lift **together, and only** for a target that (a) matches this `host:port`
+ * exactly and (b) actually resolves private. A declared local endpoint that resolves to a public address is
+ * refused rather than silently downgraded, and a sibling port on the same permitted host (`:6379`, `:5432`,
+ * `:22`, a container socket) stays blocked — which is the port-allow-list decision `SEC-EGRESS-3` requires
+ * of anyone wiring this at all.
  */
-function validateEgressHost(url: string): string {
+export interface LocalEndpoint {
+  /** Lowercased, brackets stripped — compare against {@link EgressAuthority.host}. */
+  readonly host: string;
+  readonly port: number;
+}
+
+/**
+ * Validate an egress URL's scheme + authority via the shared SSRF policy primitives and return its parsed
+ * authority. Throws `insecure_url` for an unsupported scheme, a malformed authority, or embedded
+ * credentials — never a second hand-rolled parser.
+ *
+ * Plaintext `http` is admitted here ONLY when it is the authored local endpoint; every other target is
+ * HTTPS-only exactly as before. The credential rule is never relaxed by the opt-in.
+ */
+function validateEgressTarget(url: string, local: LocalEndpoint | undefined): EgressAuthority {
   if (urlHasCredentials(url)) {
     throw new SafeEgressError('insecure_url', 'egress url must not embed credentials');
   }
-  const parsed = extractHttpsHost(url);
+  const parsed = extractEgressAuthority(url);
   if (parsed === null) {
-    throw new SafeEgressError('insecure_url', 'egress url must be a well-formed https url');
+    throw new SafeEgressError('insecure_url', 'egress url must be a well-formed http(s) url');
   }
   if (parsed.hasCredentials) {
     throw new SafeEgressError('insecure_url', 'egress url must not embed credentials');
   }
-  return parsed.host;
+  const isAuthoredLocal =
+    local !== undefined && parsed.host === local.host && parsed.port === local.port;
+  if (parsed.scheme !== 'https' && !isAuthoredLocal) {
+    throw new SafeEgressError('insecure_url', 'egress url must be a well-formed https url');
+  }
+  return parsed;
 }
 
 /**
- * Resolve `host` and validate the host literal AND **every** resolved IP against the shared range-block.
- * Fail-closed: any private/loopback/link-local/metadata address (unless `allowPrivate`) blocks the whole
- * fetch — so a multi-record name with one private answer cannot slip through.
+ * Resolve the target and validate the host literal AND **every** resolved IP against the shared range-block.
+ *
+ * Fail-closed: any private/loopback/link-local/metadata address blocks the whole fetch — so a multi-record
+ * name with one private answer cannot slip through. The ONLY exception is the authored local endpoint, and
+ * it is bound at both ends: the target must BE that `host:port`, and every resolved address must actually be
+ * private. A local-endpoint declaration pointing at a public address is refused, not downgraded.
  */
 async function resolveValidatedIps(
-  host: string,
+  target: EgressAuthority,
   deps: EgressDeps,
-  allowPrivate: boolean,
+  local: LocalEndpoint | undefined,
 ): Promise<readonly string[]> {
-  if (!allowPrivate && isPrivateOrLocalHost(host)) {
+  const isAuthoredLocal =
+    local !== undefined && target.host === local.host && target.port === local.port;
+  if (!isAuthoredLocal && isPrivateOrLocalHost(target.host)) {
     throw new SafeEgressError('blocked_host', 'egress target is a private/loopback address');
   }
-  const ips = await deps.resolveHost(host);
+  const ips = await deps.resolveHost(target.host);
   if (ips.length === 0) {
     throw new SafeEgressError('blocked_host', 'egress target did not resolve to an address');
   }
@@ -132,10 +176,19 @@ async function resolveValidatedIps(
     if (isIP(ip) === 0) {
       throw new SafeEgressError('blocked_host', 'egress resolver returned a non-IP address');
     }
-    if (!allowPrivate && isPrivateOrLocalHost(ip)) {
+    const privateIp = isPrivateOrLocalHost(ip);
+    if (!isAuthoredLocal && privateIp) {
       throw new SafeEgressError(
         'blocked_host',
         'egress target resolves to a private/loopback address',
+      );
+    }
+    if (isAuthoredLocal && !privateIp) {
+      // The opt-in NARROWS; it never widens. A declared local endpoint that resolves public would otherwise
+      // be a plaintext connection to a remote host, which is the inversion this policy exists to prevent.
+      throw new SafeEgressError(
+        'blocked_host',
+        'a local-endpoint target must resolve to a private/loopback address',
       );
     }
   }
@@ -151,7 +204,11 @@ async function resolveValidatedIps(
 export async function connectValidated(
   target: string,
   opts: {
-    readonly allowPrivate: boolean;
+    /**
+     * The ONE authored local endpoint this hop may reach (see {@link LocalEndpoint}). Absent — the default,
+     * and every existing caller — means HTTPS-only with the private ranges blocked, unchanged.
+     */
+    readonly localEndpoint?: LocalEndpoint | undefined;
     readonly method: EgressMethod;
     readonly headers?: Readonly<Record<string, string>> | undefined;
     readonly body?: string | undefined;
@@ -159,8 +216,8 @@ export async function connectValidated(
   deps: EgressDeps,
   signal: AbortSignal,
 ): Promise<HopResponse> {
-  const host = validateEgressHost(target);
-  const ips = await resolveValidatedIps(host, deps, opts.allowPrivate);
+  const authority = validateEgressTarget(target, opts.localEndpoint);
+  const ips = await resolveValidatedIps(authority, deps, opts.localEndpoint);
   // Connect by the FIRST validated IP — every IP was range-checked + confirmed an IP literal above, so
   // pinning means the address validated is the address connected to (no re-resolve TOCTOU window).
   const pinnedIp = ips[0];
@@ -173,7 +230,8 @@ export async function connectValidated(
   return deps.openConnection(
     {
       url: target,
-      hostname: host,
+      hostname: authority.host,
+      scheme: authority.scheme,
       pinnedIp,
       method: opts.method,
       headers: sanitizeHopHeaders(opts.headers),
@@ -330,20 +388,27 @@ export const nodeEgressDeps: EgressDeps = {
     new Promise<HopResponse>((resolve, reject) => {
       const parsed = new URL(request.url);
       const family = isIP(request.pinnedIp) === 6 ? 6 : 4;
-      const clientRequest = httpsRequest(
+      // Dispatch on the VALIDATED scheme, never on the url's own text. `http` reaches here only for an
+      // authored local endpoint that resolved private (ADR-0088 §4); everything else was refused upstream,
+      // so this branch cannot be reached by a crafted url alone.
+      const send = request.scheme === 'http' ? httpRequest : httpsRequest;
+      const clientRequest = send(
         {
-          protocol: 'https:',
+          protocol: `${request.scheme}:`,
           hostname: request.hostname,
-          // The URL's port (default 443) is honored as-is — a public CDN/API URL may legitimately serve over
-          // a non-443 HTTPS port. Safe under the default wiring (allowPrivate: false): the private/loopback/
-          // link-local IP range block (resolveValidatedIps) prevents reaching an internal service on ANY
-          // port, so no port allow-list is needed. If a BYOK local-endpoint allowPrivate opt-in is ever
-          // wired, that ADR MUST add an explicit port allow-list decision (SEC-EGRESS-3).
-          port: parsed.port === '' ? 443 : Number(parsed.port),
+          // The URL's port is honored as-is — a public CDN/API URL may legitimately serve over a non-443
+          // HTTPS port. Safe under the default wiring (no `localEndpoint`): the private/loopback/link-local
+          // IP range block (`resolveValidatedIps`) prevents reaching an internal service on ANY port, so no
+          // port allow-list is needed there. **`SEC-EGRESS-3`'s required port decision is now made**, in the
+          // one place that relaxes the range block: `LocalEndpoint` is a `host:port` pair and the target must
+          // match BOTH, so an opted-in `localhost:4000` cannot reach `localhost:6379` (ADR-0088 §4).
+          port: parsed.port === '' ? (request.scheme === 'http' ? 80 : 443) : Number(parsed.port),
           path: `${parsed.pathname}${parsed.search}`,
           method: request.method,
           ...(request.headers === undefined ? {} : { headers: request.headers }),
-          servername: request.hostname, // SNI + certificate hostname — TLS verification stays ON
+          // SNI + certificate hostname — TLS verification stays ON. Meaningless on the plaintext local
+          // branch (there is no TLS to verify), and harmless there: `node:http` ignores it.
+          servername: request.hostname,
           // Pin to the pre-validated IP: the agent connects to exactly this address, never re-resolving.
           lookup: (_hostname, _opts, callback) => callback(null, request.pinnedIp, family),
           signal,
