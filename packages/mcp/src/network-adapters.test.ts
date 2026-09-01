@@ -188,3 +188,47 @@ describe('SdkConnection — the bound and the cancel actually reach the SDK requ
     ).rejects.toBeInstanceOf(McpDeadlineError);
   });
 });
+
+describe('the injected fetch actually reaches the SDK transport (ADR-0088 §2.1)', () => {
+  /**
+   * **The layer a review proved untested — for the second time in this package, one level up.** Deleting
+   * `spec.fetch === undefined ? undefined : { fetch: spec.fetch }` from BOTH adapters left every suite in the
+   * repository green: the host could build the pinned, scope-carrying `fetch`, thread it through
+   * `ServerOpeners`, and the adapter could throw it away — restoring DNS-rebind and SDK-followed redirects —
+   * with nothing noticing. `mcp-servers.test.ts` asserts the fetch reaches a FAKE opener; that is the seam,
+   * and everything below it was deletable at zero cost.
+   *
+   * The oracle needs no server and no network: both SDK transports call the injected `fetch` during `start()`,
+   * so a stub that records the url and answers `500` is enough to prove the handoff — and enough to redden
+   * the moment it is dropped.
+   */
+  const recordingFetch = (): {
+    fetch: (url: string | URL) => Promise<Response>;
+    urls: string[];
+  } => {
+    const urls: string[] = [];
+    return {
+      urls,
+      fetch: (url) => {
+        urls.push(String(url));
+        return Promise.resolve(new Response('no', { status: 500 }));
+      },
+    };
+  };
+
+  it('openHttpConnection routes its requests through the injected fetch', async () => {
+    const { fetch, urls } = recordingFetch();
+    await openHttpConnection('h', { url: 'https://never.example/mcp', fetch }).catch(
+      () => undefined,
+    );
+    expect(urls).toEqual(['https://never.example/mcp']);
+  }, 30_000);
+
+  it('openSseConnection routes its requests through the injected fetch', async () => {
+    const { fetch, urls } = recordingFetch();
+    await openSseConnection('s', { url: 'https://never.example/sse', fetch }).catch(
+      () => undefined,
+    );
+    expect(urls).toEqual(['https://never.example/sse']);
+  }, 30_000);
+});

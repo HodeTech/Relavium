@@ -22,6 +22,17 @@ interface FakeOpts {
   readonly status?: number;
   readonly location?: string;
   readonly body?: readonly Uint8Array[];
+  /** Response headers the hop returns — so pass-through is observable in BOTH directions. */
+  readonly responseHeaders?: Readonly<Record<string, string>>;
+}
+
+/** An already-finished body stream — for the tests that never read one. */
+function emptyBody(): AsyncIterable<Uint8Array> {
+  return {
+    [Symbol.asyncIterator]: () => ({
+      next: () => Promise.resolve({ done: true as const, value: undefined }),
+    }),
+  };
 }
 
 function fakeDeps(opts: FakeOpts = {}): { deps: EgressDeps; opened: HopRequest[] } {
@@ -33,7 +44,7 @@ function fakeDeps(opts: FakeOpts = {}): { deps: EgressDeps; opened: HopRequest[]
       const chunks = opts.body ?? [new Uint8Array([1, 2, 3])];
       return Promise.resolve({
         status: opts.status ?? 200,
-        headers: {},
+        headers: opts.responseHeaders ?? {},
         location: opts.location,
         body: {
           // A plain async iterable rather than an async generator: nothing here awaits, and the point is to
@@ -277,5 +288,91 @@ describe('createMcpFetch — the per-message byte bound (ADR-0088 §5.4)', () =>
     const reader = response.body?.getReader();
     await reader?.read();
     await expect(reader?.read()).rejects.toMatchObject({ code: 'too_large' });
+  });
+});
+
+describe('createMcpFetch — it is a TRANSPORT, not only a refusal machine', () => {
+  /**
+   * **Five mutations that each break MCP outright left this suite green**, because nothing read what the hop
+   * actually received. Dropping every request header kills `Mcp-Session-Id` and any auth; dropping the body
+   * empties the initialize POST; forcing GET turns every JSON-RPC call into a no-op; discarding the caller's
+   * signal severs the abort path Step 1 threaded here; dropping the response headers loses the session id
+   * coming back. A fetch that refuses correctly and transports nothing is not a fetch.
+   */
+  it('carries the METHOD, HEADERS and BODY through to the hop', async () => {
+    const { deps, opened } = fakeDeps();
+    await createMcpFetch({ deps })('https://api.example/mcp', {
+      method: 'POST',
+      headers: { 'mcp-session-id': 'abc123', authorization: 'Bearer t' },
+      body: '{"jsonrpc":"2.0"}',
+    });
+    expect(opened[0]?.method).toBe('POST');
+    expect(opened[0]?.headers).toMatchObject({
+      'mcp-session-id': 'abc123',
+      authorization: 'Bearer t',
+    });
+    expect(opened[0]?.body).toBe('{"jsonrpc":"2.0"}');
+  });
+
+  it('carries the RESPONSE headers back — the session id arrives that way', async () => {
+    const { deps } = fakeDeps({ responseHeaders: { 'mcp-session-id': 'srv-1' } });
+    const response = await createMcpFetch({ deps })('https://api.example/mcp');
+    expect(response.headers.get('mcp-session-id')).toBe('srv-1');
+  });
+
+  it('passes the CALLER’S signal to the hop, so Step 1’s abort still reaches the socket', async () => {
+    // `packages/mcp` bridges a per-request signal onto the `RequestInit`; this hop is a new link in that
+    // chain, and a version that made its own controller would silently sever it.
+    const seen: AbortSignal[] = [];
+    const deps: EgressDeps = {
+      resolveHost: () => Promise.resolve(['93.184.216.34']),
+      openConnection: (_request, signal): Promise<HopResponse> => {
+        seen.push(signal);
+        return Promise.resolve({
+          status: 200,
+          headers: {},
+          location: undefined,
+          // An already-finished body: these tests are about the REQUEST and the refusal, not about streaming.
+          body: emptyBody(),
+          dispose: () => undefined,
+        });
+      },
+    };
+    const controller = new AbortController();
+    await createMcpFetch({ deps })('https://api.example/mcp', { signal: controller.signal });
+    expect(seen[0]).toBe(controller.signal);
+  });
+
+  it('drops `accept-encoding`, because this hop does not decompress', async () => {
+    // Its sibling in `validated-fetch.ts` has this test; this copy did not, and its own comment cites that
+    // sibling as the reason the line exists. A gzip'd body reaches the SDK as bytes it cannot parse.
+    const { deps, opened } = fakeDeps();
+    await createMcpFetch({ deps })('https://api.example/mcp', {
+      headers: { 'accept-encoding': 'gzip', accept: 'text/event-stream' },
+    });
+    expect(opened[0]?.headers).not.toHaveProperty('accept-encoding');
+    expect(opened[0]?.headers).toMatchObject({ accept: 'text/event-stream' });
+  });
+
+  it('DISPOSES the socket when it refuses a redirect — a refusal must not leak a connection', async () => {
+    let disposed = 0;
+    const deps: EgressDeps = {
+      resolveHost: () => Promise.resolve(['93.184.216.34']),
+      openConnection: (): Promise<HopResponse> =>
+        Promise.resolve({
+          status: 302,
+          headers: {},
+          location: 'https://elsewhere.example/',
+          // An already-finished body: these tests are about the REQUEST and the refusal, not about streaming.
+          body: emptyBody(),
+          dispose: () => {
+            disposed += 1;
+          },
+        }),
+    };
+    await expect(createMcpFetch({ deps })('https://api.example/mcp')).rejects.toThrow(
+      /may not redirect/,
+    );
+    expect(disposed).toBe(1);
   });
 });

@@ -5,6 +5,7 @@ import { isIP } from 'node:net';
 
 import {
   extractEgressAuthority,
+  isMetadataOrLinkLocal,
   isPrivateOrLocalHost,
   urlHasCredentials,
   type AbortSignalLike,
@@ -177,6 +178,17 @@ async function resolveValidatedIps(
 ): Promise<readonly string[]> {
   const isAuthoredLocal =
     local !== undefined && target.host === local.host && target.port === local.port;
+  if (isAuthoredLocal && isMetadataOrLinkLocal(target.host)) {
+    // **The opt-in may not name the metadata space, and this is where a review found it could.**
+    // `169.254.169.254` is inside the private ranges `isPrivateOrLocalHost` blocks, so it satisfied every
+    // condition for an authored "local endpoint" — and would then have been reachable over PLAINTEXT with
+    // the range check lifted, which is the cloud-credential endpoint ADR-0053's own Context names as the
+    // motivating threat. A local-development MCP server is never at 169.254.x.x or 0.x.x.x.
+    throw new SafeEgressError(
+      'blocked_host',
+      'a local endpoint may not name a link-local or cloud-metadata address',
+    );
+  }
   if (!isAuthoredLocal && isPrivateOrLocalHost(target.host)) {
     throw new SafeEgressError('blocked_host', 'egress target is a private/loopback address');
   }
@@ -196,6 +208,15 @@ async function resolveValidatedIps(
       throw new SafeEgressError(
         'blocked_host',
         'egress target resolves to a private/loopback address',
+      );
+    }
+    if (isAuthoredLocal && isMetadataOrLinkLocal(ip)) {
+      // The same rule on the RESOLVED address, because a name is what an attacker steers. A `*.local`
+      // opt-in whose mDNS answer is `169.254.169.254` must not become a plaintext hop to the metadata
+      // service just because the authored text looked innocuous.
+      throw new SafeEgressError(
+        'blocked_host',
+        'a local endpoint may not resolve to a link-local or cloud-metadata address',
       );
     }
     if (isAuthoredLocal && !privateIp) {

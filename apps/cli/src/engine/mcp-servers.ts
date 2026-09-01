@@ -16,10 +16,11 @@ import {
   type StdioServerSpec,
   type WebSocketServerSpec,
 } from '@relavium/mcp';
-import type { LocalEndpoint } from '@relavium/db';
+import { nodeEgressDeps, type LocalEndpoint } from '@relavium/db';
 import {
   extractEgressAuthority,
   isForbiddenDeclaredEnvKey,
+  isMetadataOrLinkLocal,
   isPrivateOrLocalHost,
   urlHasCredentials,
   MCP_CONNECT_TIMEOUT_CEILING_MS,
@@ -197,6 +198,11 @@ export interface ServerOpeners {
    * than the network. Production is {@link createMcpFetch}.
    */
   readonly makeFetch?: (config: McpFetchConfig) => McpFetch;
+  /**
+   * Resolve a hostname — the `websocket` pre-connect range-block (ADR-0088 §2.3). Injectable for the same
+   * reason `makeFetch` is: an SSRF policy asserted against real DNS is asserted against the network.
+   */
+  readonly resolveHost?: (hostname: string) => Promise<readonly string[]>;
   readonly stdio?: OpenStdioConnection;
   readonly http?: (
     serverId: string,
@@ -248,6 +254,7 @@ export function resolveServerConfigs(
 ): McpServerConfig[] {
   const openStdio = openers.stdio ?? openStdioConnection;
   const makeFetch = openers.makeFetch ?? createMcpFetch;
+  const resolveHost = openers.resolveHost ?? nodeEgressDeps.resolveHost;
   const network: NetworkOpeners = {
     http: openers.http ?? openHttpConnection,
     sse: openers.sse ?? openSseConnection,
@@ -265,7 +272,7 @@ export function resolveServerConfigs(
     configs.push(
       ref.transport === 'stdio'
         ? buildStdioConfig(ref.id, ref, cwd, resolveSecret, openStdio, consented?.get(ref.id))
-        : buildNetworkConfig(ref.id, ref.transport, ref, network, makeFetch),
+        : buildNetworkConfig(ref.id, ref.transport, ref, network, makeFetch, resolveHost),
     );
   }
   return configs;
@@ -347,6 +354,7 @@ function buildNetworkConfig(
   ref: McpServerRef,
   openers: NetworkOpeners,
   makeFetch: (config: McpFetchConfig) => McpFetch,
+  resolveHost: (hostname: string) => Promise<readonly string[]>,
 ): McpServerConfig {
   // The schema guarantees a `url` and forbids `env` on a network transport; re-assert both defensively so a
   // programmatic caller that bypassed the schema fails loud rather than silently dropping (an `env` secret).
@@ -382,12 +390,22 @@ function buildNetworkConfig(
     transport === 'websocket'
       ? undefined
       : makeFetch({ ...(localEndpoint === undefined ? {} : { localEndpoint }) });
+  // **The check §2.3 promises and the first implementation omitted.** `websocket` cannot be pinned, but the
+  // ADR still requires the pre-connect resolve-and-range-block — and without it the transport had NO address
+  // check at all beyond the authored literal. That mattered because `isPrivateOrLocalHost` treats
+  // `*.local` / `*.internal` / `*.localhost` as local from the SUFFIX alone: a cloned repo declaring
+  // `ws://mcp-relay.local:8080` with `allow_local_endpoint` was admitted (so the §2.3 remote refusal never
+  // fired), connected in plaintext, and pointed wherever the LAN's mDNS responder said — with no consent
+  // gate, because ADR-0084 covers `stdio` only.
+  const preflight =
+    transport === 'websocket' ? assertResolvesLocal(serverId, url, resolveHost) : undefined;
   return {
     id: serverId,
     ...toolsAllowlistFields(ref),
     // A parameter, not a capture — see the stdio sibling for what a zero-argument closure silently costs.
-    open: (signal) =>
-      open(
+    open: async (signal) => {
+      await preflight;
+      return open(
         serverId,
         {
           url,
@@ -395,8 +413,60 @@ function buildNetworkConfig(
           ...(validatedFetch === undefined ? {} : { fetch: validatedFetch }),
         },
         signal,
-      ),
+      );
+    },
   };
+}
+
+/**
+ * The `websocket` pre-connect resolve-and-range-block ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §2.3).
+ *
+ * This transport takes no dialer, so the address cannot be PINNED — that residual is stated and accepted. What
+ * §2.3 does require, and what makes the local-only narrowing meaningful at all, is that the name actually
+ * resolves where the author said: every answer must be private, and none may be link-local or metadata. A
+ * suffix like `.local` is a claim about a name, not about an address, and an mDNS responder on the same LAN
+ * is who answers it.
+ *
+ * Started at config-build time and awaited inside `open()`, so a slow resolver does not block the whole
+ * config assembly and a refusal still lands before any socket.
+ */
+async function assertResolvesLocal(
+  serverId: string,
+  url: string,
+  resolveHost: (hostname: string) => Promise<readonly string[]>,
+): Promise<void> {
+  const parsed = extractEgressAuthority(url);
+  if (parsed === null) return; // already refused by the admission — nothing to add
+  let addresses: readonly string[];
+  try {
+    addresses = await resolveHost(parsed.host);
+  } catch {
+    throw new CliError(
+      'invalid_invocation',
+      `MCP server '${serverId}': '${parsed.host}' could not be resolved.`,
+    );
+  }
+  if (addresses.length === 0) {
+    throw new CliError(
+      'invalid_invocation',
+      `MCP server '${serverId}': '${parsed.host}' did not resolve to an address.`,
+    );
+  }
+  for (const address of addresses) {
+    if (isMetadataOrLinkLocal(address)) {
+      throw new CliError(
+        'invalid_invocation',
+        `MCP server '${serverId}': '${parsed.host}' resolves to a link-local or cloud-metadata address.`,
+      );
+    }
+    if (!isPrivateOrLocalHost(address)) {
+      throw new CliError(
+        'invalid_invocation',
+        `MCP server '${serverId}': '${parsed.host}' is declared as a local endpoint but resolves to a ` +
+          `public address. A 'websocket' server must be genuinely local — use transport: 'http' for a remote one.`,
+      );
+    }
+  }
 }
 
 /**
@@ -439,6 +509,16 @@ function assertSafeNetworkEndpoint(
     throw new CliError(
       'invalid_invocation',
       `MCP server '${serverId}': the url must not embed credentials (user:pass@…) — use env/keychain auth.`,
+    );
+  }
+  if (isMetadataOrLinkLocal(parsed.host)) {
+    // Refused before the opt-in is even consulted. `169.254.169.254` is inside the private ranges, so it
+    // would otherwise satisfy every condition for an "authored local endpoint" — and ADR-0053's own Context
+    // names a registry pointing a server there as the motivating threat.
+    throw new CliError(
+      'invalid_invocation',
+      `MCP server '${serverId}': '${parsed.host}' is a link-local or cloud-metadata address, which no ` +
+        `'allow_local_endpoint' opt-in may name.`,
     );
   }
   const isLocalHost = isPrivateOrLocalHost(parsed.host);

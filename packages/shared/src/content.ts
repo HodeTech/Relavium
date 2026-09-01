@@ -1087,6 +1087,58 @@ export function isPrivateOrLocalHost(host: string): boolean {
   );
 }
 
+/**
+ * Whether a host names the **link-local / cloud-metadata** space — a subset of what
+ * {@link isPrivateOrLocalHost} blocks, separated out because it is the subset no opt-in may ever reach.
+ *
+ * `169.254.169.254` is the cloud instance-metadata address on AWS, GCP, Azure and DigitalOcean: an
+ * unauthenticated HTTP endpoint that hands out credentials. `0.0.0.0/8` resolves to "this host" on Linux. A
+ * local-development MCP server is never at either, so a `host:port` opt-in that could name one is an opt-in
+ * to credential theft rather than to local development
+ * ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §4).
+ *
+ * The IPv6 forms are covered too, including the IPv4-mapped and 6to4 tunnels that would otherwise smuggle
+ * `169.254.169.254` past a dotted-decimal check.
+ */
+export function isMetadataOrLinkLocal(host: string): boolean {
+  let h = stripTrailingDots(host.toLowerCase());
+  if (h.startsWith('[') && h.endsWith(']')) {
+    h = h.slice(1, -1); // unbracket an IPv6 literal, exactly as the sibling predicate does
+  }
+  if (h.includes(':')) {
+    const groups = parseIpv6Groups(h);
+    if (groups === null) return false;
+    const first = groups[0] ?? 0;
+    if (first >= 0xfe80 && first <= 0xfebf) return true; // fe80::/10
+    // `::` and `::1` are the unspecified and loopback addresses, and they must return FIRST — exactly as
+    // `isPrivateIpv6Groups` returns for them before its own tunnel checks. Without this, `::1` falls into the
+    // IPv4-COMPATIBLE branch below, reads as `0.0.0.1`, matches the `0.` prefix and is reported as
+    // metadata — which is how a plain loopback MCP endpoint got refused with the wrong reason.
+    if (groups.every((g) => g === 0)) return false;
+    if (groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1) return false;
+    // The embedded-IPv4 tunnels, in the same order and by the same reasoning as `isPrivateIpv6Groups`:
+    // `::ffff:a.b.c.d` (mapped), `::a.b.c.d` (compatible), `64:ff9b::/96` (NAT64) put the address in the
+    // low 32 bits; `2002::/16` (6to4) puts it in bits 16–47. Without them `::ffff:169.254.169.254` would
+    // walk straight past a dotted-decimal check.
+    const zeroHigh = groups.slice(0, 5).every((g) => g === 0);
+    if (zeroHigh && (groups[5] === 0xffff || groups[5] === 0)) {
+      return isMetadataOrLinkLocal(ipv4FromGroups(groups[6] ?? 0, groups[7] ?? 0));
+    }
+    if (first === 0x0064 && groups[1] === 0xff9b && groups.slice(2, 6).every((g) => g === 0)) {
+      return isMetadataOrLinkLocal(ipv4FromGroups(groups[6] ?? 0, groups[7] ?? 0));
+    }
+    if (first === 0x2002) {
+      return isMetadataOrLinkLocal(ipv4FromGroups(groups[1] ?? 0, groups[2] ?? 0));
+    }
+    return false;
+  }
+  // Only a canonicalized numeric IPv4 — a NAME is never metadata by its own text, and a name that resolves
+  // there is caught where every resolved address is range-checked.
+  const dotted = canonicalizeNumericIpv4(h);
+  if (dotted === null) return false;
+  return dotted.startsWith('169.254.') || dotted.startsWith('0.');
+}
+
 /** Block the 172.16/12 private range (172.16.0.0 – 172.31.255.255) on a dotted-decimal host. */
 function isPrivate172(h: string): boolean {
   const m = /^172\.(\d{1,3})\./.exec(h);

@@ -1,3 +1,4 @@
+import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -15,6 +16,11 @@ import {
 // Mock `node:https` so the CONCRETE `nodeEgressDeps.openConnection` (the un-injectable pin/SNI/headers/body
 // wiring) is asserted without a real socket. The fake-deps tests below never reach the real openConnection.
 vi.mock('node:https', () => ({ request: vi.fn() }));
+// `node:http` is mocked for the SAME reason, and it is newly load-bearing: ADR-0088 §4's plaintext
+// relaxation exists so `http://localhost:4000/mcp` works, and the scheme dispatch below is the ONLY place
+// that connection is actually made. Shipped inverted, every local-endpoint MCP server would attempt TLS
+// against a plaintext port — and a review measured that inverting it broke no test at all.
+vi.mock('node:http', () => ({ request: vi.fn() }));
 
 /**
  * safe-egress.ts is THE single connect-by-validated-IP SSRF primitive shared by media + CLI tool egress
@@ -284,6 +290,36 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
     ).rejects.toMatchObject({ code: 'insecure_url' });
   });
 
+  it('refuses a local endpoint that NAMES the cloud-metadata space, opt-in or not', async () => {
+    // **A review found this reachable, and a mutation found the check unbound.** `169.254.169.254` sits
+    // INSIDE the private ranges, so it satisfied every condition for an authored "local endpoint" — and
+    // would then have been dialled over plaintext with the range check lifted. It is the cloud-credential
+    // endpoint ADR-0053's own Context names as the motivating threat.
+    const deps = fakeDeps({ resolve: { '169.254.169.254': ['169.254.169.254'] } });
+    await expect(
+      connectValidated(
+        'http://169.254.169.254/latest',
+        { method: 'GET', localEndpoint: { host: '169.254.169.254', port: 80 } },
+        deps,
+        sig(),
+      ),
+    ).rejects.toMatchObject({ code: 'blocked_host' });
+  });
+
+  it('refuses a local endpoint whose NAME resolves into the metadata space', async () => {
+    // The half that matters more, because a name is what an attacker steers: `isPrivateOrLocalHost` treats
+    // `*.local` as local from the SUFFIX alone, and an mDNS responder on the same LAN chooses the address.
+    const deps = fakeDeps({ resolve: { 'dev.local': ['169.254.169.254'] } });
+    await expect(
+      connectValidated(
+        'http://dev.local:4000/mcp',
+        { method: 'GET', localEndpoint: { host: 'dev.local', port: 4000 } },
+        deps,
+        sig(),
+      ),
+    ).rejects.toMatchObject({ code: 'blocked_host' });
+  });
+
   it('refuses a declared local endpoint that RESOLVES PUBLIC, rather than downgrading it', async () => {
     // The opt-in narrows; it never widens. Without this, an author (or a hostile registry entry) could point
     // `allow_local_endpoint` at a name that resolves to a public address and get a plaintext, range-unchecked
@@ -514,5 +550,79 @@ describe('nodeEgressDeps.openConnection — the concrete body/headers wire path 
     await pending;
     expect(client.write).not.toHaveBeenCalled();
     expect(client.end).toHaveBeenCalled();
+  });
+});
+
+describe('nodeEgressDeps.openConnection — the plaintext branch (ADR-0088 §4)', () => {
+  it('dials node:http for a validated `http` target, and NOT node:https', () => {
+    const client = stubClientRequest();
+    vi.mocked(httpRequest).mockReturnValue(client as unknown as ReturnType<typeof httpRequest>);
+    vi.mocked(httpsRequest).mockClear();
+
+    const request: HopRequest = {
+      url: 'http://localhost:4000/mcp',
+      hostname: 'localhost',
+      scheme: 'http',
+      pinnedIp: '127.0.0.1',
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    };
+    void nodeEgressDeps.openConnection(request, new AbortController().signal);
+
+    expect(vi.mocked(httpRequest)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(httpsRequest)).not.toHaveBeenCalled();
+    const options = vi.mocked(httpRequest).mock.calls.at(-1)?.[0];
+    expect(options).toMatchObject({ protocol: 'http:', hostname: 'localhost', port: 4000 });
+    // The pin still applies on this branch — plaintext relaxes the SCHEME, never the address.
+    expect(client.write).toHaveBeenCalledWith('{}');
+  });
+
+  it('defaults an unported plaintext url to port 80, not 443', () => {
+    const client = stubClientRequest();
+    vi.mocked(httpRequest).mockReturnValue(client as unknown as ReturnType<typeof httpRequest>);
+    void nodeEgressDeps.openConnection(
+      {
+        url: 'http://dev.internal/mcp',
+        hostname: 'dev.internal',
+        scheme: 'http',
+        pinnedIp: '10.0.0.5',
+        method: 'GET',
+      },
+      new AbortController().signal,
+    );
+    expect(vi.mocked(httpRequest).mock.calls.at(-1)?.[0]).toMatchObject({ port: 80 });
+  });
+
+  it('still strips the hop headers on the plaintext branch', async () => {
+    // `sanitizeHopHeaders` runs before the dispatch, so both branches get it — asserted rather than assumed,
+    // because "the new branch inherits the old branch's guarantees" is exactly the kind of claim that rots.
+    const client = stubClientRequest();
+    vi.mocked(httpRequest).mockReturnValue(client as unknown as ReturnType<typeof httpRequest>);
+    // NOT awaited: the stubbed client never fires its response callback, so the hop promise never settles —
+    // the assertion is about what reached `node:http`, which happens before that.
+    void connectValidated(
+      'http://localhost:4000/mcp',
+      {
+        method: 'GET',
+        localEndpoint: { host: 'localhost', port: 4000 },
+        headers: { host: 'evil.example', 'content-length': '999', 'x-ok': 'kept' },
+      },
+      { ...nodeEgressDeps, resolveHost: () => Promise.resolve(['127.0.0.1']) },
+      new AbortController().signal,
+    ).catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0)); // let the resolve+dispatch microtasks run
+    const options = vi.mocked(httpRequest).mock.calls.at(-1)?.[0];
+    // Narrowed by a guard rather than an assertion — the project forbids an unsafe `as`, and a mocked call
+    // argument is genuinely `string | URL | object` until it is checked.
+    if (typeof options !== 'object' || options === null || !('headers' in options)) {
+      throw new TypeError(
+        'expected node:http to be called with an options object carrying headers',
+      );
+    }
+    const sent = options.headers as Readonly<Record<string, string>>;
+    expect(sent).toMatchObject({ 'x-ok': 'kept' });
+    expect(Object.keys(sent)).not.toContain('host'); // vhost-confusion strip applies on BOTH branches
+    expect(Object.keys(sent)).not.toContain('content-length');
   });
 });

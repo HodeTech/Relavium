@@ -421,10 +421,26 @@ describe('SSRF floor (resolveServerConfigs network gate, 2.R Step 4c / ADR-0053)
       'http://localhost:4000/mcp',
       'http://10.0.0.5/mcp',
       'http://192.168.1.2/mcp',
-      'http://169.254.169.254/latest', // the cloud metadata endpoint
       'http://[::1]/mcp',
     ]) {
       expect(() => build({ url })).toThrow(/private\/loopback/);
+    }
+  });
+
+  it('refuses the cloud-metadata address with its OWN message, and even WITH the opt-in', () => {
+    // **A review found this reachable.** `169.254.169.254` is inside the private ranges, so it satisfied
+    // every condition for an authored "local endpoint" — and would then have been dialled over PLAINTEXT
+    // with the range check lifted. It is the credential endpoint ADR-0053's Context names as the motivating
+    // threat, so it gets a refusal of its own that no opt-in can lift.
+    for (const url of [
+      'http://169.254.169.254/latest',
+      'http://[::ffff:169.254.169.254]/latest', // the IPv4-mapped tunnel
+      'http://0.0.0.0:4000/mcp',
+    ]) {
+      expect(() => build({ url })).toThrow(/link-local or cloud-metadata/);
+      expect(() => build({ url, allow_local_endpoint: true })).toThrow(
+        /link-local or cloud-metadata/,
+      );
     }
   });
 
@@ -437,7 +453,6 @@ describe('SSRF floor (resolveServerConfigs network gate, 2.R Step 4c / ADR-0053)
       'http://127.1/mcp', // inet_aton short form
       'http://LOCALHOST./mcp', // uppercase + trailing FQDN dot
       'http://[::ffff:127.0.0.1]/mcp', // IPv4-mapped IPv6
-      'http://0.0.0.0/mcp', // the "this host" wildcard
     ]) {
       expect(() => build({ url })).toThrow(/private\/loopback/);
     }
@@ -468,7 +483,7 @@ describe('SSRF floor (resolveServerConfigs network gate, 2.R Step 4c / ADR-0053)
     );
   });
 
-  it('hands the VALIDATED FETCH to an http/sse opener, carrying that server’s local scope', () => {
+  it('hands the VALIDATED FETCH to an http/sse opener, carrying that server’s local scope', async () => {
     // **The half ADR-0053 §2 called the target and left as a tracked follow-up.** The admission checks the
     // AUTHORED host, so a name that DNS-resolves to a private IP was never caught by it — the pin is what
     // closes that, and it only exists if the fetch actually reaches the transport. Asserting the CONFIG the
@@ -477,7 +492,7 @@ describe('SSRF floor (resolveServerConfigs network gate, 2.R Step 4c / ADR-0053)
     const built: McpFetchConfig[] = [];
     const marker: McpFetch = () => Promise.reject(new Error('unused'));
     let seen: unknown = 'never called';
-    resolveServerConfigs(
+    const configs = resolveServerConfigs(
       [
         {
           id: 'local',
@@ -498,9 +513,10 @@ describe('SSRF floor (resolveServerConfigs network gate, 2.R Step 4c / ADR-0053)
           return Promise.reject(new Error('not connecting'));
         },
       },
-    )[0]
-      ?.open()
-      .catch(() => undefined);
+    );
+    // Awaited, not fire-and-forget: `open()` is async now — it awaits the websocket pre-connect resolve
+    // before dispatching — so a synchronous assertion after it would read the state before the call.
+    await configs[0]?.open().catch(() => undefined);
 
     expect(built).toEqual([{ localEndpoint: { host: 'localhost', port: 4000 } }]);
     expect(seen).toBe(marker);
@@ -522,6 +538,68 @@ describe('SSRF floor (resolveServerConfigs network gate, 2.R Step 4c / ADR-0053)
       },
     );
     expect(built).toEqual([{}]);
+  });
+
+  it('RESOLVES a local websocket and refuses a name that answers PUBLIC (ADR-0088 §2.3)', async () => {
+    // **The check §2.3 promises and the first implementation omitted entirely.** websocket cannot be pinned —
+    // that residual is accepted — but the ADR still requires the pre-connect resolve-and-range-block, and
+    // without it the transport had NO address check beyond the authored literal. That mattered because
+    // `isPrivateOrLocalHost` treats `*.local` / `*.internal` / `*.localhost` as local from the SUFFIX alone:
+    // a cloned repo declaring `ws://mcp-relay.local:8080` with the opt-in was admitted (so the §2.3 remote
+    // refusal never fired), connected in plaintext, and pointed wherever the LAN's mDNS responder said — with
+    // no consent gate, because ADR-0084 covers `stdio` only.
+    const wsRef = {
+      id: 'relay',
+      transport: 'websocket' as const,
+      url: 'ws://mcp-relay.local:8080/',
+      allow_local_endpoint: true,
+    };
+    const publicAnswer = resolveServerConfigs([wsRef], '/work', undefined, {
+      resolveHost: () => Promise.resolve(['93.184.216.34']),
+      websocket: () => Promise.reject(new Error('must not connect')),
+    });
+    await expect(publicAnswer[0]?.open()).rejects.toThrow(/resolves to a public address/);
+  });
+
+  it('refuses a local websocket whose name answers into the METADATA space', async () => {
+    const wsRef = {
+      id: 'relay',
+      transport: 'websocket' as const,
+      url: 'ws://mcp-relay.local:8080/',
+      allow_local_endpoint: true,
+    };
+    const configs = resolveServerConfigs([wsRef], '/work', undefined, {
+      resolveHost: () => Promise.resolve(['169.254.169.254']),
+      websocket: () => Promise.reject(new Error('must not connect')),
+    });
+    await expect(configs[0]?.open()).rejects.toThrow(/link-local or cloud-metadata/);
+  });
+
+  it('CONNECTS a local websocket whose name genuinely answers private — the narrowing is not a removal', async () => {
+    // The other half of §2.3, and the reason it is a narrowing: a local endpoint that really is local still
+    // works. Without this the refusal tests would pass against an implementation that refused everything.
+    let connected = false;
+    const configs = resolveServerConfigs(
+      [
+        {
+          id: 'relay',
+          transport: 'websocket',
+          url: 'ws://mcp-relay.local:8080/',
+          allow_local_endpoint: true,
+        },
+      ],
+      '/work',
+      undefined,
+      {
+        resolveHost: () => Promise.resolve(['192.168.1.50']),
+        websocket: () => {
+          connected = true;
+          return Promise.reject(new Error('not connecting in a unit test'));
+        },
+      },
+    );
+    await expect(configs[0]?.open()).rejects.toThrow('not connecting');
+    expect(connected).toBe(true);
   });
 
   it('builds NO validated dialer for a websocket server — there is no hook to hand it to (ADR-0088 §2.3)', () => {
