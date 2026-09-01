@@ -424,6 +424,35 @@ describe('string byte bounds inside a schema (#209, ADR-0088 §5)', () => {
     expect(result.ok ? '' : result.reason).toMatch(/property name/);
   });
 
+  it('refuses an over-sized name declared ONLY in `required`, where `properties` is omitted', () => {
+    // **The door the bound did not cover.** The check lived in the `properties` walk, so a name that appears
+    // only in `required` — a legal JSON-Schema object with no `properties` at all — reached the compiled shape
+    // as a `z.unknown()` key, the presence refine's message, and the schema a provider is sent, at any size the
+    // aggregate discovery budget happened to allow. The same text: refused at 257 bytes through one door,
+    // admitted at 200 KiB through the other.
+    const name = 'n'.repeat(INGRESS_BOUNDS.schemaPropertyNameBytes + 1);
+    const bare = compileJsonSchemaToZod({ type: 'object', required: [name] });
+    expect(bare.ok).toBe(false);
+    expect(bare.ok ? '' : bare.reason).toMatch(/property name/);
+    // …and with a `properties` block present but not declaring it — the other half of the same shape.
+    const beside = compileJsonSchemaToZod({
+      type: 'object',
+      properties: { a: { type: 'string' } },
+      required: [name],
+    });
+    expect(beside.ok).toBe(false);
+  });
+
+  it('admits a `required`-only name EXACTLY at the bound', () => {
+    // The boundary, so a `>=` that rejects the legal maximum cannot hide behind the refusal above.
+    expect(
+      compileJsonSchemaToZod({
+        type: 'object',
+        required: ['n'.repeat(INGRESS_BOUNDS.schemaPropertyNameBytes)],
+      }).ok,
+    ).toBe(true);
+  });
+
   it('admits a string EXACTLY at each bound', () => {
     // The boundary, not near it: "10 under" would pass against a `>=` that rejects the legal maximum.
     expect(

@@ -49,7 +49,9 @@ const LLM_TOOL_NAME = /^[a-zA-Z0-9_-]+$/;
 const MAX_TOOL_NAME_LENGTH = 128;
 
 export interface SkippedTool {
+  /** The server's tool name, TERMINAL-SANITIZED — see {@link buildServerToolDefs}'s `skip`. */
   readonly name: string;
+  /** Why it was dropped, TERMINAL-SANITIZED — a reason can quote the server's own schema text. */
   readonly reason: string;
 }
 export interface ServerToolDefs {
@@ -76,6 +78,33 @@ export function buildServerToolDefs(
 ): ServerToolDefs {
   const defs: ToolDef[] = [];
   const skipped: SkippedTool[] = [];
+  /**
+   * The ONE place a refused tool is recorded — sanitized here rather than at whichever surface renders it
+   * ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §7.1).
+   *
+   * §7.1 already required this of an ADMITTED tool's `description`, and gave the reason: a poisoned string
+   * otherwise reaches a log, an approval prompt and the provider before anyone strips it. The SKIPPED entries
+   * are the same bytes from the same hostile source, down the path a hostile server actually takes, and they
+   * were carried raw.
+   *
+   * **The `name` is the live one; the `reason` arm is deliberate defence in depth, and saying so is the
+   * point.** No reason string can carry server bytes TODAY — the compiler's refusals do interpolate a key
+   * (`unsupported JSON-Schema construct: "<key>"`), but `semanticControlByte` drops such a schema before the
+   * compiler sees it, and a test pins that ordering. Sanitizing both anyway is what keeps this a boundary
+   * rather than a coincidence of which refusal happens to fire first.
+   *
+   * This does NOT cross §7.1's presentation/semantic line. A skipped tool has no wire contract left to
+   * desynchronise — it was dropped — so its name is pure presentation here, unlike the admitted name that
+   * `namespacedId` must round-trip.
+   *
+   * The CLI's own render sanitizes again (`mcpSkippedLines`), so this closes no live injection there. It
+   * closes the SHAPE: `drive-home.tsx` and `doctor-deep.ts` both interpolate these fields directly, and each
+   * is one render-site refactor away from being the hole. A boundary every consumer must remember is the
+   * boundary that gets forgotten.
+   */
+  const skip = (name: string, reason: string): void => {
+    skipped.push({ name: stripTerminalControls(name), reason: stripTerminalControls(reason) });
+  };
   const allow = allowlist === undefined ? undefined : new Set(allowlist);
   // The aggregate half of `CR-42`. Per-item bounds alone do not bound the total: 256 tools at 8 KiB each is
   // 2 MiB before a single schema is counted, and the measured hostile catalogue was 50 000 tools / 52 GB.
@@ -89,14 +118,14 @@ export function buildServerToolDefs(
     // already told us its catalogue is beyond the bound; further entries add nothing.
     if (skipped.length >= INGRESS_BOUNDS.toolsPerServer) {
       const remaining = tools.length - tools.indexOf(tool);
-      skipped.push({
-        name: tool.name,
-        reason: `and ${remaining} further tool(s) refused — the server's catalogue is beyond the ingress bounds`,
-      });
+      skip(
+        tool.name,
+        `and ${remaining} further tool(s) refused — the server's catalogue is beyond the ingress bounds`,
+      );
       break;
     }
     if (allow !== undefined && !allow.has(tool.name)) {
-      skipped.push({ name: tool.name, reason: 'not in the server tools_allowlist' });
+      skip(tool.name, 'not in the server tools_allowlist');
       continue;
     }
     // **Bounded BEFORE the schema is compiled**, because compiling is the expensive part and a hostile server
@@ -104,7 +133,7 @@ export function buildServerToolDefs(
     // catalogue too, deliberately — see `DiscoveryBudget.admit`.
     const oversized = overSizedDescription(tool.description);
     if (oversized !== undefined) {
-      skipped.push({ name: tool.name, reason: oversized });
+      skip(tool.name, oversized);
       continue;
     }
     const exhausted = budget.admit(toolDefinitionBytes(tool));
@@ -112,29 +141,20 @@ export function buildServerToolDefs(
       // The budget is order-stable and refuses everything after it is spent, so a per-tool reason from here
       // adds no information — one entry naming the remainder is the whole diagnostic.
       const remaining = tools.length - tools.indexOf(tool);
-      skipped.push({
-        name: tool.name,
-        reason: remaining > 1 ? `${exhausted} (and ${remaining - 1} further tool(s))` : exhausted,
-      });
+      skip(tool.name, remaining > 1 ? `${exhausted} (and ${remaining - 1} further tool(s))` : exhausted);
       break;
     }
     if (tool.name.trim() === '') {
-      skipped.push({ name: tool.name, reason: 'empty tool name' });
+      skip(tool.name, 'empty tool name');
       continue;
     }
     const id = namespacedId(serverId, tool.name);
     if (id === undefined) {
-      skipped.push({
-        name: tool.name,
-        reason: 'tool name is not a valid LLM tool id after namespacing',
-      });
+      skip(tool.name, 'tool name is not a valid LLM tool id after namespacing');
       continue;
     }
     if (seenToolIds.has(id)) {
-      skipped.push({
-        name: tool.name,
-        reason: `namespaced id collides with another tool ("${id}")`,
-      });
+      skip(tool.name, `namespaced id collides with another tool ("${id}")`);
       continue;
     }
     // **Presentation text is sanitized; a SEMANTIC field is never rewritten** (ADR-0088 §7.1, `#202`).
@@ -147,12 +167,12 @@ export function buildServerToolDefs(
     // TOOL, fail-closed, through the same path an unsupported schema takes.
     const unsafeField = semanticControlByte(tool);
     if (unsafeField !== undefined) {
-      skipped.push({ name: tool.name, reason: unsafeField });
+      skip(tool.name, unsafeField);
       continue;
     }
     const compiled = compileJsonSchemaToZod(tool.inputSchema);
     if (!compiled.ok) {
-      skipped.push({ name: tool.name, reason: `unsupported inputSchema: ${compiled.reason}` });
+      skip(tool.name, `unsupported inputSchema: ${compiled.reason}`);
       continue;
     }
     seenToolIds.add(id);

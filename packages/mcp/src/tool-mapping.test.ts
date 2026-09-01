@@ -208,6 +208,38 @@ describe('tool DEFINITIONS are untrusted content (#202, ADR-0088 §7.1)', () => 
     expect(shaped.skipped[0]?.reason).toMatch(/tool name contains a terminal-control/);
   });
 
+  it('SANITIZES the skipped-tool DIAGNOSTIC — the path a hostile server actually takes', () => {
+    // **The half the drop above left open.** §7.1 sanitizes an ADMITTED tool's description because a poisoned
+    // string otherwise reaches a log, an approval prompt and the provider before anyone strips it. A REFUSED
+    // tool's name and reason are the same bytes from the same source, and they were carried raw all the way
+    // to `client.skipped` — the record every host renders when a server misbehaves. The tool above is dropped
+    // for its name; that name is then quoted straight back into the diagnostic.
+    const shaped = buildServerToolDefs('s', [withSchema('read\u001b[31m\u202Eevil', 'fine')]);
+    expect(shaped.defs).toHaveLength(0);
+    // Compared to the exact expected string, so the assertion names the whole result rather than probing it
+    // with a control-character class the linter (rightly) refuses in a regex.
+    expect(shaped.skipped[0]?.name).toBe('readevil'); // ANSI and bidi both gone
+  });
+
+  it('refuses a control-bearing SCHEMA before the compiler can quote the server into a reason', () => {
+    // **Why the reason arm of that boundary is not currently a live channel, pinned rather than assumed.**
+    // The compiler's own refusals DO interpolate server text (`unsupported JSON-Schema construct: "<key>"`),
+    // which would put a hostile key into the diagnostic. It cannot happen today only because
+    // `semanticControlByte` runs FIRST and drops any schema carrying a control byte anywhere, answering with
+    // a fixed string of ours. That ordering is the whole guarantee, so it gets a test: move the compile ahead
+    // of the walker and this reason turns into the server's bytes.
+    // An unsupported `type` VALUE, because that is the refusal that quotes the server verbatim. The first
+    // attempt used a hostile schema KEY and did not discriminate at all: the compiler tolerates an unknown
+    // root key, so the walker answered under both orderings and the test passed against its own mutation.
+    const shaped = buildServerToolDefs('s', [
+      withSchema('ok', 'fine', { type: 'weird\u001b[31m' }),
+    ]);
+    expect(shaped.defs).toHaveLength(0);
+    expect(shaped.skipped[0]?.reason).toBe('inputSchema contains a terminal-control or bidi character');
+    // Compile-first, the reason becomes `unsupported JSON-Schema type: "weird…"` — the server's own bytes.
+    expect(shaped.skipped[0]?.reason).not.toMatch(/weird/);
+  });
+
   it('DROPS a tool whose SCHEMA hides a control byte, wherever in it', () => {
     // A property name, a `const`, a nested description — all reach the provider inside `llmVisibleParams`,
     // and all are semantic in the sense that matters: the validator and the server agree on them.

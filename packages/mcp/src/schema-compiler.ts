@@ -367,6 +367,15 @@ function readRequired(node: Record<string, unknown>, budget: Budget): Set<string
   if ((budget.nodes += required.length) > MAX_NODES) {
     throw new UnsupportedSchemaError(`schema exceeds the maximum of ${MAX_NODES} nodes`);
   }
+  // **A `required` entry IS a property name, and it was the one that escaped the bound.** The bound was
+  // applied where `properties` is walked, so a name declared ONLY in `required` — the legal JSON-Schema shape
+  // where `properties` is omitted entirely — reached the shape as a `z.unknown()` key, the presence refine's
+  // message, and the `llmVisibleParams` a provider receives, at any size the aggregate discovery budget
+  // happened to allow. The same text was refused at 257 bytes through one door and admitted at 200 KiB
+  // through the other. Charged here, the single place every `required` entry passes through.
+  for (const name of required) {
+    rejectOverSizedString(name, 'a property name', INGRESS_BOUNDS.schemaPropertyNameBytes);
+  }
   return new Set(required);
 }
 
