@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { DiscoveredTool } from './connection.js';
 import { McpHostUnavailableError } from './errors.js';
+import { compileJsonSchemaToZod } from './schema-compiler.js';
 import { buildServerToolDefs } from './tool-mapping.js';
 
 /** A minimal valid dispatch context (dispatch only reads `ctx.signal`; the rest are required-but-inert). */
@@ -294,13 +295,28 @@ describe('tool DEFINITIONS are untrusted content (#202, ADR-0088 §7.1)', () => 
     expect(inSchema.skipped[0]?.reason).toMatch(/terminal-control/);
   });
 
+  it('admits the WIDEST schema the compiler accepts — the scan must never refuse first', () => {
+    // **Measured at the exact boundary.** 500 properties each with a one-member enum is 2003 raw JS nodes and
+    // compiles cleanly; the scan's budget was the compiler's own number (2000), which counts SEMANTIC nodes,
+    // so it refused three nodes in — and told the server its schema contained a control byte. The scan is a
+    // DoS backstop, not a second schema policy, and it must lose that race by construction.
+    const properties: Record<string, unknown> = {};
+    for (let i = 0; i < 500; i += 1) properties[`p${i}`] = { type: 'string', enum: ['only'] };
+    const schema = { type: 'object', properties };
+    expect(compileJsonSchemaToZod(schema).ok).toBe(true); // the compiler's verdict, stated first
+    const shaped = buildServerToolDefs('s', [withSchema('wide', 'fine', schema)]);
+    expect(shaped.skipped).toEqual([]);
+    expect(shaped.defs).toHaveLength(1);
+  });
+
   it('reports a walk-budget exhaustion as ITSELF, not as a control byte', () => {
     // **A false diagnostic a review caught.** A clean 400-property schema — one the compiler ACCEPTS — was
     // dropped with "inputSchema contains a terminal-control or bidi character". The refusal is right (a schema
     // this boundary cannot finish scanning is one it cannot certify); the reason was a lie, and it would send
     // a server author hunting for a control byte that was never there.
+    // Past the backstop: deep enough that the walk genuinely cannot finish, whatever the compiler thinks.
     const properties: Record<string, unknown> = {};
-    for (let i = 0; i < 400; i += 1) properties[`p${i}`] = { type: 'string', enum: ['a', 'b'] };
+    for (let i = 0; i < 3000; i += 1) properties[`p${i}`] = { type: 'string', enum: ['a', 'b'] };
     const shaped = buildServerToolDefs('s', [
       withSchema('wide', 'fine', { type: 'object', properties }),
     ]);

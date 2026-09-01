@@ -355,8 +355,20 @@ function scanSchema(value: unknown, budget: { visited: number }, depth = 0): Sch
   return { ok: true, schema: value };
 }
 
-/** The compiler's own total-work ceiling (`MAX_NODES`) — a schema past it is refused there anyway. */
-const MAX_SCHEMA_WALK_NODES = 2000;
+/**
+ * The scan's total-work ceiling — a DoS backstop, deliberately set so the COMPILER refuses first.
+ *
+ * **It was `MAX_NODES` (2000), and matching the compiler's number is not the same as matching its budget.**
+ * The compiler counts SEMANTIC nodes; this walk also descends through every `properties` container, every key
+ * and every array element, so it reaches a given schema's ceiling sooner. Measured at the boundary: the
+ * widest schema the compiler ACCEPTS — 500 properties, each a one-member enum — is 2003 raw nodes, so it was
+ * refused here while compiling cleanly. A legitimate server lost the tool.
+ *
+ * Four times the compiler's ceiling makes this a backstop rather than the binding constraint, and the real
+ * outer bound is elsewhere anyway: one server's whole discovery payload is capped at 1 MiB
+ * ({@link INGRESS_BOUNDS.discoveryBytesPerServer}), which no schema can out-nest.
+ */
+const MAX_SCHEMA_WALK_NODES = 8000;
 /** A stack guard only, deliberately far above any real schema — the NODE budget is the real bound. */
 const MAX_SCHEMA_WALK_DEPTH = 128;
 
