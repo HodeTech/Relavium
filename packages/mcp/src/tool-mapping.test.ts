@@ -235,7 +235,9 @@ describe('tool DEFINITIONS are untrusted content (#202, ADR-0088 §7.1)', () => 
       withSchema('ok', 'fine', { type: 'weird\u001b[31m' }),
     ]);
     expect(shaped.defs).toHaveLength(0);
-    expect(shaped.skipped[0]?.reason).toBe('inputSchema contains a terminal-control or bidi character');
+    expect(shaped.skipped[0]?.reason).toBe(
+      'inputSchema contains a terminal-control or bidi character',
+    );
     // Compile-first, the reason becomes `unsupported JSON-Schema type: "weird…"` — the server's own bytes.
     expect(shaped.skipped[0]?.reason).not.toMatch(/weird/);
   });

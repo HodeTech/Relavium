@@ -656,7 +656,10 @@ describe('buildResumedChatSession (2.N)', () => {
     const built = await buildResumedChatSession({
       chat: EMPTY_CHAT,
       record: record({
-        agentSnapshot: { ...RESUME_AGENT, mcp_servers: [{ id: 'fs', transport: 'stdio', command: 'my-server' }] },
+        agentSnapshot: {
+          ...RESUME_AGENT,
+          mcp_servers: [{ id: 'fs', transport: 'stdio', command: 'my-server' }],
+        },
       }),
       messages: [message(0, 'user', 'hi'), message(1, 'assistant', 'hello')],
       now: () => Date.parse(ISO),
@@ -666,11 +669,15 @@ describe('buildResumedChatSession (2.N)', () => {
       startMcpClient: (_servers, connectSignal) => {
         seenAtOpener = connectSignal;
         return realStartMcpClient([
-          { id: 'fs', open: () => Promise.resolve({
-            listTools: () => Promise.resolve([]),
-            callTool: () => Promise.resolve({ content: [], isError: false }),
-            close: () => Promise.resolve(),
-          }) },
+          {
+            id: 'fs',
+            open: () =>
+              Promise.resolve({
+                listTools: () => Promise.resolve([]),
+                callTool: () => Promise.resolve({ content: [], isError: false }),
+                close: () => Promise.resolve(),
+              }),
+          },
         ]);
       },
     });

@@ -234,7 +234,10 @@ function assertResolvedIpAllowed(ip: string, isAuthoredLocal: boolean): void {
   }
   const privateIp = isPrivateOrLocalHost(ip);
   if (!isAuthoredLocal && privateIp) {
-    throw new SafeEgressError('blocked_host', 'egress target resolves to a private/loopback address');
+    throw new SafeEgressError(
+      'blocked_host',
+      'egress target resolves to a private/loopback address',
+    );
   }
   if (isAuthoredLocal && isMetadataOrLinkLocal(ip)) {
     // The same rule on the RESOLVED address, because a name is what an attacker steers. A `*.local`

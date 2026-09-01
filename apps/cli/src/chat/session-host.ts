@@ -823,11 +823,7 @@ export async function buildResumedChatSession(
   // go review bytes that are not what is about to run (ADR-0084 §7).
   const mcp = await connectAgentMcp(
     agent.mcp_servers,
-    mcpOptionsFor(
-      opts,
-      opts.mcpArtifact ?? `resumed session ${record.id}`,
-      context.workingDir,
-    ),
+    mcpOptionsFor(opts, opts.mcpArtifact ?? `resumed session ${record.id}`, context.workingDir),
   );
 
   try {

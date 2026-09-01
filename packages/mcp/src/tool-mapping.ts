@@ -141,7 +141,10 @@ export function buildServerToolDefs(
       // The budget is order-stable and refuses everything after it is spent, so a per-tool reason from here
       // adds no information — one entry naming the remainder is the whole diagnostic.
       const remaining = tools.length - tools.indexOf(tool);
-      skip(tool.name, remaining > 1 ? `${exhausted} (and ${remaining - 1} further tool(s))` : exhausted);
+      skip(
+        tool.name,
+        remaining > 1 ? `${exhausted} (and ${remaining - 1} further tool(s))` : exhausted,
+      );
       break;
     }
     if (tool.name.trim() === '') {

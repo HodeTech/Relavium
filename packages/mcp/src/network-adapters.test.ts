@@ -232,7 +232,10 @@ describe('SdkConnection — the bound and the cancel actually reach the SDK requ
     vi.useFakeTimers();
     try {
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-      const server = new Server({ name: 'pages', version: '1.0.0' }, { capabilities: { tools: {} } });
+      const server = new Server(
+        { name: 'pages', version: '1.0.0' },
+        { capabilities: { tools: {} } },
+      );
       let pages = 0;
       server.setRequestHandler(ListToolsRequestSchema, () => {
         pages += 1;
