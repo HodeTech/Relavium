@@ -13,6 +13,14 @@
  *
  * A lone high surrogate counts as 3 bytes (WTF-8) and does NOT consume the next unit — the case a naive
  * implementation gets wrong by pairing eagerly.
+ *
+ * **`charCodeAt`, deliberately, and a linter will keep asking for `codePointAt`.** This walks UTF-16 code
+ * UNITS and pairs surrogates explicitly, because the lone-surrogate rule above is a property of the units,
+ * not of code points. `codePointAt` at a high surrogate returns the PAIR's code point, which would either
+ * change that documented behaviour or force the same surrogate arithmetic back in while making the loop
+ * variable mean something it no longer does. The rule is a good default for extracting a character and the
+ * wrong one for this algorithm; it is a won't-fix rather than an oversight, and
+ * `bounding.test.ts`'s `L-1` case is what would catch a "cleanup" that changed it.
  */
 export function utf8ByteLength(text: string): number {
   let bytes = 0;

@@ -1302,6 +1302,25 @@ future test cannot silently re-acquire it.
       ternary, three `RunApp.tsx` array-index keys, two `'never' is overridden` union types, two
       `.some()` → `.includes()`, `openai.ts:481` nested template literals, `node.ts:60` `String.raw`, plus
       ~10 test-only nits (`toHaveLength`, parameterised tests, `test.skip()`).
+- [ ] **2026-09-02 Sonar sweep during the PR #87 review — three findings in code the wave did not touch.**
+      Same standing policy: a behaviour-preserving refactor of merged, tested code is its own change. The
+      findings inside the `W4` diff were fixed in it (`scanSchema` and `isMetadataOrLinkLocal` split along the
+      JSON type union and the address family; `buildServerToolDefs`'s gate sequence extracted verbatim into
+      `admitTool`); these three are outside it:
+      - `apps/cli/src/commands/run.ts:153` — `runCommand` cognitive complexity **26 → 15**. A ~300-line
+        orchestration (parse → engine → drive → outcome → exit code) with the CLI's densest test coverage
+        around it. The natural seam is per-phase extraction; it wants its own change, not a review fold.
+      - `packages/shared/src/content.ts:1430` — `extractEgressAuthority` **24 → 15**. A security-critical URL
+        parser where each branch is a documented refusal case. Its sibling `isMetadataOrLinkLocal` has already
+        shipped one bug from branch interaction (`::1` read as metadata), so a refactor here needs the same
+        before/after verdict sweep that one got, deliberately and not incidentally.
+      - `packages/db/src/safe-egress.ts:198` — "prefer an optional chain" on
+        `local !== undefined && target.host === local.host && target.port === local.port`. **Declined, not
+        deferred:** `local?.host === target.host && local?.port === target.port` is equivalent but reads as
+        two independent comparisons, losing the "there IS an authored opt-in AND it matches" structure that is
+        the whole precondition of the local-endpoint policy. Worth marking won't-fix in SonarQube rather than
+        re-surfacing each sweep.
+
       **Not actioned, with reasons:** the `--ignore-scripts` findings on all four workflows are declined —
       `pnpm.onlyBuiltDependencies` (root `package.json`) already allowlists the only two packages permitted
       to run install scripts, and adding the flag would break both while weakening nothing else; the

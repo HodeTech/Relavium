@@ -1513,7 +1513,9 @@ export function extractHttpsHost(url: string): { host: string; hasCredentials: b
   // policy needed the port; keeping both would have been the second URL parser ADR-0029 (d) forbids, and
   // the two would have drifted at the first fix applied to only one of them.
   const authority = extractEgressAuthority(url);
-  if (authority === null || authority.scheme !== 'https') {
+  // `authority?.scheme` reads the two failures as one — malformed and not-https both mean "not a usable
+  // HTTPS authority" here, and neither needs to be distinguished by the caller.
+  if (authority?.scheme !== 'https') {
     return null;
   }
   return { host: authority.host, hasCredentials: authority.hasCredentials };

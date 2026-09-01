@@ -126,104 +126,22 @@ export function buildServerToolDefs(
     skip(name, reason);
   };
 
-  for (const tool of tools) {
-    if (allow !== undefined && !allow.has(tool.name)) {
-      noteSkip(tool.name, 'not in the server tools_allowlist');
-      continue;
-    }
-    // **Bounded BEFORE the schema is compiled**, because compiling is the expensive part and a hostile server
-    // should not get it for free. The description bound refuses one tool; the budget refuses the rest of the
-    // catalogue too, deliberately — see `DiscoveryBudget.admit`.
-    const oversized = overSizedDescription(tool.description);
-    if (oversized !== undefined) {
-      noteSkip(tool.name, oversized);
-      continue;
-    }
-    const exhausted = budget.admit(toolDefinitionBytes(tool));
-    if (exhausted !== undefined) {
-      // The budget is order-stable and refuses everything after it is spent, so a per-tool reason from here
-      // adds no information — one entry naming the remainder is the whole diagnostic.
-      const remaining = tools.length - tools.indexOf(tool);
-      skip(
-        tool.name,
-        remaining > 1 ? `${exhausted} (and ${remaining - 1} further tool(s))` : exhausted,
-      );
+  for (const [index, tool] of tools.entries()) {
+    const outcome = admitTool(tool, index, { serverId, tools, allow, budget, seenToolIds });
+    if (outcome.kind === 'exhausted') {
+      // The budget is order-stable and refuses everything after it is spent, so this entry is NOT capped —
+      // it names the remainder and is the whole diagnostic for every tool behind it.
+      skip(tool.name, outcome.reason);
       break;
     }
-    if (tool.name.trim() === '') {
-      noteSkip(tool.name, 'empty tool name');
+    if (outcome.kind === 'skip') {
+      noteSkip(tool.name, outcome.reason);
       continue;
     }
-    const id = namespacedId(serverId, tool.name);
-    if (id === undefined) {
-      noteSkip(tool.name, 'tool name is not a valid LLM tool id after namespacing');
-      continue;
-    }
-    if (seenToolIds.has(id)) {
-      noteSkip(tool.name, `namespaced id collides with another tool ("${id}")`);
-      continue;
-    }
-    // **Presentation text is sanitized; a SEMANTIC field is never rewritten** (ADR-0088 §7.1, `#202`).
-    //
-    // The distinction is load-bearing rather than tidy. A `description` is text shown to a model or a human,
-    // and stripping terminal-control bytes from it changes nothing else. A property NAME, a `const`/`enum`
-    // value and a `required` entry are simultaneously the model-visible schema, the compiled validator's
-    // expectation, and the wire contract with the server — rewriting one desynchronises all three and
-    // produces a tool that is broken rather than safe. So a semantic field carrying a control byte drops the
-    // TOOL, fail-closed, through the same path an unsupported schema takes.
-    const unsafeField = semanticControlByte(tool);
-    if (unsafeField !== undefined) {
-      noteSkip(tool.name, unsafeField);
-      continue;
-    }
-    // Semantic fields fail closed here; presentation text INSIDE the schema is cleaned into a copy (§7.1).
-    // The copy is what `llmVisibleParams` carries, so a poisoned nested `description` reaches neither the
-    // provider nor a render — and does not cost the server a working tool, which is what dropping it did.
-    const scanned = scanSchema(tool.inputSchema, { visited: 0 });
-    if (!scanned.ok) {
-      noteSkip(tool.name, scanned.reason);
-      continue;
-    }
-    // The scan returns `unknown`; `llmVisibleParams` wants a record. A schema that is not an object is not a
-    // usable tool spec anyway, and the compiler above would refuse it — check here rather than assert, so the
-    // narrowing is a real one.
-    const safeSchema = scanned.schema;
-    if (!isPlainRecord(safeSchema)) {
-      noteSkip(tool.name, 'inputSchema must be a JSON object');
-      continue;
-    }
-    const compiled = compileJsonSchemaToZod(safeSchema);
-    if (!compiled.ok) {
-      noteSkip(tool.name, `unsupported inputSchema: ${compiled.reason}`);
-      continue;
-    }
-    seenToolIds.add(id);
-    const validator = compiled.schema;
-    const originalName = tool.name;
-    defs.push({
-      id,
-      source: 'mcp',
-      // Sanitized at DISCOVERY, not at whichever surface happens to render it: a poisoned description
-      // otherwise reaches a log, an approval prompt and the provider before anyone strips it (§7.1).
-      description: stripTerminalControls(tool.description ?? ''),
-      parseArgs: (raw: unknown): unknown => validator.parse(raw) as unknown,
-      llmVisibleParams: safeSchema,
-      policy: MCP_TOOL_POLICY,
-      // **Every discovered MCP tool is tier 3, unconditionally** (ADR-0080 §5). Not a placeholder pending
-      // richer metadata: an MCP server's own annotations (`readOnlyHint` / `idempotentHint` / …) are
-      // attacker-controlled bytes from the very party the hostile-MCP class defends against, so they may
-      // never RAISE trust. A server cannot talk its way out of being journaled, and it cannot declare its
-      // effects benign either — `duplicationBenign` is first-party-only and is deliberately not set here.
-      effect: (): EffectTier => 3,
-      dispatch: (args: unknown, host: ToolHost, ctx: ToolDispatchContext): Promise<unknown> => {
-        const mcp = host.mcp;
-        if (mcp === undefined) {
-          throw new McpHostUnavailableError(id);
-        }
-        return mcp.call({ server: serverId, tool: originalName, args }, ctx.signal);
-      },
-    });
+    seenToolIds.add(outcome.def.id);
+    defs.push(outcome.def);
   }
+
   // One line for everything the cap swallowed, so a host still learns the catalogue was beyond the bounds
   // rather than seeing a diagnostic that simply stops.
   if (suppressedDiagnostics > 0) {
@@ -405,4 +323,121 @@ function namespacedId(serverId: string, toolName: string): string | undefined {
 /** A JSON object, narrowed for  — an array or a scalar is not a usable tool spec. */
 function isPlainRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** What one tool's gate sequence decided. `exhausted` stops the walk; `skip` drops just this tool. */
+type AdmitOutcome =
+  | { readonly kind: 'admit'; readonly def: ToolDef }
+  | { readonly kind: 'skip'; readonly reason: string }
+  | { readonly kind: 'exhausted'; readonly reason: string };
+
+const skipWith = (reason: string): AdmitOutcome => ({ kind: 'skip', reason });
+
+interface AdmitContext {
+  readonly serverId: string;
+  readonly tools: readonly DiscoveredTool[];
+  readonly allow: ReadonlySet<string> | undefined;
+  readonly budget: DiscoveryBudget;
+  readonly seenToolIds: ReadonlySet<string>;
+}
+
+/**
+ * Run one tool through the admission gates, in ORDER.
+ *
+ * Extracted from `buildServerToolDefs`'s loop body without reordering a single gate — the sequence IS the
+ * contract here, and two of its steps are pinned by tests: the description bound runs before the schema is
+ * compiled (so a hostile server does not get the expensive part for free), and `semanticControlByte` runs
+ * before the compiler (so the compiler's own refusals, which quote server text, cannot reach a diagnostic).
+ */
+function admitTool(
+  tool: DiscoveredTool,
+  index: number,
+  { serverId, tools, allow, budget, seenToolIds }: AdmitContext,
+): AdmitOutcome {
+  if (allow !== undefined && !allow.has(tool.name)) {
+    return skipWith('not in the server tools_allowlist');
+  }
+  // **Bounded BEFORE the schema is compiled**, because compiling is the expensive part and a hostile server
+  // should not get it for free. The description bound refuses one tool; the budget refuses the rest of the
+  // catalogue too, deliberately — see `DiscoveryBudget.admit`.
+  const oversized = overSizedDescription(tool.description);
+  if (oversized !== undefined) {
+    return skipWith(oversized);
+  }
+  const exhausted = budget.admit(toolDefinitionBytes(tool));
+  if (exhausted !== undefined) {
+    // `index` rather than `tools.indexOf(tool)` — the old form was an O(n) scan inside the loop over the very
+    // catalogue this bound exists to survive, and a duplicate entry would have found the wrong one.
+    const remaining = tools.length - index;
+    const reason =
+      remaining > 1 ? `${exhausted} (and ${remaining - 1} further tool(s))` : exhausted;
+    return { kind: 'exhausted', reason };
+  }
+  if (tool.name.trim() === '') {
+    return skipWith('empty tool name');
+  }
+  const id = namespacedId(serverId, tool.name);
+  if (id === undefined) {
+    return skipWith('tool name is not a valid LLM tool id after namespacing');
+  }
+  if (seenToolIds.has(id)) {
+    return skipWith(`namespaced id collides with another tool ("${id}")`);
+  }
+  // **Presentation text is sanitized; a SEMANTIC field is never rewritten** (ADR-0088 §7.1, `#202`).
+  //
+  // The distinction is load-bearing rather than tidy. A `description` is text shown to a model or a human,
+  // and stripping terminal-control bytes from it changes nothing else. A property NAME, a `const`/`enum`
+  // value and a `required` entry are simultaneously the model-visible schema, the compiled validator's
+  // expectation, and the wire contract with the server — rewriting one desynchronises all three and
+  // produces a tool that is broken rather than safe. So a semantic field carrying a control byte drops the
+  // TOOL, fail-closed, through the same path an unsupported schema takes.
+  const unsafeField = semanticControlByte(tool);
+  if (unsafeField !== undefined) {
+    return skipWith(unsafeField);
+  }
+
+  // Semantic fields fail closed here; presentation text INSIDE the schema is cleaned into a copy (§7.1).
+  // The copy is what `llmVisibleParams` carries, so a poisoned nested `description` reaches neither the
+  // provider nor a render — and does not cost the server a working tool, which is what dropping it did.
+  const scanned = scanSchema(tool.inputSchema, { visited: 0 });
+  if (!scanned.ok) {
+    return skipWith(scanned.reason);
+  }
+  // The scan returns `unknown`; `llmVisibleParams` wants a record. A schema that is not an object is not a
+  // usable tool spec anyway, and the compiler above would refuse it — check here rather than assert, so the
+  // narrowing is a real one.
+  const safeSchema = scanned.schema;
+  if (!isPlainRecord(safeSchema)) {
+    return skipWith('inputSchema must be a JSON object');
+  }
+  const compiled = compileJsonSchemaToZod(safeSchema);
+  if (!compiled.ok) {
+    return skipWith(`unsupported inputSchema: ${compiled.reason}`);
+  }
+  const validator = compiled.schema;
+  const originalName = tool.name;
+  const def: ToolDef = {
+    id,
+    source: 'mcp',
+    // Sanitized at DISCOVERY, not at whichever surface happens to render it: a poisoned description
+    // otherwise reaches a log, an approval prompt and the provider before anyone strips it (§7.1).
+    description: stripTerminalControls(tool.description ?? ''),
+    parseArgs: (raw: unknown): unknown => validator.parse(raw) as unknown,
+    llmVisibleParams: safeSchema,
+    policy: MCP_TOOL_POLICY,
+    // **Every discovered MCP tool is tier 3, unconditionally** (ADR-0080 §5). Not a placeholder pending
+    // richer metadata: an MCP server's own annotations (`readOnlyHint` / `idempotentHint` / …) are
+    // attacker-controlled bytes from the very party the hostile-MCP class defends against, so they may
+    // never RAISE trust. A server cannot talk its way out of being journaled, and it cannot declare its
+    // effects benign either — `duplicationBenign` is first-party-only and is deliberately not set here.
+    effect: (): EffectTier => 3,
+    dispatch: (args: unknown, host: ToolHost, ctx: ToolDispatchContext): Promise<unknown> => {
+      const mcp = host.mcp;
+      if (mcp === undefined) {
+        throw new McpHostUnavailableError(id);
+      }
+      return mcp.call({ server: serverId, tool: originalName, args }, ctx.signal);
+    },
+  };
+  return { kind: 'admit', def };
 }
