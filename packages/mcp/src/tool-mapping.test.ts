@@ -222,6 +222,31 @@ describe('tool DEFINITIONS are untrusted content (#202, ADR-0088 §7.1)', () => 
     }
   });
 
+  it('admits a DEEPLY NESTED but clean schema — the walk must not refuse what the compiler accepts', () => {
+    // **A review measured this failing.** The walk's first budget was a depth ceiling "mirroring the
+    // compiler's MAX_DEPTH", but a JS walk also descends through each `properties` container, so its depth
+    // grows twice as fast: a control-byte-free schema at semantic depth 8 — well inside the compiler's
+    // budget — was reported "unsafe" and the tool was dropped with a message naming a defect it did not have.
+    let schema: Record<string, unknown> = { type: 'string' };
+    for (let i = 0; i < 12; i += 1) {
+      schema = { type: 'object', properties: { nested: schema } };
+    }
+    const shaped = buildServerToolDefs('s', [withSchema('deep', 'fine', schema)]);
+    expect(shaped.skipped).toEqual([]);
+    expect(shaped.defs).toHaveLength(1);
+  });
+
+  it('still refuses a control byte hidden at the BOTTOM of a deep schema', () => {
+    // The negative control for the test above: raising the bound must not have stopped it looking.
+    let schema: Record<string, unknown> = { const: 'payload\u001b[31m' };
+    for (let i = 0; i < 12; i += 1) {
+      schema = { type: 'object', properties: { nested: schema } };
+    }
+    const shaped = buildServerToolDefs('s', [withSchema('deep', 'fine', schema)]);
+    expect(shaped.defs).toHaveLength(0);
+    expect(shaped.skipped[0]?.reason).toMatch(/inputSchema contains a terminal-control/);
+  });
+
   it('leaves an ordinary tool completely untouched', () => {
     // The negative control: a strip that mangled legitimate text would be worse than no strip, and every
     // refusal test above would still pass against it.

@@ -1,7 +1,11 @@
 import type { WorkflowDefinition } from '@relavium/core';
 import {
+  MCP_DEADLINES,
+  McpAbortedError,
   McpDeadlineError,
   McpError,
+  openWindow,
+  raceDeadline,
   openHttpConnection,
   openSseConnection,
   openStdioConnection,
@@ -397,14 +401,20 @@ function buildNetworkConfig(
   // `ws://mcp-relay.local:8080` with `allow_local_endpoint` was admitted (so the §2.3 remote refusal never
   // fired), connected in plaintext, and pointed wherever the LAN's mDNS responder said — with no consent
   // gate, because ADR-0084 covers `stdio` only.
-  const preflight =
-    transport === 'websocket' ? assertResolvesLocal(serverId, url, resolveHost) : undefined;
+  const needsPreflight = transport === 'websocket';
   return {
     id: serverId,
     ...toolsAllowlistFields(ref),
     // A parameter, not a capture — see the stdio sibling for what a zero-argument closure silently costs.
     open: async (signal) => {
-      await preflight;
+      // **Run INSIDE `open`, not eagerly at config-build time**, and a review found both reasons. Started
+      // eagerly it was a hot promise nobody had to await: a later ref throwing synchronously discarded the
+      // whole config array and the abandoned lookup surfaced as an unhandled rejection. And it ran before
+      // any deadline or signal existed, so a hung `.local` resolver — the exact case §2.3 is about — hung
+      // the whole connect with Ctrl-C doing nothing.
+      if (needsPreflight) {
+        await assertResolvesLocal(serverId, url, resolveHost, signal);
+      }
       return open(
         serverId,
         {
@@ -427,20 +437,30 @@ function buildNetworkConfig(
  * suffix like `.local` is a claim about a name, not about an address, and an mDNS responder on the same LAN
  * is who answers it.
  *
- * Started at config-build time and awaited inside `open()`, so a slow resolver does not block the whole
- * config assembly and a refusal still lands before any socket.
+ * **Bounded and cancellable, like every other MCP call** (ADR-0088 §1). `dns.lookup` is not abortable, so the
+ * bound is a race: the caller is released at the deadline or on their signal even though the lookup itself
+ * keeps running in the background until the OS resolver gives up. Without it a hung mDNS responder — the very
+ * thing §2.3's narrowing is about — hung the whole connect with Ctrl-C doing nothing.
  */
 async function assertResolvesLocal(
   serverId: string,
   url: string,
   resolveHost: (hostname: string) => Promise<readonly string[]>,
+  signal?: AbortSignalLike,
 ): Promise<void> {
   const parsed = extractEgressAuthority(url);
   if (parsed === null) return; // already refused by the admission — nothing to add
   let addresses: readonly string[];
   try {
-    addresses = await resolveHost(parsed.host);
-  } catch {
+    addresses = await raceDeadline(
+      serverId,
+      'connect',
+      openWindow(MCP_DEADLINES.networkConnectMs),
+      () => resolveHost(parsed.host),
+      signal,
+    );
+  } catch (err) {
+    if (err instanceof McpDeadlineError || err instanceof McpAbortedError) throw err;
     throw new CliError(
       'invalid_invocation',
       `MCP server '${serverId}': '${parsed.host}' could not be resolved.`,

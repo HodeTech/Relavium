@@ -198,7 +198,7 @@ function semanticControlByte(tool: DiscoveredTool): string | undefined {
   if (hasControlByte(tool.name)) {
     return 'tool name contains a terminal-control or bidi character';
   }
-  return schemaHasControlByte(tool.inputSchema, 0)
+  return schemaHasControlByte(tool.inputSchema, { visited: 0 })
     ? 'inputSchema contains a terminal-control or bidi character'
     : undefined;
 }
@@ -217,26 +217,36 @@ function hasControlByte(text: string): boolean {
  * DEL, C1, or the bidi controls, so the serialized check caught some cases and missed others, which is worse
  * than catching none: it reads as a working guard.
  *
- * Depth-bounded by the same constant the compiler uses, so a hostile schema cannot make this the DoS the
- * compiler's own budgets exist to prevent. Past the bound it reports "unsafe", because a schema too deep to
- * inspect is one the compiler is about to refuse anyway.
+ * **Bounded by NODES VISITED, not by depth — and a review proved why that distinction matters.** A first
+ * version used a depth ceiling of 16, "mirroring the compiler's `MAX_DEPTH`". It does not mirror it: the
+ * compiler counts one level per schema-semantic transition, while a JS walk also descends through each
+ * `properties` container, so the walk's depth grows about twice as fast. Measured: a control-byte-free schema
+ * nested to semantic depth 8 — comfortably inside the compiler's budget — was already reported "unsafe", and
+ * a legitimate tool was dropped with a message naming a defect it did not have.
+ *
+ * A node budget is the honest bound anyway: total work is what a DoS guard is about, and 2000 is the same
+ * ceiling `MAX_NODES` gives the compiler — so a schema this walk cannot finish is one the compiler refuses on
+ * its own terms. The depth ceiling stays only as a stack guard, far above any real schema.
  */
-function schemaHasControlByte(value: unknown, depth: number): boolean {
+function schemaHasControlByte(value: unknown, budget: { visited: number }, depth = 0): boolean {
   if (depth > MAX_SCHEMA_WALK_DEPTH) return true;
+  if ((budget.visited += 1) > MAX_SCHEMA_WALK_NODES) return true;
   if (typeof value === 'string') return hasControlByte(value);
   if (Array.isArray(value)) {
-    return value.some((item) => schemaHasControlByte(item, depth + 1));
+    return value.some((item) => schemaHasControlByte(item, budget, depth + 1));
   }
   if (typeof value === 'object' && value !== null) {
     return Object.entries(value).some(
-      ([key, item]) => hasControlByte(key) || schemaHasControlByte(item, depth + 1),
+      ([key, item]) => hasControlByte(key) || schemaHasControlByte(item, budget, depth + 1),
     );
   }
   return false;
 }
 
-/** Mirrors the compiler's own nesting bound — this walk must not be the DoS its budgets prevent. */
-const MAX_SCHEMA_WALK_DEPTH = 16;
+/** The compiler's own total-work ceiling (`MAX_NODES`) — a schema past it is refused there anyway. */
+const MAX_SCHEMA_WALK_NODES = 2000;
+/** A stack guard only, deliberately far above any real schema — the NODE budget is the real bound. */
+const MAX_SCHEMA_WALK_DEPTH = 128;
 
 /**
  * The LLM-visible namespaced id `mcp_{server}_{tool}` — the tool name's non-charset bytes are mapped to `_`

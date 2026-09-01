@@ -306,6 +306,38 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
     ).rejects.toMatchObject({ code: 'blocked_host' });
   });
 
+  it('refuses a metadata LITERAL even when the resolver would answer something else', async () => {
+    // **The site a review proved unbound, and why it is not dead code.** With the real `nodeEgressDeps`, an
+    // IP literal short-circuits to itself, so the pre-DNS guard and the resolved-IP guard always fire on the
+    // same value and only the second is observable — which made the fold's claim that "both redden" false.
+    // `resolveHost` is an INJECTED seam, though, so a host (or a test) can supply one that answers
+    // differently; this fixture is that host, and it is the only way to see the pre-DNS guard alone.
+    const deps = fakeDeps({ resolve: { '169.254.169.254': ['10.0.0.1'] } });
+    await expect(
+      connectValidated(
+        'http://169.254.169.254/latest',
+        { method: 'GET', localEndpoint: { host: '169.254.169.254', port: 80 } },
+        deps,
+        sig(),
+      ),
+    ).rejects.toMatchObject({ code: 'blocked_host' });
+  });
+
+  it('refuses a TUNNELED metadata address in a resolver answer — the real rebind shape', async () => {
+    // The dialer's site, with the form an admission-layer test cannot reach: a name admitted as an ordinary
+    // local endpoint whose resolver later answers `::ffff:169.254.169.254`. The IPv4-mapped unwrap in
+    // `isMetadataOrLinkLocal` is what catches it, and it had no test at this layer at all.
+    const deps = fakeDeps({ resolve: { 'dev.local': ['::ffff:169.254.169.254'] } });
+    await expect(
+      connectValidated(
+        'http://dev.local:4000/mcp',
+        { method: 'GET', localEndpoint: { host: 'dev.local', port: 4000 } },
+        deps,
+        sig(),
+      ),
+    ).rejects.toMatchObject({ code: 'blocked_host' });
+  });
+
   it('refuses a local endpoint whose NAME resolves into the metadata space', async () => {
     // The half that matters more, because a name is what an attacker steers: `isPrivateOrLocalHost` treats
     // `*.local` as local from the SUFFIX alone, and an mDNS responder on the same LAN chooses the address.

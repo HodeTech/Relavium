@@ -190,9 +190,14 @@ allowed_command_globs = []         # opt-in glob form of the !-shell allowlist (
 ```
 
 > **Project-scoped MCP servers.** `project.toml` / `workspace.toml` may also declare
-> `[[mcp_servers]]` entries (the same shape as the global block above); they merge with the
-> global registrations per the [resolution order](#resolution-order) — a project server
-> overrides a global one with the same `name`. (Schema: `ProjectConfigSchema.mcp_servers`.)
+> `[[mcp_servers]]` entries (the same shape as the global block above); they **union** with the global
+> registrations. Unlike every other setting, a `[[mcp_servers]]` name that appears in **more than one layer is
+> a loud refusal** (exit `2`), not a last-writer-wins override
+> ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §8): a registration is not a preference —
+> it names a **program to execute** and a **secret to inject** — and a project config arrives with a cloned
+> repository, so a silent override would hand a global server's provisioned `{{secrets.*}}` to whatever the
+> project's entry names. Rename the project entry, or remove the duplicate.
+> (Schema: `ProjectConfigSchema.mcp_servers`.)
 
 > The `[chat]` block sets defaults for the **agent-first** chat entry point
 > ([agent-session-spec.md](agent-session-spec.md), [ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)),

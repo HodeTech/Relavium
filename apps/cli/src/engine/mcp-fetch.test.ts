@@ -280,6 +280,43 @@ describe('createMcpFetch — the per-message byte bound (ADR-0088 §5.4)', () =>
     await expect(reader?.read()).rejects.toMatchObject({ code: 'too_large' });
   });
 
+  it('does NOT reset on a single newline — a multi-line SSE event accumulates', async () => {
+    // **The hole a review's mutation exposed.** Changing the boundary from "blank line" to "any newline"
+    // stayed green, because every fixture used either no embedded newline or a doubled one. An SSE event is
+    // legitimately multi-line (several `data:` lines, then a blank line), so a per-line reset would let a
+    // hostile server stream an arbitrarily large single logical message past this bound one line at a time —
+    // which is the bound's entire reason to exist.
+    const lines = 'data: ' + 'x'.repeat(60) + '\ndata: ' + 'y'.repeat(60) + '\n';
+    const { deps } = fakeDeps({ body: [bytes(lines)] });
+    const response = await createMcpFetch({ deps, maxMessageBytes: 100 })(
+      'https://api.example/mcp',
+    );
+    await expect(response.body?.getReader().read()).rejects.toMatchObject({ code: 'too_large' });
+  });
+
+  it.each([
+    ['LF', '\n\n'],
+    ['CRLF', '\r\n\r\n'],
+    ['bare CR', '\r\r'],
+  ])('resets at a blank line terminated by %s', async (_label, boundary) => {
+    // The SSE spec permits all three terminators. A counter that only knew `\n` would never reset against a
+    // CRLF server, so the bound would fire on a perfectly healthy stream — a false refusal, which for a
+    // memory bound is the failure mode that gets it turned off.
+    const event = 'data: ' + 'z'.repeat(50) + boundary;
+    const { deps } = fakeDeps({ body: Array.from({ length: 20 }, () => bytes(event)) });
+    const response = await createMcpFetch({ deps, maxMessageBytes: 100 })(
+      'https://api.example/mcp',
+    );
+    const reader = response.body?.getReader();
+    let chunks = 0;
+    for (;;) {
+      const next = await reader?.read();
+      if (next?.done === true) break;
+      chunks += 1;
+    }
+    expect(chunks).toBe(20);
+  });
+
   it('treats a delimiter-free body as ONE message — the correct reading for a plain JSON response', async () => {
     const { deps } = fakeDeps({ body: [bytes('x'.repeat(60)), bytes('x'.repeat(60))] });
     const response = await createMcpFetch({ deps, maxMessageBytes: 100 })(

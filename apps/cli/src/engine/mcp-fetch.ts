@@ -171,20 +171,31 @@ function toResponse(hop: HopResponse, maxMessageBytes: number): Response {
  *
  * **Which is exactly why the bound is per MESSAGE and not per body** (ADR-0088 §5.4). A whole-body cap would
  * kill a healthy session at whatever moment it had streamed enough — the bound would fire on success. The
- * counter therefore resets at each SSE event boundary (a blank line, `\n\n`), which yields the property that
- * is actually wanted — bounded peak memory — and not the one that cannot be had for a stream with no defined
- * length: a bounded total. A plain JSON response has no delimiter, so the whole body is one "message", which
- * is the correct reading for the POST path.
+ * counter therefore resets at each SSE event boundary, which yields the property that is actually wanted —
+ * bounded peak memory — and not the one that cannot be had for a stream with no defined length: a bounded
+ * total. A plain JSON response has no delimiter, so the whole body is one "message", which is the correct
+ * reading for the POST path.
  *
- * The scan is over the last byte of the previous chunk plus the current one, so a delimiter split across a
- * chunk boundary is still seen — a counter that only looked within a chunk would never reset on a server
- * that writes one byte at a time.
+ * **A boundary is a BLANK LINE, not a newline**, and a review caught the difference mattering: an earlier
+ * version reset on any `\n`, and a mutation making that explicit stayed green because every fixture used
+ * either no embedded newline or a doubled one. But an SSE event is legitimately multi-line — several `data:`
+ * lines before the terminating blank line — so resetting per line would have let a hostile server stream an
+ * arbitrarily large single logical message past this bound, one line at a time. That is precisely the bound's
+ * reason to exist.
+ *
+ * All three SSE line terminators are honoured — `\n`, `\r\n`, and a lone `\r` — because the spec permits
+ * each, and a counter that only knew `\n` would never reset against a CRLF server: the bound would then fire
+ * on a perfectly healthy stream. The CR/LF state carries ACROSS chunks, so a server writing one byte at a
+ * time still resets.
  */
 function hopBodyToStream(hop: HopResponse, maxMessageBytes: number): ReadableStream<Uint8Array> {
   const iterator = hop.body[Symbol.asyncIterator]();
   let disposed = false;
   let messageBytes = 0;
-  let trailingNewline = false; // the previous chunk ended with `\n` — half of a `\n\n` boundary
+  // Boundary state, carried ACROSS chunks: whether the previous byte ended a line, and whether it was a CR
+  // whose LF is still to come. A server that writes one byte at a time is the reason both must survive.
+  let afterTerminator = false;
+  let pendingCr = false;
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
@@ -200,22 +211,30 @@ function hopBodyToStream(hop: HopResponse, maxMessageBytes: number): ReadableStr
    * excused it outright. A bound that only looks at the tail of a chunk is not a bound.
    */
   const chargeAndReset = (chunk: Uint8Array): boolean => {
-    let previousWasNewline = trailingNewline;
     for (const byte of chunk) {
-      const isNewline = byte === 0x0a;
-      if (isNewline && previousWasNewline) {
-        messageBytes = 0; // an SSE event ended here — the next message starts from zero
-        previousWasNewline = false;
+      const isCr = byte === 0x0d;
+      const isLf = byte === 0x0a;
+      if (isLf && pendingCr) {
+        // The LF half of a CRLF — the CR already ended this line, so it must not end a second one.
+        pendingCr = false;
         continue;
       }
-      messageBytes += 1;
-      if (messageBytes > maxMessageBytes) {
-        trailingNewline = false;
-        return false;
+      if (isCr || isLf) {
+        pendingCr = isCr;
+        if (afterTerminator) {
+          // A BLANK LINE: the SSE event boundary. The next message starts from zero.
+          messageBytes = 0;
+          afterTerminator = false;
+        } else {
+          afterTerminator = true;
+        }
+        continue;
       }
-      previousWasNewline = isNewline;
+      pendingCr = false;
+      afterTerminator = false;
+      messageBytes += 1;
+      if (messageBytes > maxMessageBytes) return false;
     }
-    trailingNewline = previousWasNewline;
     return true;
   };
   return new ReadableStream<Uint8Array>({

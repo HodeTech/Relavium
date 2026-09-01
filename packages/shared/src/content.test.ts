@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   extractEgressAuthority,
+  isMetadataOrLinkLocal,
   collectDurableMediaHandles,
   containsDurableUnsafeMedia,
   containsInlineMediaBytes,
@@ -1072,5 +1073,60 @@ describe('extractEgressAuthority', () => {
       host: 'example.com',
       hasCredentials: true,
     });
+  });
+});
+
+describe('isMetadataOrLinkLocal', () => {
+  /**
+   * The subset of {@link isPrivateOrLocalHost} that NO opt-in may reach
+   * ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §4). It had exactly one test in
+   * the whole repository — at the admission layer, on authored URL text — which only defends against an
+   * attacker who writes a tunnel form into the config. The DIALER's use, on a resolver's answer, is the
+   * rebind case, and it had none.
+   */
+  it.each([
+    ['the AWS/GCP/Azure metadata address', '169.254.169.254'],
+    ['any link-local address', '169.254.1.1'],
+    ['the unspecified address', '0.0.0.0'],
+    ['the 0/8 range', '0.1.2.3'],
+    ['IPv6 link-local', 'fe80::1'],
+    ['IPv4-MAPPED metadata', '::ffff:169.254.169.254'],
+    ['IPv4-COMPATIBLE metadata', '::169.254.169.254'],
+    ['NAT64-tunnelled metadata', '64:ff9b::169.254.169.254'],
+    ['6to4-tunnelled metadata', '2002:a9fe:a9fe::1'],
+    ['a bracketed literal', '[::ffff:169.254.169.254]'],
+    ['a decimal-encoded literal', '2852039166'], // 169.254.169.254, the inet_aton form
+  ])('is true for %s', (_label, host) => {
+    expect(isMetadataOrLinkLocal(host)).toBe(true);
+  });
+
+  it.each([
+    ['plain loopback', '127.0.0.1'],
+    ['IPv6 loopback', '::1'],
+    ['the unspecified IPv6 address', '::'],
+    ['an RFC1918 address', '10.0.0.5'],
+    ['another RFC1918 address', '192.168.1.2'],
+    ['a public address', '93.184.216.34'],
+    ['a NAME, however local-looking', 'metadata.local'],
+    ['a name that merely starts with the digits', '169.254.example.com'],
+  ])('is FALSE for %s — it is narrower than the private-range block', (_label, host) => {
+    expect(isMetadataOrLinkLocal(host)).toBe(false);
+  });
+
+  it('does not misread ::1 as metadata — a bug this predicate shipped with once', () => {
+    // `::1` fell into the IPv4-COMPATIBLE branch, read as `0.0.0.1`, matched the `0.` prefix and was
+    // reported as metadata — so a plain loopback MCP endpoint was refused with the wrong reason. Both
+    // predicates return early for `::`/`::1`; this pins that they agree.
+    expect(isMetadataOrLinkLocal('::1')).toBe(false);
+    expect(isPrivateOrLocalHost('::1')).toBe(true);
+  });
+
+  it('is a strict SUBSET of the private-range block', () => {
+    // The relationship the opt-in depends on: anything this refuses, the range block would also have
+    // refused — so carving it out narrows the opt-in and never widens what is reachable.
+    for (const host of ['169.254.169.254', '0.0.0.0', 'fe80::1', '::ffff:169.254.169.254']) {
+      expect(isMetadataOrLinkLocal(host)).toBe(true);
+      expect(isPrivateOrLocalHost(host)).toBe(true);
+    }
   });
 });

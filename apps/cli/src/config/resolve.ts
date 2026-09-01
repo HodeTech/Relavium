@@ -225,8 +225,13 @@ function resolveChat(
  * sufficient: it covers `stdio` only, and a re-prompt for a name the user already approved invites approval
  * by habit.)*
  *
- * WITHIN one layer the schema already rejects a duplicate name, so the collision this refuses is always a
- * cross-layer one, which is exactly the trust boundary that matters.
+ * **Within ONE layer too**, and that clause exists because a review found the docstring asserting it was
+ * already true. It was not: neither `McpServerRegistrationSchema` nor its containing config schemas enforce a
+ * unique `name` across the array, and TOML happily accepts two `[[mcp_servers]]` tables with the same one.
+ * So a copy-paste in a single `config.toml` silently let the last entry win — the exact "a registration names
+ * a program and a secret, so a collision is a refusal rather than a merge" reasoning, applied to the case the
+ * comment claimed was already covered. It is a lower-stakes collision than the cross-layer one (same trust
+ * tier, no privilege crossing) and it gets the same answer, because the reason is the same.
  */
 function mergeMcpServers(
   ...lists: ReadonlyArray<readonly McpServerRegistration[] | undefined>
@@ -236,12 +241,16 @@ function mergeMcpServers(
   lists.forEach((list, layer) => {
     for (const server of list ?? []) {
       const previous = layerOf.get(server.name);
-      if (previous !== undefined && previous !== layer) {
+      if (previous !== undefined) {
         throw new CliError(
           'invalid_invocation',
-          `MCP server '${server.name}' is registered in more than one config layer. A registration names a ` +
-            `program to run and a secret to inject, so a lower-trust layer may not redefine one from a ` +
-            `higher-trust layer — rename it, or remove the duplicate.`,
+          previous === layer
+            ? `MCP server '${server.name}' is registered twice in the same config file. A registration ` +
+                `names a program to run and a secret to inject, so the duplicate is refused rather than ` +
+                `silently overridden — remove one of them.`
+            : `MCP server '${server.name}' is registered in more than one config layer. A registration ` +
+                `names a program to run and a secret to inject, so a lower-trust layer may not redefine one ` +
+                `from a higher-trust layer — rename it, or remove the duplicate.`,
         );
       }
       byName.set(server.name, server);

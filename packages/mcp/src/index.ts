@@ -46,6 +46,8 @@ export {
   MCP_DEADLINES,
   McpAbortedError,
   McpDeadlineError,
+  openWindow,
+  raceDeadline,
   type McpDeadlinePhase,
 } from './deadlines.js';
 export { shapeToolResult } from './result.js';

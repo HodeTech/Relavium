@@ -97,6 +97,41 @@ connections down on `SIGINT`/`SIGTERM`/`SIGHUP`/`SIGQUIT`, and a synchronous las
 paths that cannot await a teardown. `run` keeps its documented cancel contract — the run still drains to
 `run:cancelled` and exits `1`; the teardown does not take the exit code from it.
 
+### Discovery and result ingress bounds
+
+A server's own output is untrusted input, and it is bounded
+([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §5). Before these bounds a server returning
+100 pages of 500 tools with 1 MiB descriptions was admitted whole — 50 000 tools and 52 GB of description
+text, re-sent to the provider on every subsequent turn of the session.
+
+| What | Bound | Level |
+| --- | --- | --- |
+| Tools admitted per server (across all `tools/list` pages) | **256** | application |
+| One tool's `description` | **8 KiB** | application |
+| One server's whole discovery payload (names + descriptions + schemas) | **1 MiB** | application |
+| One string literal or `enum` member inside a schema | **4 KiB** | application |
+| One schema property name | **256 B** | application |
+| One `tools/call` result's text, summed across parts | **1 MiB** | application |
+| One message on an `http`/`sse` transport | **4 MiB** | transport |
+
+**The two levels are different promises, and the distinction is deliberate.** An *application* bound runs on
+an already-parsed value, so it bounds what is **admitted** — what reaches the prompt, the workflow state and
+the tool registry — and **not** what was allocated to get there. A *transport* bound runs on raw bytes before
+anything parses them, so it bounds **peak memory**; it exists only where the byte path is ours, which is the
+host-injected `fetch` of `http`/`sse`. `stdio` and a local `websocket` therefore have the application bounds
+only, and their memory story is the consent gate's and the author's own opt-in — see the Security section.
+
+The transport bound is **per message, not per body**: a Streamable HTTP session's server-to-client stream
+stays open for the whole session, so a body cap would fire on a healthy one. The counter resets at each SSE
+event boundary — a blank line, terminated by `\n`, `\r\n` or a lone `\r`.
+
+Every bound counts **UTF-8 bytes**, and a schema is measured as its canonical JSON serialization — the form
+that actually travels. An over-bound **tool** is dropped and reported through the same `SkippedTool` channel
+an unsupported `inputSchema` uses, so the server stays usable; an over-bound **result or message fails the
+call**, because half a tool result reaching the model is a wrong answer that looks like a right one. Once a
+server's aggregate budget is spent the remaining tools are refused too, in declaration order, so the same
+catalogue always yields the same tool set.
+
 ### Tool discovery
 
 | Mode | When | Behavior |
@@ -243,6 +278,7 @@ it. See [../cli/commands.md](../cli/commands.md).
 - **The local-endpoint opt-in is scoped to the authored `host:port`, and it narrows only** ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §4). The private-range block and the plaintext permission lift **together, and only** for a target that matches that `host:port` exactly *and* actually resolves to a private address. So an opt-in for `localhost:4000` cannot reach `localhost:6379`, `:5432`, `:22` or a container socket (`SEC-EGRESS-3`), and a server declared local that resolves to a **public** address is refused rather than silently downgraded to plaintext.
 - **A remote `websocket` server is refused at admission** ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §2.3). The SDK's WebSocket transport accepts a `URL` and nothing else — no `fetch`, no dialer — and parses each frame before any Relavium code sees a byte, so it can carry neither the pin above nor a byte bound. Declaring one is an authored error (exit `2`) naming `http` (Streamable HTTP) as the transport that carries the same server safely. A `websocket` server **with `allow_local_endpoint`** still connects: an unbounded transport must be local and explicitly admitted, which is the same line `stdio` sits on.
 - MCP server credentials are injected from the secret store via a **stdio** server's `env` (e.g. `{{secrets.github_token}}`, resolved from the isolated `mcp-secret:*` namespace) and are **never** written into the workflow file or any event payload. See [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md). `env` applies to the spawned stdio child only — a network (`http`, its deprecated `sse` alias, or `websocket`) transport has no process to inject into, so `env` is **rejected at parse** there (header-based auth for network MCP servers is a tracked follow-up, [../../roadmap/deferred-tasks.md](../../roadmap/deferred-tasks.md)).
+- **A server's tool DEFINITIONS are untrusted content** ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §7). The engine's `Untrusted<T>` brand covers tool *results*; a `description` and an `inputSchema` are equally attacker-controlled and reach the model in the tool spec itself, which is the channel real "MCP tool poisoning" uses. They are **not** routed through that brand — its guarantee is that a value cannot reach prompt assembly without an explicit unwrap, and a tool definition's whole purpose is to reach the model, so a brand there would imply a property that does not exist. What holds instead: **presentation text is sanitized at discovery** (terminal-control and Trojan-Source bidi bytes are stripped from a `description` before it can reach a render, an approval prompt, a log or the provider), and a **semantic field is never rewritten** — a property name, a `const`/`enum` value or a `required` entry is simultaneously the model-visible schema, the compiled validator's expectation and the wire contract, so one carrying such a byte **drops the tool**, fail-closed. The mitigation is advisory where the model itself is what is being steered; that limit is stated rather than papered over.
 - **A local stdio spawn requires the user's consent on that machine** ([ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md)) — an artifact chooses the program, so the decision cannot belong to the artifact. The fingerprint, the grant store and the shared environment denylist are specified above as a cross-surface contract; a host that spawns without consulting it is the bypass. No credential enters the digest or the grant line.
 - Outbound (workflow-as-MCP) exposure is opt-in per workflow (only those listed in the adapter config are published).
 - All inbound MCP tool calls are schema-validated before dispatch, and tool inputs in events are sanitized — see [built-in-tools.md](built-in-tools.md) and [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md).

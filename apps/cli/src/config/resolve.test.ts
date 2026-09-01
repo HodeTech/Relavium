@@ -292,6 +292,20 @@ describe('resolveConfig', () => {
     expect(() => resolveConfig({ global, workspace })).toThrow(/more than one config layer/);
   });
 
+  it('refuses a name registered TWICE IN ONE FILE — the case the comment wrongly assumed the schema caught', () => {
+    // A review checked the claim: neither the registration schema nor its containers enforce a unique `name`
+    // across the array, and TOML accepts two `[[mcp_servers]]` tables with the same one. So a copy-paste let
+    // the last entry win silently — the same "a registration names a program and a secret" reasoning, in the
+    // case the docstring said was already covered.
+    const global: GlobalConfig = {
+      mcp_servers: [
+        { name: 'gh', transport: 'stdio', command: 'first' },
+        { name: 'gh', transport: 'stdio', command: 'second' },
+      ],
+    };
+    expect(() => resolveConfig({ global })).toThrow(/twice in the same config file/);
+  });
+
   it('does NOT refuse a server declared once, however many layers are present', () => {
     // The guard keys on the LAYER a name was first seen in, so a single declaration must survive an
     // otherwise-populated stack — a refusal that fired on the ordinary case would be worse than the hole.
