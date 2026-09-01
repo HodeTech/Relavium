@@ -219,17 +219,37 @@ describe('raceDeadline', () => {
     ).rejects.toBeInstanceOf(McpAbortedError);
   });
 
-  it('does NOT relabel an error the operation itself produced', async () => {
+  it('does NOT relabel an error the operation itself produced, even mid-cancel', async () => {
     // Only our own verdict is reclassified. A server that answered with an error while the user happened to
     // cancel must still report what the server said — laundering it into "cancelled" would hide a real fault.
-    const { signal, abort } = fakeSignal();
-    abort();
+    //
+    // **This test built a signal and then never passed it.** It aborted a `fakeSignal`, handed `raceDeadline`
+    // nothing, and asserted the signal it had aborted was aborted — so `cancelled()` was constant `false` and
+    // the "while the user happened to cancel" half, the entire point, was never exercised. It was a duplicate
+    // of the test below it. A pre-aborted signal cannot be used here either: the pre-abort refusal returns
+    // before the operation runs. It needs one that goes live→aborted around the operation, which is the
+    // `silentlyCancelled` shape above.
+    const startedAt = Date.now();
+    const cancelsDuringTheCall: AbortSignalLike = {
+      get aborted() {
+        return Date.now() - startedAt >= 5;
+      },
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    };
     await expect(
-      raceDeadline('s', 'call', openWindow(1_000), () =>
-        Promise.reject(new Error('server said no')),
+      raceDeadline(
+        's',
+        'call',
+        openWindow(1_000),
+        async () => {
+          await new Promise((resolve) => setTimeout(resolve, 15)); // the cancel lands in here
+          throw new Error('server said no');
+        },
+        cancelsDuringTheCall,
       ),
     ).rejects.toThrow('server said no');
-    expect(signal.aborted).toBe(true);
+    expect(cancelsDuringTheCall.aborted).toBe(true); // …and it really was cancelled by then
   });
 
   it('lets the operation’s OWN failure through unchanged, with its own type', async () => {

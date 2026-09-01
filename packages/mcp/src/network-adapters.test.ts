@@ -1,5 +1,7 @@
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -8,7 +10,7 @@ import { MCP_DEADLINES, McpDeadlineError, openWindow, raceDeadline } from './dea
 import { McpError } from './errors.js';
 import { openHttpConnection } from './sdk-http.js';
 import { openSseConnection } from './sdk-sse.js';
-import { connectSdkTransport } from './sdk-stdio.js';
+import { connectSdkTransport, MAX_TOOL_PAGES } from './sdk-stdio.js';
 import { openWebSocketConnection } from './sdk-websocket.js';
 
 /**
@@ -153,14 +155,15 @@ describe('SdkConnection — the bound and the cancel actually reach the SDK requ
     }
   }, 30_000);
 
-  it('a tools/call that never answers is ended by ITS OWN deadline, not by the SDK default', async () => {
-    // Binds `MCP_DEADLINES.callMs` to behaviour. The window is overridden through a short-lived connection so
-    // the assertion does not take a minute; what it pins is that `#request` races at all — with `raceDeadline`
-    // removed the call hangs and this times out.
+  it('refuses a PRE-ABORTED call before a byte is written, rather than racing it', async () => {
+    // **Renamed to what it proves.** It was called "…ended by ITS OWN deadline, not by the SDK default" and
+    // its comment claimed a window was overridden — neither was true. It passes a pre-aborted signal and
+    // asserts `McpAbortedError`, which is the CANCELLATION arm; nothing in it could distinguish `callMs` from
+    // the SDK's own timeout. The deadline claim now has its own test below, and this keeps the property it
+    // really covers: `Promise.race` evaluates its array before racing, so an unguarded version still puts the
+    // request on the wire for a call the caller had already cancelled.
     const { conn, close } = await hangingServer();
     try {
-      // A pre-aborted signal proves the refusal happens BEFORE the request is written, which is the other
-      // half: `Promise.race` evaluates its array first, so an unguarded version still puts bytes on the wire.
       const aborted = AbortSignal.abort();
       await expect(conn.callTool('hang', {}, aborted)).rejects.toMatchObject({
         name: 'McpAbortedError',
@@ -171,15 +174,43 @@ describe('SdkConnection — the bound and the cancel actually reach the SDK requ
     }
   }, 30_000);
 
-  it('discovery is bounded by ONE window across the whole paged walk', async () => {
-    // `collectAllTools` takes an injected page fetcher, so the multi-page case is testable without a hostile
-    // server. Each page answers just inside a per-page bound; only a walk-wide window stops it.
+  it('ends a never-answering tools/call at MCP_DEADLINES.callMs, by OUR timer not the SDK’s', async () => {
+    // The claim the renamed test above only asserted in its title. Driven on fake timers so the real 60 s
+    // constant is exercised rather than a stand-in: advance to just under `callMs` and the call is still
+    // pending; cross it and OUR `McpDeadlineError` is what surfaces.
+    //
+    // That it is ours and not the SDK's is `SDK_TIMER_MARGIN_MS`: `#request` hands the SDK
+    // `remainingMs(window) + 250`, so at every instant our timer is due first. Set the margin negative and
+    // this test reports the SDK's own timeout error instead — which is the whole reason the margin exists.
+    vi.useFakeTimers();
+    try {
+      const { conn, close } = await hangingServer();
+      try {
+        const call = conn.callTool('hang', {});
+        const settled = vi.fn();
+        void call.catch(settled);
+        await vi.advanceTimersByTimeAsync(MCP_DEADLINES.callMs - 1_000);
+        expect(settled).not.toHaveBeenCalled(); // still in flight, well past any default we did not set
+        await vi.advanceTimersByTimeAsync(2_000);
+        await expect(call).rejects.toMatchObject({ name: 'McpDeadlineError', phase: 'call' });
+      } finally {
+        await close();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 30_000);
+
+  it('raceDeadline itself keeps one window across repeated calls', () => {
+    // The primitive, in isolation. Kept because it is cheap and pins the arithmetic, but it is NOT the
+    // whole-walk guarantee: it hand-rolls the loop `listTools` composes, so `listTools` could open a window
+    // per page and this would still be green. The test below is the one that binds that.
     const window = openWindow(120);
     const slowPage = async (): Promise<{ tools: []; nextCursor: string }> => {
       await new Promise((resolve) => setTimeout(resolve, 40));
       return { tools: [], nextCursor: 'more' };
     };
-    await expect(
+    return expect(
       (async () => {
         for (;;) {
           await raceDeadline('s', 'discovery', window, slowPage);
@@ -187,6 +218,47 @@ describe('SdkConnection — the bound and the cancel actually reach the SDK requ
       })(),
     ).rejects.toBeInstanceOf(McpDeadlineError);
   });
+
+  it('`listTools` bounds the WHOLE paged walk by one window, not each page', async () => {
+    // **The seam the test above stops one layer above.** A server that answers every page just inside a
+    // per-page bound outlives any deadline simply by paginating, which is the hole `MAX_TOOL_PAGES` closes
+    // for the page COUNT and this window closes for elapsed TIME. Nothing bound it to `listTools`: a version
+    // that called `openWindow(discoveryMs)` inside the page fetcher rather than around the walk left the
+    // repeated-call test above untouched.
+    //
+    // A real paginating server on fake timers. Each page burns a third of `discoveryMs` and hands back a
+    // cursor, so a per-page window would never expire and the walk would run to `MAX_TOOL_PAGES` (100 pages,
+    // a DIFFERENT error) — while one walk-wide window dies on the fourth page.
+    vi.useFakeTimers();
+    try {
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      const server = new Server({ name: 'pages', version: '1.0.0' }, { capabilities: { tools: {} } });
+      let pages = 0;
+      server.setRequestHandler(ListToolsRequestSchema, () => {
+        pages += 1;
+        vi.advanceTimersByTime(MCP_DEADLINES.discoveryMs / 3);
+        return { tools: [], nextCursor: `page-${pages}` };
+      });
+      await server.connect(serverTransport);
+      const conn = await connectSdkTransport('pages', clientTransport, {
+        timeoutMs: MCP_DEADLINES.networkConnectMs,
+      });
+      try {
+        const walk = conn.listTools();
+        const settled = vi.fn();
+        void walk.catch(settled);
+        await vi.advanceTimersByTimeAsync(MCP_DEADLINES.discoveryMs + 1_000);
+        await expect(walk).rejects.toMatchObject({ name: 'McpDeadlineError', phase: 'discovery' });
+        // The walk-wide window, not the page cap: it died in a handful of pages, nowhere near 100.
+        expect(pages).toBeLessThan(MAX_TOOL_PAGES);
+      } finally {
+        await conn.close();
+        await server.close();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 30_000);
 });
 
 describe('the injected fetch actually reaches the SDK transport (ADR-0088 §2.1)', () => {

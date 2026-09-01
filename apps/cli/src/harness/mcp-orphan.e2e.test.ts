@@ -134,28 +134,38 @@ describe('MCP orphan reaping — against the real child-process table', () => {
       cwd: process.cwd(),
       consentGate: allowAll,
     });
-    const pid = client?.childPids[0];
-    expect(typeof pid).toBe('number');
+    // **Everything after the connect runs under a `finally`.** A failing assertion here used to leave a live
+    // `SIGTERM`-trapping child behind, and this file's own later test filters the process table by fixture
+    // name — so one red run seeded orphans that made the next run red for a different reason. The first test
+    // in this file already had the guard; these two did not.
+    try {
+      const pid = client?.childPids[0];
+      expect(typeof pid).toBe('number');
 
-    // Drive the net directly rather than exiting this test process: the mechanism under test is the callback,
-    // and a real `process.exit` here would take the runner with it.
-    let fireExitNet = (): void => undefined;
-    const unguard = guardMcpTeardown(
-      () => client?.close() ?? Promise.resolve(),
-      () => client?.childPids ?? [],
-      {
-        subscribeSignals: () => () => undefined, // the cooperative half is the other test's subject
-        subscribeProcessExit: (onExit) => {
-          fireExitNet = onExit;
-          return () => undefined;
+      // Drive the net directly rather than exiting this test process: the mechanism under test is the
+      // callback, and a real `process.exit` here would take the runner with it.
+      let fireExitNet = (): void => undefined;
+      const unguard = guardMcpTeardown(
+        () => client?.close() ?? Promise.resolve(),
+        () => client?.childPids ?? [],
+        {
+          subscribeSignals: () => () => undefined, // the cooperative half is the other test's subject
+          subscribeProcessExit: (onExit) => {
+            fireExitNet = onExit;
+            return () => undefined;
+          },
         },
-      },
-    );
-
-    fireExitNet();
-    // `kill` returns immediately; the process leaves the table a moment later.
-    expect(await until(() => !alive(pid as number))).toBe(true);
-    unguard();
+      );
+      try {
+        fireExitNet();
+        // `kill` returns immediately; the process leaves the table a moment later.
+        expect(await until(() => !alive(pid as number))).toBe(true);
+      } finally {
+        unguard();
+      }
+    } finally {
+      await client?.close();
+    }
   }, 30_000);
 
   it('the COOPERATIVE half reaps on a signal, and the run’s own teardown is not what did it', async () => {
@@ -166,35 +176,41 @@ describe('MCP orphan reaping — against the real child-process table', () => {
       cwd: process.cwd(),
       consentGate: allowAll,
     });
-    const pid = client?.childPids[0];
-    expect(typeof pid).toBe('number');
+    try {
+      const pid = client?.childPids[0];
+      expect(typeof pid).toBe('number');
 
-    const signalsSeen: number[] = [];
-    let fireSignal = (signo: number): void => {
-      signalsSeen.push(signo);
-    };
-    const unguard = guardMcpTeardown(
-      () => client?.close() ?? Promise.resolve(),
-      () => client?.childPids ?? [],
-      {
-        subscribeSignals: (onSignal) => {
-          fireSignal = onSignal;
-          return () => undefined;
+      const signalsSeen: number[] = [];
+      let fireSignal = (signo: number): void => {
+        signalsSeen.push(signo);
+      };
+      const unguard = guardMcpTeardown(
+        () => client?.close() ?? Promise.resolve(),
+        () => client?.childPids ?? [],
+        {
+          subscribeSignals: (onSignal) => {
+            fireSignal = onSignal;
+            return () => undefined;
+          },
+          subscribeProcessExit: () => () => undefined, // the OTHER half must not be what reaps here
+          reapOnly: true,
+          exit: () => {
+            throw new Error('reapOnly must not exit — driveRun owns this surface’s exit code');
+          },
         },
-        subscribeProcessExit: () => () => undefined, // the OTHER half must not be what reaps here
-        reapOnly: true,
-        exit: () => {
-          throw new Error('reapOnly must not exit — driveRun owns this surface’s exit code');
-        },
-      },
-    );
-
-    fireSignal(2);
-    expect(signalsSeen).toEqual([]); // the guard replaced the placeholder, so the guard is what ran
-    // The SDK ladder takes up to ~4 s against a trapping child (stdin.end → 2 s → SIGTERM → 2 s → SIGKILL),
-    // which is why the budget is generous and why the guard's own 3 s grace is NOT what is being measured.
-    expect(await until(() => !alive(pid as number))).toBe(true);
-    unguard();
+      );
+      try {
+        fireSignal(2);
+        expect(signalsSeen).toEqual([]); // the guard replaced the placeholder, so the guard is what ran
+        // The SDK ladder takes up to ~4 s against a trapping child (stdin.end → 2 s → SIGTERM → 2 s →
+        // SIGKILL), which is why the budget is generous and why the guard's own 3 s grace is NOT measured.
+        expect(await until(() => !alive(pid as number))).toBe(true);
+      } finally {
+        unguard();
+      }
+    } finally {
+      await client?.close();
+    }
   }, 30_000);
 
   it('cancels an IN-FLIGHT connect and reaps the child spawned inside it', async () => {
@@ -214,13 +230,16 @@ describe('MCP orphan reaping — against the real child-process table', () => {
       consentGate: allowAll,
       connectSignal: cancel.signal,
     });
-    // Give the SDK time to spawn before cancelling — cancelling before the spawn would prove nothing.
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Wait for the spawn rather than assuming it — cancelling before it would prove nothing, and a fixed
+    // 500 ms sleep is a bet on the runner. A cold `npx` on a loaded CI box loses that bet, and the failure
+    // reads as "the cancel did not reap" when in fact nothing had been spawned yet.
+    //
     // Only the pids THIS test spawned. Scanning the whole table for the fixture name also picks up orphans a
     // previous failing run left behind, which nothing will ever reap — a self-poisoning assertion that fails
     // for the wrong reason and then keeps failing.
-    const spawned = childPidsOf(SILENT).filter((pid) => !before.includes(pid));
-    expect(spawned.length).toBeGreaterThan(0);
+    const newPids = (): number[] => childPidsOf(SILENT).filter((pid) => !before.includes(pid));
+    expect(await until(() => newPids().length > 0)).toBe(true);
+    const spawned = newPids();
 
     cancel.abort();
     await expect(connecting).rejects.toThrow();

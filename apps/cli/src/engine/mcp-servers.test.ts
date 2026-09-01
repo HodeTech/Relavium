@@ -87,9 +87,15 @@ describe('resolveServerConfigs', () => {
     expect(seen?.connectTimeoutMs).toBe(300_000);
   });
 
-  it('omits connectTimeoutMs entirely when unauthored, so the adapter default applies', () => {
+  it('omits connectTimeoutMs entirely when unauthored, so the adapter default applies', async () => {
     // `exactOptionalPropertyTypes`: an explicit `undefined` would be a different value from absent, and the
     // adapter's `spec.connectTimeoutMs ?? MCP_DEADLINES.x` reads absent as "use the default".
+    //
+    // **Two assertions, because the single one was vacuous.** It read
+    // `expect(seen !== undefined && 'connectTimeoutMs' in seen).toBe(false)`, which is satisfied by `seen`
+    // being undefined — so an opener that never ran, or ran and threw before assigning, passed the test
+    // exactly as an opener that correctly omitted the key. The absence has to be asserted on a spec that
+    // demonstrably exists.
     let seen: StdioServerSpec | undefined;
     const configs = resolveServerConfigs([stdioRef()], '/work', undefined, {
       stdio: (_id, spec) => {
@@ -97,8 +103,9 @@ describe('resolveServerConfigs', () => {
         return Promise.reject(new Error('stop'));
       },
     });
-    void configs[0]?.open().catch(() => undefined);
-    expect(seen !== undefined && 'connectTimeoutMs' in seen).toBe(false);
+    await expect(configs[0]?.open()).rejects.toThrow('stop'); // the opener ran
+    expect(seen).toBeDefined();
+    expect(Object.keys(seen ?? {})).not.toContain('connectTimeoutMs');
   });
 
   it('carries an authored connect_timeout_ms into a NETWORK connect spec too', async () => {

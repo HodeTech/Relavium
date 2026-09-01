@@ -538,12 +538,33 @@ function bindChatAgent(opts: BuildChatSessionOptions): ResolvedChatAgent {
  * spread-or-nothing shape is what keeps a caller that did not wire a dependency from asserting it wired one
  * to `undefined`.
  */
+/**
+ * Exactly the fields {@link mcpOptionsFor} reads — deliberately NOT `BuildChatSessionOptions`.
+ *
+ * The fresh and resumed paths carry two different option types, and the mapper has no business requiring
+ * either whole. Naming the five it actually consumes is what lets both satisfy it structurally, and makes a
+ * sixth option impossible to add on one path only: it has to be added here, and then both call sites see it.
+ */
+type McpConnectInputs = Pick<
+  BuildChatSessionOptions,
+  'consentGate' | 'startMcpClient' | 'mcpSecretResolver' | 'mcpRegistrations' | 'mcpConnectSignal'
+>;
+
+/**
+ * The ONE mapper from build options to `connectAgentMcp` options, used by BOTH the fresh and the resumed path.
+ *
+ * `cwd` and `artifact` differ between them and are therefore parameters; everything else is shared. The
+ * resumed path used to build this record inline, and the cost is recorded rather than guessed: a newly-added
+ * `connectSignal` was wired on the fresh path and dead on the resumed one — the "wired and still dead" shape,
+ * caused by exactly this duplication. A second option added tomorrow would have drifted the same way.
+ */
 function mcpOptionsFor(
-  opts: BuildChatSessionOptions,
+  opts: McpConnectInputs,
   mcpArtifact: string | undefined,
+  cwd: string,
 ): ConnectAgentMcpOptions {
   return {
-    cwd: opts.cwd,
+    cwd,
     ...(opts.consentGate === undefined ? {} : { consentGate: opts.consentGate }),
     // The caller's label wins (`agent run` names the ref the user typed); otherwise the path the agent was
     // actually read from — §7's "declared in <file>" for the imported-artifact case.
@@ -574,7 +595,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
   // (fixture/offline replay) bypasses the path entirely — no config build, no spawn, no dial.
   const mcp = opts.disableMcp
     ? undefined
-    : await connectAgentMcp(agent.mcp_servers, mcpOptionsFor(opts, mcpArtifact));
+    : await connectAgentMcp(agent.mcp_servers, mcpOptionsFor(opts, mcpArtifact, opts.cwd));
 
   try {
     const { bus, deps, emit, host, governor, attachDurabilityProbe, attachEffectJournal } =
@@ -722,8 +743,19 @@ export interface BuildResumedChatSessionOptions {
   readonly providers?: ProviderResolver;
   /** The tool-execution host (injectable for tests); defaults to the full-capability chat host (chat-read-write); its writes/egress are gated by the ADR-0057 approval regime, not capability absence. */
   readonly toolHost?: ToolHost;
-  /** Injectable MCP connect-all (2.R; see {@link BuildChatSessionOptions.startMcpClient}). */
-  readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  /**
+   * Injectable MCP connect-all (2.R; see {@link BuildChatSessionOptions.startMcpClient}).
+   *
+   * **The `signal` parameter is not decoration.** This declared a ONE-argument function while the fresh
+   * path's declared two, and TypeScript accepts a shorter parameter list — so the resumed path's contract
+   * silently said "there is no connect signal here" while the runtime passed one anyway. That is the same
+   * shape as the dropped `open: () =>` closure ADR-0088 §1.3 records: a signal that type-checks its way out
+   * of existing. Kept identical to the fresh declaration so the two paths cannot disagree again.
+   */
+  readonly startMcpClient?: (
+    servers: readonly McpServerConfig[],
+    signal?: AbortSignalLike,
+  ) => Promise<McpClient>;
   /**
    * The consent gate ([ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §1) —
    * threaded to {@link connectAgentMcp} so a chat session's declared stdio server is not spawned until the
@@ -783,21 +815,20 @@ export async function buildResumedChatSession(
   // agent, NOT a baked tool grant, so a server whose tool set changed is picked up correctly. The spawn cwd is
   // the session's frozen working dir. Connect last (after the sync reconstruct/validate) so a reconstruct fault
   // never leaks an opened connection.
-  const mcp = await connectAgentMcp(agent.mcp_servers, {
-    cwd: context.workingDir,
-    ...(opts.consentGate === undefined ? {} : { consentGate: opts.consentGate }),
-    // The SESSION, not a file. A resume runs the agent SNAPSHOT frozen at session start, so the file the
-    // agent originally came from may have changed or be gone — naming it would tell the user to go review
-    // bytes that are not what is about to run (ADR-0084 §7).
-    artifact: opts.mcpArtifact ?? `resumed session ${record.id}`,
-    ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
-    ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
-    ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
-    // The same forward `mcpOptionsFor` makes on the fresh path. Omitting it left a documented, newly-added
-    // option dead on arrival — the "wired and still dead" shape, and the two build paths drifting is exactly
-    // how it happened: one routes through the shared mapper, this one builds its options inline.
-    ...(opts.mcpConnectSignal === undefined ? {} : { connectSignal: opts.mcpConnectSignal }),
-  });
+  // Through the SHARED mapper, with this path's two differences passed in — rather than a second inline copy
+  // of the same record. The copy is how `connectSignal` came to be wired on one path and dead on the other.
+  //
+  // The artifact label is the SESSION, not a file. A resume runs the agent SNAPSHOT frozen at session start,
+  // so the file the agent originally came from may have changed or be gone — naming it would tell the user to
+  // go review bytes that are not what is about to run (ADR-0084 §7).
+  const mcp = await connectAgentMcp(
+    agent.mcp_servers,
+    mcpOptionsFor(
+      opts,
+      opts.mcpArtifact ?? `resumed session ${record.id}`,
+      context.workingDir,
+    ),
+  );
 
   try {
     const { bus, deps, emit, host, governor, attachDurabilityProbe, attachEffectJournal } =
