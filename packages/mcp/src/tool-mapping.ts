@@ -8,6 +8,12 @@ import {
 
 import type { DiscoveredTool } from './connection.js';
 import { McpHostUnavailableError } from './errors.js';
+import {
+  DiscoveryBudget,
+  INGRESS_BOUNDS,
+  overSizedDescription,
+  toolDefinitionBytes,
+} from './ingress-bounds.js';
 import { compileJsonSchemaToZod } from './schema-compiler.js';
 
 /**
@@ -69,11 +75,46 @@ export function buildServerToolDefs(
   const defs: ToolDef[] = [];
   const skipped: SkippedTool[] = [];
   const allow = allowlist === undefined ? undefined : new Set(allowlist);
+  // The aggregate half of `CR-42`. Per-item bounds alone do not bound the total: 256 tools at 8 KiB each is
+  // 2 MiB before a single schema is counted, and the measured hostile catalogue was 50 000 tools / 52 GB.
+  const budget = new DiscoveryBudget();
 
   for (const tool of tools) {
+    // **The diagnostic is bounded by the same catalogue limit as the admission**, and this guard is here
+    // because the regression test was slow rather than because anyone read it: bounding what is ADMITTED
+    // while recording one entry per REFUSED tool just moves the flood — the measured 50 000-tool catalogue
+    // produced 50 000 skip entries, each of which the host renders to stderr. Past this point a server has
+    // already told us its catalogue is beyond the bound; further entries add nothing.
+    if (skipped.length >= INGRESS_BOUNDS.toolsPerServer) {
+      const remaining = tools.length - tools.indexOf(tool);
+      skipped.push({
+        name: tool.name,
+        reason: `and ${remaining} further tool(s) refused — the server's catalogue is beyond the ingress bounds`,
+      });
+      break;
+    }
     if (allow !== undefined && !allow.has(tool.name)) {
       skipped.push({ name: tool.name, reason: 'not in the server tools_allowlist' });
       continue;
+    }
+    // **Bounded BEFORE the schema is compiled**, because compiling is the expensive part and a hostile server
+    // should not get it for free. The description bound refuses one tool; the budget refuses the rest of the
+    // catalogue too, deliberately — see `DiscoveryBudget.admit`.
+    const oversized = overSizedDescription(tool.description);
+    if (oversized !== undefined) {
+      skipped.push({ name: tool.name, reason: oversized });
+      continue;
+    }
+    const exhausted = budget.admit(toolDefinitionBytes(tool));
+    if (exhausted !== undefined) {
+      // The budget is order-stable and refuses everything after it is spent, so a per-tool reason from here
+      // adds no information — one entry naming the remainder is the whole diagnostic.
+      const remaining = tools.length - tools.indexOf(tool);
+      skipped.push({
+        name: tool.name,
+        reason: remaining > 1 ? `${exhausted} (and ${remaining - 1} further tool(s))` : exhausted,
+      });
+      break;
     }
     if (tool.name.trim() === '') {
       skipped.push({ name: tool.name, reason: 'empty tool name' });

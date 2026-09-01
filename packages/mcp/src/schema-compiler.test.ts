@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { INGRESS_BOUNDS } from './ingress-bounds.js';
+
 import {
   compileJsonSchemaToZod,
   MAX_DEPTH,
@@ -386,5 +388,61 @@ describe('compileJsonSchemaToZod — fail-closed on unsupported / adversarial in
     const result = compileJsonSchemaToZod({ type: types });
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.reason).toContain(String(MAX_NODES));
+  });
+});
+
+describe('string byte bounds inside a schema (#209, ADR-0088 §5)', () => {
+  /**
+   * The dimension every other budget in this file missed. `MAX_DEPTH`/`MAX_NODES`/`MAX_PROPERTIES`/
+   * `MAX_ENUM_MEMBERS` bound the schema's SHAPE thoroughly, and a single `{ const: '<megabytes>' }` costs
+   * exactly one node against all of them — so up to `MAX_NODES` such strings passed every existing check.
+   */
+  it('refuses an over-sized `const` string, which every shape budget admitted', () => {
+    const huge = 'x'.repeat(INGRESS_BOUNDS.schemaStringBytes + 1);
+    const result = compileJsonSchemaToZod({ type: 'object', properties: { a: { const: huge } } });
+    expect(result.ok).toBe(false);
+    expect(result.ok ? '' : result.reason).toMatch(/above the limit/);
+  });
+
+  it('refuses an over-sized `enum` member', () => {
+    const huge = 'x'.repeat(INGRESS_BOUNDS.schemaStringBytes + 1);
+    const result = compileJsonSchemaToZod({
+      type: 'object',
+      properties: { a: { enum: ['ok', huge] } },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it('refuses an over-sized PROPERTY NAME, bounded far tighter than a value', () => {
+    // A parameter name is a word, not a paragraph — and it reaches the model in the tool spec.
+    const name = 'n'.repeat(INGRESS_BOUNDS.schemaPropertyNameBytes + 1);
+    const result = compileJsonSchemaToZod({
+      type: 'object',
+      properties: { [name]: { type: 'string' } },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.ok ? '' : result.reason).toMatch(/property name/);
+  });
+
+  it('admits a string EXACTLY at each bound', () => {
+    // The boundary, not near it: "10 under" would pass against a `>=` that rejects the legal maximum.
+    expect(
+      compileJsonSchemaToZod({
+        type: 'object',
+        properties: {
+          ['n'.repeat(INGRESS_BOUNDS.schemaPropertyNameBytes)]: {
+            const: 'x'.repeat(INGRESS_BOUNDS.schemaStringBytes),
+          },
+        },
+      }).ok,
+    ).toBe(true);
+  });
+
+  it('counts UTF-8 bytes, so a multi-byte literal is not admitted at twice the bound', () => {
+    const emoji = '😀'.repeat(INGRESS_BOUNDS.schemaStringBytes / 4 + 1); // 4 bytes each
+    expect(emoji.length).toBeLessThan(INGRESS_BOUNDS.schemaStringBytes); // a `.length` bound would admit it
+    expect(compileJsonSchemaToZod({ type: 'object', properties: { a: { const: emoji } } }).ok).toBe(
+      false,
+    );
   });
 });

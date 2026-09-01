@@ -40,6 +40,13 @@ export {
   type McpDeadlinePhase,
 } from './deadlines.js';
 export { shapeToolResult } from './result.js';
+export {
+  DiscoveryBudget,
+  INGRESS_BOUNDS,
+  jsonByteLength,
+  overSizedDescription,
+  toolDefinitionBytes,
+} from './ingress-bounds.js';
 export { buildServerToolDefs, type ServerToolDefs, type SkippedTool } from './tool-mapping.js';
 export { openStdioConnection, type ConnectBound, type StdioServerSpec } from './sdk-stdio.js';
 export { openHttpConnection, type HttpServerSpec } from './sdk-http.js';

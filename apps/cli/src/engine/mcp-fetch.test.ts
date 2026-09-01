@@ -200,3 +200,82 @@ describe('createMcpFetch — response mapping', () => {
     ).rejects.toThrow(/unsupported egress method/);
   });
 });
+
+describe('createMcpFetch — the per-message byte bound (ADR-0088 §5.4)', () => {
+  /**
+   * The TRANSPORT-level half of §5, and the only place in the MCP path that can have one: these bytes are
+   * counted before anything parses them, so this bounds peak MEMORY — unlike the application-level bounds in
+   * `@relavium/mcp`, which bound what is admitted. §6's invariant ("an unbounded transport must be local and
+   * opted into") is only true because `http`/`sse` have this.
+   */
+  const bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
+
+  it('refuses a single oversized message mid-stream, with a typed error', async () => {
+    const { deps } = fakeDeps({ body: [bytes('x'.repeat(64)), bytes('y'.repeat(64))] });
+    const response = await createMcpFetch({ deps, maxMessageBytes: 100 })(
+      'https://api.example/mcp',
+    );
+    const reader = response.body?.getReader();
+    await reader?.read(); // the first 64 bytes are under the bound
+    await expect(reader?.read()).rejects.toMatchObject({ code: 'too_large' });
+  });
+
+  it('RESETS at an SSE event boundary, so a long session is not killed by its own length', async () => {
+    // The property a whole-body cap cannot have: this stream carries far more total bytes than the bound and
+    // is perfectly healthy, because no single message is over it. A body cap would fire on success.
+    const event = 'data: ' + 'z'.repeat(50) + '\n\n';
+    const { deps } = fakeDeps({ body: Array.from({ length: 20 }, () => bytes(event)) });
+    const response = await createMcpFetch({ deps, maxMessageBytes: 100 })(
+      'https://api.example/mcp',
+    );
+    const reader = response.body?.getReader();
+    let chunks = 0;
+    for (;;) {
+      const next = await reader?.read();
+      if (next?.done === true) break;
+      chunks += 1;
+    }
+    expect(chunks).toBe(20); // 20 × ~58 bytes = far past the bound in total, none of it over per message
+  });
+
+  it('sees a boundary SPLIT ACROSS CHUNKS — a server writing one byte at a time still resets', async () => {
+    // A counter that only looked within a chunk would never reset here, so a byte-at-a-time server would trip
+    // the bound on a healthy stream. The scan carries the previous chunk's trailing newline.
+    const body = [...('a'.repeat(60) + '\n\n' + 'b'.repeat(60))].map((c) => bytes(c));
+    const { deps } = fakeDeps({ body });
+    const response = await createMcpFetch({ deps, maxMessageBytes: 100 })(
+      'https://api.example/mcp',
+    );
+    const reader = response.body?.getReader();
+    let chunks = 0;
+    for (;;) {
+      const next = await reader?.read();
+      if (next?.done === true) break;
+      chunks += 1;
+    }
+    expect(chunks).toBe(body.length);
+  });
+
+  it('refuses an oversized message even when a boundary FOLLOWS it in the same chunk', async () => {
+    // **The hole a mutation found in this bound's first version.** It compared the counter AFTER scanning the
+    // whole chunk, with a "saw a boundary" flag that excused the comparison outright — so a chunk carrying a
+    // huge message and then a `\n\n` passed, because the reset had already zeroed the counter. A bound that
+    // only looks at the tail of a chunk is not a bound.
+    const { deps } = fakeDeps({ body: [bytes('x'.repeat(500) + '\n\n' + 'ok')] });
+    const response = await createMcpFetch({ deps, maxMessageBytes: 100 })(
+      'https://api.example/mcp',
+    );
+    const reader = response.body?.getReader();
+    await expect(reader?.read()).rejects.toMatchObject({ code: 'too_large' });
+  });
+
+  it('treats a delimiter-free body as ONE message — the correct reading for a plain JSON response', async () => {
+    const { deps } = fakeDeps({ body: [bytes('x'.repeat(60)), bytes('x'.repeat(60))] });
+    const response = await createMcpFetch({ deps, maxMessageBytes: 100 })(
+      'https://api.example/mcp',
+    );
+    const reader = response.body?.getReader();
+    await reader?.read();
+    await expect(reader?.read()).rejects.toMatchObject({ code: 'too_large' });
+  });
+});

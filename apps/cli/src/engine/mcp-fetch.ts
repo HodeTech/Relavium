@@ -8,6 +8,7 @@ import {
   type HopResponse,
   type LocalEndpoint,
 } from '@relavium/db';
+import { INGRESS_BOUNDS } from '@relavium/mcp';
 
 /**
  * The validated `fetch` the `http` / `sse` MCP transports connect through
@@ -26,8 +27,10 @@ import {
  * 2. **It carries the local-endpoint policy.** `allow_local_endpoint` is per-server, so the `host:port` scope
  *    travels with the fetch rather than being a property of the process.
  *
- * The size bound §5 gives this transport rides here too, on the response body, because this is the only place
- * in the MCP path that sees raw bytes before anything parses them.
+ * **§5's transport-level byte bound lives here**, because this is the only place in the MCP path that sees raw
+ * bytes before anything parses them — which is exactly what makes it a bound on peak MEMORY rather than on
+ * what is admitted. §6's whole invariant ("an unbounded transport must be local and opted into") rests on
+ * `http`/`sse` having it.
  */
 
 /** The `fetch` shape the MCP transports take — structurally the SDK's `FetchLike`, in our own terms. */
@@ -41,6 +44,8 @@ export interface McpFetchConfig {
   readonly localEndpoint?: LocalEndpoint;
   /** Injectable DNS + pinned connect (Node by default; faked in tests so the policy is deterministic). */
   readonly deps?: EgressDeps;
+  /** Override the per-message byte bound (tests use a small one); defaults to §5's 4 MiB. */
+  readonly maxMessageBytes?: number;
 }
 
 /**
@@ -52,6 +57,7 @@ export interface McpFetchConfig {
  */
 export function createMcpFetch(config: McpFetchConfig = {}): McpFetch {
   const deps = config.deps ?? nodeEgressDeps;
+  const maxMessageBytes = config.maxMessageBytes ?? INGRESS_BOUNDS.transportMessageBytes;
   return async (input, init) => {
     const url = typeof input === 'string' ? input : input.href;
     const method = normalizeMethod(init?.method);
@@ -79,7 +85,7 @@ export function createMcpFetch(config: McpFetchConfig = {}): McpFetch {
         'an MCP endpoint may not redirect — declare the final url',
       );
     }
-    return toResponse(hop);
+    return toResponse(hop, maxMessageBytes);
   };
 }
 
@@ -134,8 +140,8 @@ async function bodyToString(body: RequestInit['body']): Promise<string | undefin
   return await new Response(body).text();
 }
 
-/** Map a validated hop to a `Response` with a backpressure-aware streaming body. */
-function toResponse(hop: HopResponse): Response {
+/** Map a validated hop to a `Response` with a backpressure-aware, byte-bounded streaming body. */
+function toResponse(hop: HopResponse, maxMessageBytes: number): Response {
   if (hop.status < 200 || hop.status > 599) {
     // `new Response(…, { status })` throws for a status outside [200, 599]; a hostile endpoint can emit one.
     hop.dispose();
@@ -147,7 +153,7 @@ function toResponse(hop: HopResponse): Response {
     return new Response(null, { status: hop.status, headers });
   }
   try {
-    return new Response(hopBodyToStream(hop), { status: hop.status, headers });
+    return new Response(hopBodyToStream(hop, maxMessageBytes), { status: hop.status, headers });
   } catch (err) {
     hop.dispose();
     throw err instanceof SafeEgressError
@@ -157,19 +163,60 @@ function toResponse(hop: HopResponse): Response {
 }
 
 /**
- * Wrap the hop's live `AsyncIterable` body in a pull-based `ReadableStream`.
+ * Wrap the hop's live `AsyncIterable` body in a pull-based, **per-message byte-bounded** `ReadableStream`.
  *
  * Pull-based rather than an eager drain because the Streamable HTTP transport's GET stream is long-lived: an
  * MCP session's server-to-client messages arrive over one response that stays open for the whole session, so
- * buffering it would be both a memory bound violation and a session that never starts.
+ * buffering it would be both a memory-bound violation and a session that never starts.
+ *
+ * **Which is exactly why the bound is per MESSAGE and not per body** (ADR-0088 §5.4). A whole-body cap would
+ * kill a healthy session at whatever moment it had streamed enough — the bound would fire on success. The
+ * counter therefore resets at each SSE event boundary (a blank line, `\n\n`), which yields the property that
+ * is actually wanted — bounded peak memory — and not the one that cannot be had for a stream with no defined
+ * length: a bounded total. A plain JSON response has no delimiter, so the whole body is one "message", which
+ * is the correct reading for the POST path.
+ *
+ * The scan is over the last byte of the previous chunk plus the current one, so a delimiter split across a
+ * chunk boundary is still seen — a counter that only looked within a chunk would never reset on a server
+ * that writes one byte at a time.
  */
-function hopBodyToStream(hop: HopResponse): ReadableStream<Uint8Array> {
+function hopBodyToStream(hop: HopResponse, maxMessageBytes: number): ReadableStream<Uint8Array> {
   const iterator = hop.body[Symbol.asyncIterator]();
   let disposed = false;
+  let messageBytes = 0;
+  let trailingNewline = false; // the previous chunk ended with `\n` — half of a `\n\n` boundary
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
     hop.dispose();
+  };
+  /**
+   * Charge a chunk's bytes against the current message, resetting at each SSE event boundary. Returns `false`
+   * the moment ANY message segment crosses the bound.
+   *
+   * **Checked inside the scan, not after it**, and a mutation is what proved that matters: an earlier version
+   * returned `sawBoundary || messageBytes <= max`, so a chunk carrying a 10 MB message FOLLOWED by a `\n\n`
+   * passed — the reset had already zeroed the counter by the time the comparison ran, and the boundary flag
+   * excused it outright. A bound that only looks at the tail of a chunk is not a bound.
+   */
+  const chargeAndReset = (chunk: Uint8Array): boolean => {
+    let previousWasNewline = trailingNewline;
+    for (const byte of chunk) {
+      const isNewline = byte === 0x0a;
+      if (isNewline && previousWasNewline) {
+        messageBytes = 0; // an SSE event ended here — the next message starts from zero
+        previousWasNewline = false;
+        continue;
+      }
+      messageBytes += 1;
+      if (messageBytes > maxMessageBytes) {
+        trailingNewline = false;
+        return false;
+      }
+      previousWasNewline = isNewline;
+    }
+    trailingNewline = previousWasNewline;
+    return true;
   };
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
@@ -178,6 +225,16 @@ function hopBodyToStream(hop: HopResponse): ReadableStream<Uint8Array> {
         if (next.done === true) {
           controller.close();
           dispose();
+        } else if (!chargeAndReset(next.value)) {
+          // Refused mid-stream: the socket is reaped and the consumer sees a typed error rather than a
+          // truncated message, which for a JSON-RPC frame would be a parse failure with no explanation.
+          dispose();
+          controller.error(
+            new SafeEgressError(
+              'too_large',
+              `an MCP message exceeded the maximum of ${maxMessageBytes} bytes`,
+            ),
+          );
         } else {
           controller.enqueue(next.value);
         }
