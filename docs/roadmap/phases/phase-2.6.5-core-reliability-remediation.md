@@ -1480,7 +1480,25 @@ loopback, RFC1918 or a metadata IP.
 **Fix.** Apply the built-in egress mechanism — resolve-all, range-block, pinned IP — to the MCP HTTP, SSE and
 WebSocket transports.
 
-### CR-42 — MCP discovery and result ingress are unbounded · High · **bound values open**
+### Step 3 — the ingress bounds · ✅ (`CR-42`, `G33`, `#201`, `#209`, `#288`)
+
+The measurement, taken before anything was written: a server returning 100 pages of 500 tools with 1 MiB
+descriptions was admitted **whole** — 50 000 tools, 52 GB of description text, zero skipped, all of it re-sent
+to the provider on every subsequent turn. The schema compiler had been adversarially hardened since 2.R; the
+pipeline around it had no budget at all.
+
+Two levels, kept apart deliberately ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §5.1):
+the application-level bounds say what is ADMITTED, the transport-level one bounds peak MEMORY and exists only
+where raw bytes are ours — the injected `fetch` of `http`/`sse`. Claiming the first prevents an OOM would be
+false, and §6 records where the guarantee stops instead.
+
+Three defects of the wave's own making surfaced here, two by mutation and one by a test being slow: the
+budget's wiring into the pipeline was untested; the message counter compared bytes AFTER a whole chunk, so a
+chunk carrying an over-bound message followed by a delimiter passed; and the DIAGNOSTIC was unbounded, so the
+measured catalogue produced 50 000 stderr lines. Bounding the admission while leaving the report unbounded
+just moves the flood.
+
+### CR-42 — MCP discovery and result ingress are unbounded · High · ✅ CLOSED 2026-09-01 ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §5–§6)
 Page count is capped for `tools/list`, but total tool count, byte size, description and schema size are not, and
 a result is fully materialized before core bounding applies. A hostile server can exhaust startup memory, inflate
 prompt token cost, or bloat a workflow output.

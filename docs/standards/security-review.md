@@ -176,9 +176,10 @@ those) — unless the caller has explicitly opted into a local endpoint, plus re
 **scheme** requirement is per-path, NOT part of this shared summary: each transport requires its own TLS scheme
 (see the individual bullets below — e.g. provider `baseURL` / `http_request` / a remote MCP `url`). NOTE: the
 shared primitive is the **range block**; the stronger **connect-by-validated-IP + per-redirect revalidation** is
-wired for the media carrier (and is construction-time for the provider `baseURL` / `http_request`), but the
-**MCP** path is on the **pre-connect host floor** only until its dialer lands (see the MCP bullet) — so a
-DNS-rebind / redirect-to-private window is MCP-specific, not a property of all four.
+wired for the media carrier, for the provider `baseURL` / `http_request`, and — since
+[ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md) §2.1 — for the MCP `http`/`sse` transports. The
+one path that still cannot carry it is MCP `websocket`, whose SDK transport accepts no dialer; that transport
+is therefore **narrowed to a local, opted-in endpoint** rather than left on a floor (§2.3).
 
 - **Provider `baseURL`.** DeepSeek (and any OpenAI-compatible provider) is reached via a
   user-supplied `baseURL`. Never let an agent-config URL cause the engine to call an
@@ -197,11 +198,14 @@ DNS-rebind / redirect-to-private window is MCP-specific, not a property of all f
   `http_request` would be strictly worse. MCP server URLs run the **same** SSRF range-primitive (no second
   parser): private/loopback/link-local/metadata hosts are rejected and a remote host must use `https`/`wss`,
   unless the per-server `allow_local_endpoint` opt-in is set (which never relaxes the no-credentials check).
-  **MCP is a temporary exception to the full egress guarantee:** 2.R ships only the **pre-connect host floor**
-  (the SDK opens its own socket), so a hostname that DNS-resolves to a private IP — or a redirect to one —
-  remains a residual window until the connect-by-validated-IP dialer (resolve → validate → connect-by-IP →
-  re-validate per redirect) lands; tracked in [deferred-tasks.md](../roadmap/deferred-tasks.md)
-  ([ADR-0053](../decisions/0053-mcp-network-transport-egress-security.md) §2/§3). The transport vocabulary,
+  **MCP is no longer an exception** ([ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md) §2–§4,
+  which closes what ADR-0053 §2 scoped out). `http`/`sse` take a host-injected validated `fetch`, so every
+  request rides the connect-by-validated-IP hop and the DNS-rebind window is closed; a **redirect is refused**
+  rather than re-validated, because an MCP server is the exact url its author declared; a **remote
+  `websocket` is refused at admission**, since that transport can be neither pinned nor byte-bounded; and the
+  `allow_local_endpoint` opt-in is one **bound** policy — the private-range and plaintext relaxations lift
+  together, only for the authored `host:port`, only when it actually resolves private, and **never** for the
+  link-local/cloud-metadata space. The transport vocabulary,
   the `allow_local_endpoint` host:port scope, and the `env`-injection scoping are specified in their canonical
   home — [mcp-integration.md](../reference/shared-core/mcp-integration.md); see
   [ADR-0029](../decisions/0029-tool-policy-hardening.md) for the rationale.
@@ -209,8 +213,10 @@ DNS-rebind / redirect-to-private window is MCP-specific, not a property of all f
   A media `url` source (a provider-returned output URL re-hosted to a handle, or a user-supplied input URL) is
   fetched through the **host** `fetchMedia` port — `@relavium/db`'s **`fetchMediaBytes`**, the one vetted
   SSRF primitive (DNS-resolve → validate-every-IP → connect-by-validated-IP → re-validate per redirect), never an
-  adapter and never a second parser. The CLI host wires it with **`allowPrivate: false`** (the default-deny
-  posture, 2.S/[ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)); the engine owns the
+  adapter and never a second parser. The CLI host wires it with **no local-endpoint policy at all** — the
+  default-deny posture, which [ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md) §4 expresses as an
+  ABSENT `localEndpoint` rather than the old `allowPrivate: false` boolean, so there is no flag a later edit
+  can flip to "private is fine, anywhere"; the engine owns the
   `maxBytes` size bound + the run `AbortSignal`. The shared primitive **has landed** (ADR-0043, tested); a
   user-supplied `url` INPUT *source* (a `url` media part crossing the seam) stays **feature-flag-OFF**
   (`MEDIA_URL_SOURCE_ENABLED`) until the BYOK local-endpoint opt-in lands behind a fresh ADR.
