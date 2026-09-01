@@ -20,6 +20,7 @@
 
 export * from './bytes.js';
 export * from './canonical.js';
+export * from './terminal-safe.js';
 export * from './constants.js';
 export * from './declared-env.js';
 export * from './content.js';

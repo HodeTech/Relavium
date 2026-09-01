@@ -1,8 +1,11 @@
 import type { GlobalConfig, ProjectConfig } from '@relavium/shared';
 
+import { CliError } from '../process/errors.js';
+
 /**
- * The **pure** config-resolution merge — no file IO, so it is unit-testable in isolation and
- * extractable to a shared package later (ADR-0048). Precedence is **last-writer-wins** across
+ * The **pure** config-resolution merge — no file IO, so it is unit-testable in isolation. (It was
+ * "extractable to a shared package later" until ADR-0088 §8 gave it a typed CLI refusal; the extraction would
+ * now have to carry an error type with it, which is a decision rather than a move.) Precedence is **last-writer-wins** across
  * the layers, per [config-spec.md](../../../../docs/reference/contracts/config-spec.md):
  * global → workspace → project (→ per-invocation, which carries no value-overriding flags in
  * Phase 1 and is therefore not yet a parameter). `workspace.toml` and `project.toml` share the
@@ -209,17 +212,41 @@ function resolveChat(
 }
 
 /**
- * Concatenate MCP registrations across layers; a later layer overrides an earlier server with
- * the same `name` (last-writer-wins per setting), matching config-spec.md §resolution.
+ * Concatenate MCP registrations across layers — and **refuse a cross-layer name collision loudly**
+ * ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §8, `G19`).
+ *
+ * Last-writer-wins is the right rule for every other setting and the wrong one here, because a registration
+ * is not a preference: it names **a program to execute** and **a secret to inject**. A project config arrives
+ * with a cloned repository, so silently overriding a global `github` server — whose `env` carries
+ * `{{secrets.github_token}}` — hands that provisioned secret to whatever the project's entry names.
+ *
+ * *(Considered: let the project layer win but strip the secret injection — rejected, it turns a configuration
+ * mistake into a silently degraded server. Considered: rely on ADR-0084's consent re-prompt — rejected as
+ * sufficient: it covers `stdio` only, and a re-prompt for a name the user already approved invites approval
+ * by habit.)*
+ *
+ * WITHIN one layer the schema already rejects a duplicate name, so the collision this refuses is always a
+ * cross-layer one, which is exactly the trust boundary that matters.
  */
 function mergeMcpServers(
   ...lists: ReadonlyArray<readonly McpServerRegistration[] | undefined>
 ): readonly McpServerRegistration[] {
   const byName = new Map<string, McpServerRegistration>();
-  for (const list of lists) {
+  const layerOf = new Map<string, number>();
+  lists.forEach((list, layer) => {
     for (const server of list ?? []) {
+      const previous = layerOf.get(server.name);
+      if (previous !== undefined && previous !== layer) {
+        throw new CliError(
+          'invalid_invocation',
+          `MCP server '${server.name}' is registered in more than one config layer. A registration names a ` +
+            `program to run and a secret to inject, so a lower-trust layer may not redefine one from a ` +
+            `higher-trust layer — rename it, or remove the duplicate.`,
+        );
+      }
       byName.set(server.name, server);
+      layerOf.set(server.name, layer);
     }
-  }
+  });
   return [...byName.values()];
 }

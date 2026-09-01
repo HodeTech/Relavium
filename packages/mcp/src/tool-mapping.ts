@@ -6,6 +6,8 @@ import {
   type ToolPolicyClass,
 } from '@relavium/core';
 
+import { stripTerminalControls } from '@relavium/shared';
+
 import type { DiscoveredTool } from './connection.js';
 import { McpHostUnavailableError } from './errors.js';
 import {
@@ -135,6 +137,19 @@ export function buildServerToolDefs(
       });
       continue;
     }
+    // **Presentation text is sanitized; a SEMANTIC field is never rewritten** (ADR-0088 §7.1, `#202`).
+    //
+    // The distinction is load-bearing rather than tidy. A `description` is text shown to a model or a human,
+    // and stripping terminal-control bytes from it changes nothing else. A property NAME, a `const`/`enum`
+    // value and a `required` entry are simultaneously the model-visible schema, the compiled validator's
+    // expectation, and the wire contract with the server — rewriting one desynchronises all three and
+    // produces a tool that is broken rather than safe. So a semantic field carrying a control byte drops the
+    // TOOL, fail-closed, through the same path an unsupported schema takes.
+    const unsafeField = semanticControlByte(tool);
+    if (unsafeField !== undefined) {
+      skipped.push({ name: tool.name, reason: unsafeField });
+      continue;
+    }
     const compiled = compileJsonSchemaToZod(tool.inputSchema);
     if (!compiled.ok) {
       skipped.push({ name: tool.name, reason: `unsupported inputSchema: ${compiled.reason}` });
@@ -146,7 +161,9 @@ export function buildServerToolDefs(
     defs.push({
       id,
       source: 'mcp',
-      description: tool.description ?? '',
+      // Sanitized at DISCOVERY, not at whichever surface happens to render it: a poisoned description
+      // otherwise reaches a log, an approval prompt and the provider before anyone strips it (§7.1).
+      description: stripTerminalControls(tool.description ?? ''),
       parseArgs: (raw: unknown): unknown => validator.parse(raw) as unknown,
       llmVisibleParams: tool.inputSchema,
       policy: MCP_TOOL_POLICY,
@@ -167,6 +184,59 @@ export function buildServerToolDefs(
   }
   return { defs, skipped };
 }
+
+/**
+ * Whether any SEMANTIC field of a discovered tool carries a terminal-control or bidi byte — the fields that
+ * cannot be sanitized because rewriting them would desynchronise the model-visible schema, the compiled
+ * validator and the wire contract (ADR-0088 §7.1).
+ *
+ * A legitimate server has no reason to put a control character in a tool name, a property name, or a `const`
+ * value. Checked against the serialized schema rather than by walking it, because the serialization is what
+ * reaches the provider — and because a walker would have to know every place a string can hide.
+ */
+function semanticControlByte(tool: DiscoveredTool): string | undefined {
+  if (hasControlByte(tool.name)) {
+    return 'tool name contains a terminal-control or bidi character';
+  }
+  return schemaHasControlByte(tool.inputSchema, 0)
+    ? 'inputSchema contains a terminal-control or bidi character'
+    : undefined;
+}
+
+/** Whether stripping changes the string — i.e. it carried a terminal-control or bidi byte. */
+function hasControlByte(text: string): boolean {
+  return stripTerminalControls(text) !== text;
+}
+
+/**
+ * Walk a JSON value for a control byte in ANY string — a key or a value, at any depth.
+ *
+ * **A walker rather than a check on the serialized form, and the difference is a hole I shipped first.**
+ * `JSON.stringify` escapes C0 controls into six-character TEXT (`\u001b`), so the byte being hunted is not in
+ * the serialization at all — a property name of `bad\u001b[31m` sailed straight through. It does NOT escape
+ * DEL, C1, or the bidi controls, so the serialized check caught some cases and missed others, which is worse
+ * than catching none: it reads as a working guard.
+ *
+ * Depth-bounded by the same constant the compiler uses, so a hostile schema cannot make this the DoS the
+ * compiler's own budgets exist to prevent. Past the bound it reports "unsafe", because a schema too deep to
+ * inspect is one the compiler is about to refuse anyway.
+ */
+function schemaHasControlByte(value: unknown, depth: number): boolean {
+  if (depth > MAX_SCHEMA_WALK_DEPTH) return true;
+  if (typeof value === 'string') return hasControlByte(value);
+  if (Array.isArray(value)) {
+    return value.some((item) => schemaHasControlByte(item, depth + 1));
+  }
+  if (typeof value === 'object' && value !== null) {
+    return Object.entries(value).some(
+      ([key, item]) => hasControlByte(key) || schemaHasControlByte(item, depth + 1),
+    );
+  }
+  return false;
+}
+
+/** Mirrors the compiler's own nesting bound — this walk must not be the DoS its budgets prevent. */
+const MAX_SCHEMA_WALK_DEPTH = 16;
 
 /**
  * The LLM-visible namespaced id `mcp_{server}_{tool}` — the tool name's non-charset bytes are mapped to `_`

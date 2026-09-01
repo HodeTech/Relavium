@@ -162,3 +162,78 @@ describe('every discovered MCP tool is permanently tier 3 (ADR-0080 §5)', () =>
     expect(def?.duplicationBenign).toBeUndefined();
   });
 });
+
+describe('tool DEFINITIONS are untrusted content (#202, ADR-0088 §7.1)', () => {
+  /**
+   * `packages/core`'s `Untrusted<T>` brand covers tool RESULTS. A server's `description` and `inputSchema` are
+   * equally attacker-controlled and reach the model in the tool spec itself, never passing that boundary —
+   * the real-world "MCP tool poisoning" channel. They are NOT routed through the brand, and §7.2 says why:
+   * the brand's guarantee is that a value cannot reach prompt assembly without an explicit unwrap, and a tool
+   * definition's whole purpose is to reach the model. Sanitization at discovery plus a stated provenance is
+   * the honest mechanism; a brand here would imply a structural property that does not exist.
+   */
+  const withSchema = (
+    name: string,
+    description: string,
+    inputSchema: unknown = {
+      type: 'object',
+      properties: {},
+    },
+  ): DiscoveredTool => ({
+    name,
+    description,
+    inputSchema: inputSchema as DiscoveredTool['inputSchema'],
+  });
+
+  it('SANITIZES a description carrying ANSI escapes, rather than dropping the tool', () => {
+    // A description is presentation text: stripping it changes nothing else, and the tool stays usable.
+    const shaped = buildServerToolDefs('s', [
+      withSchema('ok', 'reads a file\u001b[31m\u001b]0;pwned\u0007 and returns it'),
+    ]);
+    expect(shaped.defs).toHaveLength(1);
+    expect(shaped.defs[0]?.description).toBe('reads a file and returns it');
+  });
+
+  it('SANITIZES a description carrying Trojan-Source bidi controls', () => {
+    // The bytes that reorder how a terminal renders a line — a description that displays as one thing and
+    // reads as another is the whole point of the attack.
+    const shaped = buildServerToolDefs('s', [withSchema('ok', 'safe\u202Ednegrous\u202C')]);
+    expect(shaped.defs[0]?.description).not.toMatch(/[\u202A-\u202E]/);
+  });
+
+  it('DROPS a tool whose NAME carries a control byte — a name cannot be rewritten', () => {
+    // Rewriting it would desynchronise the model-visible id, the routing closure and the wire contract.
+    const shaped = buildServerToolDefs('s', [withSchema('read\u001b[31m', 'fine')]);
+    expect(shaped.defs).toHaveLength(0);
+    expect(shaped.skipped[0]?.reason).toMatch(/tool name contains a terminal-control/);
+  });
+
+  it('DROPS a tool whose SCHEMA hides a control byte, wherever in it', () => {
+    // A property name, a `const`, a nested description — all reach the provider inside `llmVisibleParams`,
+    // and all are semantic in the sense that matters: the validator and the server agree on them.
+    for (const schema of [
+      { type: 'object', properties: { ['bad\u001b[31m']: { type: 'string' } } },
+      { type: 'object', properties: { a: { const: 'x\u0007y' } } },
+      { type: 'object', properties: { a: { type: 'string', description: 'hidden\u202E' } } },
+    ]) {
+      const shaped = buildServerToolDefs('s', [withSchema('ok', 'fine', schema)]);
+      expect(shaped.defs).toHaveLength(0);
+      expect(shaped.skipped[0]?.reason).toMatch(/inputSchema contains a terminal-control/);
+    }
+  });
+
+  it('leaves an ordinary tool completely untouched', () => {
+    // The negative control: a strip that mangled legitimate text would be worse than no strip, and every
+    // refusal test above would still pass against it.
+    const shaped = buildServerToolDefs('s', [
+      withSchema(
+        'read_file',
+        'Reads a file. Accepts a path — returns UTF-8 text, or an error.\nUse it.',
+      ),
+    ]);
+    expect(shaped.defs).toHaveLength(1);
+    expect(shaped.defs[0]?.description).toBe(
+      'Reads a file. Accepts a path — returns UTF-8 text, or an error.\nUse it.',
+    );
+  });
+});

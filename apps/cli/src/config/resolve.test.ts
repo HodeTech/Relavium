@@ -248,22 +248,58 @@ describe('resolveConfig', () => {
     expect(resolveConfig({ workspace, project }).variables).toEqual({ a: 'w', b: 'p', c: 'p' });
   });
 
-  it('merges MCP servers across layers, a later layer winning by name', () => {
+  it('UNIONS MCP servers across layers when the names are distinct', () => {
+    // The ordinary case, and the negative control for the refusal below: a project may add servers, it just
+    // may not redefine one it did not declare.
     const global: GlobalConfig = {
       mcp_servers: [{ name: 'fs', transport: 'stdio', command: 'global-cmd' }],
     };
     const project: ProjectConfig = {
-      mcp_servers: [
-        { name: 'fs', transport: 'stdio', command: 'project-cmd' },
-        { name: 'gh', transport: 'stdio', command: 'gh-cmd' },
-      ],
+      mcp_servers: [{ name: 'gh', transport: 'stdio', command: 'gh-cmd' }],
     };
     const merged = resolveConfig({ global, project }).mcpServers;
-    expect(merged).toHaveLength(2);
-    expect(merged.find((server) => server.name === 'fs')?.command).toBe('project-cmd');
     expect([...merged.map((server) => server.name)].sort((a, b) => a.localeCompare(b))).toEqual([
       'fs',
       'gh',
     ]);
+    expect(merged.find((server) => server.name === 'fs')?.command).toBe('global-cmd');
+  });
+
+  it('REFUSES a project layer that redefines a global MCP server (G19, ADR-0088 §8)', () => {
+    // **This test previously asserted the opposite**, because last-writer-wins is the rule for every other
+    // setting. It is the wrong rule here: a registration names a PROGRAM to execute and a SECRET to inject,
+    // and a project config arrives with a cloned repository — so a silent override hands the global server's
+    // provisioned `{{secrets.*}}` to whatever the project's entry names. The assertion is inverted because
+    // the decision changed, and the old expectation is recorded here rather than deleted.
+    const global: GlobalConfig = {
+      mcp_servers: [
+        { name: 'gh', transport: 'stdio', command: 'gh-server', env: { TOKEN: '{{secrets.gh}}' } },
+      ],
+    };
+    const project: ProjectConfig = {
+      mcp_servers: [{ name: 'gh', transport: 'stdio', command: 'attacker-cmd' }],
+    };
+    expect(() => resolveConfig({ global, project })).toThrow(/more than one config layer/);
+  });
+
+  it('refuses a WORKSPACE layer redefining a global one too — the rule is about layers, not about `project`', () => {
+    const global: GlobalConfig = {
+      mcp_servers: [{ name: 'fs', transport: 'stdio', command: 'global-cmd' }],
+    };
+    const workspace: ProjectConfig = {
+      mcp_servers: [{ name: 'fs', transport: 'stdio', command: 'ws-cmd' }],
+    };
+    expect(() => resolveConfig({ global, workspace })).toThrow(/more than one config layer/);
+  });
+
+  it('does NOT refuse a server declared once, however many layers are present', () => {
+    // The guard keys on the LAYER a name was first seen in, so a single declaration must survive an
+    // otherwise-populated stack — a refusal that fired on the ordinary case would be worse than the hole.
+    const global: GlobalConfig = { mcp_servers: [{ name: 'a', transport: 'stdio', command: 'x' }] };
+    const workspace: ProjectConfig = { defaults: { model: 'claude-sonnet-4-6' } };
+    const project: ProjectConfig = {
+      mcp_servers: [{ name: 'b', transport: 'stdio', command: 'y' }],
+    };
+    expect(resolveConfig({ global, workspace, project }).mcpServers).toHaveLength(2);
   });
 });
