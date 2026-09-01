@@ -124,6 +124,45 @@ describe('resolveServerConfigs', () => {
     expect(seen?.connectTimeoutMs).toBe(45_000);
   });
 
+  it('hands the CONNECT SIGNAL to the opener — a parameter, not a dropped argument', async () => {
+    // **The defect this pins was found one layer up from where it was fixed.** The adapters took a `signal`,
+    // `startMcpClient` passed one, and the closure built HERE was written `open: () => …` — which accepts the
+    // call and silently drops the argument. TypeScript is happy; the cancel path type-checks and cannot fire.
+    // A Ctrl-C during a cold `npx` therefore stopped nothing, and the child was orphaned, because
+    // `McpClient.childPids` stays empty until a connect fully succeeds so neither reaper had a pid either.
+    //
+    // Asserting IDENTITY, not merely presence: a closure that captured some other controller's signal would
+    // pass a presence check and still not be cancellable by the caller who owns the teardown.
+    const controller = new AbortController();
+    let seenSignal: unknown = 'never called';
+    const configs = resolveServerConfigs([stdioRef()], '/work', undefined, {
+      stdio: (_id, _spec, signal) => {
+        seenSignal = signal;
+        return Promise.reject(new Error('not connecting in a unit test'));
+      },
+    });
+    await expect(configs[0]?.open(controller.signal)).rejects.toThrow('not connecting');
+    expect(seenSignal).toBe(controller.signal);
+  });
+
+  it('hands the connect signal to a NETWORK opener too', async () => {
+    const controller = new AbortController();
+    let seenSignal: unknown = 'never called';
+    const configs = resolveServerConfigs(
+      [{ id: 'docs', transport: 'http', url: 'https://docs.example/mcp' }],
+      '/work',
+      undefined,
+      {
+        http: (_id, _spec, signal) => {
+          seenSignal = signal;
+          return Promise.reject(new Error('not connecting in a unit test'));
+        },
+      },
+    );
+    await expect(configs[0]?.open(controller.signal)).rejects.toThrow('not connecting');
+    expect(seenSignal).toBe(controller.signal);
+  });
+
   it('omits toolsAllowlist when the ref declares none (exactOptionalPropertyTypes — never an explicit undefined)', () => {
     const configs = resolveServerConfigs([stdioRef()], '/work');
     expect('toolsAllowlist' in configs[0]!).toBe(false);

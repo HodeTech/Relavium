@@ -197,6 +197,13 @@ export async function connectSdkTransport(
       bound.signal,
     );
   } catch (err) {
+    // `safeClose(client)` is what reaps a spawned child on the deadline/cancel path, and it genuinely does:
+    // `Protocol.connect` assigns `this._transport` BEFORE awaiting `transport.start()`, so `client.close()`
+    // reaches the transport even when the connect never completed. Measured on a cancelled stdio connect
+    // against a child that traps `SIGTERM`: gone at ~4.6 s, which is the SDK's own ladder (stdin EOF → 2 s →
+    // SIGTERM → 2 s → SIGKILL) running to completion. An earlier version of this comment claimed the close did
+    // NOT reach the transport and added a direct `transport.close()` beside it — the timing was byte-identical
+    // with and without, so the addition was inert and the claim was wrong.
     await safeClose(client);
     // A deadline / cancellation keeps its own type — a caller distinguishing "too slow" from "you pressed Esc"
     // from "the server refused" is exactly what `#204` asks for; collapsing them here would undo it. Both now

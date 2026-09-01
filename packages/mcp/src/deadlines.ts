@@ -214,7 +214,18 @@ export async function raceDeadline<T>(
   } catch (err) {
     // Classification time, not listener order. Only OUR OWN deadline verdict is reclassified: an error the
     // operation itself produced is its own answer and must not be laundered into a cancellation.
-    if (err instanceof McpDeadlineError && cancelled()) {
+    //
+    // The identity check is defensive rather than load-bearing today — `operation()` is always a bare SDK call,
+    // never a nested `raceDeadline`, so a deadline arriving here is always this call's. It costs one comparison
+    // to make that a property of the code instead of a property of the current call graph: if a caller ever
+    // nests deadlines (a per-page bound inside the whole-walk bound, say), an inner call's genuine timeout must
+    // not be relabelled with the outer call's cancellation.
+    if (
+      err instanceof McpDeadlineError &&
+      err.serverId === serverId &&
+      err.phase === phase &&
+      cancelled()
+    ) {
       throw new McpAbortedError(serverId, phase);
     }
     throw err;

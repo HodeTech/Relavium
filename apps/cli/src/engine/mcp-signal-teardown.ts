@@ -147,6 +147,13 @@ function defaultSubscribeProcessExit(onExit: () => void): () => void {
  * wait for a graceful shutdown, so a signal the child may ignore is a signal that does nothing. The throw to
  * swallow is `ESRCH` — the ordinary case, where the cooperative teardown already reaped this child — and
  * `EPERM`, where the pid was recycled by a process we do not own. Neither is actionable at exit time.
+ *
+ * **The residual a pid-based reap cannot close, stated rather than implied.** If our child exits and the OS
+ * recycles its pid to an unrelated process owned by the SAME user before this handler runs, the `SIGKILL`
+ * lands on that process. Distinguishing them needs a mechanism this host does not have (a pid file descriptor,
+ * or recording the child's start time), and the window is the milliseconds-to-3-seconds between the teardown
+ * starting and the process exiting. Accepted rather than hidden: ADR-0088 §11's "asserted against the actual
+ * child-process table" is a statement about what the TEST checks, and this is where the guarantee stops.
  */
 function defaultKillPid(pid: number): void {
   try {

@@ -793,6 +793,10 @@ export async function buildResumedChatSession(
     ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
     ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
     ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
+    // The same forward `mcpOptionsFor` makes on the fresh path. Omitting it left a documented, newly-added
+    // option dead on arrival — the "wired and still dead" shape, and the two build paths drifting is exactly
+    // how it happened: one routes through the shared mapper, this one builds its options inline.
+    ...(opts.mcpConnectSignal === undefined ? {} : { connectSignal: opts.mcpConnectSignal }),
   });
 
   try {

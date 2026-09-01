@@ -179,6 +179,7 @@ function entryServerId(entry: McpServerRef): string | undefined {
 export type OpenStdioConnection = (
   serverId: string,
   spec: StdioServerSpec,
+  signal?: AbortSignalLike,
 ) => Promise<McpConnection>;
 
 /**
@@ -187,9 +188,21 @@ export type OpenStdioConnection = (
  */
 export interface ServerOpeners {
   readonly stdio?: OpenStdioConnection;
-  readonly http?: (serverId: string, spec: HttpServerSpec) => Promise<McpConnection>;
-  readonly sse?: (serverId: string, spec: SseServerSpec) => Promise<McpConnection>;
-  readonly websocket?: (serverId: string, spec: WebSocketServerSpec) => Promise<McpConnection>;
+  readonly http?: (
+    serverId: string,
+    spec: HttpServerSpec,
+    signal?: AbortSignalLike,
+  ) => Promise<McpConnection>;
+  readonly sse?: (
+    serverId: string,
+    spec: SseServerSpec,
+    signal?: AbortSignalLike,
+  ) => Promise<McpConnection>;
+  readonly websocket?: (
+    serverId: string,
+    spec: WebSocketServerSpec,
+    signal?: AbortSignalLike,
+  ) => Promise<McpConnection>;
 }
 
 /** The network transports — all take the same `{ url }` connect spec, so the dispatch is a keyed lookup. */
@@ -197,6 +210,7 @@ type NetworkTransport = 'http' | 'sse' | 'websocket';
 type NetworkOpener = (
   serverId: string,
   spec: { readonly url: string; readonly connectTimeoutMs?: number },
+  signal?: AbortSignalLike,
 ) => Promise<McpConnection>;
 type NetworkOpeners = Record<NetworkTransport, NetworkOpener>;
 
@@ -291,16 +305,26 @@ function buildStdioConfig(
   return {
     id: serverId,
     ...toolsAllowlistFields(ref),
-    open: () =>
-      openStdio(serverId, {
-        command,
-        env,
-        cwd,
-        ...(args === undefined ? {} : { args }),
-        ...(ref.connect_timeout_ms === undefined
-          ? {}
-          : { connectTimeoutMs: ref.connect_timeout_ms }),
-      }),
+    // **The signal is a PARAMETER of the closure, not a capture.** `startMcpClient` calls `open(signal)`, and
+    // a zero-argument closure accepts that call and silently DROPS the argument — TypeScript is happy, and the
+    // whole cancel path becomes dead surface that type-checks and cannot fire. That is exactly the defect the
+    // `McpServerConfig.open` doc records one layer down, and it was still true HERE until a review found it:
+    // a Ctrl-C during a cold `npx` reached this point and stopped nothing, orphaning the child — because
+    // `client.childPids` stays empty until a connect fully succeeds, so neither reaper had a pid either.
+    open: (signal) =>
+      openStdio(
+        serverId,
+        {
+          command,
+          env,
+          cwd,
+          ...(args === undefined ? {} : { args }),
+          ...(ref.connect_timeout_ms === undefined
+            ? {}
+            : { connectTimeoutMs: ref.connect_timeout_ms }),
+        },
+        signal,
+      ),
   };
 }
 
@@ -335,11 +359,16 @@ function buildNetworkConfig(
   return {
     id: serverId,
     ...toolsAllowlistFields(ref),
-    open: () =>
-      open(serverId, {
-        url,
-        ...(connectTimeoutMs === undefined ? {} : { connectTimeoutMs }),
-      }),
+    // A parameter, not a capture — see the stdio sibling for what a zero-argument closure silently costs.
+    open: (signal) =>
+      open(
+        serverId,
+        {
+          url,
+          ...(connectTimeoutMs === undefined ? {} : { connectTimeoutMs }),
+        },
+        signal,
+      ),
   };
 }
 

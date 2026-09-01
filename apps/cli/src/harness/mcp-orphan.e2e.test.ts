@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import type { McpServerRef } from '@relavium/shared';
@@ -28,6 +29,18 @@ const STUBBORN = fileURLToPath(
   new URL('../../../../packages/mcp/test-fixtures/stubborn-mcp-server.mjs', import.meta.url),
 );
 
+/** A child that spawns and never completes `initialize` — holds the CONNECT window open. */
+const SILENT = fileURLToPath(
+  new URL('../../../../packages/mcp/test-fixtures/silent-mcp-server.mjs', import.meta.url),
+);
+
+const silentServer = (id = 'silent'): McpServerRef => ({
+  id,
+  transport: 'stdio',
+  command: process.execPath,
+  args: [SILENT],
+});
+
 const stubbornServer = (id = 'stubborn'): McpServerRef => ({
   id,
   transport: 'stdio',
@@ -54,6 +67,24 @@ const allowAll = (
   }
   return Promise.resolve(grants);
 };
+
+/**
+ * The pids of live children running `fixture`, read from the process table.
+ *
+ * Needed because a cancelled connect never returns a client, so there is no `childPids` to read — the only
+ * source of truth for "did the host reap what it spawned" is the table itself, which is also what ADR-0088
+ * §11 asks for.
+ */
+function childPidsOf(fixture: string): number[] {
+  // `-A`: the whole table, not just this terminal's session — the child is spawned detached from any tty.
+  const listing = execFileSync('ps', ['-A', '-o', 'pid=,args=']).toString();
+  const needle = fixture.slice(fixture.lastIndexOf('/') + 1);
+  return listing
+    .split('\n')
+    .filter((line) => line.includes(needle))
+    .map((line) => Number.parseInt(line.trim().split(/\s+/)[0] ?? '', 10))
+    .filter((pid) => Number.isInteger(pid) && pid !== process.pid);
+}
 
 /** Is this pid still alive? `kill(pid, 0)` sends nothing and throws `ESRCH` once the process is gone. */
 function alive(pid: number): boolean {
@@ -164,5 +195,37 @@ describe('MCP orphan reaping — against the real child-process table', () => {
     // which is why the budget is generous and why the guard's own 3 s grace is NOT what is being measured.
     expect(await until(() => !alive(pid as number))).toBe(true);
     unguard();
+  }, 30_000);
+
+  it('cancels an IN-FLIGHT connect and reaps the child spawned inside it', async () => {
+    // **The branch a review found uncovered, and it is the one the whole ordering exists for.** The SDK spawns
+    // the child inside `transport.start()`, so between the spawn and a completed `initialize` there is a live
+    // process and no client — `McpClient.childPids` is still empty, so neither reaper has a pid, and the only
+    // thing that can stop it is the connect signal itself.
+    //
+    // It was broken in a way that type-checked: the adapters took a `signal`, `startMcpClient` passed one, and
+    // the CLI's own `open` closure was written `open: () => …`, which accepts the call and drops the argument.
+    // A Ctrl-C during a cold `npx` therefore stopped nothing. The unit test asserts the signal's IDENTITY
+    // reaches the opener; this one asserts what that buys — a real child, gone.
+    const before = childPidsOf(SILENT);
+    const cancel = new AbortController();
+    const connecting = connectAgentMcp([silentServer()], {
+      cwd: process.cwd(),
+      consentGate: allowAll,
+      connectSignal: cancel.signal,
+    });
+    // Give the SDK time to spawn before cancelling — cancelling before the spawn would prove nothing.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Only the pids THIS test spawned. Scanning the whole table for the fixture name also picks up orphans a
+    // previous failing run left behind, which nothing will ever reap — a self-poisoning assertion that fails
+    // for the wrong reason and then keeps failing.
+    const spawned = childPidsOf(SILENT).filter((pid) => !before.includes(pid));
+    expect(spawned.length).toBeGreaterThan(0);
+
+    cancel.abort();
+    await expect(connecting).rejects.toThrow();
+    // The connect's own teardown reaps what it spawned; nothing else can, because no client was ever returned
+    // and `childPids` is therefore empty. Budgeted well above the SDK's ~4.6 s ladder against a trapping child.
+    expect(await until(() => spawned.every((pid) => !alive(pid)), 20_000)).toBe(true);
   }, 30_000);
 });
