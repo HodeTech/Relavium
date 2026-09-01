@@ -118,13 +118,40 @@ export async function openStdioConnection(
   return connectSdkTransport(serverId, transport, {
     timeoutMs: spec.connectTimeoutMs ?? MCP_DEADLINES.stdioConnectMs,
     ...(signal === undefined ? {} : { signal }),
+    // The SDK exposes the spawned pid; carrying it out is what lets a host reap synchronously on an exit path
+    // that cannot await an async close (ADR-0088 §1.3). `?? undefined` normalizes the SDK's `null`.
+    childPid: () => transport.pid ?? undefined,
   });
 }
+
+/**
+ * How much longer the SDK's own request timer is given than our window.
+ *
+ * **Two timers for one deadline is how the surfaced error type becomes a coin flip.** Handing the SDK exactly
+ * `remainingMs(window)` armed a second timer for the same instant in a different timer list; when the SDK's
+ * won, the rejection was its own `McpError` (`Request timed out`) and the `phase`/`serverId`/`timeoutMs`
+ * discriminants ADR-0088 §9 exists to give were gone — non-deterministically. The margin makes ours
+ * deterministically first, and leaves the SDK's as a backstop for any path our race cannot observe.
+ *
+ * Small enough to be invisible against the shortest bound here (30 s), large enough to survive ordinary timer
+ * jitter.
+ */
+const SDK_TIMER_MARGIN_MS = 250;
 
 /** How a connect is bounded — a deadline in ms plus the caller's optional cancel. */
 export interface ConnectBound {
   readonly timeoutMs: number;
   readonly signal?: AbortSignalLike;
+  /**
+   * Read the spawned child's pid, AFTER the connect succeeds — `stdio` only; the network transports own no
+   * process and leave it absent.
+   *
+   * A thunk rather than a number because the pid does not exist until `start()` spawns, and `start()` happens
+   * inside the very call this bound wraps. It exists so a host can install a **synchronous** last-resort reap
+   * on `process.on('exit')`: `client.close()` is async, and an exit path that does not await it (a second
+   * Ctrl-C forcing `process.exit`, say) would otherwise re-orphan exactly the children ADR-0088 §1.3 is about.
+   */
+  readonly childPid?: () => number | undefined;
 }
 
 /**
@@ -140,8 +167,11 @@ export interface ConnectBound {
  * `RequestOptions` is not sufficient: `Client.connect` awaits `transport.start()` **first and with no options
  * at all**, then issues `initialize` — and `start()` is where the hang actually lives (measured: a transport
  * whose `start()` never settles hung this function indefinitely). So the window opens here, before any I/O,
- * the whole call is raced against it, and the loser is **disposed** — which for `stdio` is what reaps the
- * spawned child rather than orphaning it.
+ * and the whole call is raced against it.
+ *
+ * **The `catch` below is the ONE owner of teardown**, and it is what reaps a spawned `stdio` child rather than
+ * orphaning it: `Protocol.connect` assigns `this._transport` BEFORE awaiting `start()`, so `client.close()`
+ * reaches `transport.close()` even when the connect never completed.
  *
  * The **remaining** time is also handed to the SDK as `options.timeout`, so its internal 60 s default can
  * neither cut an authored 120 s window short nor outlive the end of one.
@@ -161,28 +191,33 @@ export async function connectSdkTransport(
       window,
       () =>
         client.connect(transport, {
-          timeout: remainingMs(window),
-          ...(bridged === undefined ? {} : { signal: bridged }),
+          timeout: remainingMs(window) + SDK_TIMER_MARGIN_MS,
+          ...(bridged.signal === undefined ? {} : { signal: bridged.signal }),
         }),
       bound.signal,
     );
   } catch (err) {
     await safeClose(client);
     // A deadline / cancellation keeps its own type — a caller distinguishing "too slow" from "you pressed Esc"
-    // from "the server refused" is exactly what `#204` asks for; collapsing them here would undo it.
+    // from "the server refused" is exactly what `#204` asks for; collapsing them here would undo it. Both now
+    // extend `McpError`, so `startMcpClient`'s own wrap preserves them too (it did not, at first).
     if (err instanceof McpDeadlineError || err instanceof McpAbortedError) throw err;
     throw new McpConnectError(serverId, { cause: err });
+  } finally {
+    bridged.dispose();
   }
-  return new SdkConnection(serverId, client);
+  return new SdkConnection(serverId, client, bound.childPid?.());
 }
 
 class SdkConnection implements McpConnection {
   readonly #serverId: string;
   readonly #client: Client;
+  readonly childPid: number | undefined;
 
-  constructor(serverId: string, client: Client) {
+  constructor(serverId: string, client: Client, childPid: number | undefined) {
     this.#serverId = serverId;
     this.#client = client;
+    this.childPid = childPid;
   }
 
   /**
@@ -219,9 +254,12 @@ class SdkConnection implements McpConnection {
   /**
    * One bounded SDK request: the remaining window goes into the SDK's own `timeout`, and the whole call is
    * still raced so a transport that never answers cannot outlive the window through a path the SDK does not
-   * time. `dispose` is a no-op here — unlike a connect, a failed in-flight request must NOT tear the shared
-   * connection down: the caller may have other work on this server, and blunt teardown is precisely the
-   * fallback §1.2 replaces.
+   * time.
+   *
+   * **Nothing is torn down when a request fails**, unlike the connect: the caller may have other work on this
+   * server, and tearing the shared connection down for one failed call is precisely the blunt fallback §1.2
+   * replaces. The only cleanup here is the bridged signal's listener, freed in the `finally` — a bridge is
+   * built per request, and a discovery walk builds one per page.
    */
   async #request<T>(
     phase: 'discovery' | 'call',
@@ -230,17 +268,21 @@ class SdkConnection implements McpConnection {
     send: (options: RequestOptions) => Promise<T>,
   ): Promise<T> {
     const bridged = toAbortSignal(signal);
-    return raceDeadline(
-      this.#serverId,
-      phase,
-      window,
-      () =>
-        send({
-          timeout: remainingMs(window),
-          ...(bridged === undefined ? {} : { signal: bridged }),
-        }),
-      signal,
-    );
+    try {
+      return await raceDeadline(
+        this.#serverId,
+        phase,
+        window,
+        () =>
+          send({
+            timeout: remainingMs(window) + SDK_TIMER_MARGIN_MS,
+            ...(bridged.signal === undefined ? {} : { signal: bridged.signal }),
+          }),
+        signal,
+      );
+    } finally {
+      bridged.dispose();
+    }
   }
 }
 

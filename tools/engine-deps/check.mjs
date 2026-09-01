@@ -15,7 +15,8 @@
  * `bundledDependencies` (unused in this repo). `@relavium/db` is deliberately NOT an
  * engine package — it is host-bound by design (better-sqlite3). When `packages/ui` lands
  * (build phase 3), its internal layer boundaries get the same treatment via an ESLint
- * import-zone config rather than this list.
+ * import-zone config rather than this list. `@relavium/mcp` IS listed despite being host-bound, because it is
+ * the SDK fence between an untrusted third-party server and the tool-dispatch loop — see its entry.
  *
  * Exits non-zero so CI fails loudly. Run from the repo root:
  *   node tools/engine-deps/check.mjs
@@ -55,6 +56,13 @@ const ENGINE_ALLOWLISTS = {
     'quickjs-emscripten-core',
     '@jitl/quickjs-singlefile-mjs-release-sync',
   ],
+  // The INBOUND MCP fence. Not an engine package — it spawns child processes and dials networks by design —
+  // but it is listed here for the reason the engine packages are: it is the one place a third-party runtime
+  // dependency would sit between an untrusted server and the tool-dispatch loop, and the SDK it fences is
+  // adopted by ADR-0034 rather than by a feature PR. `@relavium/shared` joined at ADR-0088 §1.2 (the
+  // platform-free `AbortSignalLike` the SDK bridge converts from). A gate that did not cover this package
+  // would have let that addition through unexamined, which is what prompted listing it.
+  'packages/mcp': ['@modelcontextprotocol/sdk', '@relavium/core', '@relavium/shared', 'zod'],
 };
 
 let failed = false;

@@ -52,4 +52,14 @@ export interface McpConnection {
   callTool(name: string, args: unknown, signal?: AbortSignalLike): Promise<McpToolResult>;
   /** Tear the connection down (terminate the stdio child / close the socket). Idempotent. */
   close(): Promise<void>;
+  /**
+   * The spawned child's pid — `stdio` only; a network connection owns no process and leaves it absent.
+   *
+   * Surfaced so a host can install a **synchronous** last-resort reap on `process.on('exit')`. {@link close}
+   * is async, and an exit path that cannot await it — a second Ctrl-C forcing `process.exit`, an
+   * `uncaughtException` net, a `process.exit` anywhere — would otherwise re-orphan the children
+   * [ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §1.3 is about. A pid is a number,
+   * not an SDK type, so it crosses the seam cleanly.
+   */
+  readonly childPid?: number | undefined;
 }

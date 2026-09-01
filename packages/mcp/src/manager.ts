@@ -1,4 +1,5 @@
 import type { McpCapability, ToolDef } from '@relavium/core';
+import type { AbortSignalLike } from '@relavium/shared';
 
 import type { McpConnection } from './connection.js';
 import { McpConnectError, McpError } from './errors.js';
@@ -21,8 +22,16 @@ import { buildServerToolDefs } from './tool-mapping.js';
 export interface McpServerConfig {
   readonly id: string;
   readonly toolsAllowlist?: readonly string[];
-  /** Open the live connection (production: a stdio/network adapter; tests: a fake). */
-  open(): Promise<McpConnection>;
+  /**
+   * Open the live connection (production: a stdio/network adapter; tests: a fake).
+   *
+   * **Takes the connect signal**, because a connect can be the longest thing a session does — up to
+   * `stdio`'s 120 s while a cold `npx` resolves, with the terminal silent and the user reaching for Ctrl-C
+   * ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §1.1). A first version threaded
+   * the signal into every adapter and then never passed one here, which made the whole cancel path dead
+   * surface: it type-checked and could not fire.
+   */
+  open(signal?: AbortSignalLike): Promise<McpConnection>;
 }
 
 /** A tool dropped at discovery, tagged with its server (allowlist / unsupported schema / collision / unsafe id). */
@@ -48,9 +57,19 @@ export interface McpClient {
   readonly skipped: readonly ManagerSkippedTool[];
   /** Tear down every connection (idempotent). */
   close(): Promise<void>;
+  /**
+   * The pids of the spawned `stdio` children, for a host's **synchronous** last-resort reap on
+   * `process.on('exit')` ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §1.3).
+   * {@link close} is async and an exit path that cannot await it would otherwise re-orphan them.
+   */
+  readonly childPids: readonly number[];
 }
 
-export async function startMcpClient(servers: readonly McpServerConfig[]): Promise<McpClient> {
+export async function startMcpClient(
+  servers: readonly McpServerConfig[],
+  /** Cancels the connect AND the discovery walk — see {@link McpServerConfig.open}. */
+  signal?: AbortSignalLike,
+): Promise<McpClient> {
   const connections = new Map<string, McpConnection>();
   const toolDefs: ToolDef[] = [];
   const toolIdsByServer = new Map<string, readonly string[]>();
@@ -75,9 +94,9 @@ export async function startMcpClient(servers: readonly McpServerConfig[]): Promi
   const settled = await Promise.allSettled(
     servers.map(async (server) => {
       try {
-        const connection = await server.open();
+        const connection = await server.open(signal);
         connections.set(server.id, connection);
-        const tools = await connection.listTools();
+        const tools = await connection.listTools(signal);
         return { server, tools };
       } catch (err) {
         throw err instanceof McpError ? err : new McpConnectError(server.id, { cause: err });
@@ -126,7 +145,20 @@ export async function startMcpClient(servers: readonly McpServerConfig[]): Promi
     },
   };
 
-  return { capability, toolDefs, toolIdsByServer, skipped, close: () => closeAll(connections) };
+  // Read ONCE, here, while every connection is still registered: `closeAll` clears the map, so a later read
+  // would return an empty list exactly when the reaper needs it most.
+  const childPids = [...connections.values()]
+    .map((connection) => connection.childPid)
+    .filter((pid): pid is number => pid !== undefined);
+
+  return {
+    capability,
+    toolDefs,
+    toolIdsByServer,
+    skipped,
+    childPids,
+    close: () => closeAll(connections),
+  };
 }
 
 /** Close every connection, swallowing teardown errors (the children are exiting); clears the map (idempotent). */

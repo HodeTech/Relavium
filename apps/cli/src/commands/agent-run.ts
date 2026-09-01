@@ -100,43 +100,74 @@ export async function agentRunCommand(
   // async (2.R): it connects the agent's inline stdio `mcp_servers` (a connect failure is a fail-loud exit-2
   // CliError, cause stripped) before the one-shot turn runs. In `--fixture` (cassette) mode the run must be
   // FULLY offline: no `[[mcp_servers]]` registrations and an env-only secret resolver (never the keychain).
-  const built = await (deps.buildSession ?? buildChatSession)({
-    chat: config.chat,
-    // **Consent before any stdio MCP spawn** (ADR-0084 §1). A one-shot `agent run` opens an agent artifact
-    // — often an imported one — which is exactly the case the gate exists for; `--fixture` replays offline
-    // and declares no servers, so the gate never fires there.
-    mcpArtifact: args.agent,
-    consentGate:
-      deps.consentGate ??
-      createConsentGate({
-        io: deps.io,
-        global: deps.global,
-        homeDir,
-        allowedDigests: args.allowMcpStdio,
-        prompt: createConsentPrompter(),
-      }),
-    // ADR-0071 §6: a one-shot invoke has no transcript and no picker, so a withheld tier would otherwise vanish
-    // completely — the turn runs, the authored knob does nothing, and the bill arrives at the provider's default.
-    // STDERR, never stdout: `--json` owns stdout, and a warning line mid-stream is a parse error downstream.
-    onEffortWithheld: onceEffortNotice((note) => deps.io.writeErr(`warning: ${note}\n`)),
-    // stderr, never stdout: `--json` owns stdout and a notice must not corrupt the NDJSON stream.
-    onListenerError: (note) => deps.io.writeErr(`warning: ${note}\n`),
-    onUnpriced: (note) => deps.io.writeErr(`warning: ${note}\n`),
-    agentRef: args.agent,
-    cwd: deps.global.cwd,
-    projectConfigDir,
-    now,
-    uuid,
-    providers,
-    mcpSecretResolver: offline
-      ? createMcpSecretResolver(deps.io.env)
-      : (deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env)),
-    mcpRegistrations: offline ? [] : config.mcpServers,
-    ...(resolvePrice === undefined ? {} : { resolvePrice }),
-    // FULLY offline in `--fixture` (cassette) mode: disable inbound MCP entirely so an agent's inline
-    // `mcp_servers` are never connected (no config build, no spawn, no dial). The cassette already carries any
-    // recorded tool results, so the replay needs no live MCP.
-    ...(offline ? { disableMcp: true } : {}),
+  /**
+   * The signal guard, armed BEFORE the session build (ADR-0088 §1.3).
+   *
+   * `buildChatSession` is where the stdio children are spawned, and a cold `npx` can hold that call for up to
+   * 120 s with the terminal silent — the highest-probability window for a Ctrl-C. Arming afterwards, which was
+   * the first attempt, left exactly that window uncovered. Two things follow: the pids are read LAZILY (there
+   * are none yet here) and the connect is given a cancel signal, so a Ctrl-C during it stops rather than being
+   * merely survived.
+   *
+   * Unlike `relavium run`, this surface has no other signal handler, so the guard DOES own the exit code.
+   */
+  const mcpConnectCancel = new AbortController();
+  let session: BuiltChatSession | undefined;
+  const unguardMcp = guardMcpTeardown(
+    async () => {
+      mcpConnectCancel.abort();
+      await session?.closeMcp?.();
+    },
+    () => session?.mcpChildPids ?? [],
+  );
+
+  const built = await (async (): Promise<BuiltChatSession> => {
+    const b = await (deps.buildSession ?? buildChatSession)({
+      chat: config.chat,
+      // **Consent before any stdio MCP spawn** (ADR-0084 §1). A one-shot `agent run` opens an agent artifact
+      // — often an imported one — which is exactly the case the gate exists for; `--fixture` replays offline
+      // and declares no servers, so the gate never fires there.
+      mcpArtifact: args.agent,
+      consentGate:
+        deps.consentGate ??
+        createConsentGate({
+          io: deps.io,
+          global: deps.global,
+          homeDir,
+          allowedDigests: args.allowMcpStdio,
+          prompt: createConsentPrompter(),
+        }),
+      // ADR-0071 §6: a one-shot invoke has no transcript and no picker, so a withheld tier would otherwise vanish
+      // completely — the turn runs, the authored knob does nothing, and the bill arrives at the provider's default.
+      // STDERR, never stdout: `--json` owns stdout, and a warning line mid-stream is a parse error downstream.
+      onEffortWithheld: onceEffortNotice((note) => deps.io.writeErr(`warning: ${note}\n`)),
+      // stderr, never stdout: `--json` owns stdout and a notice must not corrupt the NDJSON stream.
+      onListenerError: (note) => deps.io.writeErr(`warning: ${note}\n`),
+      onUnpriced: (note) => deps.io.writeErr(`warning: ${note}\n`),
+      agentRef: args.agent,
+      cwd: deps.global.cwd,
+      projectConfigDir,
+      now,
+      uuid,
+      providers,
+      mcpSecretResolver: offline
+        ? createMcpSecretResolver(deps.io.env)
+        : (deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env)),
+      mcpRegistrations: offline ? [] : config.mcpServers,
+      ...(resolvePrice === undefined ? {} : { resolvePrice }),
+      // FULLY offline in `--fixture` (cassette) mode: disable inbound MCP entirely so an agent's inline
+      // `mcp_servers` are never connected (no config build, no spawn, no dial). The cassette already carries any
+      // recorded tool results, so the replay needs no live MCP.
+      ...(offline ? { disableMcp: true } : {}),
+      mcpConnectSignal: mcpConnectCancel.signal,
+    });
+    session = b; // now the guard's lazy reads see a live client
+    return b;
+  })().catch((err: unknown) => {
+    // The build threw — nothing was returned, so the `finally` below never runs. Release the guard here or it
+    // outlives the command it was protecting.
+    unguardMcp();
+    throw err;
   });
 
   // ADR-0074 §4: `agent run` is a ONE-SHOT, non-persisted invocation — it opens no session store and builds no
@@ -165,15 +196,9 @@ export async function agentRunCommand(
     journalStore = openSessionStore(homeDir);
   } catch (cause) {
     await built.closeMcp?.().catch(() => undefined);
+    unguardMcp();
     throw cause;
   }
-  // **A signal does not run `finally`** ([ADR-0088](../../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md)
-  // §1.3, `#21`) — measured: a host that spawned a child the way the MCP SDK does, sent `SIGTERM`, printed no
-  // teardown line and left the child alive with `ppid 1`. Every path below unwinds through a `finally`; a
-  // Ctrl-C, a `kill`, or a closed terminal window does not, and this is what reaps the children then.
-  const closeMcp = built.closeMcp;
-  const unguardMcp =
-    closeMcp === undefined ? undefined : guardMcpTeardown(() => closeMcp().then(() => undefined));
   try {
     built.attachEffectJournal((correlation) =>
       createEffectJournalPort(
@@ -187,7 +212,7 @@ export async function agentRunCommand(
     return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;
   } finally {
     // Removed first: from here `runOneShotTurn`'s own teardown owns the children on every unwinding path.
-    unguardMcp?.();
+    unguardMcp();
     journalStore.close();
   }
 }

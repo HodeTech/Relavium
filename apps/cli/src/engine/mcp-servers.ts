@@ -1,5 +1,6 @@
 import type { WorkflowDefinition } from '@relavium/core';
 import {
+  McpDeadlineError,
   McpError,
   openHttpConnection,
   openSseConnection,
@@ -18,6 +19,8 @@ import {
 import {
   isForbiddenDeclaredEnvKey,
   isPrivateOrLocalHost,
+  MCP_CONNECT_TIMEOUT_CEILING_MS,
+  type AbortSignalLike,
   type Agent,
   type AgentRef,
   type McpServerRef,
@@ -50,7 +53,18 @@ export interface ConnectAgentMcpOptions {
   /** The session/run working directory — the spawned server's `cwd` (relative server paths resolve here). */
   readonly cwd: string;
   /** Injectable connect-all (tests pass a fake that never spawns); defaults to the real `startMcpClient`. */
-  readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  readonly startMcpClient?: (
+    servers: readonly McpServerConfig[],
+    signal?: AbortSignalLike,
+  ) => Promise<McpClient>;
+  /**
+   * Cancels the connect and the discovery walk (ADR-0088 §1.1).
+   *
+   * A connect can be the longest thing a session does — up to `stdio`'s 120 s while a cold `npx` resolves,
+   * with the terminal silent and the user reaching for Ctrl-C. Without this the signal guard could only reap
+   * children that already existed, leaving the highest-probability window uncovered.
+   */
+  readonly connectSignal?: AbortSignalLike;
   /**
    * Resolve a `{{secrets.<name>}}` placeholder in a server `env` value (2.R Step 4, ADR-0052 §6). When absent,
    * any `{{…}}` in an `env` value is rejected loud (a placeholder is never passed to the child as a literal).
@@ -435,7 +449,7 @@ export async function connectAgentMcp(
   const consented = await opts.consentGate?.(inline, opts.cwd, opts.artifact);
   const configs = resolveServerConfigs(inline, opts.cwd, opts.resolveSecret, {}, consented);
   if (configs.length === 0) return undefined;
-  return startMcpClientFailLoud(configs, opts.startMcpClient);
+  return startMcpClientFailLoud(configs, opts.startMcpClient, opts.connectSignal);
 }
 
 /**
@@ -448,16 +462,37 @@ export async function connectAgentMcp(
 async function startMcpClientFailLoud(
   configs: readonly McpServerConfig[],
   custom: ConnectAgentMcpOptions['startMcpClient'],
+  connectSignal?: AbortSignalLike,
 ): Promise<McpClient> {
   const start = custom ?? defaultStartMcpClient;
   try {
-    return await start(configs);
+    return await start(configs, connectSignal);
   } catch (err) {
     if (err instanceof McpError) {
-      throw new CliError('invalid_invocation', `MCP server connection failed: ${err.message}`);
+      throw new CliError(
+        'invalid_invocation',
+        `MCP server connection failed: ${err.message}${deadlineHint(err)}`,
+      );
     }
     throw err;
   }
+}
+
+/**
+ * The one-line remedy for a connect that ran out of time.
+ *
+ * Without it a user waits the full deadline and is told only that it elapsed — true, secret-free, and useless,
+ * because the escape hatch exists and its name appears nowhere. This is the half of `#204` that a discriminant
+ * alone does not buy: the type tells a PROGRAM what happened, and this tells a PERSON what to do. Only the
+ * connect phase gets it, because it is the only phase with an authored override — saying "raise
+ * `connect_timeout_ms`" after a slow `tools/call` would send an author to a field that cannot help.
+ */
+function deadlineHint(err: McpError): string {
+  if (!(err instanceof McpDeadlineError) || err.phase !== 'connect') return '';
+  return (
+    ` If this server is legitimately slow to start (a cold \`npx\` often is), raise it with` +
+    ` \`connect_timeout_ms\` on the server entry (max ${MCP_CONNECT_TIMEOUT_CEILING_MS} ms).`
+  );
 }
 
 /** Matches a `{{secrets.<name>}}` placeholder (tolerant of inner whitespace) — the ONLY supported env interpolation. */
@@ -519,7 +554,12 @@ export interface WorkflowMcpRuntime {
 /** Options for {@link connectWorkflowMcp} — the run cwd + an injectable client starter (tests). */
 export interface ConnectWorkflowMcpOptions {
   readonly cwd: string;
-  readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  readonly startMcpClient?: (
+    servers: readonly McpServerConfig[],
+    signal?: AbortSignalLike,
+  ) => Promise<McpClient>;
+  /** Cancels the connect and the discovery walk (ADR-0088 §1.1) — see {@link ConnectAgentMcpOptions.connectSignal}. */
+  readonly connectSignal?: AbortSignalLike;
   /** Resolve `{{secrets.<name>}}` in a server `env` value (2.R Step 4, ADR-0052 §6); see {@link ConnectAgentMcpOptions}. */
   readonly resolveSecret?: McpSecretResolver;
   /** The merged config `[[mcp_servers]]` registrations (Step 4b) — resolves a by-name `ref` entry; see {@link ConnectAgentMcpOptions}. */
@@ -528,6 +568,26 @@ export interface ConnectWorkflowMcpOptions {
   readonly consentGate?: StdioConsentGate;
   /** The workflow path, shown at the consent prompt so the imported-artifact case names its own file. */
   readonly artifact?: string;
+}
+
+/**
+ * Does this workflow declare ANY inbound MCP server on an inline agent?
+ *
+ * A cheap, side-effect-free look ahead of {@link connectWorkflowMcp}, so a caller can decide whether there is
+ * anything to guard **before** the connect that spawns the children
+ * ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §1.3). Arming a signal handler
+ * unconditionally was the first attempt and a regression: `relavium run` has a documented single-SIGINT-handler
+ * contract (`drive.ts` identifies its own by set-delta), and a guard installed for a workflow with no children
+ * to reap is a second listener that does nothing but break it.
+ *
+ * Deliberately does NOT resolve a `ref` or validate anything — an unresolvable `ref` is
+ * {@link connectWorkflowMcp}'s fail-loud, not this predicate's, and answering "yes, look closer" is the safe
+ * direction for a look-ahead.
+ */
+export function workflowDeclaresMcp(def: WorkflowDefinition): boolean {
+  return (def.workflow.agents ?? [])
+    .filter(isInlineAgent)
+    .some((agent) => (agent.mcp_servers ?? []).length > 0);
 }
 
 /**
@@ -581,7 +641,7 @@ export async function connectWorkflowMcp(
     {},
     consented,
   );
-  const client = await startMcpClientFailLoud(configs, opts.startMcpClient);
+  const client = await startMcpClientFailLoud(configs, opts.startMcpClient, opts.connectSignal);
 
   try {
     // Augment each inline agent's grant with ONLY its own servers' discovered ids (a `$ref` entry passes through).

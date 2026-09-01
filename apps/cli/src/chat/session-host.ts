@@ -28,6 +28,7 @@ import {
 } from '@relavium/llm';
 import type { ManagerSkippedTool, McpClient, McpServerConfig } from '@relavium/mcp';
 import type {
+  AbortSignalLike,
   AgentSessionRecord,
   Budget,
   McpServerRegistration,
@@ -118,6 +119,13 @@ export interface BuildChatSessionOptions {
    */
   readonly mcpRegistrations?: readonly McpServerRegistration[];
   /**
+   * Cancels the MCP connect + discovery ([ADR-0088](../../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md)
+   * §1.1). A connect can be the longest thing a session start does — up to `stdio`'s 120 s while a cold `npx`
+   * resolves — so a surface that reaps children on a signal needs the connect itself to be interruptible, not
+   * merely survivable.
+   */
+  readonly mcpConnectSignal?: AbortSignalLike;
+  /**
    * Disable inbound MCP entirely for this session — the agent's `mcp_servers` are NOT connected (no config
    * build, no spawn, no dial), so the session is fully offline. `relavium agent run --fixture` (cassette replay)
    * sets this so a recorded run never touches a real server; the cassette already carries any tool results.
@@ -206,6 +214,12 @@ export interface BuiltChatSession {
    * command MUST `await` it on session teardown (its `finally`), mirroring `persister.close()`. Idempotent.
    */
   readonly closeMcp?: () => Promise<void>;
+  /**
+   * The spawned `stdio` children's pids — for a **synchronous** last-resort reap on `process.on('exit')`
+   * ([ADR-0088](../../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §1.3). {@link closeMcp} is
+   * async, and an exit path that cannot await it re-orphans exactly the children that obligation is about.
+   */
+  readonly mcpChildPids?: readonly number[];
   /**
    * The budget wiring, when the chat config declares a cap — surfaced so the caller can attach the durable
    * conservative-commitment writer once the persister exists (ADR-0074 §4), and so a surface can offer §1's
@@ -537,6 +551,7 @@ function mcpOptionsFor(
     ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
     ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
     ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
+    ...(opts.mcpConnectSignal === undefined ? {} : { connectSignal: opts.mcpConnectSignal }),
   };
 }
 
@@ -593,7 +608,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       tools: deps.tools,
       emitSessionEvent: emit,
       mcpSkipped: mcp?.skipped ?? [],
-      ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
+      ...(mcp === undefined ? {} : { closeMcp: () => mcp.close(), mcpChildPids: mcp.childPids }),
       attachDurabilityProbe,
       attachEffectJournal,
       ...(governor === undefined ? {} : { governor }),
@@ -722,6 +737,13 @@ export interface BuildResumedChatSessionOptions {
   readonly mcpSecretResolver?: McpSecretResolver;
   /** Config `[[mcp_servers]]` registrations for by-name `ref` resolution (2.R Step 4b; see {@link BuildChatSessionOptions.mcpRegistrations}). */
   readonly mcpRegistrations?: readonly McpServerRegistration[];
+  /**
+   * Cancels the MCP connect + discovery ([ADR-0088](../../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md)
+   * §1.1). A connect can be the longest thing a session start does — up to `stdio`'s 120 s while a cold `npx`
+   * resolves — so a surface that reaps children on a signal needs the connect itself to be interruptible, not
+   * merely survivable.
+   */
+  readonly mcpConnectSignal?: AbortSignalLike;
   /** Sink for an `on_exceed: 'warn'` pre-egress budget warning (see {@link BuildChatSessionOptions}). */
   readonly onBudgetWarning?: (warning: ChatBudgetWarning) => void;
   /** The ADR-0065 §2 user-pricing overlay (2.5.G S10; see {@link BuildChatSessionOptions.resolvePrice}) — so a
@@ -812,7 +834,7 @@ export async function buildResumedChatSession(
       resumeState,
       nextSequenceNumber,
       mcpSkipped: mcp?.skipped ?? [],
-      ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
+      ...(mcp === undefined ? {} : { closeMcp: () => mcp.close(), mcpChildPids: mcp.childPids }),
       attachDurabilityProbe,
       attachEffectJournal,
       ...(governor === undefined ? {} : { governor }),

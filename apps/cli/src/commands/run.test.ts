@@ -1168,6 +1168,58 @@ describe('runCommand', () => {
     expect(closed).toBe(1); // the connection was torn down at the run terminal
   });
 
+  it('ARMS the MCP signal guard around the connect, and releases it on the normal path (ADR-0088 §1.3)', async () => {
+    // **The binding a review proved absent.** A clean revert of `guardMcpTeardown` from this command left all
+    // 2534 CLI tests green: the guard's own suite exercises the helper in isolation, so nothing required a
+    // surface to call it — which is the "a field can be wired and still dead" failure exactly.
+    //
+    // The observation point is the injected `startMcpClient`, because it runs INSIDE the window the guard is
+    // supposed to cover. That is the point of §1.3's ordering: the SDK spawns children inside the connect, so
+    // arming afterwards leaves the longest child-holding window — a cold `npx`, up to 120 s — unguarded.
+    const path = writeWorkflow('mcp-guard.relavium.yaml', MCP_WF);
+    const { io } = captureIo();
+    const conn: McpConnection = {
+      listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
+      callTool: () =>
+        Promise.resolve({ content: [{ type: 'text', text: 'fs result' }], isError: false }),
+      close: () => Promise.resolve(),
+    };
+    const baselineSigint = process.listenerCount('SIGINT');
+    const baselineExit = process.listenerCount('exit');
+    let sigintDuringConnect = -1;
+    let exitDuringConnect = -1;
+
+    const code = await runCommand(
+      { workflow: path, input: [], allowMcpStdio: [] },
+      {
+        io,
+        global: globalOptions(),
+        providers: scriptedResolver([toolUseTurn('c1', 'mcp_fs_read'), textTurn('done')]),
+        buildEngine: (opts) =>
+          buildEngine({
+            ...opts,
+            host: createInMemoryHost(),
+            effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+          }),
+        consentGate: PASS_CONSENT,
+        startMcpClient: () => {
+          // Sampled while the connect is in flight — the window that must be covered.
+          sigintDuringConnect = process.listenerCount('SIGINT');
+          exitDuringConnect = process.listenerCount('exit');
+          return realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(conn) }]);
+        },
+      },
+    );
+
+    expect(code).toBe(EXIT_CODES.success);
+    // The cooperative half AND the synchronous `process.on('exit')` reaper are both armed during the connect.
+    expect(sigintDuringConnect).toBeGreaterThan(baselineSigint);
+    expect(exitDuringConnect).toBe(baselineExit + 1);
+    // …and both are released on the normal path, where the command's own `finally` owns the teardown.
+    expect(process.listenerCount('SIGINT')).toBe(baselineSigint);
+    expect(process.listenerCount('exit')).toBe(baselineExit);
+  });
+
   it('freezes the AUGMENTED graph — the store is opened with the workflow that RUNS (ADR-0083 §5)', async () => {
     // `runs.workflow_definition_snapshot` is what a cross-process `relavium gate` rebuilds the run from, and
     // what ADR-0083 §5 verifies a resume against. The store used to be opened with the PRE-augmentation

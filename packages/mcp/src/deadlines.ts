@@ -1,5 +1,7 @@
 import type { AbortSignalLike } from '@relavium/shared';
 
+import { McpError } from './errors.js';
+
 /**
  * Deadlines for the inbound MCP layer
  * ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §1) — and the bridge from the
@@ -46,35 +48,63 @@ export const MCP_DEADLINES = {
 /** Why a bounded MCP operation ended — the phase, so a caller can say which deadline was exceeded. */
 export type McpDeadlinePhase = 'connect' | 'discovery' | 'call';
 
+/** A bridged signal and the disposer that releases its listener on the SOURCE signal. */
+export interface BridgedSignal {
+  readonly signal: AbortSignal | undefined;
+  readonly dispose: () => void;
+}
+
 /**
- * Convert the engine's platform-free {@link AbortSignalLike} into a real `AbortSignal` for the SDK.
+ * Convert the engine's platform-free {@link AbortSignalLike} into a **per-request** `AbortSignal` for the SDK.
  *
  * `@relavium/shared` compiles with `types: []` and describes a signal only by what it observes, so the
  * engine's signal is structurally compatible but not the DOM/Node class the SDK's `RequestOptions.signal`
  * demands. Rather than widen the shared type (which would drag an ambient lib into the one package that must
  * not have one), the bridge lives here — at the SDK fence, where a vendor's type expectations belong.
  *
- * Returns `undefined` for an absent signal so a caller can spread the result without an explicit `undefined`
- * under `exactOptionalPropertyTypes`. An already-aborted input produces an already-aborted output.
+ * **A real `AbortSignal` is bridged too, and that is deliberate — an earlier version forwarded it verbatim.**
+ * Forwarding looked strictly better (one fewer controller, and `signal.reason` preserved for the SDK's error
+ * mapping) and was measured to be the leak: `Protocol.request` does
+ * `options.signal.addEventListener('abort', …)` with **no removal, no `{ once: true }`, and no detach on
+ * settle**. Hand it the run-lifetime signal and every `tools/call` — and every one of up to a hundred
+ * discovery pages — leaves a listener behind for the rest of the run, each retaining a message id, a schema
+ * and a transport. On cancel they all fire, emitting a `notifications/cancelled` per long-answered request.
+ *
+ * Giving the SDK a controller **we** own moves that retention to something with a lifetime we control: the
+ * caller's `finally` calls {@link BridgedSignal.dispose}, the bridged controller becomes garbage, and the
+ * SDK's listener goes with it. The `reason` is forwarded through `abort(reason)`, so nothing is lost.
+ *
+ * `signal` is `undefined` for an absent input so a caller can spread it without an explicit `undefined` under
+ * `exactOptionalPropertyTypes`. An already-aborted input produces an already-aborted output.
  */
-export function toAbortSignal(signal: AbortSignalLike | undefined): AbortSignal | undefined {
-  if (signal === undefined) return undefined;
-  // A real `AbortSignal` already satisfies `AbortSignalLike`; forwarding it directly avoids a redundant
-  // controller AND keeps the SDK's own `signal.reason` intact for its error mapping.
-  if (signal instanceof AbortSignal) return signal;
+export function toAbortSignal(signal: AbortSignalLike | undefined): BridgedSignal {
+  const noop = (): void => undefined;
+  if (signal === undefined) return { signal: undefined, dispose: noop };
   const controller = new AbortController();
+  const reasonOf = (source: AbortSignalLike): unknown =>
+    source instanceof AbortSignal ? source.reason : undefined;
   if (signal.aborted) {
-    controller.abort();
-    return controller.signal;
+    controller.abort(reasonOf(signal));
+    return { signal: controller.signal, dispose: noop };
   }
-  // No `removeEventListener` on completion: the bridged controller lives exactly as long as the request it
-  // was created for, and the source signal is the caller's — holding one listener for that span is the point.
-  signal.addEventListener('abort', () => controller.abort());
-  return controller.signal;
+  const onAbort = (): void => controller.abort(reasonOf(signal));
+  signal.addEventListener('abort', onAbort);
+  return {
+    signal: controller.signal,
+    dispose: () => signal.removeEventListener('abort', onAbort),
+  };
 }
 
-/** An operation that exceeded its deadline. The `phase` is a field, never only a sentence (`#203`). */
-export class McpDeadlineError extends Error {
+/**
+ * An operation that exceeded its deadline. The `phase` is a field, never only a sentence (`#203`).
+ *
+ * **Extends `McpError`, and that is load-bearing rather than tidy.** A first version extended `Error`, and a
+ * review found the consequence one frame up: `startMcpClient` wraps anything that is not an `McpError` into
+ * `McpConnectError`, whose message is the fixed sentence "could not be connected or listed". So the type this
+ * class exists to preserve was being flattened into the opaque message ADR-0088 §9 exists to replace — after
+ * the user had already waited out the full deadline.
+ */
+export class McpDeadlineError extends McpError {
   readonly serverId: string;
   readonly phase: McpDeadlinePhase;
   readonly timeoutMs: number;
@@ -122,10 +152,21 @@ export function remainingMs(window: DeadlineWindow, now: () => number = Date.now
  * every failure path. Two mechanisms for one obligation is how the second one rots — the caller keeps it,
  * because the caller is what holds the thing that needs closing.
  *
- * **Caller-cancel wins a same-tick tie** ([ADR-0082](../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) §5):
- * the abort branch is registered first and checked first, so a signal that fires in the same turn as the timer
- * surfaces as a cancellation rather than a timeout. A user who pressed Esc should not be told the server was
- * slow.
+ * **Caller-cancel wins, and precedence is decided at CLASSIFICATION time — not by listener order.** An
+ * earlier version claimed the win came from registering the abort branch first, and a review measured that
+ * claim false: registration order only decides a tie when both callbacks land in the same synchronous flush,
+ * and the realistic CLI delivery is our timer firing in the timers phase while the user's Esc arrives in the
+ * poll phase of the same iteration. The result was a user being told the server exceeded its deadline for
+ * what was a cancel — exactly what
+ * [ADR-0082](../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
+ * §5 forbids. `@relavium/shared`'s own `openDeadline` had already solved this and written down why; this now
+ * uses the same rule, which is also the only version a test can pin without pinning a scheduler detail.
+ *
+ * **An already-aborted signal does not start the work.** The same refusal the spent-window branch makes, for
+ * the same reason: `Promise.race` evaluates its array before racing, so an `operation()` in that array runs
+ * even when the guard already rejected. Measured — a pre-aborted connect still **spawned the child** and a
+ * pre-aborted request still put bytes on the wire, which is the "the remote or child effect keeps running"
+ * harm ADR-0088's own Context names.
  */
 export async function raceDeadline<T>(
   serverId: string,
@@ -135,6 +176,15 @@ export async function raceDeadline<T>(
   signal?: AbortSignalLike,
   now: () => number = Date.now,
 ): Promise<T> {
+  // A function, not a direct read: `AbortSignalLike.aborted` is declared `readonly boolean`, so a narrowing
+  // read here would let the compiler treat it as settled for the rest of the scope — and the whole point of
+  // the classification below is that it changed in between.
+  const cancelled = (): boolean => signal?.aborted === true;
+  if (cancelled()) {
+    // Refuse BEFORE `Promise.race` evaluates its array: the work in it would otherwise run — spawning a child
+    // or writing a request the caller had already cancelled.
+    throw new McpAbortedError(serverId, phase);
+  }
   const remaining = window.startedAt + window.timeoutMs - now();
   if (remaining <= 0) {
     // Already expired before the operation starts — do not begin work that cannot finish inside the window.
@@ -145,10 +195,10 @@ export async function raceDeadline<T>(
   let onAbort: (() => void) | undefined;
   const guard = new Promise<never>((_resolve, reject) => {
     if (signal !== undefined) {
-      if (signal.aborted) {
-        reject(new McpAbortedError(serverId, phase));
-        return;
-      }
+      // No pre-aborted branch here: the refusal above already returned, so reaching this point means the
+      // signal was live. A synchronous `reject` inside this executor was also the one shape that could leave
+      // an UNHANDLED rejection — if `operation()` threw synchronously, the array literal never completed and
+      // `Promise.race` was never called, so nothing subscribed to `guard`.
       onAbort = (): void => reject(new McpAbortedError(serverId, phase));
       signal.addEventListener('abort', onAbort);
     }
@@ -161,14 +211,25 @@ export async function raceDeadline<T>(
 
   try {
     return await Promise.race([operation(), guard]);
+  } catch (err) {
+    // Classification time, not listener order. Only OUR OWN deadline verdict is reclassified: an error the
+    // operation itself produced is its own answer and must not be laundered into a cancellation.
+    if (err instanceof McpDeadlineError && cancelled()) {
+      throw new McpAbortedError(serverId, phase);
+    }
+    throw err;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort);
   }
 }
 
-/** A bounded MCP operation the caller cancelled. Distinct from a deadline so a surface can say which happened. */
-export class McpAbortedError extends Error {
+/**
+ * A bounded MCP operation the caller cancelled. Distinct from a deadline so a surface can say which happened —
+ * a user who pressed Esc must not be told the server was slow. Extends `McpError` for the reason
+ * {@link McpDeadlineError} does.
+ */
+export class McpAbortedError extends McpError {
   readonly serverId: string;
   readonly phase: McpDeadlinePhase;
 

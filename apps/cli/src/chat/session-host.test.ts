@@ -450,6 +450,7 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
           capability: { call: () => Promise.resolve({ content: [], isError: false }) },
           toolDefs: [],
           toolIdsByServer: new Map(),
+          childPids: [],
           skipped: [],
           close: () => Promise.resolve(),
         }),
@@ -530,6 +531,7 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
       capability: { call: () => Promise.resolve({ content: [], isError: false }) },
       toolDefs: [...defs, ...defs], // duplicate id ⇒ createToolRegistry throws inside buildSessionRuntime
       toolIdsByServer: new Map(),
+      childPids: [],
       skipped: [],
       close: () => {
         closed += 1;
@@ -900,6 +902,7 @@ describe('buildResumedChatSession (2.N)', () => {
         capability: { call: () => Promise.resolve({ content: [], isError: false }) },
         toolDefs: [...defs, ...defs], // duplicate id ⇒ createToolRegistry throws post-connect
         toolIdsByServer: new Map(),
+        childPids: [],
         skipped: [],
         close: () => {
           closed += 1;

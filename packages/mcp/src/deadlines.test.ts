@@ -20,8 +20,13 @@ import { connectSdkTransport } from './sdk-stdio.js';
  *
  * 1. a transport whose `start()` never resolves hung `connectSdkTransport` **forever** — because
  *    `Client.connect` awaits `transport.start()` first and with no options at all, so the SDK's own 60 s
- *    request timeout never applied to it;
- * 2. an aborted `tools/call` was still pending 500 ms later, because the signal had nowhere to go.
+ *    request timeout never applied to it.
+ *
+ * Measurement 2 — an aborted `tools/call` still pending 500 ms later — is **not** asserted here, and an
+ * earlier version of this docstring said it was. There is no `tools/call` in this file; the closest is a
+ * `raceDeadline(…, 'call', …)` over a synthetic promise, which is neither a call nor an SDK request. It is
+ * asserted where it can actually be: `network-adapters.test.ts`, against a real `McpServer` whose handler
+ * observes its own cancellation.
  *
  * The suite deliberately asserts that the transport is CLOSED as well as that the promise rejected. Rejecting
  * without closing leaves the SDK transport running, which for `stdio` is a spawned child that outlives the
@@ -64,7 +69,11 @@ function muteTransport(): { transport: Transport; closed: () => number } {
 }
 
 /** A minimal `AbortSignalLike` that is NOT a real `AbortSignal` — the shape the engine actually passes. */
-function fakeSignal(): { signal: AbortSignalLike; abort: () => void } {
+function fakeSignal(): {
+  signal: AbortSignalLike;
+  abort: () => void;
+  listenerCount: () => number;
+} {
   const listeners = new Set<() => void>();
   let aborted = false;
   return {
@@ -83,6 +92,9 @@ function fakeSignal(): { signal: AbortSignalLike; abort: () => void } {
       aborted = true;
       for (const l of [...listeners]) l();
     },
+    // Exposed so the bridge's listener lifetime is ASSERTABLE rather than argued about — the review that
+    // caught the leak had to read the code to find it.
+    listenerCount: () => listeners.size,
   };
 }
 
@@ -159,20 +171,65 @@ describe('raceDeadline', () => {
     expect(operation).not.toHaveBeenCalled();
   });
 
-  it('gives the caller’s cancel precedence over a timer that fires in the same turn', async () => {
-    // ADR-0082 §5's caller-cancel-wins, applied here: a user who pressed Esc must not be told the server was
-    // slow. The signal is pre-aborted, so both branches are eligible at the first opportunity.
-    const { signal } = fakeSignal();
-    const preAborted: AbortSignalLike = { ...signal, aborted: true };
+  it('refuses a PRE-ABORTED signal without starting the work at all', async () => {
+    // `Promise.race` evaluates its array before racing, so an `operation()` in it runs even when the guard
+    // has already rejected. Measured on the real thing: a pre-aborted connect still SPAWNED the child, and a
+    // pre-aborted request still put bytes on the wire — the "the remote or child effect keeps running" harm
+    // ADR-0088's own Context names. The refusal now happens before the array exists.
+    const { signal, abort } = fakeSignal();
+    abort();
+    const operation = vi.fn(() => Promise.resolve('never'));
+    await expect(
+      raceDeadline('s', 'connect', openWindow(1_000), operation, signal),
+    ).rejects.toBeInstanceOf(McpAbortedError);
+    expect(operation).not.toHaveBeenCalled();
+  });
+
+  it('reports a CANCELLATION when the timer won the race but the caller had cancelled', async () => {
+    // **The test the previous version could not be.** It passed a PRE-aborted signal, which takes the early
+    // refusal above and never reaches the timer — so reordering the guard's branches left it green and it
+    // pinned nothing.
+    //
+    // This signal never FIRES an abort event, so the guard's abort branch cannot win: the timer necessarily
+    // does. But `aborted` flips to true as the window elapses, so at classification time the caller has
+    // cancelled. That is the whole property — precedence decided when the failure is classified, not by which
+    // listener the runtime happened to invoke first — and it is deterministic rather than a scheduler race.
+    // The realistic delivery it models: our `setTimeout` fires in the timers phase while the user's Esc
+    // arrives in the poll phase of the same iteration. ADR-0082 §5: a user who pressed Esc must not be told
+    // the server was slow.
+    const startedAt = Date.now();
+    const silentlyCancelled: AbortSignalLike = {
+      get aborted() {
+        return Date.now() - startedAt >= 10;
+      },
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    };
     await expect(
       raceDeadline(
         's',
         'call',
-        { startedAt: Date.now(), timeoutMs: 1 },
-        () => new Promise<never>(() => undefined),
-        preAborted,
+        openWindow(10),
+        () =>
+          new Promise<never>(() => {
+            // never settles — the timer is what ends this
+          }),
+        silentlyCancelled,
       ),
     ).rejects.toBeInstanceOf(McpAbortedError);
+  });
+
+  it('does NOT relabel an error the operation itself produced', async () => {
+    // Only our own verdict is reclassified. A server that answered with an error while the user happened to
+    // cancel must still report what the server said — laundering it into "cancelled" would hide a real fault.
+    const { signal, abort } = fakeSignal();
+    abort();
+    await expect(
+      raceDeadline('s', 'call', openWindow(1_000), () =>
+        Promise.reject(new Error('server said no')),
+      ),
+    ).rejects.toThrow('server said no');
+    expect(signal.aborted).toBe(true);
   });
 
   it('lets the operation’s OWN failure through unchanged, with its own type', async () => {
@@ -199,36 +256,111 @@ describe('remainingMs', () => {
 
 describe('toAbortSignal', () => {
   it('is undefined for an absent signal, so a caller can spread it', () => {
-    expect(toAbortSignal(undefined)).toBeUndefined();
+    expect(toAbortSignal(undefined).signal).toBeUndefined();
   });
 
-  it('forwards a real AbortSignal rather than re-wrapping it', () => {
-    // Re-wrapping would drop `signal.reason`, which the SDK maps into its own error.
+  it('bridges a real AbortSignal too, rather than forwarding it — and forwards its reason', () => {
+    // **The forward was the leak.** `Protocol.request` does `options.signal.addEventListener('abort', …)`
+    // with no removal and no detach on settle, so handing it the run-lifetime signal left one listener per
+    // `tools/call` and per discovery page for the rest of the run. Giving the SDK a controller WE own moves
+    // that retention to something with a lifetime we control. The `reason` — the only thing forwarding
+    // bought — is carried across explicitly.
     const controller = new AbortController();
-    expect(toAbortSignal(controller.signal)).toBe(controller.signal);
+    const bridged = toAbortSignal(controller.signal);
+    expect(bridged.signal).not.toBe(controller.signal);
+    controller.abort(new Error('user pressed Esc'));
+    expect(bridged.signal?.aborted).toBe(true);
+    expect((bridged.signal?.reason as Error).message).toBe('user pressed Esc');
+  });
+
+  it('releases its listener on a real AbortSignal as well', () => {
+    // The leak this replaces was on exactly this path, so the disposer has to work here or nothing changed.
+    const controller = new AbortController();
+    const bridged = toAbortSignal(controller.signal);
+    bridged.dispose();
+    controller.abort();
+    expect(bridged.signal?.aborted).toBe(false); // detached before the abort — no propagation
   });
 
   it('bridges an ALREADY-aborted engine signal to an aborted AbortSignal', () => {
     const { signal, abort } = fakeSignal();
     abort();
-    expect(toAbortSignal(signal)?.aborted).toBe(true);
+    expect(toAbortSignal(signal).signal?.aborted).toBe(true);
   });
 
   it('bridges a LATER abort', () => {
     const { signal, abort } = fakeSignal();
     const bridged = toAbortSignal(signal);
-    expect(bridged?.aborted).toBe(false);
+    expect(bridged.signal?.aborted).toBe(false);
     abort();
-    expect(bridged?.aborted).toBe(true);
+    expect(bridged.signal?.aborted).toBe(true);
+  });
+
+  it('RELEASES its listener on the source signal when disposed', () => {
+    // **The leak a review caught, inverted into an assertion.** A first version never removed the listener and
+    // its comment claimed the bridge "lives exactly as long as the request" — but the retainer is the SOURCE
+    // signal, which is the engine's run/turn signal, alive for the whole run. One bridge is built per request,
+    // and a discovery walk builds one per page, so a long agentic loop accumulated hundreds.
+    const { signal, listenerCount } = fakeSignal();
+    const bridged = toAbortSignal(signal);
+    expect(listenerCount()).toBe(1);
+    bridged.dispose();
+    expect(listenerCount()).toBe(0);
+  });
+
+  it('has a no-op dispose where it subscribed to nothing', () => {
+    // An absent signal, a real `AbortSignal`, and an already-aborted one all skip the subscription — calling
+    // dispose on them must be safe rather than merely unnecessary.
+    const controller = new AbortController();
+    const { signal, abort } = fakeSignal();
+    abort();
+    expect(() => {
+      toAbortSignal(undefined).dispose();
+      toAbortSignal(controller.signal).dispose();
+      toAbortSignal(signal).dispose();
+    }).not.toThrow();
   });
 });
 
 describe('MCP_DEADLINES', () => {
-  it('gives stdio the longest connect window, and the network the shortest', () => {
+  it('gives stdio the longest window and the network the shortest — the whole ordering, not half of it', () => {
     // Not a tautology: the ordering IS the decision (ADR-0088 §1). A cold `npx` needs room; a remote endpoint
-    // past thirty seconds is hung rather than starting. An edit that equalised them would silently reopen
-    // `#205`, and this is the test that would go red.
-    expect(MCP_DEADLINES.stdioConnectMs).toBeGreaterThan(MCP_DEADLINES.networkConnectMs);
+    // past thirty seconds is hung rather than starting.
+    //
+    // **An earlier version asserted only half its own title**, and a review proved it: raising
+    // `networkConnectMs` to 90 s — longer than discovery AND call, and 3× the stated rationale — left it
+    // green. Both halves are checked against every member now.
+    const all = Object.values(MCP_DEADLINES);
+    expect(MCP_DEADLINES.stdioConnectMs).toBe(Math.max(...all));
+    expect(MCP_DEADLINES.networkConnectMs).toBe(Math.min(...all));
     expect(MCP_DEADLINES.stdioConnectMs).toBeGreaterThan(60_000); // above the SDK's own default
+  });
+});
+
+describe('raceDeadline — cleanup', () => {
+  it('clears its timer and RELEASES its abort listener on the happy path', async () => {
+    // **A review deleted the whole `finally` and every test stayed green.** That is not cosmetic: this runs on
+    // every `tools/list` page and every `tools/call` against the run's long-lived signal, so a session making
+    // N MCP calls would retain N listeners and N timers. The file reasons carefully about listener lifetime in
+    // `toAbortSignal` while the same decision here went unasserted.
+    vi.useFakeTimers();
+    const { signal, listenerCount } = fakeSignal();
+    const before = vi.getTimerCount();
+    await expect(
+      raceDeadline('s', 'call', openWindow(5_000), () => Promise.resolve('ok'), signal),
+    ).resolves.toBe('ok');
+    expect(listenerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(before);
+  });
+
+  it('clears them on the FAILURE path too', async () => {
+    vi.useFakeTimers();
+    const { signal, listenerCount } = fakeSignal();
+    const before = vi.getTimerCount();
+    await expect(
+      raceDeadline('s', 'call', openWindow(5_000), () => Promise.reject(new Error('nope')), signal),
+    ).rejects.toThrow('nope');
+    expect(listenerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(before);
   });
 });

@@ -3,6 +3,7 @@ import {
   McpError,
   type McpClient,
   type McpConnection,
+  type HttpServerSpec,
   type McpServerConfig,
   type StdioServerSpec,
 } from '@relavium/mcp';
@@ -28,6 +29,7 @@ function fakeClient(overrides: Partial<McpClient> = {}): McpClient {
     capability: { call: () => Promise.resolve({ content: [], isError: false }) },
     toolDefs: [],
     toolIdsByServer: new Map(),
+    childPids: [],
     skipped: [],
     close: () => Promise.resolve(),
     ...overrides,
@@ -61,6 +63,65 @@ describe('resolveServerConfigs', () => {
     expect(configs[0]?.id).toBe('fs');
     expect(configs[0]?.toolsAllowlist).toEqual(['read', 'write']);
     expect(typeof configs[0]?.open).toBe('function'); // not invoked here — no spawn in a unit test
+  });
+
+  it('carries an authored connect_timeout_ms all the way into the STDIO spawn spec (ADR-0088 §1.4)', async () => {
+    // **The journey a review proved untested.** Four independent mutations — dropping the forwarding in
+    // `buildStdioConfig`, in `buildNetworkConfig`, in the registration carry-through, and in all four
+    // adapters' `spec.connectTimeoutMs ?? DEFAULT` — each left every suite green. `packages/shared` proves
+    // the SHAPE is admitted; nothing proved the admitted value is USED, so the whole field was decorative.
+    let seen: StdioServerSpec | undefined;
+    const configs = resolveServerConfigs(
+      [stdioRef({ connect_timeout_ms: 300_000 })],
+      '/work',
+      undefined,
+      {
+        stdio: (_id, spec) => {
+          seen = spec;
+          return Promise.reject(new Error('not connecting in a unit test'));
+        },
+      },
+    );
+    await expect(configs[0]?.open()).rejects.toThrow('not connecting');
+    expect(seen?.connectTimeoutMs).toBe(300_000);
+  });
+
+  it('omits connectTimeoutMs entirely when unauthored, so the adapter default applies', () => {
+    // `exactOptionalPropertyTypes`: an explicit `undefined` would be a different value from absent, and the
+    // adapter's `spec.connectTimeoutMs ?? MCP_DEADLINES.x` reads absent as "use the default".
+    let seen: StdioServerSpec | undefined;
+    const configs = resolveServerConfigs([stdioRef()], '/work', undefined, {
+      stdio: (_id, spec) => {
+        seen = spec;
+        return Promise.reject(new Error('stop'));
+      },
+    });
+    void configs[0]?.open().catch(() => undefined);
+    expect(seen !== undefined && 'connectTimeoutMs' in seen).toBe(false);
+  });
+
+  it('carries an authored connect_timeout_ms into a NETWORK connect spec too', async () => {
+    let seen: HttpServerSpec | undefined;
+    const configs = resolveServerConfigs(
+      [
+        {
+          id: 'docs',
+          transport: 'http',
+          url: 'https://docs.example/mcp',
+          connect_timeout_ms: 45_000,
+        },
+      ],
+      '/work',
+      undefined,
+      {
+        http: (_id, spec) => {
+          seen = spec;
+          return Promise.reject(new Error('not connecting in a unit test'));
+        },
+      },
+    );
+    await expect(configs[0]?.open()).rejects.toThrow('not connecting');
+    expect(seen?.connectTimeoutMs).toBe(45_000);
   });
 
   it('omits toolsAllowlist when the ref declares none (exactOptionalPropertyTypes — never an explicit undefined)', () => {
@@ -628,6 +689,50 @@ describe('connectWorkflowMcp (run path)', () => {
     ).rejects.toThrow(/conflicting settings/);
   });
 
+  it('fails loud when two agents share a server id but DIFFER on connect_timeout_ms', async () => {
+    // **A review deleted `d: ref.connect_timeout_ms ?? null` from `serverFingerprint` and all 2534 CLI tests
+    // stayed green.** Every sibling identity field (`env`, `tools_allowlist`, `allow_local_endpoint`) has a
+    // fail-loud test; this one had none, so the comment claiming it "enters the fingerprint for the reason
+    // `allow_local_endpoint` already does" was unbacked. Two authors would silently share a bound neither
+    // wrote — first-wins.
+    const def = wf(
+      [
+        '    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x, connect_timeout_ms: 5000 }] }',
+        '    - { id: writer, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x, connect_timeout_ms: 300000 }] }',
+        '',
+      ].join('\n'),
+    );
+    await expect(
+      connectWorkflowMcp(def, {
+        cwd: '/w',
+        consentGate: PASS_CONSENT,
+        startMcpClient: fakeStart(new Map()),
+      }),
+    ).rejects.toThrow(/conflicting settings/);
+  });
+
+  it('shares ONE connection when the two declarations agree on connect_timeout_ms', async () => {
+    // The negative control. Without it the test above would also pass against a fingerprint that treats every
+    // declaration as unique — which would break legitimate sharing rather than catch a conflict.
+    let startedWith: readonly McpServerConfig[] = [];
+    const def = wf(
+      [
+        '    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x, connect_timeout_ms: 5000 }] }',
+        '    - { id: writer, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x, connect_timeout_ms: 5000 }] }',
+        '',
+      ].join('\n'),
+    );
+    await connectWorkflowMcp(def, {
+      cwd: '/w',
+      consentGate: PASS_CONSENT,
+      startMcpClient: (servers) => {
+        startedWith = servers;
+        return Promise.resolve(fakeClient({ toolIdsByServer: new Map([['fs', []]]) }));
+      },
+    });
+    expect(startedWith).toHaveLength(1);
+  });
+
   it('fails loud when two agents share a server id but declare DIFFERENT tools_allowlist (no escalation)', async () => {
     // One physical connection cannot honor two allowlists — collapsing them would grant BOTH agents the union,
     // escalating the narrower agent past its declared grant. `tools_allowlist` is part of the dedup identity.
@@ -928,6 +1033,21 @@ describe('resolveMcpServerRef (by-name resolution, 2.R Step 4b)', () => {
       args: ['--stdio'],
       env: { GH: '1' },
       tools_allowlist: ['issue'],
+    });
+  });
+
+  it('preserves a registration `connect_timeout_ms` on the resolved ref (ADR-0088 §1.4)', () => {
+    // The registration owns the connection, so it owns the deadline — and the schema refuses an inline
+    // override alongside a `ref`, so this carry-through is the ONLY way an authored value reaches a by-name
+    // server. Deleting the carry line was measured to cost nothing.
+    const regs: McpServerRegistration[] = [
+      { name: 'gh', transport: 'stdio', command: 'npx', connect_timeout_ms: 300_000 },
+    ];
+    expect(resolveMcpServerRef({ ref: 'gh' }, regs)).toMatchObject({
+      id: 'gh',
+      transport: 'stdio',
+      command: 'npx',
+      connect_timeout_ms: 300_000,
     });
   });
 

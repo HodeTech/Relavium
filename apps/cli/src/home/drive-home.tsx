@@ -81,6 +81,7 @@ import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from '../render/tui/tui-constants.js';
 import { createHomeStore } from './home-store.js';
+import { defaultSubscribeSignals } from '../process/signals.js';
 
 /**
  * `driveHome` — the imperative entry behind a bare `relavium` in a TTY (2.5.B / [ADR-0054](../../../../docs/decisions/0054-cli-bare-invocation-interactive-home.md)).
@@ -145,31 +146,12 @@ export interface HomeDeps {
 }
 
 /**
- * The default external-signal source, registered with `on` (not `once`) so ink's signal-exit listener never re-raises
- * while we still hold the cooperative teardown.
- *
- * SIGINT(2) + SIGTERM(15) drive the cooperative teardown. SIGHUP(1) + SIGQUIT(3) were MISSING until Step 6f: they are
- * catchable kills that terminate WITHOUT firing Node's `'exit'` event, and SIGHUP is what a user gets by closing the
- * terminal window. Without them the Home left DECSET 1002+1006 enabled on the primary buffer, and the shell then
- * echoed a mouse report on every click. `relavium chat`'s `defaultReplLifecycle` has covered all four since Step 4b-3;
- * the two surfaces now agree.
+ * The default external-signal source. **Moved to `process/signals.ts`** so the one-shot commands' MCP
+ * teardown guard can reuse the ONE subscription without value-importing this Ink/React module
+ * ([ADR-0088](../../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §1.3); re-exported here because
+ * this file's own tests and callers address it by this name.
  */
-export function defaultSubscribeSignals(onSignal: (signo: number) => void): () => void {
-  const onSigint = (): void => onSignal(2);
-  const onSigterm = (): void => onSignal(15);
-  const onSighup = (): void => onSignal(1);
-  const onSigquit = (): void => onSignal(3);
-  process.on('SIGINT', onSigint);
-  process.on('SIGTERM', onSigterm);
-  process.on('SIGHUP', onSighup);
-  process.on('SIGQUIT', onSigquit);
-  return () => {
-    process.removeListener('SIGINT', onSigint);
-    process.removeListener('SIGTERM', onSigterm);
-    process.removeListener('SIGHUP', onSighup);
-    process.removeListener('SIGQUIT', onSigquit);
-  };
-}
+export { defaultSubscribeSignals };
 
 /** The default `process.on('exit')` net — synchronous by definition, which is why the restore it runs must be too. */
 export function defaultSubscribeProcessExit(onExit: () => void): () => void {
