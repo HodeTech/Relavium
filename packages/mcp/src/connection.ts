@@ -1,4 +1,5 @@
 import type { JsonSchema } from '@relavium/core';
+import type { AbortSignalLike } from '@relavium/shared';
 
 /**
  * The narrow, **SDK-type-free** seam between the inbound MCP layer and a live server connection
@@ -34,12 +35,31 @@ export interface McpToolResult {
   readonly isError: boolean;
 }
 
-/** A live connection to ONE MCP server — the seam the SDK adapter implements and a fake satisfies in tests. */
+/**
+ * A live connection to ONE MCP server — the seam the SDK adapter implements and a fake satisfies in tests.
+ *
+ * **Both round-trips take an optional `signal`** ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §1.2).
+ * It was measured absent: `McpCapability.call(input, signal)` received the engine's signal and had nowhere to
+ * put it, so an aborted `tools/call` was still pending 500 ms later and the only cancellation available was
+ * tearing the whole connection down — which invalidates every other call to that server for the rest of the
+ * session. The parameter is `AbortSignalLike` rather than a DOM `AbortSignal` because the engine's signal is
+ * platform-free; each adapter bridges it at the SDK fence.
+ */
 export interface McpConnection {
-  /** List the server's tools (the `tools/list` round-trip). */
-  listTools(): Promise<readonly DiscoveredTool[]>;
+  /** List the server's tools (the `tools/list` round-trip), bounded and cancellable. */
+  listTools(signal?: AbortSignalLike): Promise<readonly DiscoveredTool[]>;
   /** Invoke one tool by its ORIGINAL (server) name with already-validated arguments. */
-  callTool(name: string, args: unknown): Promise<McpToolResult>;
+  callTool(name: string, args: unknown, signal?: AbortSignalLike): Promise<McpToolResult>;
   /** Tear the connection down (terminate the stdio child / close the socket). Idempotent. */
   close(): Promise<void>;
+  /**
+   * The spawned child's pid — `stdio` only; a network connection owns no process and leaves it absent.
+   *
+   * Surfaced so a host can install a **synchronous** last-resort reap on `process.on('exit')`. {@link close}
+   * is async, and an exit path that cannot await it — a second Ctrl-C forcing `process.exit`, an
+   * `uncaughtException` net, a `process.exit` anywhere — would otherwise re-orphan the children
+   * [ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §1.3 is about. A pid is a number,
+   * not an SDK type, so it crosses the seam cleanly.
+   */
+  readonly childPid?: number | undefined;
 }

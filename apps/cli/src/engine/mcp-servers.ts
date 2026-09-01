@@ -1,6 +1,13 @@
 import type { WorkflowDefinition } from '@relavium/core';
 import {
+  MCP_DEADLINES,
+  McpAbortedError,
+  McpDeadlineError,
   McpError,
+  openWindow,
+  remainingMs,
+  type DeadlineWindow,
+  raceDeadline,
   openHttpConnection,
   openSseConnection,
   openStdioConnection,
@@ -15,9 +22,15 @@ import {
   type StdioServerSpec,
   type WebSocketServerSpec,
 } from '@relavium/mcp';
+import { nodeEgressDeps, type LocalEndpoint } from '@relavium/db';
 import {
+  extractEgressAuthority,
   isForbiddenDeclaredEnvKey,
+  isMetadataOrLinkLocal,
   isPrivateOrLocalHost,
+  urlHasCredentials,
+  MCP_CONNECT_TIMEOUT_CEILING_MS,
+  type AbortSignalLike,
   type Agent,
   type AgentRef,
   type McpServerRef,
@@ -25,6 +38,7 @@ import {
 } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
+import { createMcpFetch, type McpFetch, type McpFetchConfig } from './mcp-fetch.js';
 import type { ResolvedStdioSpawn } from './mcp-consent.js';
 import type { CliIo } from '../process/io.js';
 import { sanitizeInline } from '../render/tui/chat-projection.js';
@@ -50,7 +64,18 @@ export interface ConnectAgentMcpOptions {
   /** The session/run working directory — the spawned server's `cwd` (relative server paths resolve here). */
   readonly cwd: string;
   /** Injectable connect-all (tests pass a fake that never spawns); defaults to the real `startMcpClient`. */
-  readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  readonly startMcpClient?: (
+    servers: readonly McpServerConfig[],
+    signal?: AbortSignalLike,
+  ) => Promise<McpClient>;
+  /**
+   * Cancels the connect and the discovery walk (ADR-0088 §1.1).
+   *
+   * A connect can be the longest thing a session does — up to `stdio`'s 120 s while a cold `npx` resolves,
+   * with the terminal silent and the user reaching for Ctrl-C. Without this the signal guard could only reap
+   * children that already existed, leaving the highest-probability window uncovered.
+   */
+  readonly connectSignal?: AbortSignalLike;
   /**
    * Resolve a `{{secrets.<name>}}` placeholder in a server `env` value (2.R Step 4, ADR-0052 §6). When absent,
    * any `{{…}}` in an `env` value is rejected loud (a placeholder is never passed to the child as a literal).
@@ -145,6 +170,9 @@ export function resolveMcpServerRef(
     ...(reg.allow_local_endpoint === undefined
       ? {}
       : { allow_local_endpoint: reg.allow_local_endpoint }),
+    // The registration owns the connection, so it owns the connect deadline too (ADR-0088 §1.4) — the schema
+    // refuses an inline `connect_timeout_ms` alongside a `ref`, so there is nothing to reconcile here.
+    ...(reg.connect_timeout_ms === undefined ? {} : { connect_timeout_ms: reg.connect_timeout_ms }),
     ...(entry.tools_allowlist === undefined ? {} : { tools_allowlist: entry.tools_allowlist }),
   };
 }
@@ -162,6 +190,7 @@ function entryServerId(entry: McpServerRef): string | undefined {
 export type OpenStdioConnection = (
   serverId: string,
   spec: StdioServerSpec,
+  signal?: AbortSignalLike,
 ) => Promise<McpConnection>;
 
 /**
@@ -169,16 +198,61 @@ export type OpenStdioConnection = (
  * observe the built spec (or assert the SSRF gate) without a real spawn/connect.
  */
 export interface ServerOpeners {
+  /**
+   * Build the validated `fetch` for one network server (ADR-0088 §2.1). Injectable so a test can observe the
+   * `host:port` scope the admission derived — and so the SSRF policy is exercised against fake DNS rather
+   * than the network. Production is {@link createMcpFetch}.
+   */
+  readonly makeFetch?: (config: McpFetchConfig) => McpFetch;
+  /**
+   * Resolve a hostname — the `websocket` pre-connect range-block (ADR-0088 §2.3). Injectable for the same
+   * reason `makeFetch` is: an SSRF policy asserted against real DNS is asserted against the network.
+   */
+  readonly resolveHost?: (hostname: string) => Promise<readonly string[]>;
   readonly stdio?: OpenStdioConnection;
-  readonly http?: (serverId: string, spec: HttpServerSpec) => Promise<McpConnection>;
-  readonly sse?: (serverId: string, spec: SseServerSpec) => Promise<McpConnection>;
-  readonly websocket?: (serverId: string, spec: WebSocketServerSpec) => Promise<McpConnection>;
+  readonly http?: (
+    serverId: string,
+    spec: HttpServerSpec,
+    signal?: AbortSignalLike,
+  ) => Promise<McpConnection>;
+  readonly sse?: (
+    serverId: string,
+    spec: SseServerSpec,
+    signal?: AbortSignalLike,
+  ) => Promise<McpConnection>;
+  readonly websocket?: (
+    serverId: string,
+    spec: WebSocketServerSpec,
+    signal?: AbortSignalLike,
+  ) => Promise<McpConnection>;
 }
 
-/** The network transports — all take the same `{ url }` connect spec, so the dispatch is a keyed lookup. */
+/**
+ * The network transports. Each opener keeps its OWN spec type rather than sharing one erased shape.
+ *
+ * **The erased version is what let an unpinned connect type-check.** It declared `fetch?: McpFetch`, so a
+ * dispatch through it satisfied the compiler with no dialer at all — even after `HttpServerSpec.fetch` became
+ * required, this alias would have kept saying it was optional. `websocket` genuinely has no `fetch` (§2.3),
+ * and that difference is now in the types instead of being flattened away by them.
+ */
 type NetworkTransport = 'http' | 'sse' | 'websocket';
-type NetworkOpener = (serverId: string, spec: { readonly url: string }) => Promise<McpConnection>;
-type NetworkOpeners = Record<NetworkTransport, NetworkOpener>;
+type NetworkOpeners = {
+  readonly http: (
+    serverId: string,
+    spec: HttpServerSpec,
+    signal?: AbortSignalLike,
+  ) => Promise<McpConnection>;
+  readonly sse: (
+    serverId: string,
+    spec: SseServerSpec,
+    signal?: AbortSignalLike,
+  ) => Promise<McpConnection>;
+  readonly websocket: (
+    serverId: string,
+    spec: WebSocketServerSpec,
+    signal?: AbortSignalLike,
+  ) => Promise<McpConnection>;
+};
 
 /**
  * Map an agent's inline `mcp_servers` to {@link McpServerConfig}s, dispatching by transport — `stdio` spawns a
@@ -203,6 +277,8 @@ export function resolveServerConfigs(
   consented?: ReadonlyMap<string, ResolvedStdioSpawn>,
 ): McpServerConfig[] {
   const openStdio = openers.stdio ?? openStdioConnection;
+  const makeFetch = openers.makeFetch ?? createMcpFetch;
+  const resolveHost = openers.resolveHost ?? nodeEgressDeps.resolveHost;
   const network: NetworkOpeners = {
     http: openers.http ?? openHttpConnection,
     sse: openers.sse ?? openSseConnection,
@@ -220,7 +296,7 @@ export function resolveServerConfigs(
     configs.push(
       ref.transport === 'stdio'
         ? buildStdioConfig(ref.id, ref, cwd, resolveSecret, openStdio, consented?.get(ref.id))
-        : buildNetworkConfig(ref.id, ref.transport, ref, network),
+        : buildNetworkConfig(ref.id, ref.transport, ref, network, makeFetch, resolveHost),
     );
   }
   return configs;
@@ -271,7 +347,26 @@ function buildStdioConfig(
   return {
     id: serverId,
     ...toolsAllowlistFields(ref),
-    open: () => openStdio(serverId, { command, env, cwd, ...(args === undefined ? {} : { args }) }),
+    // **The signal is a PARAMETER of the closure, not a capture.** `startMcpClient` calls `open(signal)`, and
+    // a zero-argument closure accepts that call and silently DROPS the argument — TypeScript is happy, and the
+    // whole cancel path becomes dead surface that type-checks and cannot fire. That is exactly the defect the
+    // `McpServerConfig.open` doc records one layer down, and it was still true HERE until a review found it:
+    // a Ctrl-C during a cold `npx` reached this point and stopped nothing, orphaning the child — because
+    // `client.childPids` stays empty until a connect fully succeeds, so neither reaper had a pid either.
+    open: (signal) =>
+      openStdio(
+        serverId,
+        {
+          command,
+          env,
+          cwd,
+          ...(args === undefined ? {} : { args }),
+          ...(ref.connect_timeout_ms === undefined
+            ? {}
+            : { connectTimeoutMs: ref.connect_timeout_ms }),
+        },
+        signal,
+      ),
   };
 }
 
@@ -282,6 +377,8 @@ function buildNetworkConfig(
   transport: NetworkTransport,
   ref: McpServerRef,
   openers: NetworkOpeners,
+  makeFetch: (config: McpFetchConfig) => McpFetch,
+  resolveHost: (hostname: string) => Promise<readonly string[]>,
 ): McpServerConfig {
   // The schema guarantees a `url` and forbids `env` on a network transport; re-assert both defensively so a
   // programmatic caller that bypassed the schema fails loud rather than silently dropping (an `env` secret).
@@ -298,69 +395,216 @@ function buildNetworkConfig(
     );
   }
   const url = ref.url;
-  // The SSRF pre-connect floor — rejects a private/loopback/link-local host (unless opted in) and a plaintext
-  // remote (ADR-0053). The connect-by-validated-IP dialer upgrade (DNS-rebind) is the tracked follow-up.
-  assertSafeNetworkEndpoint(serverId, url, ref.allow_local_endpoint === true);
-  const open = openers[transport]; // `http` (Streamable HTTP) | `sse` (legacy HTTP+SSE alias) | `websocket`
-  return { id: serverId, ...toolsAllowlistFields(ref), open: () => open(serverId, { url }) };
+  // Admission: scheme, credentials, the private-range rule, and — for `websocket` — the §2.3 narrowing.
+  // Returns the authored `host:port` when the server opted into a local endpoint, which is the scope the
+  // dialer then enforces (ADR-0088 §2.2/§4).
+  const localEndpoint = assertSafeNetworkEndpoint(
+    serverId,
+    url,
+    transport,
+    ref.allow_local_endpoint === true,
+  );
+  const connectTimeoutMs = ref.connect_timeout_ms;
+  // **The validated dialer, per server** (ADR-0088 §2.1). `http`/`sse` accept an injected `fetch`, so every
+  // request on those transports — the initialize POST, each `tools/call`, the long-lived GET stream — rides
+  // the ONE shared connect-by-validated-IP hop carrying this server's own local-endpoint scope. `websocket`
+  // accepts no such hook, which is why §2.3 narrows it to a local endpoint rather than pretending otherwise.
+  const validatedFetch =
+    transport === 'websocket'
+      ? undefined
+      : makeFetch({ ...(localEndpoint === undefined ? {} : { localEndpoint }) });
+  // **The check §2.3 promises and the first implementation omitted.** `websocket` cannot be pinned, but the
+  // ADR still requires the pre-connect resolve-and-range-block — and without it the transport had NO address
+  // check at all beyond the authored literal. That mattered because `isPrivateOrLocalHost` treats
+  // `*.local` / `*.internal` / `*.localhost` as local from the SUFFIX alone: a cloned repo declaring
+  // `ws://mcp-relay.local:8080` with `allow_local_endpoint` was admitted (so the §2.3 remote refusal never
+  // fired), connected in plaintext, and pointed wherever the LAN's mDNS responder said — with no consent
+  // gate, because ADR-0084 covers `stdio` only.
+  const needsPreflight = transport === 'websocket';
+  return {
+    id: serverId,
+    ...toolsAllowlistFields(ref),
+    // A parameter, not a capture — see the stdio sibling for what a zero-argument closure silently costs.
+    open: async (signal) => {
+      // **Run INSIDE `open`, not eagerly at config-build time**, and a review found both reasons. Started
+      // eagerly it was a hot promise nobody had to await: a later ref throwing synchronously discarded the
+      // whole config array and the abandoned lookup surfaced as an unhandled rejection. And it ran before
+      // any deadline or signal existed, so a hung `.local` resolver — the exact case §2.3 is about — hung
+      // the whole connect with Ctrl-C doing nothing.
+      // **ONE window across the preflight AND the connect** (ADR-0088 §1.1). The preflight used to open its
+      // own fixed 30 s window and the adapter then opened a second one, so the total connect budget was
+      // `preflight + authored` — and an author who RAISED `connect_timeout_ms` did not raise the DNS half at
+      // all. Opened here, the remaining time is what the adapter is given.
+      const window = openWindow(connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs);
+      if (needsPreflight) {
+        await assertResolvesLocal(serverId, url, resolveHost, window, signal);
+      }
+      // **Dispatched per transport so the COMPILER carries the §2.1 obligation**, rather than spreading one
+      // union-typed spec that let an absent `fetch` type-check. `HttpServerSpec.fetch` is required now; a
+      // single `open(serverId, {...})` against the union hid that from exactly the site that must satisfy it.
+      // What is LEFT of the window, so the preflight's cost comes out of the same budget rather than being
+      // added to it. `remainingMs` floors at 1, so an already-spent window still reaches the adapter's own
+      // deadline check rather than silently becoming "no bound".
+      const timeout = { connectTimeoutMs: remainingMs(window) };
+      if (transport === 'websocket') {
+        return openers.websocket(serverId, { url, ...timeout }, signal);
+      }
+      if (validatedFetch === undefined) {
+        // Unreachable: `validatedFetch` is absent only for `websocket`, returned above. Fail closed rather
+        // than reach the SDK's unpinned global `fetch` if that ever stops being true.
+        throw new CliError(
+          'invalid_invocation',
+          `MCP server '${serverId}': no validated dialer for a ${transport} transport`,
+        );
+      }
+      const spec: HttpServerSpec = { url, fetch: validatedFetch, ...timeout };
+      return transport === 'http'
+        ? openers.http(serverId, spec, signal)
+        : openers.sse(serverId, spec, signal);
+    },
+  };
 }
 
 /**
- * The **SSRF pre-connect floor** for a network MCP `url` (2.R Step 4c, [ADR-0053](../../../docs/decisions/0053-mcp-network-transport-egress-security.md)).
- * Reuses the ONE shared `isPrivateOrLocalHost` range-block primitive (never re-implemented). A private/loopback/
- * link-local/metadata host is rejected UNLESS `allow_local_endpoint` is set (which, for that local endpoint,
- * also permits plaintext `http`/`ws` — a local-dev server is typically plaintext); a **remote** host must use
- * `https`/`wss` regardless of the flag. The no-embedded-credentials check is enforced here too (the flag never
- * relaxes it).
+ * The `websocket` pre-connect resolve-and-range-block ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §2.3).
  *
- * **Scope (ADR-0053 §3 / SEC-EGRESS-3):** the opt-in relaxes exactly the **authored `host:port`** — the SDK
- * transport dials precisely the validated `url`, so today the relaxation cannot reach a sibling private port
- * (e.g. `:6379`/`:22`) on the same host. This is the host-validated **FLOOR**: it checks the AUTHORED host, so a
- * hostname that DNS-resolves to a private IP, and a redirect-to-private, are NOT caught here — the
- * connect-by-validated-IP dialer + per-hop re-validation (which **must** re-block any resolved/redirected
- * `host:port` other than the authored one) is the tracked follow-up (deferred-tasks.md).
+ * This transport takes no dialer, so the address cannot be PINNED — that residual is stated and accepted. What
+ * §2.3 does require, and what makes the local-only narrowing meaningful at all, is that the name actually
+ * resolves where the author said: every answer must be private, and none may be link-local or metadata. A
+ * suffix like `.local` is a claim about a name, not about an address, and an mDNS responder on the same LAN
+ * is who answers it.
+ *
+ * **Bounded and cancellable, like every other MCP call** (ADR-0088 §1). `dns.lookup` is not abortable, so the
+ * bound is a race: the caller is released at the deadline or on their signal even though the lookup itself
+ * keeps running in the background until the OS resolver gives up. Without it a hung mDNS responder — the very
+ * thing §2.3's narrowing is about — hung the whole connect with Ctrl-C doing nothing.
  */
-function assertSafeNetworkEndpoint(serverId: string, url: string, allowLocal: boolean): void {
-  let parsed: URL;
+async function assertResolvesLocal(
+  serverId: string,
+  url: string,
+  resolveHost: (hostname: string) => Promise<readonly string[]>,
+  window: DeadlineWindow,
+  signal?: AbortSignalLike,
+): Promise<void> {
+  const parsed = extractEgressAuthority(url);
+  if (parsed === null) return; // already refused by the admission — nothing to add
+  let addresses: readonly string[];
   try {
-    parsed = new URL(url);
-  } catch {
-    throw new CliError('invalid_invocation', `MCP server '${serverId}': malformed url.`);
+    // The CALLER's window, not one of our own — see the note at the call site.
+    addresses = await raceDeadline(
+      serverId,
+      'connect',
+      window,
+      () => resolveHost(parsed.host),
+      signal,
+    );
+  } catch (err) {
+    if (err instanceof McpDeadlineError || err instanceof McpAbortedError) throw err;
+    throw new CliError(
+      'invalid_invocation',
+      `MCP server '${serverId}': '${parsed.host}' could not be resolved.`,
+    );
   }
-  if (parsed.username !== '' || parsed.password !== '') {
+  if (addresses.length === 0) {
+    throw new CliError(
+      'invalid_invocation',
+      `MCP server '${serverId}': '${parsed.host}' did not resolve to an address.`,
+    );
+  }
+  for (const address of addresses) {
+    if (isMetadataOrLinkLocal(address)) {
+      throw new CliError(
+        'invalid_invocation',
+        `MCP server '${serverId}': '${parsed.host}' resolves to a link-local or cloud-metadata address.`,
+      );
+    }
+    if (!isPrivateOrLocalHost(address)) {
+      throw new CliError(
+        'invalid_invocation',
+        `MCP server '${serverId}': '${parsed.host}' is declared as a local endpoint but resolves to a ` +
+          `public address. A 'websocket' server must be genuinely local — use transport: 'http' for a remote one.`,
+      );
+    }
+  }
+}
+
+/**
+ * **Admission** for a network MCP `url` — what may be declared at all
+ * ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §2.2–§4,
+ * [ADR-0053](../../../docs/decisions/0053-mcp-network-transport-egress-security.md)). Reuses the ONE shared
+ * `isPrivateOrLocalHost` range-block primitive (never re-implemented), and returns the authored `host:port`
+ * when the server opted into a local endpoint — the scope the dialer then enforces on every resolved address.
+ *
+ * It is no longer the whole story, and that is the point of §2.1: this checks the AUTHORED host, so a name
+ * that DNS-resolves to a private IP is caught by the **dialer**, not here. What stays here is what can only be
+ * decided from the declaration:
+ *
+ * - **no embedded credentials**, which the opt-in never relaxes;
+ * - **the scheme family**, rejected before any relaxation so an opted-in local endpoint can never wave through
+ *   a `file:`/`javascript:` scheme;
+ * - **a remote endpoint is `https`/`wss`**, always — the rule two independent relaxation flags would have
+ *   inverted (ADR-0088 §4);
+ * - **a remote `websocket` is refused outright** (§2.3). `WebSocketClientTransport` takes a `URL` and nothing
+ *   else and parses each frame before Relavium sees a byte, so on that transport there is neither a pin nor a
+ *   byte bound to give a server the user never consented to run. A local opted-in one is permitted: an
+ *   unbounded transport must be local and explicitly admitted, which is the same line `stdio` sits on.
+ */
+function assertSafeNetworkEndpoint(
+  serverId: string,
+  url: string,
+  transport: NetworkTransport,
+  allowLocal: boolean,
+): LocalEndpoint | undefined {
+  const parsed = extractEgressAuthority(url);
+  if (parsed === null) {
+    // The ONE parser. `new URL` here would have been a second reading of the same bytes, and the dialer's
+    // `host:port` scope must be derived from the SAME parse the admission approved or the two can disagree.
+    throw new CliError(
+      'invalid_invocation',
+      `MCP server '${serverId}': malformed url or unsupported scheme (http/https/ws/wss only).`,
+    );
+  }
+  if (parsed.hasCredentials || urlHasCredentials(url)) {
     throw new CliError(
       'invalid_invocation',
       `MCP server '${serverId}': the url must not embed credentials (user:pass@…) — use env/keychain auth.`,
     );
   }
-  // Validate the scheme FIRST — the schema already constrains it per transport, but as a host-side floor reject
-  // anything outside the http/ws family BEFORE the `allow_local_endpoint` relaxation, so an opt-in local endpoint
-  // can never wave through a `file:`/`javascript:`/etc. scheme (defense-in-depth, ADR-0053).
-  const scheme = parsed.protocol;
-  if (scheme !== 'http:' && scheme !== 'https:' && scheme !== 'ws:' && scheme !== 'wss:') {
+  if (isMetadataOrLinkLocal(parsed.host)) {
+    // Refused before the opt-in is even consulted. `169.254.169.254` is inside the private ranges, so it
+    // would otherwise satisfy every condition for an "authored local endpoint" — and ADR-0053's own Context
+    // names a registry pointing a server there as the motivating threat.
     throw new CliError(
       'invalid_invocation',
-      `MCP server '${serverId}': unsupported url scheme '${scheme.replace(':', '')}' (http/https/ws/wss only).`,
+      `MCP server '${serverId}': '${parsed.host}' is a link-local or cloud-metadata address, which no ` +
+        `'allow_local_endpoint' opt-in may name.`,
     );
   }
-  const host = parsed.hostname.replace(/^\[/, '').replace(/\]$/, '');
-  const isSecure = scheme === 'https:' || scheme === 'wss:';
-  if (isPrivateOrLocalHost(host)) {
-    if (!allowLocal) {
-      throw new CliError(
-        'invalid_invocation',
-        `MCP server '${serverId}': '${host}' is a private/loopback/link-local address. ` +
-          `Set 'allow_local_endpoint: true' on the server to permit a local MCP endpoint.`,
-      );
-    }
-    return; // a local endpoint with the explicit opt-in — plaintext is permitted for it (ADR-0053 §3).
-  }
-  if (!isSecure) {
+  const isLocalHost = isPrivateOrLocalHost(parsed.host);
+  if (isLocalHost && !allowLocal) {
     throw new CliError(
       'invalid_invocation',
-      `MCP server '${serverId}': a remote MCP url must use https/wss (got '${parsed.protocol.replace(':', '')}').`,
+      `MCP server '${serverId}': '${parsed.host}' is a private/loopback/link-local address. ` +
+        `Set 'allow_local_endpoint: true' on the server to permit a local MCP endpoint.`,
     );
   }
+  if (transport === 'websocket' && !isLocalHost) {
+    throw new CliError(
+      'invalid_invocation',
+      `MCP server '${serverId}': a remote 'websocket' MCP server is not supported — its transport cannot be ` +
+        `pinned to a validated address or byte-bounded, so it is refused rather than connected unsafely. ` +
+        `Use transport: 'http' (Streamable HTTP), which carries the same server safely.`,
+    );
+  }
+  if (!isLocalHost && parsed.scheme !== 'https' && parsed.scheme !== 'wss') {
+    throw new CliError(
+      'invalid_invocation',
+      `MCP server '${serverId}': a remote MCP url must use https/wss (got '${parsed.scheme}').`,
+    );
+  }
+  // A local endpoint's scope: exactly this `host:port`, which is what lets the dialer refuse a sibling port
+  // on the same permitted host (`:6379`, `:5432`, `:22`, a container socket) — SEC-EGRESS-3's requirement.
+  return isLocalHost ? { host: parsed.host, port: parsed.port } : undefined;
 }
 
 /**
@@ -411,7 +655,7 @@ export async function connectAgentMcp(
   const consented = await opts.consentGate?.(inline, opts.cwd, opts.artifact);
   const configs = resolveServerConfigs(inline, opts.cwd, opts.resolveSecret, {}, consented);
   if (configs.length === 0) return undefined;
-  return startMcpClientFailLoud(configs, opts.startMcpClient);
+  return startMcpClientFailLoud(configs, opts.startMcpClient, opts.connectSignal);
 }
 
 /**
@@ -424,16 +668,37 @@ export async function connectAgentMcp(
 async function startMcpClientFailLoud(
   configs: readonly McpServerConfig[],
   custom: ConnectAgentMcpOptions['startMcpClient'],
+  connectSignal?: AbortSignalLike,
 ): Promise<McpClient> {
   const start = custom ?? defaultStartMcpClient;
   try {
-    return await start(configs);
+    return await start(configs, connectSignal);
   } catch (err) {
     if (err instanceof McpError) {
-      throw new CliError('invalid_invocation', `MCP server connection failed: ${err.message}`);
+      throw new CliError(
+        'invalid_invocation',
+        `MCP server connection failed: ${err.message}${deadlineHint(err)}`,
+      );
     }
     throw err;
   }
+}
+
+/**
+ * The one-line remedy for a connect that ran out of time.
+ *
+ * Without it a user waits the full deadline and is told only that it elapsed — true, secret-free, and useless,
+ * because the escape hatch exists and its name appears nowhere. This is the half of `#204` that a discriminant
+ * alone does not buy: the type tells a PROGRAM what happened, and this tells a PERSON what to do. Only the
+ * connect phase gets it, because it is the only phase with an authored override — saying "raise
+ * `connect_timeout_ms`" after a slow `tools/call` would send an author to a field that cannot help.
+ */
+function deadlineHint(err: McpError): string {
+  if (!(err instanceof McpDeadlineError) || err.phase !== 'connect') return '';
+  return (
+    ` If this server is legitimately slow to start (a cold \`npx\` often is), raise it with` +
+    ` \`connect_timeout_ms\` on the server entry (max ${MCP_CONNECT_TIMEOUT_CEILING_MS} ms).`
+  );
 }
 
 /** Matches a `{{secrets.<name>}}` placeholder (tolerant of inner whitespace) — the ONLY supported env interpolation. */
@@ -495,7 +760,12 @@ export interface WorkflowMcpRuntime {
 /** Options for {@link connectWorkflowMcp} — the run cwd + an injectable client starter (tests). */
 export interface ConnectWorkflowMcpOptions {
   readonly cwd: string;
-  readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  readonly startMcpClient?: (
+    servers: readonly McpServerConfig[],
+    signal?: AbortSignalLike,
+  ) => Promise<McpClient>;
+  /** Cancels the connect and the discovery walk (ADR-0088 §1.1) — see {@link ConnectAgentMcpOptions.connectSignal}. */
+  readonly connectSignal?: AbortSignalLike;
   /** Resolve `{{secrets.<name>}}` in a server `env` value (2.R Step 4, ADR-0052 §6); see {@link ConnectAgentMcpOptions}. */
   readonly resolveSecret?: McpSecretResolver;
   /** The merged config `[[mcp_servers]]` registrations (Step 4b) — resolves a by-name `ref` entry; see {@link ConnectAgentMcpOptions}. */
@@ -504,6 +774,26 @@ export interface ConnectWorkflowMcpOptions {
   readonly consentGate?: StdioConsentGate;
   /** The workflow path, shown at the consent prompt so the imported-artifact case names its own file. */
   readonly artifact?: string;
+}
+
+/**
+ * Does this workflow declare ANY inbound MCP server on an inline agent?
+ *
+ * A cheap, side-effect-free look ahead of {@link connectWorkflowMcp}, so a caller can decide whether there is
+ * anything to guard **before** the connect that spawns the children
+ * ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §1.3). Arming a signal handler
+ * unconditionally was the first attempt and a regression: `relavium run` has a documented single-SIGINT-handler
+ * contract (`drive.ts` identifies its own by set-delta), and a guard installed for a workflow with no children
+ * to reap is a second listener that does nothing but break it.
+ *
+ * Deliberately does NOT resolve a `ref` or validate anything — an unresolvable `ref` is
+ * {@link connectWorkflowMcp}'s fail-loud, not this predicate's, and answering "yes, look closer" is the safe
+ * direction for a look-ahead.
+ */
+export function workflowDeclaresMcp(def: WorkflowDefinition): boolean {
+  return (def.workflow.agents ?? [])
+    .filter(isInlineAgent)
+    .some((agent) => (agent.mcp_servers ?? []).length > 0);
 }
 
 /**
@@ -557,7 +847,7 @@ export async function connectWorkflowMcp(
     {},
     consented,
   );
-  const client = await startMcpClientFailLoud(configs, opts.startMcpClient);
+  const client = await startMcpClientFailLoud(configs, opts.startMcpClient, opts.connectSignal);
 
   try {
     // Augment each inline agent's grant with ONLY its own servers' discovered ids (a `$ref` entry passes through).
@@ -631,6 +921,11 @@ function serverFingerprint(ref: McpServerRef): string {
     e: env,
     w: allowlist,
     l: ref.allow_local_endpoint ?? false,
+    // Part of the identity for the SAME reason `allow_local_endpoint` is (ADR-0088 §1.4): a same-id pair
+    // differing only in its connect deadline would otherwise collapse first-wins, silently giving BOTH
+    // declarations a bound neither author wrote. It is deliberately NOT in the ADR-0084 consent digest —
+    // that answers "is this the same PROGRAM", and a timeout changes nothing about what executes.
+    d: ref.connect_timeout_ms ?? null,
   });
 }
 

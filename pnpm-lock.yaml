@@ -336,6 +336,9 @@ importers:
       '@relavium/core':
         specifier: workspace:*
         version: link:../core
+      '@relavium/shared':
+        specifier: workspace:*
+        version: link:../shared
       zod:
         specifier: 'catalog:'
         version: 3.25.76

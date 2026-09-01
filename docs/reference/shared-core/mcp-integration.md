@@ -53,14 +53,92 @@ mcp_servers:
     transport: http
     url: 'http://localhost:4000/mcp'
     allow_local_endpoint: true    # opt into a private/loopback url (relaxes the SSRF block + plaintext for it)
+  - id: slow-start
+    transport: stdio
+    command: npx
+    args: ['-y', '@acme/big-server']
+    connect_timeout_ms: 300000    # raise the connect deadline (any transport; max 600000, ADR-0088 §1.4)
   # 2. BY-NAME `ref` — identity + connection come from a [[mcp_servers]] registration
-  - ref: shared-fs                # mutually exclusive with id/transport/command/url/env
+  - ref: shared-fs                # mutually exclusive with id/transport/command/args/env/url/
+                                  # allow_local_endpoint/connect_timeout_ms
     tools_allowlist: [read_file]  # the only field allowed alongside `ref`
 ```
 
-The **transport vocabulary** is reconciled to the current MCP spec: `http` is the **Streamable HTTP** transport (the SDK's `StreamableHTTPClientTransport`); `sse` is a **deprecated alias** of `http` (the legacy HTTP+SSE transport, accepted for older servers, same `http(s)` url); `websocket` uses a `wss://` url. A network `url` is SSRF-guarded (below). The vocabulary is the **same on both surfaces** — an inline `agent.mcp_servers` entry and a `[[mcp_servers]]` config registration both accept `stdio | http | websocket` plus the `sse` alias (prefer `http` for new servers). The stdio-only fields (`command`/`args`/`env`) are rejected on a network transport, and the network-only fields (`url`/`allow_local_endpoint`) on stdio — symmetric across both schemas.
+The **transport vocabulary** is reconciled to the current MCP spec: `http` is the **Streamable HTTP** transport (the SDK's `StreamableHTTPClientTransport`); `sse` is a **deprecated alias** of `http` (the legacy HTTP+SSE transport, accepted for older servers, same `http(s)` url); `websocket` is **local-only** — see the Security section. A network `url` is SSRF-guarded (below). The vocabulary is the **same on both surfaces** — an inline `agent.mcp_servers` entry and a `[[mcp_servers]]` config registration both accept `stdio | http | websocket` plus the `sse` alias (prefer `http` for new servers). The stdio-only fields (`command`/`args`/`env`) are rejected on a network transport, and the network-only fields (`url`/`allow_local_endpoint`) on stdio — symmetric across both schemas.
 
-Server **registrations** also live globally in `~/.relavium/config.toml` under repeatable `[[mcp_servers]]` entries, so a server can be registered once and referenced **by name** (`ref:`) from many agents. A referenced server connects **on demand** when an agent that uses it starts; the registration's `autostart` field is accepted by the schema but reserved for a future always-on pool (not acted on in 2.R). The merge of global and project-scoped servers follows the normal config resolution order — see [../contracts/config-spec.md](../contracts/config-spec.md).
+Server **registrations** also live globally in `~/.relavium/config.toml` under repeatable `[[mcp_servers]]` entries, so a server can be registered once and referenced **by name** (`ref:`) from many agents. A referenced server connects **on demand** when an agent that uses it starts; the registration's `autostart` field is accepted by the schema but reserved for a future always-on pool (not acted on in 2.R). Global and project-scoped registrations **union**, but unlike every other setting a **duplicate name is refused** (exit `2`) rather than overridden — across layers, and twice within one file alike — a registration names a program to execute and a secret to inject, so a project config arriving with a cloned repository must not silently take over a global server's name ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §8). The rule and its remedy live in [../contracts/config-spec.md](../contracts/config-spec.md).
+
+### Connect and call deadlines
+
+Every MCP interaction is bounded, and the bound is Relavium's rather than the SDK's
+([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1). The connect bound covers the transport's
+own start — the spawn or the dial — not only the `initialize` request that follows it, because that is where an
+unbounded wait actually lives.
+
+| Phase | Default | Raise it with |
+| --- | --- | --- |
+| `stdio` connect — spawn through `initialize` | **120 000 ms** | `connect_timeout_ms` |
+| network connect — dial through `initialize` | **30 000 ms** | `connect_timeout_ms` |
+| `tools/list` discovery — the WHOLE paged walk, not one page | **60 000 ms** | — |
+| `tools/call` | **60 000 ms** | — |
+
+`stdio` gets the longest window because the canonical authored example is `command: npx`, and a cold resolution
+routinely outruns a tighter one before the child speaks MCP at all. The discovery bound covers the whole walk
+so a server that answers each page slowly cannot outlive its deadline by paginating.
+
+**A run or turn cancel reaches the server.** The engine's signal is threaded through `tools/call` and the
+discovery walk to the SDK request, so a cancelled call is cancelled at the server rather than merely abandoned
+by the caller. A deadline and a cancellation are distinct typed failures: a user who pressed Esc is not told
+the server was slow, and precedence is decided when the failure is classified rather than by which timer the
+runtime happened to fire first.
+
+**A signalled one-shot command reaps its children.** `relavium run` and `relavium agent run` tear their MCP
+connections down on `SIGINT`/`SIGTERM`/`SIGHUP`/`SIGQUIT`, and a synchronous last-resort reap covers the exit
+paths that cannot await a teardown. `run` keeps its documented cancel contract — the run still drains to
+`run:cancelled` and exits `1`; the teardown does not take the exit code from it.
+
+### Discovery and result ingress bounds
+
+A server's own output is untrusted input, and it is bounded
+([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §5). Before these bounds a server returning
+100 pages of 500 tools with 1 MiB descriptions was admitted whole — 50 000 tools and 52 GB of description
+text, re-sent to the provider on every subsequent turn of the session.
+
+| What | Bound | Level |
+| --- | --- | --- |
+| Tools admitted per server (across all `tools/list` pages) | **256** | application |
+| One tool's `description` | **8 KiB** | application |
+| One server's whole discovery payload (names + descriptions + schemas) | **1 MiB** | application |
+| One string literal or `enum` member inside a schema | **4 KiB** | application |
+| One schema property name | **256 B** | application |
+| One `tools/call` result's text, summed across parts | **1 MiB** | application |
+| One message on an `http`/`sse` transport | **4 MiB** | transport |
+
+A "message" is decided by the response's **content type**: on `text/event-stream` the counter resets at each
+SSE event boundary (a blank line, with any of the three line terminators), and on **anything else the whole
+body is one message** — delimiters included. A body with no framing has no boundary to reset on, and treating
+its whitespace as one let a padded JSON response past the bound entirely.
+
+The `tools/list` walk **stops paging** once the aggregate is spent, rather than fetching every page and
+bounding afterwards: a server cannot make the host hold a catalogue it has already decided to refuse.
+
+**The two levels are different promises, and the distinction is deliberate.** An *application* bound runs on
+an already-parsed value, so it bounds what is **admitted** — what reaches the prompt, the workflow state and
+the tool registry — and **not** what was allocated to get there. A *transport* bound runs on raw bytes before
+anything parses them, so it bounds **peak memory**; it exists only where the byte path is ours, which is the
+host-injected `fetch` of `http`/`sse`. `stdio` and a local `websocket` therefore have the application bounds
+only, and their memory story is the consent gate's and the author's own opt-in — see the Security section.
+
+The transport bound is **per message, not per body**: a Streamable HTTP session's server-to-client stream
+stays open for the whole session, so a body cap would fire on a healthy one. The counter resets at each SSE
+event boundary — a blank line, terminated by `\n`, `\r\n` or a lone `\r`.
+
+Every bound counts **UTF-8 bytes**, and a schema is measured as its canonical JSON serialization — the form
+that actually travels. An over-bound **tool** is dropped and reported through the same `SkippedTool` channel
+an unsupported `inputSchema` uses, so the server stays usable; an over-bound **result or message fails the
+call**, because half a tool result reaching the model is a wrong answer that looks like a right one. Once a
+server's aggregate budget is spent the remaining tools are refused too, in declaration order, so the same
+catalogue always yields the same tool set.
 
 ### Tool discovery
 
@@ -202,8 +280,15 @@ it. See [../cli/commands.md](../cli/commands.md).
 
 ## Security
 
-- **MCP server URLs are SSRF-guarded ([ADR-0029](../../decisions/0029-tool-policy-hardening.md)).** A declared MCP `url` is validated against the **same** vetted range-block as a provider base URL and the `http_request` tool — private/loopback/link-local/metadata ranges (`127.0.0.0/8`, `::1`, `10/8`, `172.16/12`, `192.168/16`, `169.254/16`) are rejected, and remote hosts must use `https`/`wss`, **unless the user explicitly opts into a local endpoint** (the per-server `allow_local_endpoint` flag). A `http://localhost`/loopback `url` is exactly such a local endpoint and requires that explicit opt-in; the opt-in permits exactly the **authored `host:port`** (and plaintext for it). 2.R ships this as a **pre-connect floor** validating the authored host — a hostname that DNS-resolves to a private IP, or a redirect to one, is the residual window the connect-by-validated-IP dialer (per-hop re-validation against the authored `host:port`) closes; tracked in [../../roadmap/deferred-tasks.md](../../roadmap/deferred-tasks.md) ([ADR-0053](../../decisions/0053-mcp-network-transport-egress-security.md) §2). The one SSRF primitive is reused, never re-implemented — see [security-review.md](../../standards/security-review.md).
+- **MCP server URLs are SSRF-guarded ([ADR-0029](../../decisions/0029-tool-policy-hardening.md)).** A declared MCP `url` is validated against the **same** vetted range-block as a provider base URL and the `http_request` tool — private/loopback/link-local/metadata ranges (`127.0.0.0/8`, `::1`, `10/8`, `172.16/12`, `192.168/16`, `169.254/16`) are rejected, and remote hosts must use `https`/`wss`, **unless the user explicitly opts into a local endpoint** (the per-server `allow_local_endpoint` flag). A `http://localhost`/loopback `url` is exactly such a local endpoint and requires that explicit opt-in. The one SSRF primitive is reused, never re-implemented — see [security-review.md](../../standards/security-review.md).
+- **The validated dialer is REQUIRED, not optional** ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §2.1/§6). A host that opens an `http`/`sse` MCP connection must supply the validated `fetch`; the type enforces it, because absence silently meant the runtime's global `fetch` and with it the loss of all three guarantees below at once.
+- **`http` and `sse` connect by validated, pinned IP** ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §2.1). Every request on those transports — the `initialize` POST, each `tools/call`, and the long-lived server-to-client stream — goes through the host's validated hop: resolve DNS → range-block **every** resolved address → connect **pinned** to the validated IP, with the hostname kept as SNI so TLS verification stays on. This closes the DNS-rebind window the pre-connect check alone could not see: a name that resolves public at validation time and private at connect time is refused at the dial.
+- **A redirect is refused, not followed** ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §3). A `3xx` on an MCP endpoint is a typed connect failure naming the redirect; the remedy is to declare the final `url`. An MCP server is identified by the exact url its author wrote, and no range-block expresses "and it is still the server the user chose" — so a redirect to a perfectly public host is refused too.
+- **No opt-in may name a cloud metadata endpoint** ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §4). Several providers put their instance-metadata service *inside* the private ranges — the IPv4 link-local `169.254.169.254`, AWS's IPv6 `fd00:ec2::254`, Alibaba's `100.100.100.200` — and "private" is precisely what `allow_local_endpoint` lifts. Those addresses are refused whether they are authored directly, reached through an IPv4-mapped or 6to4 tunnel form, or returned by the resolver for an innocuous-looking name.
+- **The local-endpoint opt-in is scoped to the authored `host:port`, and it narrows only** ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §4). The private-range block and the plaintext permission lift **together, and only** for a target that matches that `host:port` exactly *and* actually resolves to a private address. So an opt-in for `localhost:4000` cannot reach `localhost:6379`, `:5432`, `:22` or a container socket (`SEC-EGRESS-3`), and a server declared local that resolves to a **public** address is refused rather than silently downgraded to plaintext.
+- **A remote `websocket` server is refused at admission** ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §2.3). The SDK's WebSocket transport accepts a `URL` and nothing else — no `fetch`, no dialer — and parses each frame before any Relavium code sees a byte, so it can carry neither the pin above nor a byte bound. Declaring one is an authored error (exit `2`) naming `http` (Streamable HTTP) as the transport that carries the same server safely. A `websocket` server **with `allow_local_endpoint`** still connects: an unbounded transport must be local and explicitly admitted, which is the same line `stdio` sits on.
 - MCP server credentials are injected from the secret store via a **stdio** server's `env` (e.g. `{{secrets.github_token}}`, resolved from the isolated `mcp-secret:*` namespace) and are **never** written into the workflow file or any event payload. See [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md). `env` applies to the spawned stdio child only — a network (`http`, its deprecated `sse` alias, or `websocket`) transport has no process to inject into, so `env` is **rejected at parse** there (header-based auth for network MCP servers is a tracked follow-up, [../../roadmap/deferred-tasks.md](../../roadmap/deferred-tasks.md)).
+- **A server's tool DEFINITIONS are untrusted content** ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §7). The engine's `Untrusted<T>` brand covers tool *results*; a `description` and an `inputSchema` are equally attacker-controlled and reach the model in the tool spec itself, which is the channel real "MCP tool poisoning" uses. They are **not** routed through that brand — its guarantee is that a value cannot reach prompt assembly without an explicit unwrap, and a tool definition's whole purpose is to reach the model, so a brand there would imply a property that does not exist. What holds instead: **presentation text is sanitized at discovery** (terminal-control and Trojan-Source bidi bytes are stripped from a `description` before it can reach a render, an approval prompt, a log or the provider), and a **semantic field is never rewritten** — a property name, a `const`/`enum` value or a `required` entry is simultaneously the model-visible schema, the compiled validator's expectation and the wire contract, so one carrying such a byte **drops the tool**, fail-closed. The line is drawn by key: a `description` or `title` — including one nested inside the schema — is cleaned into the copy the provider receives, while any other string, and every property NAME, is semantic. A semantic field is refused on **any** C0/C1 control (a TAB or a NEWLINE included, which a display sanitizer deliberately preserves and which therefore used to slip through) or bidi character. **The model is also told where the text came from**: a discovered tool's description is presented with a line naming it as external-server text (§7.2). The mitigation is advisory where the model itself is what is being steered; that limit is stated rather than papered over.
 - **A local stdio spawn requires the user's consent on that machine** ([ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md)) — an artifact chooses the program, so the decision cannot belong to the artifact. The fingerprint, the grant store and the shared environment denylist are specified above as a cross-surface contract; a host that spawns without consulting it is the bypass. No credential enters the digest or the grant line.
 - Outbound (workflow-as-MCP) exposure is opt-in per workflow (only those listed in the adapter config are published).
 - All inbound MCP tool calls are schema-validated before dispatch, and tool inputs in events are sanitized — see [built-in-tools.md](built-in-tools.md) and [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md).

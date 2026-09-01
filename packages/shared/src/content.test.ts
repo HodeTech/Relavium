@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  extractEgressAuthority,
+  isMetadataOrLinkLocal,
   collectDurableMediaHandles,
   containsDurableUnsafeMedia,
   containsInlineMediaBytes,
@@ -1005,5 +1007,141 @@ describe('collectDurableMediaHandles (1.AF/D12c — produced-handle reference co
 
   it('returns [] for a value with no media', () => {
     expect(collectDurableMediaHandles({ text: 'hi', n: [1, 2, 3] })).toEqual([]);
+  });
+});
+
+describe('extractEgressAuthority', () => {
+  /**
+   * The port half is the whole reason this exists: it is what lets a policy be scoped to a `host:port` pair
+   * rather than a host, so relaxing the private-range block for `localhost:4000` does not also reach
+   * `localhost:6379` or `localhost:22` (`SEC-EGRESS-3`, ADR-0088 §2.2/§4). `extractHttpsHost` is now built
+   * on this, so these cases also pin the parser that primitive delegates to.
+   */
+  it('returns the scheme, lowercased host and EXPLICIT port', () => {
+    expect(extractEgressAuthority('https://Example.COM:8443/mcp')).toEqual({
+      scheme: 'https',
+      host: 'example.com',
+      port: 8443,
+      hasCredentials: false,
+    });
+  });
+
+  it('defaults the port per scheme, so an unported url still compares against a host:port policy', () => {
+    expect(extractEgressAuthority('https://example.com/x')?.port).toBe(443);
+    expect(extractEgressAuthority('http://localhost/x')?.port).toBe(80);
+  });
+
+  it('admits plaintext at the PARSE level, which grants nothing on its own', () => {
+    // The decision about whether plaintext is acceptable belongs to the dialer, which permits it only for a
+    // target that resolves private AND matches an authored `host:port`. Refusing it here would have forced a
+    // second URL parser for the local-endpoint case — the shape ADR-0029 (d) exists to prevent.
+    expect(extractEgressAuthority('http://localhost:4000/mcp')).toMatchObject({
+      scheme: 'http',
+      host: 'localhost',
+      port: 4000,
+    });
+  });
+
+  it('reads an IPv6 authority and its port, and refuses junk after the bracket', () => {
+    expect(extractEgressAuthority('https://[::1]:9000/x')).toMatchObject({
+      host: '::1',
+      port: 9000,
+    });
+    expect(extractEgressAuthority('https://[::1]/x')).toMatchObject({ host: '::1', port: 443 });
+    expect(extractEgressAuthority('https://[::1]junk/x')).toBeNull();
+    expect(extractEgressAuthority('https://[::1/x')).toBeNull();
+  });
+
+  it('fails closed on a malformed port rather than silently using the default', () => {
+    // `:80abc` reading as "port 443" would let a crafted authority compare EQUAL to an authored `host:443`
+    // policy while a real client dialled something else.
+    expect(extractEgressAuthority('https://host:80abc/x')).toBeNull();
+    expect(extractEgressAuthority('https://host:0/x')).toBeNull();
+    expect(extractEgressAuthority('https://host:70000/x')).toBeNull();
+    // …but an EMPTY port is the scheme default, not malformed. RFC 3986 permits it, WHATWG normalizes it
+    // away, and Node's `new URL('https://host:/x').port` is `''` — so a parser that refused it would read a
+    // url DIFFERENTLY from the client that dials it, which for a host:port policy is the dangerous direction.
+    expect(extractEgressAuthority('https://host:/x')?.port).toBe(443);
+  });
+
+  it('keeps the fail-closed rules its HTTPS-only sibling had', () => {
+    expect(extractEgressAuthority('ftp://example.com/x')).toBeNull();
+    expect(extractEgressAuthority('https://exa\u0000mple.com/x')).toBeNull(); // smuggling char
+    expect(extractEgressAuthority('https://ex%41mple.com/x')).toBeNull(); // percent-encoded authority
+    expect(extractEgressAuthority('https://host./x')?.host).toBe('host'); // trailing FQDN dot stripped
+    expect(extractEgressAuthority('https://u:p@example.com/x')).toMatchObject({
+      host: 'example.com',
+      hasCredentials: true,
+    });
+  });
+});
+
+describe('isMetadataOrLinkLocal', () => {
+  /**
+   * The subset of {@link isPrivateOrLocalHost} that NO opt-in may reach
+   * ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §4). It had exactly one test in
+   * the whole repository — at the admission layer, on authored URL text — which only defends against an
+   * attacker who writes a tunnel form into the config. The DIALER's use, on a resolver's answer, is the
+   * rebind case, and it had none.
+   */
+  it.each([
+    ['the AWS/GCP/Azure metadata address', '169.254.169.254'],
+    ['any link-local address', '169.254.1.1'],
+    ['the unspecified address', '0.0.0.0'],
+    ['the 0/8 range', '0.1.2.3'],
+    ['IPv6 link-local', 'fe80::1'],
+    ['IPv4-MAPPED metadata', '::ffff:169.254.169.254'],
+    ['IPv4-COMPATIBLE metadata', '::169.254.169.254'],
+    ['NAT64-tunnelled metadata', '64:ff9b::169.254.169.254'],
+    ['6to4-tunnelled metadata', '2002:a9fe:a9fe::1'],
+    ['a bracketed literal', '[::ffff:169.254.169.254]'],
+    ['a decimal-encoded literal', '2852039166'], // 169.254.169.254, the inet_aton form
+    // **The two a review found reachable**, and both are reachable for the same reason: they sit INSIDE the
+    // private ranges, and private is precisely what `allow_local_endpoint` lifts. A predicate that names only
+    // `169.254/16` leaves every provider whose metadata lives elsewhere in the private space wide open to an
+    // opt-in that names it. Verified reachable through `connectValidated` before these lines existed.
+    ['AWS IMDS over IPv6', 'fd00:ec2::254'],
+    ['AWS IMDS over IPv6, bracketed', '[fd00:ec2::254]'],
+    ['the Alibaba Cloud metadata service', '100.100.100.200'],
+    ['a sibling in the Alibaba metadata /24', '100.100.100.1'],
+    ['the Alibaba endpoint through an IPv4-mapped tunnel', '::ffff:100.100.100.200'],
+  ])('is true for %s', (_label, host) => {
+    expect(isMetadataOrLinkLocal(host)).toBe(true);
+  });
+
+  it.each([
+    ['plain loopback', '127.0.0.1'],
+    ['IPv6 loopback', '::1'],
+    ['the unspecified IPv6 address', '::'],
+    ['an RFC1918 address', '10.0.0.5'],
+    ['another RFC1918 address', '192.168.1.2'],
+    ['a public address', '93.184.216.34'],
+    ['a NAME, however local-looking', 'metadata.local'],
+    ['a name that merely starts with the digits', '169.254.example.com'],
+    // The carve-outs stay narrow: a plain ULA and the rest of the CGNAT range are ordinary private space, and
+    // a local MCP server may legitimately live there.
+    ['an ordinary ULA address', 'fd00::1'],
+    ['a ULA that merely shares the fd00 prefix', 'fd00:ec2::1'],
+    ['the rest of the CGNAT range', '100.64.0.1'],
+    ['a CGNAT address one octet off the metadata /24', '100.100.101.200'],
+  ])('is FALSE for %s — it is narrower than the private-range block', (_label, host) => {
+    expect(isMetadataOrLinkLocal(host)).toBe(false);
+  });
+
+  it('does not misread ::1 as metadata — a bug this predicate shipped with once', () => {
+    // `::1` fell into the IPv4-COMPATIBLE branch, read as `0.0.0.1`, matched the `0.` prefix and was
+    // reported as metadata — so a plain loopback MCP endpoint was refused with the wrong reason. Both
+    // predicates return early for `::`/`::1`; this pins that they agree.
+    expect(isMetadataOrLinkLocal('::1')).toBe(false);
+    expect(isPrivateOrLocalHost('::1')).toBe(true);
+  });
+
+  it('is a strict SUBSET of the private-range block', () => {
+    // The relationship the opt-in depends on: anything this refuses, the range block would also have
+    // refused — so carving it out narrows the opt-in and never widens what is reachable.
+    for (const host of ['169.254.169.254', '0.0.0.0', 'fe80::1', '::ffff:169.254.169.254']) {
+      expect(isMetadataOrLinkLocal(host)).toBe(true);
+      expect(isPrivateOrLocalHost(host)).toBe(true);
+    }
   });
 });

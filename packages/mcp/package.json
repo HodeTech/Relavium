@@ -25,6 +25,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "catalog:",
     "@relavium/core": "workspace:*",
+    "@relavium/shared": "workspace:*",
     "zod": "catalog:"
   },
   "devDependencies": {

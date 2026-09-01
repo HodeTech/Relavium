@@ -1087,6 +1087,104 @@ export function isPrivateOrLocalHost(host: string): boolean {
   );
 }
 
+/**
+ * Whether a host names the **link-local / cloud-metadata** space — a subset of what
+ * {@link isPrivateOrLocalHost} blocks, separated out because it is the subset no opt-in may ever reach.
+ *
+ * `169.254.169.254` is the cloud instance-metadata address on AWS, GCP, Azure and DigitalOcean: an
+ * unauthenticated HTTP endpoint that hands out credentials. `0.0.0.0/8` resolves to "this host" on Linux. A
+ * local-development MCP server is never at either, so a `host:port` opt-in that could name one is an opt-in
+ * to credential theft rather than to local development
+ * ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §4).
+ *
+ * The IPv6 forms are covered too, including the IPv4-mapped and 6to4 tunnels that would otherwise smuggle
+ * `169.254.169.254` past a dotted-decimal check.
+ */
+export function isMetadataOrLinkLocal(host: string): boolean {
+  let h = stripTrailingDots(host.toLowerCase());
+  if (h.startsWith('[') && h.endsWith(']')) {
+    h = h.slice(1, -1); // unbracket an IPv6 literal, exactly as the sibling predicate does
+  }
+  if (h.includes(':')) {
+    const groups = parseIpv6Groups(h);
+    return groups === null ? false : ipv6IsMetadataOrLinkLocal(groups);
+  }
+  // Only a canonicalized numeric IPv4 — a NAME is never metadata by its own text, and a name that resolves
+  // there is caught where every resolved address is range-checked.
+  const dotted = canonicalizeNumericIpv4(h);
+  return dotted === null ? false : ipv4IsMetadata(dotted);
+}
+
+/**
+ * The IPv4 half: the ranges no local-endpoint opt-in may name.
+ *
+ * Split from the IPv6 half rather than sharing one long body, because the two answer the same question from
+ * completely different evidence — and this predicate has already shipped one bug (`::1` read as metadata)
+ * that came from an IPv6 case falling through into IPv4 reasoning.
+ */
+function ipv4IsMetadata(dotted: string): boolean {
+  // `169.254.0.0/16` (link-local, and the IMDS address every cloud shares) and `0.0.0.0/8` ("this host").
+  if (dotted.startsWith('169.254.') || dotted.startsWith('0.')) return true;
+  // **Alibaba Cloud's metadata service at `100.100.100.200`**, inside `100.64.0.0/10` — the CGNAT range,
+  // which `isPrivateOrLocalHost` treats as private. Same reasoning as the AWS IPv6 address: private is what
+  // the opt-in lifts, so a metadata endpoint inside the private space is reachable through it unless this
+  // predicate names it. The whole `/24` rather than the single host, because Alibaba documents sibling
+  // endpoints there and a one-address carve-out would be a bypass with a different last octet.
+  return dotted.startsWith('100.100.100.');
+}
+
+/** AWS IMDS over IPv6 — the fixed `fd00:ec2::254`, inside the ULA range treated as private elsewhere. */
+function isAwsImdsV6(groups: readonly number[]): boolean {
+  return (
+    groups[0] === 0xfd00 &&
+    groups[1] === 0x0ec2 &&
+    groups.slice(2, 7).every((g) => g === 0) &&
+    groups[7] === 0x254
+  );
+}
+
+/** `::` and `::1` — the unspecified and loopback addresses, neither of them metadata. */
+function isUnspecifiedOrLoopbackV6(groups: readonly number[]): boolean {
+  if (groups.every((g) => g === 0)) return true;
+  return groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1;
+}
+
+/**
+ * The embedded-IPv4 tunnel forms, or `null` when this is not one.
+ *
+ * Same order and same reasoning as `isPrivateIpv6Groups`: `::ffff:a.b.c.d` (mapped), `::a.b.c.d` (compatible)
+ * and `64:ff9b::/96` (NAT64) put the address in the low 32 bits; `2002::/16` (6to4) puts it in bits 16–47.
+ * Without them `::ffff:169.254.169.254` would walk straight past a dotted-decimal check.
+ */
+function tunnelledIpv4(groups: readonly number[]): string | null {
+  const first = groups[0] ?? 0;
+  const zeroHigh = groups.slice(0, 5).every((g) => g === 0);
+  if (zeroHigh && (groups[5] === 0xffff || groups[5] === 0)) {
+    return ipv4FromGroups(groups[6] ?? 0, groups[7] ?? 0);
+  }
+  if (first === 0x0064 && groups[1] === 0xff9b && groups.slice(2, 6).every((g) => g === 0)) {
+    return ipv4FromGroups(groups[6] ?? 0, groups[7] ?? 0);
+  }
+  if (first === 0x2002) return ipv4FromGroups(groups[1] ?? 0, groups[2] ?? 0);
+  return null;
+}
+
+/**
+ * The IPv6 half.
+ *
+ * **Order is load-bearing.** `::`/`::1` must be answered BEFORE the tunnel forms — without that, `::1` falls
+ * into the IPv4-compatible branch, reads as `0.0.0.1`, matches the `0.` prefix and is reported as metadata,
+ * which is how a plain loopback MCP endpoint once got refused with the wrong reason.
+ */
+function ipv6IsMetadataOrLinkLocal(groups: readonly number[]): boolean {
+  const first = groups[0] ?? 0;
+  if (first >= 0xfe80 && first <= 0xfebf) return true; // fe80::/10
+  if (isAwsImdsV6(groups)) return true;
+  if (isUnspecifiedOrLoopbackV6(groups)) return false;
+  const tunnelled = tunnelledIpv4(groups);
+  return tunnelled === null ? false : isMetadataOrLinkLocal(tunnelled);
+}
+
 /** Block the 172.16/12 private range (172.16.0.0 – 172.31.255.255) on a dotted-decimal host. */
 function isPrivate172(h: string): boolean {
   const m = /^172\.(\d{1,3})\./.exec(h);
@@ -1280,11 +1378,119 @@ function ipv4FromGroups(hi: number, lo: number): string {
  *  for the two URL policy helpers below, so their scheme + capture can never drift apart. */
 const HTTPS_AUTHORITY_PATTERN = /^https:\/\/([^/?#]+)/i;
 
+/** The `http`/`https`/`ws`/`wss` authority, with the scheme captured. One grammar, four schemes — see
+ *  {@link extractEgressAuthority} for why the plaintext and websocket forms are parsed at all. */
+const EGRESS_AUTHORITY_PATTERN = /^(https?|wss?):\/\/([^/?#]+)/i;
+
+/** An egress target's scheme, host and port — the shape a connect-by-validated-IP dialer needs. */
+export interface EgressAuthority {
+  /** Lowercased. `ws`/`wss` are parsed because MCP declares them; a dialer must still refuse what it cannot dial. */
+  readonly scheme: 'http' | 'https' | 'ws' | 'wss';
+  /** Lowercased, brackets stripped, trailing FQDN dots removed. */
+  readonly host: string;
+  /** The explicit port, or the scheme default (443 / 80). */
+  readonly port: number;
+  readonly hasCredentials: boolean;
+}
+
 /**
- * Returns `true` when an HTTPS URL string contains credentials (`user:pass@`) in its authority
- * component. Used by the SSRF policy to reject URLs that embed secrets in the URL itself
- * (security-review.md). HTTPS-only, matching {@link extractHttpsHost} (a non-HTTPS URL is rejected
- * upstream by the same scheme check, so the two never disagree on scheme).
+ * Parse an `http(s)` URL's authority into scheme + host + **port**.
+ *
+ * **The port is why this exists.** `extractHttpsHost` deliberately drops it, which is right for an
+ * exact-FQDN allowlist and wrong for the one place a policy is scoped to a `host:port` pair: the MCP
+ * `allow_local_endpoint` opt-in, where relaxing the private-range block for `localhost:4000` must NOT also
+ * reach `localhost:6379` or `localhost:22` (`SEC-EGRESS-3`,
+ * [ADR-0053](../../../docs/decisions/0053-mcp-network-transport-egress-security.md) §3,
+ * [ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §2.2/§4).
+ *
+ * **The plaintext scheme is the other half**, and it is admitted here rather than in a caller because a
+ * second URL parser beside this one is precisely what [ADR-0029](../../../docs/decisions/0029-tool-policy-hardening.md) (d)'s
+ * one-primitive rule exists to prevent. Admitting `http` at the PARSE level grants nothing: the policy that
+ * decides whether plaintext is acceptable lives in the dialer, which permits it only for a target that
+ * resolves private AND matches an authored `host:port`.
+ *
+ * **`ws`/`wss` are parsed too**, because MCP's authored transport vocabulary includes them
+ * ([ADR-0053](../../../docs/decisions/0053-mcp-network-transport-egress-security.md) §1) and the authority
+ * grammar is identical — the alternative was normalizing `ws://` to `http://` before parsing, which is a
+ * rewrite of the very bytes a security check is about. Parsing a scheme grants nothing: a dialer that cannot
+ * speak it must still refuse it, and `connectValidated` does.
+ *
+ * Returns `null` for any other scheme or a malformed authority — the same fail-closed answer, and for the same
+ * reasons, as its HTTPS-only sibling: a smuggling character or a percent-encoded authority is never a literal
+ * host.
+ */
+function normalizeScheme(raw: string): EgressAuthority['scheme'] | null {
+  const lower = raw.toLowerCase();
+  // A lookup rather than a cast — the project forbids an unsafe `as`, and a member the pattern could match
+  // but this list forgot must fail closed rather than be coerced into the nearest neighbour.
+  const schemes: readonly EgressAuthority['scheme'][] = ['http', 'https', 'ws', 'wss'];
+  return schemes.find((candidate) => candidate === lower) ?? null;
+}
+
+export function extractEgressAuthority(url: string): EgressAuthority | null {
+  const match = EGRESS_AUTHORITY_PATTERN.exec(url);
+  if (match === null) {
+    return null;
+  }
+  const scheme = normalizeScheme(match[1] ?? '');
+  if (scheme === null) {
+    return null;
+  }
+  const rawAuthority = match[2] ?? '';
+  if (hasSmugglingChar(rawAuthority) || rawAuthority.includes('%')) {
+    return null;
+  }
+  let authority = rawAuthority;
+  let hasCredentials = false;
+  const at = authority.lastIndexOf('@');
+  if (at !== -1) {
+    hasCredentials = true;
+    authority = authority.slice(at + 1);
+  }
+  let host: string;
+  let portPart: string;
+  if (authority.startsWith('[')) {
+    const end = authority.indexOf(']');
+    if (end === -1) {
+      return null; // unmatched IPv6 bracket — malformed authority, fail closed
+    }
+    host = authority.slice(1, end);
+    const rest = authority.slice(end + 1);
+    if (rest !== '' && !rest.startsWith(':')) {
+      return null; // trailing junk after the bracket is not a port — fail closed
+    }
+    portPart = rest.startsWith(':') ? rest.slice(1) : '';
+  } else {
+    const colon = authority.indexOf(':');
+    host = colon === -1 ? authority : authority.slice(0, colon);
+    portPart = colon === -1 ? '' : authority.slice(colon + 1);
+  }
+  if (host === '') {
+    return null;
+  }
+  const defaultPort = scheme === 'https' || scheme === 'wss' ? 443 : 80;
+  let port = defaultPort;
+  if (portPart !== '') {
+    // Digits only: a `:80abc` or a `:` with nothing after it is a malformed authority, not a default.
+    if (!/^\d+$/.test(portPart)) return null;
+    port = Number.parseInt(portPart, 10);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  }
+  return { scheme, host: stripTrailingDots(host.toLowerCase()), port, hasCredentials };
+}
+
+/**
+ * Returns `true` when an **HTTPS** URL string contains credentials (`user:pass@`) in its authority component.
+ * Used by the SSRF policy to reject URLs that embed secrets in the URL itself (security-review.md).
+ *
+ * **HTTPS-only, and that is now a real limitation rather than a tautology.** It matches
+ * {@link extractHttpsHost}, and its callers — the OpenAI adapter's base-url check and `relavium provider` —
+ * are HTTPS-only by their own rules, so for them a non-HTTPS url is refused on scheme before this is
+ * consulted. That was the whole story until [ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md)
+ * §4 admitted a plaintext local endpoint: `validateEgressTarget` calls this AND then checks
+ * `parsed.hasCredentials` from {@link extractEgressAuthority}, which is scheme-agnostic, and it is that second
+ * check — not this one — that catches `http://user:pass@localhost:4000`. A new caller on a path that can carry
+ * `http`, `ws` or `wss` must use `extractEgressAuthority`; this function will answer `false` for all three.
  */
 export function urlHasCredentials(url: string): boolean {
   const match = HTTPS_AUTHORITY_PATTERN.exec(url);
@@ -1303,35 +1509,16 @@ export function urlHasCredentials(url: string): boolean {
  * ({@link refineInFlightMediaPart}) and the engine's `enforceHttpEgress`.
  */
 export function extractHttpsHost(url: string): { host: string; hasCredentials: boolean } | null {
-  const match = HTTPS_AUTHORITY_PATTERN.exec(url);
-  if (match === null) {
+  // ONE parser. This was a near-copy of {@link extractEgressAuthority}'s body until the local-endpoint
+  // policy needed the port; keeping both would have been the second URL parser ADR-0029 (d) forbids, and
+  // the two would have drifted at the first fix applied to only one of them.
+  const authority = extractEgressAuthority(url);
+  // `authority?.scheme` reads the two failures as one — malformed and not-https both mean "not a usable
+  // HTTPS authority" here, and neither needs to be distinguished by the caller.
+  if (authority?.scheme !== 'https') {
     return null;
   }
-  const rawAuthority = match[1] ?? '';
-  if (hasSmugglingChar(rawAuthority) || rawAuthority.includes('%')) {
-    // A percent-encoded authority is never a literal host — fail closed rather than decode/normalize here
-    // (a WHATWG client would percent-decode it, which could mask a blocked address).
-    return null;
-  }
-  let authority = rawAuthority;
-  let hasCredentials = false;
-  const at = authority.lastIndexOf('@');
-  if (at !== -1) {
-    hasCredentials = true;
-    authority = authority.slice(at + 1);
-  }
-  let host: string;
-  if (authority.startsWith('[')) {
-    const end = authority.indexOf(']');
-    if (end === -1) {
-      return null; // unmatched IPv6 bracket — malformed authority, fail closed
-    }
-    host = authority.slice(1, end);
-  } else {
-    const colon = authority.indexOf(':');
-    host = colon === -1 ? authority : authority.slice(0, colon);
-  }
-  return { host: stripTrailingDots(host.toLowerCase()), hasCredentials };
+  return { host: authority.host, hasCredentials: authority.hasCredentials };
 }
 
 /**

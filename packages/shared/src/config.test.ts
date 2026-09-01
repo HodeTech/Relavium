@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { GlobalConfigSchema, ProjectConfigSchema } from './config.js';
+import { GlobalConfigSchema, McpServerRegistrationSchema, ProjectConfigSchema } from './config.js';
+import { MCP_CONNECT_TIMEOUT_CEILING_MS } from './constants.js';
 
 describe('config schemas', () => {
   it('accepts a global config.toml shape', () => {
@@ -345,6 +346,25 @@ describe('config schemas', () => {
     // A non-array is rejected.
     expect(
       ProjectConfigSchema.safeParse({ chat: { allowed_commands: 'git status' } }).success,
+    ).toBe(false);
+  });
+});
+
+describe('McpServerRegistration — connect_timeout_ms (ADR-0088 §1.4)', () => {
+  it('shares the inline form’s ceiling, so `ref` is not a way around it', () => {
+    // The registration and the inline `McpServerRef` use the SAME schema deliberately: a registration that
+    // accepted a value the inline form refuses would turn a by-name `ref` into a bypass of the ceiling.
+    const reg = (ms: number): unknown => ({
+      name: 'gh',
+      transport: 'stdio',
+      command: 'npx',
+      connect_timeout_ms: ms,
+    });
+    expect(McpServerRegistrationSchema.safeParse(reg(MCP_CONNECT_TIMEOUT_CEILING_MS)).success).toBe(
+      true,
+    );
+    expect(
+      McpServerRegistrationSchema.safeParse(reg(MCP_CONNECT_TIMEOUT_CEILING_MS + 1)).success,
     ).toBe(false);
   });
 });

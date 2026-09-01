@@ -1,3 +1,4 @@
+import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -15,6 +16,11 @@ import {
 // Mock `node:https` so the CONCRETE `nodeEgressDeps.openConnection` (the un-injectable pin/SNI/headers/body
 // wiring) is asserted without a real socket. The fake-deps tests below never reach the real openConnection.
 vi.mock('node:https', () => ({ request: vi.fn() }));
+// `node:http` is mocked for the SAME reason, and it is newly load-bearing: ADR-0088 §4's plaintext
+// relaxation exists so `http://localhost:4000/mcp` works, and the scheme dispatch below is the ONLY place
+// that connection is actually made. Shipped inverted, every local-endpoint MCP server would attempt TLS
+// against a plaintext port — and a review measured that inverting it broke no test at all.
+vi.mock('node:http', () => ({ request: vi.fn() }));
 
 /**
  * safe-egress.ts is THE single connect-by-validated-IP SSRF primitive shared by media + CLI tool egress
@@ -64,7 +70,6 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
     await connectValidated(
       'https://api.example.com/p?q=1',
       {
-        allowPrivate: false,
         method: 'POST',
         headers: { authorization: 'Bearer X' },
         body: '{"a":1}',
@@ -79,6 +84,26 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
     expect(captured?.body).toBe('{"a":1}');
   });
 
+  it('carries the VALIDATED port onto the hop — the same number the local-endpoint match used', async () => {
+    // **One reading of the url, not two.** The dialer used to re-parse `request.url` and re-apply the scheme
+    // default itself, so the port the opt-in was scoped to (`LocalEndpoint`'s `host:port`) and the port
+    // actually dialled came from two independent parses of one string. They agreed; a divergence would connect
+    // somewhere admission never approved. The port now travels with the request that was validated.
+    const cases: readonly (readonly [string, number])[] = [
+      ['https://api.example.com:8443/a', 8443], // explicit, non-default
+      ['https://api.example.com/a', 443], // scheme default, made explicit at admission
+    ];
+    for (const [url, port] of cases) {
+      let captured: HopRequest | undefined;
+      const deps = fakeDeps({
+        resolve: { 'api.example.com': ['203.0.113.5'] },
+        onOpen: (request) => (captured = request),
+      });
+      await connectValidated(url, { method: 'GET' }, deps, sig());
+      expect(captured?.port).toBe(port);
+    }
+  });
+
   it('STRIPS a caller-supplied Host / :authority header (virtual-host-confusion SSRF defense)', async () => {
     let captured: HopRequest | undefined;
     const deps = fakeDeps({
@@ -88,7 +113,6 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
     await connectValidated(
       'https://api.example.com/x',
       {
-        allowPrivate: false,
         method: 'GET',
         // A model could set these to reroute an allowlisted, correctly-pinned request to a DIFFERENT vhost at
         // the same shared IP — the mechanism must drop them so the wire Host derives from the validated host.
@@ -119,7 +143,6 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
     await connectValidated(
       'https://api.example.com/x',
       {
-        allowPrivate: false,
         method: 'POST',
         // A model-set Content-Length that MISMATCHES the body length is a request-smuggling primitive (the
         // surplus body bytes are parsed as a second, forged request on a keep-alive socket) — the mechanism must
@@ -170,7 +193,6 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
     await connectValidated(
       'https://api.example.com/x',
       {
-        allowPrivate: false,
         method: 'GET',
         headers: {
           'X-Forwarded-Host': 'evil-backend.example', // forwarding header → vhost reroute
@@ -208,20 +230,10 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
       openConnection: () => Promise.reject(new Error('must not connect')),
     };
     await expect(
-      connectValidated(
-        'http://api.example.com/x',
-        { allowPrivate: false, method: 'GET' },
-        deps,
-        sig(),
-      ),
+      connectValidated('http://api.example.com/x', { method: 'GET' }, deps, sig()),
     ).rejects.toMatchObject({ code: 'insecure_url' });
     await expect(
-      connectValidated(
-        'https://u:p@api.example.com/x',
-        { allowPrivate: false, method: 'GET' },
-        deps,
-        sig(),
-      ),
+      connectValidated('https://u:p@api.example.com/x', { method: 'GET' }, deps, sig()),
     ).rejects.toMatchObject({ code: 'insecure_url' });
     expect(resolved).toBe(false); // the url gate runs before the resolver
   });
@@ -229,49 +241,167 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
   it('blocks a private IP among MANY resolved answers (one bad answer fails the whole fetch)', async () => {
     const deps = fakeDeps({ resolve: { 'evil.example.com': ['203.0.113.5', '127.0.0.1'] } });
     await expect(
-      connectValidated(
-        'https://evil.example.com/x',
-        { allowPrivate: false, method: 'GET' },
-        deps,
-        sig(),
-      ),
+      connectValidated('https://evil.example.com/x', { method: 'GET' }, deps, sig()),
     ).rejects.toMatchObject({ code: 'blocked_host' });
   });
 
   it('blocks a resolver that returns a NON-IP (it would defeat connect-by-validated-IP)', async () => {
     const deps = fakeDeps({ resolve: { 'evil.example.com': ['cdn.internal.corp'] } });
     await expect(
-      connectValidated(
-        'https://evil.example.com/x',
-        { allowPrivate: false, method: 'GET' },
-        deps,
-        sig(),
-      ),
+      connectValidated('https://evil.example.com/x', { method: 'GET' }, deps, sig()),
     ).rejects.toMatchObject({ code: 'blocked_host' });
   });
 
   it('blocks an empty DNS result (fail-closed — never pins the unvalidated hostname)', async () => {
     const deps = fakeDeps({ resolve: { 'nx.example.com': [] } });
     await expect(
+      connectValidated('https://nx.example.com/x', { method: 'GET' }, deps, sig()),
+    ).rejects.toMatchObject({ code: 'blocked_host' });
+  });
+
+  it('a localEndpoint permits exactly its own host:port (the BYOK local-endpoint opt-in)', async () => {
+    let opened = false;
+    const deps = fakeDeps({ resolve: { localhost: ['127.0.0.1'] }, onOpen: () => (opened = true) });
+    await connectValidated(
+      'https://localhost:4000/x',
+      { method: 'GET', localEndpoint: { host: 'localhost', port: 4000 } },
+      deps,
+      sig(),
+    );
+    expect(opened).toBe(true);
+  });
+
+  it('refuses a SIBLING PORT on the permitted host — the SEC-EGRESS-3 decision, made', async () => {
+    // The reason the opt-in is a `host:port` and not a boolean. An `allowPrivate: true` that meant "private
+    // is fine" would have let a server opted in for `localhost:4000` reach `localhost:6379` (Redis),
+    // `:5432` (Postgres), `:22` or a container socket — the hole ADR-0053 §3 requires any wiring of this to
+    // close before it ships.
+    const deps = fakeDeps({ resolve: { localhost: ['127.0.0.1'] } });
+    await expect(
       connectValidated(
-        'https://nx.example.com/x',
-        { allowPrivate: false, method: 'GET' },
+        'https://localhost:6379/x',
+        { method: 'GET', localEndpoint: { host: 'localhost', port: 4000 } },
         deps,
         sig(),
       ),
     ).rejects.toMatchObject({ code: 'blocked_host' });
   });
 
-  it('allowPrivate:true permits a loopback target (the BYOK local-endpoint opt-in)', async () => {
-    let opened = false;
-    const deps = fakeDeps({ resolve: { localhost: ['127.0.0.1'] }, onOpen: () => (opened = true) });
-    await connectValidated(
-      'https://localhost/x',
-      { allowPrivate: true, method: 'GET' },
+  it('permits PLAINTEXT for the authored local endpoint, and only for it', async () => {
+    // The two relaxations lift together. A local-dev MCP server is typically `http://localhost:4000`, which
+    // is why plaintext is needed at all — and it is scoped to that one endpoint.
+    const deps = fakeDeps({ resolve: { localhost: ['127.0.0.1'] } });
+    const hop = await connectValidated(
+      'http://localhost:4000/mcp',
+      { method: 'GET', localEndpoint: { host: 'localhost', port: 4000 } },
       deps,
       sig(),
     );
-    expect(opened).toBe(true);
+    expect(hop.status).toBeGreaterThan(0);
+    // A DIFFERENT plaintext host is still refused, opt-in or not — the rule ADR-0053 §3 states and a pair of
+    // independent flags would have inverted: a remote endpoint is always https.
+    await expect(
+      connectValidated(
+        'http://public.example/x',
+        { method: 'GET', localEndpoint: { host: 'localhost', port: 4000 } },
+        deps,
+        sig(),
+      ),
+    ).rejects.toMatchObject({ code: 'insecure_url' });
+  });
+
+  it('refuses embedded credentials on the PLAINTEXT local-endpoint path too', async () => {
+    // **The arm `urlHasCredentials` does not cover.** That helper is HTTPS-only — it answers `false` for an
+    // `http` url whatever its authority — and it was the whole credential story until ADR-0088 §4 admitted a
+    // plaintext local endpoint. What catches this is the second check: `hasCredentials` off the scheme-
+    // agnostic `extractEgressAuthority`. Untested until now, on a path that carries a user's dev-server
+    // password to a socket, so the refusal rested on a helper that cannot see it.
+    const deps = fakeDeps({ resolve: { localhost: ['127.0.0.1'] } });
+    await expect(
+      connectValidated(
+        'http://user:pass@localhost:4000/mcp',
+        { method: 'GET', localEndpoint: { host: 'localhost', port: 4000 } },
+        deps,
+        sig(),
+      ),
+    ).rejects.toMatchObject({ code: 'insecure_url' });
+  });
+
+  it('refuses a local endpoint that NAMES the cloud-metadata space, opt-in or not', async () => {
+    // **A review found this reachable, and a mutation found the check unbound.** `169.254.169.254` sits
+    // INSIDE the private ranges, so it satisfied every condition for an authored "local endpoint" — and
+    // would then have been dialled over plaintext with the range check lifted. It is the cloud-credential
+    // endpoint ADR-0053's own Context names as the motivating threat.
+    const deps = fakeDeps({ resolve: { '169.254.169.254': ['169.254.169.254'] } });
+    await expect(
+      connectValidated(
+        'http://169.254.169.254/latest',
+        { method: 'GET', localEndpoint: { host: '169.254.169.254', port: 80 } },
+        deps,
+        sig(),
+      ),
+    ).rejects.toMatchObject({ code: 'blocked_host' });
+  });
+
+  it('refuses a metadata LITERAL even when the resolver would answer something else', async () => {
+    // **The site a review proved unbound, and why it is not dead code.** With the real `nodeEgressDeps`, an
+    // IP literal short-circuits to itself, so the pre-DNS guard and the resolved-IP guard always fire on the
+    // same value and only the second is observable — which made the fold's claim that "both redden" false.
+    // `resolveHost` is an INJECTED seam, though, so a host (or a test) can supply one that answers
+    // differently; this fixture is that host, and it is the only way to see the pre-DNS guard alone.
+    const deps = fakeDeps({ resolve: { '169.254.169.254': ['10.0.0.1'] } });
+    await expect(
+      connectValidated(
+        'http://169.254.169.254/latest',
+        { method: 'GET', localEndpoint: { host: '169.254.169.254', port: 80 } },
+        deps,
+        sig(),
+      ),
+    ).rejects.toMatchObject({ code: 'blocked_host' });
+  });
+
+  it('refuses a TUNNELED metadata address in a resolver answer — the real rebind shape', async () => {
+    // The dialer's site, with the form an admission-layer test cannot reach: a name admitted as an ordinary
+    // local endpoint whose resolver later answers `::ffff:169.254.169.254`. The IPv4-mapped unwrap in
+    // `isMetadataOrLinkLocal` is what catches it, and it had no test at this layer at all.
+    const deps = fakeDeps({ resolve: { 'dev.local': ['::ffff:169.254.169.254'] } });
+    await expect(
+      connectValidated(
+        'http://dev.local:4000/mcp',
+        { method: 'GET', localEndpoint: { host: 'dev.local', port: 4000 } },
+        deps,
+        sig(),
+      ),
+    ).rejects.toMatchObject({ code: 'blocked_host' });
+  });
+
+  it('refuses a local endpoint whose NAME resolves into the metadata space', async () => {
+    // The half that matters more, because a name is what an attacker steers: `isPrivateOrLocalHost` treats
+    // `*.local` as local from the SUFFIX alone, and an mDNS responder on the same LAN chooses the address.
+    const deps = fakeDeps({ resolve: { 'dev.local': ['169.254.169.254'] } });
+    await expect(
+      connectValidated(
+        'http://dev.local:4000/mcp',
+        { method: 'GET', localEndpoint: { host: 'dev.local', port: 4000 } },
+        deps,
+        sig(),
+      ),
+    ).rejects.toMatchObject({ code: 'blocked_host' });
+  });
+
+  it('refuses a declared local endpoint that RESOLVES PUBLIC, rather than downgrading it', async () => {
+    // The opt-in narrows; it never widens. Without this, an author (or a hostile registry entry) could point
+    // `allow_local_endpoint` at a name that resolves to a public address and get a plaintext, range-unchecked
+    // connection to it — the inversion the bound policy exists to prevent.
+    const deps = fakeDeps({ resolve: { 'not-really-local': ['93.184.216.34'] } });
+    await expect(
+      connectValidated(
+        'http://not-really-local:4000/x',
+        { method: 'GET', localEndpoint: { host: 'not-really-local', port: 4000 } },
+        deps,
+        sig(),
+      ),
+    ).rejects.toMatchObject({ code: 'blocked_host' });
   });
 });
 
@@ -379,6 +509,17 @@ function stubClientRequest(): {
   return { on: vi.fn(), write: vi.fn(), end: vi.fn(), destroy: vi.fn() };
 }
 
+/** The plaintext sibling of {@link lastHttpsCall} — same narrowing, `node:http` instead of `node:https`. */
+function lastHttpCallOptions(): CapturedHttpsOptions {
+  const call = vi.mocked(httpRequest).mock.calls.at(-1);
+  if (call === undefined) throw new Error('expected http.request to have been called');
+  const [options] = call;
+  if (typeof options !== 'object' || options === null || options instanceof URL) {
+    throw new Error('expected http.request(optionsObject, …)');
+  }
+  return options;
+}
+
 function lastHttpsCall(): {
   options: CapturedHttpsOptions;
   onResponse: (incoming: FakeIncoming) => void;
@@ -404,6 +545,8 @@ describe('nodeEgressDeps.openConnection — the concrete body/headers wire path 
     const request: HopRequest = {
       url: 'https://api.example.com/p',
       hostname: 'api.example.com',
+      scheme: 'https',
+      port: 443,
       pinnedIp: '203.0.113.5',
       method: 'POST',
       headers: { authorization: 'Bearer SECRET-VALUE' },
@@ -425,6 +568,8 @@ describe('nodeEgressDeps.openConnection — the concrete body/headers wire path 
       {
         url: 'https://api.example.com/x',
         hostname: 'api.example.com',
+        scheme: 'https',
+        port: 443,
         pinnedIp: '203.0.113.5',
         method: 'GET',
       },
@@ -454,6 +599,8 @@ describe('nodeEgressDeps.openConnection — the concrete body/headers wire path 
       {
         url: 'https://api.example.com/x',
         hostname: 'api.example.com',
+        scheme: 'https',
+        port: 443,
         pinnedIp: '2606:2800:220:1:248:1893:25c8:1946',
         method: 'GET',
       },
@@ -476,6 +623,8 @@ describe('nodeEgressDeps.openConnection — the concrete body/headers wire path 
       {
         url: 'https://api.example.com/x',
         hostname: 'api.example.com',
+        scheme: 'https',
+        port: 443,
         pinnedIp: '203.0.113.5',
         method: 'GET',
       },
@@ -485,5 +634,89 @@ describe('nodeEgressDeps.openConnection — the concrete body/headers wire path 
     await pending;
     expect(client.write).not.toHaveBeenCalled();
     expect(client.end).toHaveBeenCalled();
+  });
+});
+
+describe('nodeEgressDeps.openConnection — the plaintext branch (ADR-0088 §4)', () => {
+  it('dials node:http for a validated `http` target, and NOT node:https', () => {
+    const client = stubClientRequest();
+    vi.mocked(httpRequest).mockReturnValue(client as unknown as ReturnType<typeof httpRequest>);
+    vi.mocked(httpsRequest).mockClear();
+
+    const request: HopRequest = {
+      url: 'http://localhost:4000/mcp',
+      hostname: 'localhost',
+      scheme: 'http',
+      port: 4000,
+      pinnedIp: '127.0.0.1',
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    };
+    void nodeEgressDeps.openConnection(request, new AbortController().signal);
+
+    expect(vi.mocked(httpRequest)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(httpsRequest)).not.toHaveBeenCalled();
+    const options = lastHttpCallOptions();
+    expect(options).toMatchObject({ protocol: 'http:', hostname: 'localhost', port: 4000 });
+    // **The pin still applies on this branch — plaintext relaxes the SCHEME, never the address.** That
+    // sentence sat above an assertion about the request BODY, which proves nothing about pinning: the
+    // plaintext dialer could have dropped `lookup` entirely and re-resolved `localhost` and this test stayed
+    // green. Asserted through the lookup itself, which is the only place the pin exists.
+    let pinned: string | undefined;
+    options.lookup?.('localhost', {}, (_err, address) => {
+      pinned = address;
+    });
+    expect(pinned).toBe('127.0.0.1');
+    expect(client.write).toHaveBeenCalledWith('{}');
+  });
+
+  it('defaults an unported plaintext url to port 80, not 443', () => {
+    const client = stubClientRequest();
+    vi.mocked(httpRequest).mockReturnValue(client as unknown as ReturnType<typeof httpRequest>);
+    void nodeEgressDeps.openConnection(
+      {
+        url: 'http://dev.internal/mcp',
+        hostname: 'dev.internal',
+        scheme: 'http',
+        port: 80,
+        pinnedIp: '10.0.0.5',
+        method: 'GET',
+      },
+      new AbortController().signal,
+    );
+    expect(vi.mocked(httpRequest).mock.calls.at(-1)?.[0]).toMatchObject({ port: 80 });
+  });
+
+  it('still strips the hop headers on the plaintext branch', async () => {
+    // `sanitizeHopHeaders` runs before the dispatch, so both branches get it — asserted rather than assumed,
+    // because "the new branch inherits the old branch's guarantees" is exactly the kind of claim that rots.
+    const client = stubClientRequest();
+    vi.mocked(httpRequest).mockReturnValue(client as unknown as ReturnType<typeof httpRequest>);
+    // NOT awaited: the stubbed client never fires its response callback, so the hop promise never settles —
+    // the assertion is about what reached `node:http`, which happens before that.
+    void connectValidated(
+      'http://localhost:4000/mcp',
+      {
+        method: 'GET',
+        localEndpoint: { host: 'localhost', port: 4000 },
+        headers: { host: 'evil.example', 'content-length': '999', 'x-ok': 'kept' },
+      },
+      { ...nodeEgressDeps, resolveHost: () => Promise.resolve(['127.0.0.1']) },
+      new AbortController().signal,
+    ).catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 0)); // let the resolve+dispatch microtasks run
+    const options = vi.mocked(httpRequest).mock.calls.at(-1)?.[0];
+    // Narrowed by a guard rather than an assertion — the project forbids an unsafe `as`, and a mocked call
+    // argument is genuinely `string | URL | object` until it is checked.
+    if (typeof options !== 'object' || options === null || !('headers' in options)) {
+      throw new TypeError(
+        'expected node:http to be called with an options object carrying headers',
+      );
+    }
+    const sent = options.headers as Readonly<Record<string, string>>;
+    expect(sent).toMatchObject({ 'x-ok': 'kept' });
+    expect(Object.keys(sent)).not.toContain('host'); // vhost-confusion strip applies on BOTH branches
+    expect(Object.keys(sent)).not.toContain('content-length');
   });
 });

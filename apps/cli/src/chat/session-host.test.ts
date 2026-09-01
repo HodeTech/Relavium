@@ -450,6 +450,7 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
           capability: { call: () => Promise.resolve({ content: [], isError: false }) },
           toolDefs: [],
           toolIdsByServer: new Map(),
+          childPids: [],
           skipped: [],
           close: () => Promise.resolve(),
         }),
@@ -530,6 +531,7 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
       capability: { call: () => Promise.resolve({ content: [], isError: false }) },
       toolDefs: [...defs, ...defs], // duplicate id ⇒ createToolRegistry throws inside buildSessionRuntime
       toolIdsByServer: new Map(),
+      childPids: [],
       skipped: [],
       close: () => {
         closed += 1;
@@ -638,6 +640,49 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(built.resumeState.cumulativeCostMicrocents).toBe(1234); // carried from the record
     // The persister continues PAST the persisted MAX(sequence_number) = 1.
     expect(built.nextSequenceNumber).toBe(2);
+  });
+
+  it('forwards mcpConnectSignal on the RESUMED path, not only the fresh one (ADR-0088 §1.3)', async () => {
+    // **The field that was wired and dead, now bound.** The resumed path built its `connectAgentMcp` options
+    // inline instead of going through `mcpOptionsFor`, so `mcpConnectSignal` — added for the connect-cancel —
+    // was forwarded on one path and silently dropped on the other. A `chat-resume` whose agent declares a
+    // stdio server would spawn children through a cold `npx` with the user's Ctrl-C reaching nothing.
+    //
+    // Observed at `startMcpClient`, on IDENTITY — the right layer for THIS bug, which was in the option
+    // MAPPING above it, not in the plumbing below. That the same signal then reaches each server's `open()`
+    // is `mcp-servers.test.ts`'s claim, and it is asserted there rather than restated here.
+    const signal = new AbortController().signal;
+    let seenAtOpener: unknown;
+    const built = await buildResumedChatSession({
+      chat: EMPTY_CHAT,
+      record: record({
+        agentSnapshot: {
+          ...RESUME_AGENT,
+          mcp_servers: [{ id: 'fs', transport: 'stdio', command: 'my-server' }],
+        },
+      }),
+      messages: [message(0, 'user', 'hi'), message(1, 'assistant', 'hello')],
+      now: () => Date.parse(ISO),
+      providers: scriptedResolver([textTurn('continued')]),
+      consentGate: () => Promise.resolve(new Map()),
+      mcpConnectSignal: signal,
+      startMcpClient: (_servers, connectSignal) => {
+        seenAtOpener = connectSignal;
+        return realStartMcpClient([
+          {
+            id: 'fs',
+            open: () =>
+              Promise.resolve({
+                listTools: () => Promise.resolve([]),
+                callTool: () => Promise.resolve({ content: [], isError: false }),
+                close: () => Promise.resolve(),
+              }),
+          },
+        ]);
+      },
+    });
+    expect(seenAtOpener).toBe(signal);
+    await built.closeMcp?.();
   });
 
   it('createChatModeControl gates a governed dispatch on the RESUMED session too (regression guard)', async () => {
@@ -900,6 +945,7 @@ describe('buildResumedChatSession (2.N)', () => {
         capability: { call: () => Promise.resolve({ content: [], isError: false }) },
         toolDefs: [...defs, ...defs], // duplicate id ⇒ createToolRegistry throws post-connect
         toolIdsByServer: new Map(),
+        childPids: [],
         skipped: [],
         close: () => {
           closed += 1;

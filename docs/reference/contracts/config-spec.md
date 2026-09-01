@@ -57,7 +57,7 @@ flowchart LR
 3. **Project** (`project.toml`) — project-specific overrides.
 4. **Per-invocation** — a CLI flag or environment variable for a single run; highest precedence. See [../cli/commands.md](../cli/commands.md).
 
-MCP server registrations follow the same merge: globally registered servers (`config.toml`) plus any project-scoped servers. See [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md).
+MCP server registrations **union** across layers rather than following this precedence: globally registered servers (`config.toml`) plus any project-scoped servers. A duplicate `name` is **refused, not overridden** — whether it appears in more than one layer, or twice within a single file — see the **Project-scoped MCP servers** note under [`project.toml` / `workspace.toml`](#projecttoml--workspacetoml-project--keys) for the rule and its remedies, and [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md) for the registration shape.
 
 ## `config.toml` (global) — keys
 
@@ -99,16 +99,22 @@ autostart = true                   # accepted, reserved for a future always-on p
 # url = "https://host/mcp"         # for transport = http (Streamable HTTP); a `websocket` server uses wss://
 # env = { TOKEN = "{{secrets.github_token}}" }   # stdio only — resolved from the isolated mcp-secret:* keychain, injected into the spawned child; rejected on a network transport (header-auth is a follow-up)
 # allow_local_endpoint = true      # opt into a private/loopback url (network transports only, ADR-0053 §3)
+# connect_timeout_ms = 180000      # raise this server's connect deadline (any transport; max 600000, ADR-0088 §1.4)
 ```
 
 A `transport = "http"` / `"websocket"` registration requires a `url` (`http(s)` for `http`, `ws(s)` for
 `websocket`); the url is SSRF-guarded (a private/loopback host is rejected unless `allow_local_endpoint` is set;
-a remote host must be `https`/`wss`) and must not embed credentials. A registration's transport is
+a remote host must be `https`/`wss`) and must not embed credentials. **A `websocket` registration must be
+local** — a remote one is refused, because that transport can be neither address-pinned nor byte-bounded; use
+`http` ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §2.3). A registration's transport is
 **`stdio | http | websocket`**, plus the deprecated **`sse`** alias of `http` (accepted for older servers, same
 `http(s)` url) — symmetric with an inline `agent.mcp_servers` entry; prefer `http` for new servers. The
 stdio-only fields (`command`/`args`/`env`) are rejected on a network registration, and the network-only fields
-(`url`/`allow_local_endpoint`) on a stdio one. An agent consumes a registration with `- ref: filesystem` (see
-[../shared-core/mcp-integration.md](../shared-core/mcp-integration.md)).
+(`url`/`allow_local_endpoint`) on a stdio one. **`connect_timeout_ms` is the one connection field legal on every
+transport** — a cold container is slow the same way a cold `npx` is — and it is validated by the *same* schema
+the inline form uses (max 600 000, rejected rather than clamped), so a by-name `ref` is not a way around the
+ceiling ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1.4). An agent consumes a registration
+with `- ref: filesystem` (see [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md)).
 
 A stdio registration's **`env` may not declare a name that redirects the interpreter, the dynamic loader, or a
 tool's configuration** — `NODE_OPTIONS`, `PATH`, `ZDOTDIR`, `BASH_ENV`, `HOME`, `LD_*`, `DYLD_*`, `GIT_*`,
@@ -184,9 +190,21 @@ allowed_command_globs = []         # opt-in glob form of the !-shell allowlist (
 ```
 
 > **Project-scoped MCP servers.** `project.toml` / `workspace.toml` may also declare
-> `[[mcp_servers]]` entries (the same shape as the global block above); they merge with the
-> global registrations per the [resolution order](#resolution-order) — a project server
-> overrides a global one with the same `name`. (Schema: `ProjectConfigSchema.mcp_servers`.)
+> `[[mcp_servers]]` entries (the same shape as the global block above); they **union** with the global
+> registrations. Unlike every other setting, a duplicate `[[mcp_servers]]` **name is a loud refusal** (exit
+> `2`), not a last-writer-wins override
+> ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §8): a registration is not a preference —
+> it names a **program to execute** and a **secret to inject** — and a project config arrives with a cloned
+> repository, so a silent override would hand a global server's provisioned `{{secrets.*}}` to whatever the
+> project's entry names. Two cases, same answer:
+>
+> - **Across layers** (e.g. `config.toml` and `project.toml` both register `github`) — rename the project
+>   entry, or remove the duplicate.
+> - **Twice within ONE file.** TOML accepts two `[[mcp_servers]]` tables with the same name and neither the
+>   registration schema nor the config schema rejects it, so a copy-paste silently let the last entry win.
+>   Lower stakes than the cross-layer case (same trust tier, no privilege crossing) and the same reasoning, so
+>   the same refusal — **remove the duplicate entry.**
+> (Schema: `ProjectConfigSchema.mcp_servers`.)
 
 > The `[chat]` block sets defaults for the **agent-first** chat entry point
 > ([agent-session-spec.md](agent-session-spec.md), [ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)),

@@ -4,6 +4,26 @@
 - **Date**: 2026-06-26
 - **Related**: [0052-inbound-mcp-client-package-lifecycle-registration.md](0052-inbound-mcp-client-package-lifecycle-registration.md) (the sibling structural ADR — this is its egress-security half; `stdio` has no `url` and is out of scope here), [0034-mcp-client-sdk-dependency.md](0034-mcp-client-sdk-dependency.md) (guardrail 2: MCP `url`s pass the one shared SSRF primitive, never a re-implementation), [0029-tool-policy-hardening.md](0029-tool-policy-hardening.md) (the one shared range-block primitive + egress discipline), [0043-media-egress-failover-rematerialization-ssrf.md](0043-media-egress-failover-rematerialization-ssrf.md) (the connect-by-validated-IP host-egress mechanism this reuses, and the `MEDIA_URL_SOURCE` local-endpoint opt-in that ADR deferred "behind a fresh ADR" — this provides the reusable opt-in surface), [../standards/security-review.md](../standards/security-review.md) (the SSRF rule + the single range-primitive), [mcp-integration.md](../reference/shared-core/mcp-integration.md), [../contracts/agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md), [../contracts/config-spec.md](../reference/contracts/config-spec.md)
 
+> **Amended 2026-08-30 by [ADR-0088](0088-the-mcp-boundary-is-hostile.md).** Three mechanism clauses move; the
+> guarantees they serve do not.
+>
+> - **§2's redirect clause.** "Every redirect hop re-runs the primitive" is replaced by refusing a `3xx`
+>   outright. The property — a redirect to a private address is blocked — is kept strictly more tightly, and
+>   an MCP server stays the exact url the author declared rather than wherever a hop points (ADR-0088 §3).
+> - **§2's `websocket` obligation.** The "pre-connect floor plus a forward obligation to land the pinned
+>   dialer" was written expecting an SDK hook. Measured against `@modelcontextprotocol/sdk` 1.29.0:
+>   `StreamableHTTPClientTransport` and `SSEClientTransport` DO accept an injectable `fetch` (so §2's target
+>   lands there in full), while `WebSocketClientTransport` takes a `URL` and nothing else AND parses each
+>   frame before any Relavium code sees a byte. A **remote** `websocket` server is therefore refused at
+>   admission rather than carried on a floor; the `allow_local_endpoint` form still connects (ADR-0088 §2.3).
+> - **§3's opt-in shape.** `allow_local_endpoint` becomes ONE bound policy inside the dialer rather than two
+>   independent relaxations. Two separate flags would have let a remote host with the flag set connect over
+>   plaintext — inverting this ADR's own "a remote endpoint must be `https`/`wss`" rule. The rule is unchanged;
+>   ADR-0088 §4 exists to keep it true where the connect actually happens.
+>
+> Everything else here stands: the one shared primitive, the `host:port` scoping of `SEC-EGRESS-3`, the
+> secure-closed default, and the per-mechanism security review at landing.
+
 ## Context
 
 The maintainer chose **all transports** for workstream 2.R (2026-06-26) — not just `stdio` — so the **network** MCP connections (`http` = the MCP *Streamable HTTP* transport, with legacy `sse` as its deprecated alias, and `websocket`; see [ADR-0052](0052-inbound-mcp-client-package-lifecycle-registration.md) §5) are in scope. [ADR-0034](0034-mcp-client-sdk-dependency.md) guardrail 2 and [mcp-integration.md](../reference/shared-core/mcp-integration.md) require an MCP `url` to pass the **one shared SSRF range-block primitive** (the same used for provider base URLs, the `http_request` tool, and media egress) and to honor an **"explicit local-endpoint opt-in"** — but the pre-implementation doc review (2026-06-26) verified that **neither** is owned by an ADR:

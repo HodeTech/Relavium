@@ -157,7 +157,7 @@ describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded me
     });
     const bytes = await fetchMediaBytes(
       'https://localhost.example/a.png',
-      { maxBytes: 1000, allowPrivate: true },
+      { maxBytes: 1000, localEndpoint: { host: 'localhost.example', port: 443 } },
       deps,
     );
     expect([...bytes]).toEqual([9]);
@@ -398,6 +398,9 @@ describe('nodeMediaEgressDeps — the Node mechanism wiring (E43-7)', () => {
     const request: HopRequest = {
       url: 'https://media.example.com:8443/a/b?c=d',
       hostname: 'media.example.com',
+      scheme: 'https',
+      // Carried from admission, not re-parsed out of `url` — see `connectValidated`'s own port test.
+      port: 8443,
       pinnedIp: '203.0.113.10',
       method: 'GET',
     };
@@ -424,6 +427,8 @@ describe('nodeMediaEgressDeps — the Node mechanism wiring (E43-7)', () => {
       {
         url: 'https://v6.example.com/x',
         hostname: 'v6.example.com',
+        scheme: 'https',
+        port: 443,
         pinnedIp: '2001:db8::1',
         method: 'GET',
       },

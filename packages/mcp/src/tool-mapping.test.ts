@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { DiscoveredTool } from './connection.js';
 import { McpHostUnavailableError } from './errors.js';
+import { compileJsonSchemaToZod } from './schema-compiler.js';
 import { buildServerToolDefs } from './tool-mapping.js';
 
 /** A minimal valid dispatch context (dispatch only reads `ctx.signal`; the rest are required-but-inert). */
@@ -162,3 +163,213 @@ describe('every discovered MCP tool is permanently tier 3 (ADR-0080 §5)', () =>
     expect(def?.duplicationBenign).toBeUndefined();
   });
 });
+
+describe('tool DEFINITIONS are untrusted content (#202, ADR-0088 §7.1)', () => {
+  /**
+   * `packages/core`'s `Untrusted<T>` brand covers tool RESULTS. A server's `description` and `inputSchema` are
+   * equally attacker-controlled and reach the model in the tool spec itself, never passing that boundary —
+   * the real-world "MCP tool poisoning" channel. They are NOT routed through the brand, and §7.2 says why:
+   * the brand's guarantee is that a value cannot reach prompt assembly without an explicit unwrap, and a tool
+   * definition's whole purpose is to reach the model. Sanitization at discovery plus a stated provenance is
+   * the honest mechanism; a brand here would imply a structural property that does not exist.
+   */
+  const withSchema = (
+    name: string,
+    description: string,
+    inputSchema: unknown = {
+      type: 'object',
+      properties: {},
+    },
+  ): DiscoveredTool => ({
+    name,
+    description,
+    inputSchema: inputSchema as DiscoveredTool['inputSchema'],
+  });
+
+  it('SANITIZES a description carrying ANSI escapes, rather than dropping the tool', () => {
+    // A description is presentation text: stripping it changes nothing else, and the tool stays usable.
+    const shaped = buildServerToolDefs('s', [
+      withSchema('ok', 'reads a file\u001b[31m\u001b]0;pwned\u0007 and returns it'),
+    ]);
+    expect(shaped.defs).toHaveLength(1);
+    expect(shaped.defs[0]?.description).toBe('reads a file and returns it');
+  });
+
+  it('SANITIZES a description carrying Trojan-Source bidi controls', () => {
+    // The bytes that reorder how a terminal renders a line — a description that displays as one thing and
+    // reads as another is the whole point of the attack.
+    const shaped = buildServerToolDefs('s', [withSchema('ok', 'safe\u202Ednegrous\u202C')]);
+    expect(shaped.defs[0]?.description).not.toMatch(/[\u202A-\u202E]/);
+  });
+
+  it('DROPS a tool whose NAME carries a control byte — a name cannot be rewritten', () => {
+    // Rewriting it would desynchronise the model-visible id, the routing closure and the wire contract.
+    const shaped = buildServerToolDefs('s', [withSchema('read\u001b[31m', 'fine')]);
+    expect(shaped.defs).toHaveLength(0);
+    expect(shaped.skipped[0]?.reason).toMatch(/tool name contains a terminal-control/);
+  });
+
+  it('SANITIZES the skipped-tool DIAGNOSTIC — the path a hostile server actually takes', () => {
+    // **The half the drop above left open.** §7.1 sanitizes an ADMITTED tool's description because a poisoned
+    // string otherwise reaches a log, an approval prompt and the provider before anyone strips it. A REFUSED
+    // tool's name and reason are the same bytes from the same source, and they were carried raw all the way
+    // to `client.skipped` — the record every host renders when a server misbehaves. The tool above is dropped
+    // for its name; that name is then quoted straight back into the diagnostic.
+    const shaped = buildServerToolDefs('s', [withSchema('read\u001b[31m\u202Eevil', 'fine')]);
+    expect(shaped.defs).toHaveLength(0);
+    // Compared to the exact expected string, so the assertion names the whole result rather than probing it
+    // with a control-character class the linter (rightly) refuses in a regex.
+    expect(shaped.skipped[0]?.name).toBe('readevil'); // ANSI and bidi both gone
+  });
+
+  it('refuses a control-bearing SCHEMA before the compiler can quote the server into a reason', () => {
+    // **Why the reason arm of that boundary is not currently a live channel, pinned rather than assumed.**
+    // The compiler's own refusals DO interpolate server text (`unsupported JSON-Schema construct: "<key>"`),
+    // which would put a hostile key into the diagnostic. It cannot happen today only because
+    // `semanticControlByte` runs FIRST and drops any schema carrying a control byte anywhere, answering with
+    // a fixed string of ours. That ordering is the whole guarantee, so it gets a test: move the compile ahead
+    // of the walker and this reason turns into the server's bytes.
+    // An unsupported `type` VALUE, because that is the refusal that quotes the server verbatim. The first
+    // attempt used a hostile schema KEY and did not discriminate at all: the compiler tolerates an unknown
+    // root key, so the walker answered under both orderings and the test passed against its own mutation.
+    const shaped = buildServerToolDefs('s', [
+      withSchema('ok', 'fine', { type: 'weird\u001b[31m' }),
+    ]);
+    expect(shaped.defs).toHaveLength(0);
+    expect(shaped.skipped[0]?.reason).toBe(
+      'inputSchema contains a terminal-control or bidi character',
+    );
+    // Compile-first, the reason becomes `unsupported JSON-Schema type: "weird…"` — the server's own bytes.
+    expect(shaped.skipped[0]?.reason).not.toMatch(/weird/);
+  });
+
+  it('DROPS a tool whose SCHEMA hides a control byte in a SEMANTIC field', () => {
+    // A property name and a `const` reach the provider inside `llmVisibleParams` AND are what the compiled
+    // validator and the server agree on — rewriting either desynchronises the three, so the tool is dropped.
+    for (const schema of [
+      { type: 'object', properties: { ['bad\u001b[31m']: { type: 'string' } } },
+      { type: 'object', properties: { a: { const: 'x\u0007y' } } },
+    ]) {
+      const shaped = buildServerToolDefs('s', [withSchema('ok', 'fine', schema)]);
+      expect(shaped.defs).toHaveLength(0);
+      expect(shaped.skipped[0]?.reason).toMatch(/inputSchema contains a terminal-control/);
+    }
+  });
+
+  it('SANITIZES a nested description/title instead of dropping the tool — §7.1 both ways', () => {
+    // **This case used to sit in the list above, and that inverted the ADR.** §7.1 names `description` and
+    // `title` as presentation precisely because cleaning them changes nothing else; a poisoned one cost the
+    // server a working tool, while a newline in a property NAME — genuinely semantic — was admitted. Both
+    // halves were wrong, in opposite directions, and the test asserted the wrong one.
+    const shaped = buildServerToolDefs('s', [
+      withSchema('ok', 'fine', {
+        type: 'object',
+        properties: {
+          a: { type: 'string', description: 'hidden\u202Etext', title: 'ti\u001b[31mtle' },
+        },
+      }),
+    ]);
+    expect(shaped.skipped).toEqual([]);
+    expect(shaped.defs).toHaveLength(1);
+    // The CLEANED copy is what the provider receives — the original is never handed on.
+    // Read the VALUES, not the serialized blob: `toContain('title')` matched the KEY name, so it passed
+    // whether or not the escape survived in the value — the assertion the fix would have satisfied by accident.
+    const params = shaped.defs[0]?.llmVisibleParams;
+    const prop =
+      isRecord(params) && isRecord(params['properties']) ? params['properties']['a'] : undefined;
+    expect(isRecord(prop) ? prop['description'] : undefined).toBe('hiddentext');
+    expect(isRecord(prop) ? prop['title'] : undefined).toBe('title'); // `ti<ESC>[31mtle` cleaned
+  });
+
+  it('DROPS a tool whose NAME or PROPERTY NAME carries a NEWLINE — not just an escape', () => {
+    // **Measured admitted on HEAD.** The semantic check asked "does the display sanitizer change this?", and
+    // that sanitizer deliberately preserves TAB and LF — so `read\nINJECT` answered "no" and was admitted as
+    // `mcp_s_read_INJECT`, with the raw newline still the name used on the wire. A semantic field has no
+    // legitimate use for any C0 byte, which is what §7.1 says and what the predicate now tests for.
+    expect(buildServerToolDefs('s', [withSchema('read\nINJECT', 'fine')]).defs).toHaveLength(0);
+    expect(buildServerToolDefs('s', [withSchema('read\tINJECT', 'fine')]).defs).toHaveLength(0);
+    const inSchema = buildServerToolDefs('s', [
+      withSchema('ok', 'fine', {
+        type: 'object',
+        properties: { ['key\nINJECT']: { type: 'string' } },
+      }),
+    ]);
+    expect(inSchema.defs).toHaveLength(0);
+    expect(inSchema.skipped[0]?.reason).toMatch(/terminal-control/);
+  });
+
+  it('admits the WIDEST schema the compiler accepts — the scan must never refuse first', () => {
+    // **Measured at the exact boundary.** 500 properties each with a one-member enum is 2003 raw JS nodes and
+    // compiles cleanly; the scan's budget was the compiler's own number (2000), which counts SEMANTIC nodes,
+    // so it refused three nodes in — and told the server its schema contained a control byte. The scan is a
+    // DoS backstop, not a second schema policy, and it must lose that race by construction.
+    const properties: Record<string, unknown> = {};
+    for (let i = 0; i < 500; i += 1) properties[`p${i}`] = { type: 'string', enum: ['only'] };
+    const schema = { type: 'object', properties };
+    expect(compileJsonSchemaToZod(schema).ok).toBe(true); // the compiler's verdict, stated first
+    const shaped = buildServerToolDefs('s', [withSchema('wide', 'fine', schema)]);
+    expect(shaped.skipped).toEqual([]);
+    expect(shaped.defs).toHaveLength(1);
+  });
+
+  it('reports a walk-budget exhaustion as ITSELF, not as a control byte', () => {
+    // **A false diagnostic a review caught.** A clean 400-property schema — one the compiler ACCEPTS — was
+    // dropped with "inputSchema contains a terminal-control or bidi character". The refusal is right (a schema
+    // this boundary cannot finish scanning is one it cannot certify); the reason was a lie, and it would send
+    // a server author hunting for a control byte that was never there.
+    // Past the backstop: deep enough that the walk genuinely cannot finish, whatever the compiler thinks.
+    const properties: Record<string, unknown> = {};
+    for (let i = 0; i < 3000; i += 1) properties[`p${i}`] = { type: 'string', enum: ['a', 'b'] };
+    const shaped = buildServerToolDefs('s', [
+      withSchema('wide', 'fine', { type: 'object', properties }),
+    ]);
+    expect(shaped.defs).toHaveLength(0);
+    expect(shaped.skipped[0]?.reason).toMatch(/nodes this boundary will scan/);
+    expect(shaped.skipped[0]?.reason).not.toMatch(/terminal-control/);
+  });
+
+  it('admits a DEEPLY NESTED but clean schema — the walk must not refuse what the compiler accepts', () => {
+    // **A review measured this failing.** The walk's first budget was a depth ceiling "mirroring the
+    // compiler's MAX_DEPTH", but a JS walk also descends through each `properties` container, so its depth
+    // grows twice as fast: a control-byte-free schema at semantic depth 8 — well inside the compiler's
+    // budget — was reported "unsafe" and the tool was dropped with a message naming a defect it did not have.
+    let schema: Record<string, unknown> = { type: 'string' };
+    for (let i = 0; i < 12; i += 1) {
+      schema = { type: 'object', properties: { nested: schema } };
+    }
+    const shaped = buildServerToolDefs('s', [withSchema('deep', 'fine', schema)]);
+    expect(shaped.skipped).toEqual([]);
+    expect(shaped.defs).toHaveLength(1);
+  });
+
+  it('still refuses a control byte hidden at the BOTTOM of a deep schema', () => {
+    // The negative control for the test above: raising the bound must not have stopped it looking.
+    let schema: Record<string, unknown> = { const: 'payload\u001b[31m' };
+    for (let i = 0; i < 12; i += 1) {
+      schema = { type: 'object', properties: { nested: schema } };
+    }
+    const shaped = buildServerToolDefs('s', [withSchema('deep', 'fine', schema)]);
+    expect(shaped.defs).toHaveLength(0);
+    expect(shaped.skipped[0]?.reason).toMatch(/inputSchema contains a terminal-control/);
+  });
+
+  it('leaves an ordinary tool completely untouched', () => {
+    // The negative control: a strip that mangled legitimate text would be worse than no strip, and every
+    // refusal test above would still pass against it.
+    const shaped = buildServerToolDefs('s', [
+      withSchema(
+        'read_file',
+        'Reads a file. Accepts a path — returns UTF-8 text, or an error.\nUse it.',
+      ),
+    ]);
+    expect(shaped.defs).toHaveLength(1);
+    expect(shaped.defs[0]?.description).toBe(
+      'Reads a file. Accepts a path — returns UTF-8 text, or an error.\nUse it.',
+    );
+  });
+});
+
+/** A plain object, so the schema copy can be read without an unsafe cast. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}

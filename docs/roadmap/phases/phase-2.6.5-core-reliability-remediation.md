@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0`, `W1` and `W2` are merged; `W3` is complete on `development`** (25 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28); `W4` is next
+- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` is REVIEW-BLOCKED on PR #87** — a systematic review found five merge blockers in it, all reproduced, all now fixed on the branch and awaiting re-review (28 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28)
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -277,9 +277,9 @@ to correct.
 | `CR-31` | made 2026-08-28 — default concurrency **8** (omitted `max_parallel`), and absolute ceilings: **500** nodes · **2000** edges · fan-out **50** · fallback-chain **5** entries · `retry.max` **10** · per-entry `max_attempts` **10** · `max_parallel` **64** · **16** tool calls in one model response · **500** node dispatches per run. Over-ceiling is a REJECTION, never a clamp | [ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md) | no | — |
 | `CR-32` | made 2026-08-28 — **256 KiB** node output, **4 MiB** total workflow state, **1 MiB** per durable event; typed `validation` REJECTION, never a truncation (half an output flowing into the next template is a wrong answer that looks right). **A terminal event is measured and never refused** — exactly-one-terminal ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) outranks every size rule, and [ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §6 draws the same line for a store fault. The three are separate bounds because one shared number is either useless at the state limit or absurd per node | — | no | — |
 | `CR-33` | made 2026-08-28 — **count-based, N = 100** settled runs, FIFO eviction (no clock, so engine purity is untouched); the `#executor` quarantine half stays a `W2` residual and is NOT claimed by this bound | — | no | — |
-| `CR-40` | made (forward signal + deadline) | with `CR-16`'s | no | hostile MCP |
-| `CR-41` | made (apply the built-in egress floor) | with `CR-16`'s | no | hostile MCP |
-| `CR-42` | **open** — the ingress bounds | with `CR-16`'s | no | hostile MCP |
+| `CR-40` | made (forward signal + deadline) · ✅ closed 2026-09-01 | [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1 | no | hostile MCP |
+| `CR-41` | made 2026-08-31 (full pinning on `http`/`sse`; a **remote `websocket` is refused at admission**; a redirect is refused, not followed; the local opt-in is ONE bound policy) | [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §2–§4 | no | hostile MCP |
+| `CR-42` | made 2026-08-31 — **256** tools/server · **8 KiB** description · **1 MiB** discovery/server · **4 KiB** schema string · **256 B** property name · **1 MiB** result text · **4 MiB** per `http`/`sse` message. Transport-level (pre-parse, memory) and application-level (post-parse, admission) are separate guarantees; a local transport has only the second, and its bound is the consent gate | [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §5–§6 | no | hostile MCP |
 | `CR-50` | **open** — complete the handle path, or remove the tool | — | yes | media bytes |
 | `CR-51` | made (gate on model-level capability) | — | no | — |
 | `CR-52` | made (pull [ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md)'s deferral forward) | ADR-0039 follow-up | no | — |
@@ -1283,7 +1283,24 @@ Two of the remaining findings were worth more than their severity labels:
 Both regression tests were break-verified line-precisely; the second hangs to a vitest timeout against the
 pre-fix code, which is the only red a liveness defect can produce.
 
-## W3 — Resource governance and bounds · ✅ COMPLETE 2026-08-29 ([ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md))
+## W3 — Resource governance and bounds · ⚠️ MERGED 2026-08-30 (PR #86) WITH A LIVE BLOCKER
+
+**Merged, not closed, and the distinction is deliberate.** The wave's four items all landed, but the review
+round that ran alongside the merge left one reproduced blocker and nine verified findings open on `main`. The
+item marks below say CLOSED because their mechanisms shipped; this heading says otherwise because the wave as
+a whole does not yet keep what it claims. Marking it complete would repeat the exact failure this phase's
+exit criterion 7 exists to catch — the register recording a state the code does not hold.
+
+> **The live blocker: an un-pulled stream drops the terminal event.** Reproduced on `main` today —
+> `BoundedEventStream` at capacity 2, three pushes, `close()`: the consumer receives a clean EOF and never
+> sees the terminal, with no `sequenceNumber` gap to signal the loss. That is a direct breach of
+> [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s gap-free contract.
+> It is the third defect in one chain, each the cure for the last: the producer-await deadlocked every CLI
+> session; letting an un-pulled stream through cured that and reopened the unbounded buffer; bounding the
+> buffer cured that and started dropping. [ADR-0087](../../decisions/0087-consumed-streams-size-bounds-and-run-retention.md)
+> §1 records the real fix — a handle declares whether its stream is consumed — and is **Proposed, not
+> Accepted**: it merged unapproved and §1 and §3 are unimplemented.
+
 
 All four items closed. Three things this wave established that outlived their own items:
 
@@ -1370,6 +1387,13 @@ the mutation was confirmed to have landed before the red was trusted.
 | `CR-32` | `size-bounds.ts` + its three wiring points: the pre-retain check in `#settleCompleted`, the running `#workflowStateBytes` total (seeded on resume), and the non-terminal guard at the top of `#emitDurable` | `size-bounds.test.ts` (9 cases, including *"never refuses a TERMINAL event, however large"*); `engine.test.ts` — *"fails the node whose output exceeds the bound, and never retains it"*, its negative control, the accumulated-state case, and *"a resume SEEDS the workflow-state total"* |
 | `CR-33` | `engine.ts`'s `#retainSettled` + `#settledOrder`, wired to both `onSettled` sites | `engine.test.ts` — *"keeps the last N settled runs addressable and evicts older ones"* (asserting the error CODE, because both cases throw the same class) and *"does not evict a run that is merely PARKED"* |
 
+**What the closing register does NOT cover, added 2026-08-30 with the merge.** The table above was written
+before the PR review round finished, and it vouches for four items whose mechanisms shipped — which is true,
+and is not the same as the wave being sound. Ten findings went in open, one of them a reproduced blocker
+against ADR-0036's gap-free contract, and they are enumerated with severity, trigger and narrowed claim in
+[deferred-tasks.md](../deferred-tasks.md)'s `W3` residuals. A register that reads clean over an open blocker
+is the failure mode exit criterion 7 exists to prevent, and this note is what keeps it from being one.
+
 **Six defects this wave found by measurement rather than by reading**, recorded because the ratio is the
 point — three came from review rounds and three from self-review, and every one was reproduced before it was
 believed:
@@ -1394,24 +1418,92 @@ held one and broke the other, the second held that one and lost the first. They 
 
 ---
 
-## W4 — MCP hostile boundary
+## W4 — MCP hostile boundary · ✅ COMPLETE 2026-09-01 ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md))
 
 Executes Wave 2's MCP queue (see [Phase boundary](#phase-boundary)). One security sitting covers this group
 plus `CR-16`.
 
-### CR-40 — Cancellation and deadlines never reach the MCP transport · High
+**Scope, settled 2026-08-31.** The maintainer took the whole 2.5.5 MCP queue that
+[current.md](../current.md) binds to this wave (`#35`, `G32`, `#205`, `G33`, `#201`, `#209`, `#288`, `#203`,
+`#204`, `#206`, `#207`, `#297`, `#208`) **plus** `#202` (tool-definition poisoning), `#21` (`agent run`
+orphaning MCP children on a signal) and `G19` (a project config hijacking a global registration name) — all
+the same threat class and the same security sitting, so splitting them would book the reviewer twice.
+
+**The decisions this wave needed are in [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md)**, on
+one invariant: *a transport that reaches a REMOTE server is pinned and byte-bounded; a transport that can be
+neither must be local and explicitly opted into.* That is what forced the two hardest calls — a **remote
+`websocket` server is now refused at admission** (the SDK's transport takes a URL and nothing else, and parses
+each frame before any Relavium code sees a byte), and the `allow_local_endpoint` opt-in became **one bound
+policy** rather than two independent relaxations that would have let a remote host connect over plaintext.
+
+### Step 1 — deadlines and cancellation · ✅ (`CR-40`, `#35`, `G32`, `#205`, `#21`)
+
+Three measurements opened it, each reproduced before it was believed: a transport whose `start()` never
+resolves hung the connect **forever** (the SDK's own timeout reaches only the `initialize` request that
+follows `start()`); an aborted `tools/call` was still pending 500 ms later; and a signalled host left its
+child alive with **`ppid 1`**, because Node's default signal handling never unwinds the `finally` both
+commands tear down in.
+
+Four review rounds over the result found three blockers, all in the fix rather than the original code — the
+guard raced `driveRun`'s documented cancel contract and won; the new typed errors were flattened one frame
+above the code that preserved them; and the guard was armed *after* the connect, leaving the 120 s cold-`npx`
+window it existed for uncovered. A fifth round proved **four of the wave's own tests could not fail**: a clean
+revert of the whole guard from both commands left all 2534 CLI tests green. The wave now owns
+[ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §11's hardest bullet — a real spawned child
+that traps `SIGTERM`, reaped and asserted against the **process table**, never against a promise.
+
+### CR-40 — Cancellation and deadlines never reach the MCP transport · High · ✅ CLOSED 2026-09-01 ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1)
 The dispatch context can carry a signal, but the manager's `callTool` chain does not forward it, and neither the
 connection nor the stdio SDK call accepts an abort or deadline. After a user cancels, the remote or child effect
 continues and child processes can survive.
 
-### CR-41 — The MCP SSRF floor does not cover DNS or redirects · High
+### Step 2 — the validated dialer · ✅ (`CR-41`, `#287`)
+
+The codebase's ONE tracked exception to its own SSRF discipline: every other egress path connects by
+validated pinned IP, while the MCP network transports checked the authored hostname once and handed the
+socket to the vendor SDK. ADR-0053 §2 named the gap in June and scoped the fix out because it depended on an
+SDK hook. The hook exists on two of the three transports, and the third turned out to have no safe remote
+form at all.
+
+Three decisions came out of building it, each recorded in
+[ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) rather than discovered in the diff: a
+redirect is **refused** rather than re-validated per hop (an MCP server is the exact url its author declared,
+and no range-block expresses "and it is still that server"); the local opt-in became **one bound policy**
+instead of two independent flags that would have inverted ADR-0053 §3's own "a remote endpoint is always
+https" rule; and a remote **`websocket` is refused at admission**, because its transport takes a `URL` and
+nothing else and parses each frame before Relavium sees a byte.
+
+### CR-41 — The MCP SSRF floor does not cover DNS or redirects · High · ✅ CLOSED 2026-09-01 ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §2–§4)
 The network config checks the authored hostname and scheme, then hands the raw opener to the SDK. The code
 itself documents the DNS-to-private and redirect-to-private holes. A public-looking domain can resolve to
 loopback, RFC1918 or a metadata IP.
-**Fix.** Apply the built-in egress mechanism — resolve-all, range-block, pinned IP — to the MCP HTTP, SSE and
-WebSocket transports.
+**Fix (as written when the item was opened).** Apply the built-in egress mechanism — resolve-all, range-block,
+pinned IP — to the MCP HTTP, SSE and WebSocket transports.
+**What actually landed**, and why the third differs: `http`/`sse` accept an injectable `fetch` and got exactly
+that mechanism. `WebSocketClientTransport` takes a `URL` and nothing else, so there is no seam to pin it
+through — a remote `websocket` is **refused at admission** instead ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md)
+§2.3). Refusal is the stronger answer, not a weaker one; the transport is still reachable for a local endpoint
+opted into via `allow_local_endpoint`.
 
-### CR-42 — MCP discovery and result ingress are unbounded · High · **bound values open**
+### Step 3 — the ingress bounds · ✅ (`CR-42`, `G33`, `#201`, `#209`, `#288`)
+
+The measurement, taken before anything was written: a server returning 100 pages of 500 tools with 1 MiB
+descriptions was admitted **whole** — 50 000 tools, 52 GB of description text, zero skipped, all of it re-sent
+to the provider on every subsequent turn. The schema compiler had been adversarially hardened since 2.R; the
+pipeline around it had no budget at all.
+
+Two levels, kept apart deliberately ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §5.1):
+the application-level bounds say what is ADMITTED, the transport-level one bounds peak MEMORY and exists only
+where raw bytes are ours — the injected `fetch` of `http`/`sse`. Claiming the first prevents an OOM would be
+false, and §6 records where the guarantee stops instead.
+
+Three defects of the wave's own making surfaced here, two by mutation and one by a test being slow: the
+budget's wiring into the pipeline was untested; the message counter compared bytes AFTER a whole chunk, so a
+chunk carrying an over-bound message followed by a delimiter passed; and the DIAGNOSTIC was unbounded, so the
+measured catalogue produced 50 000 stderr lines. Bounding the admission while leaving the report unbounded
+just moves the flood.
+
+### CR-42 — MCP discovery and result ingress are unbounded · High · ✅ CLOSED 2026-09-01 ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §5–§6)
 Page count is capped for `tools/list`, but total tool count, byte size, description and schema size are not, and
 a result is fully materialized before core bounding applies. A hostile server can exhaust startup memory, inflate
 prompt token cost, or bloat a workflow output.
@@ -1421,6 +1513,90 @@ never answers is cancelled within its deadline and leaves **no orphan process** 
 table, not on the promise); a DNS record resolving to loopback, to an RFC1918 range and to the cloud metadata
 address are each refused; a redirect to any of those is refused; oversized discovery and results are rejected
 with typed errors **before** they reach the prompt.
+
+### Step 4 — untrusted tool definitions and config trust · ✅ (`#202`, `G19`)
+
+`Untrusted<T>` covers tool RESULTS; a `description` and an `inputSchema` reach the model in the tool spec
+itself and never pass that boundary. They are deliberately not given the brand — §7.2 records why — and get
+the split §7.1 decides instead: presentation text sanitized at discovery, a semantic field never rewritten but
+fail-closed dropped. `G19`'s last-writer-wins merge became a loud refusal, because a registration names a
+program and a secret rather than a preference.
+
+### Step 5 — the error taxonomy and the queue's remainder · ✅ (`#203`, `#204`, `#206`, `#207`, `#208`)
+
+Every connect failure had collapsed into one sentence, and every identifier was interpolated rather than
+carried — the package's own tests had to regex human prose to find a server id. Fields and a `reason` now,
+derived from the caught error's SHAPE, never from its text.
+
+### W4 closing register
+
+**The register, per exit criterion 7 — the code that closes each item, so a reader can check the claim.**
+
+| Item | Closed by | The test that fails if it is reverted |
+|------|-----------|----------------------------------------|
+| `CR-40` | the connect window opens before any I/O and races the whole `client.connect()`; the signal reaches `RequestOptions.signal` | `deadlines.test.ts` — a transport whose `start()` never settles; `network-adapters.test.ts` — a real `McpServer` observing its own cancellation |
+| `CR-41` | `http`/`sse` REQUIRE a host-injected validated `fetch` (it was optional); a redirect is refused; a remote `websocket` is refused at admission; the local opt-in is one bound policy and may not name a provider metadata endpoint | `mcp-fetch.test.ts` (rebind, redirect, sibling port, the JSON-body bound); `mcp-servers.test.ts` (the dialer is handed over, one window across preflight + connect); `content.test.ts` (AWS IMDS v6, Alibaba) |
+| `CR-42` | seven bounds at two levels; the aggregate is order-stable; **paging stops** at it; the diagnostic is bounded without bounding the traversal | `ingress-bounds.test.ts` — the measured 50 000-tool catalogue, refused; the paging-stops group; the allowlist-behind-decoys case |
+| `#21` | a cooperative signal teardown plus a **process-scoped** synchronous reap over a spawn-time child registry | `mcp-orphan.e2e.test.ts` (mechanism) **and `tools/cli-smoke/check.mjs`** — a real signalled `agent run` subprocess, asserted against the process table. The e2e alone could not catch this: every in-process test injects `exit` |
+| `#202` | presentation sanitized at discovery (including INSIDE the schema), semantic fields fail-closed on any C0/C1 or bidi byte; provenance stated to the model (§7.2) | `tool-mapping.test.ts`; `agent-session.test.ts` for the provenance, asserted on the request a provider receives |
+| `G19` | a cross-layer (and same-layer) name collision refuses | `resolve.test.ts` |
+| `#35`, `G32`, `#205` | four named deadlines; authored `connect_timeout_ms` with an admission ceiling | `deadlines.test.ts`, `agent.test.ts`, `config.test.ts` |
+| `G33`, `#201`, `#209`, `#288` | the transport message bound, the discovery budget, the schema string bounds, the result text bound | `mcp-fetch.test.ts`, `ingress-bounds.test.ts`, `schema-compiler.test.ts` |
+| `#203`, `#204`, `#206`, `#207` | structured fields, a `reason` from the error's shape (every egress code, not four-of-six wrong), fail-loud args, a teardown a real adapter can actually report | `errors.test.ts`, `mcp-egress-taxonomy.test.ts` (cross-package exhaustiveness), `manager.test.ts` (a rejecting close reaches `onCloseError`) |
+| `#208` | the host-supplied client version | `network-adapters.test.ts` — read back from a real server's handshake. **This row named `errors.test.ts` and that file has no version test**; nothing covered it until the PR #87 review said so |
+| `#287` | is `CR-41` | as above |
+
+**What this wave cost that a reader should know.** Two previously-working configurations are now refused, and
+both remedies are in the reference specs:
+
+- A **remote `websocket` server**. The remedy is not a one-word YAML edit — changing `transport:` does not
+  convert a `wss://` endpoint into a Streamable HTTP one. Point the entry at an `https://` endpoint the same
+  server exposes for `http`/`sse` (most MCP servers offer one), or, if it is genuinely local, keep `websocket`
+  and opt in with `allow_local_endpoint`.
+- A **project config redefining a global MCP registration**. Rename the project entry, or remove the duplicate.
+
+**What it did NOT close**, recorded in [deferred-tasks.md](../deferred-tasks.md) rather than implied: the
+admission and the dialer canonicalize a url differently (fails closed, so it costs usability not safety); the
+MCP hop does not go through `withEgressTimeout`; and `allow_local_endpoint` may still name a host whose
+resolution a LAN-adjacent attacker steers, narrowed but not eliminated by the dialer's refusal of a public or
+metadata answer. `#297` (per-file adapter coverage) is satisfied incidentally by the tests above rather than
+by a coverage threshold, and is left as a coverage-gate question rather than claimed.
+
+**The PR #87 systematic review (2026-09-01) found five MERGE BLOCKERS, and the honest reading is that `W4`
+claimed more than it had.** Not one of them is a subtle interaction: a signalled `agent run` orphaned its MCP
+child at `ppid 1` (reproduced against a real subprocess, twice, for two independent reasons); the validated
+`fetch` that carries all three §2 guarantees was OPTIONAL on a public opener; a JSON body defeated the 4 MiB
+transport bound entirely by padding with blank lines; discovery paged a hostile catalogue to exhaustion before
+the budget was consulted, which §5.2 explicitly forbids and which one of this wave's own tests had contracted
+as required behaviour; and the local opt-in could name two real cloud metadata endpoints (AWS IMDS over IPv6,
+Alibaba's `100.100.100.200`) because both sit inside the private ranges the opt-in lifts.
+
+Four more mechanisms were live in the type system and dead in practice: `onCloseError` (unreachable — every
+real adapter closed through a swallowing helper), the connect-error taxonomy (four of six egress codes
+reported "the endpoint redirected", including the byte bound firing), the §7.2 provenance (decided in the ADR,
+dropped by the lowering, so a server's text reached the model unmarked), and the §7.1 classification, which
+was inverted in BOTH directions — a newline in a tool name was admitted while a poisoned nested `description`
+dropped the whole tool.
+
+The pattern is the wave's own, one level up: **the mechanisms were built and the bindings between them were
+assumed.** Every blocker sat at a seam where two correct pieces met.
+
+**The earlier PR #87 round (2026-09-01)** found nine more, and their distribution repeats the wave's own
+lesson rather than departing from it. Two were live gaps in the boundaries the ADR claims: a `required`-only
+property name escaped `schemaPropertyNameBytes` entirely (refused at 257 bytes through the `properties` door,
+admitted at 200 KiB through the other), and `relavium run` released the signal guard BEFORE awaiting the MCP
+teardown — leaving the ~4 s ladder against a trapping child with no reaper, which is the exact orphan the
+guard exists to prevent, inside the guard's own teardown path. Four were tests that could not fail: one built
+an `AbortSignal` and never passed it, one carried a name its assertion did not support, one hand-rolled the
+loop it claimed to test `listTools` through, and one asserted a request body under a comment about connection
+pinning. Adding the missing test for the plaintext credential path found that removing the check it covers left
+**every other test in the repository green**.
+
+**Eight review rounds ran over this wave** — four Opus and four Sonnet, across five steps. They found three
+blockers and nine highs, and the pattern was consistent enough to be worth stating: **every blocker was in a
+fix rather than in the original code**, and the recurring shape was a guarantee asserted in a comment, an ADR
+or a commit message with nothing between it and the code. The wave's own tests were the other half of that —
+four could not fail at all, each stopping at a seam one layer above the thing it claimed to prove.
 
 ---
 

@@ -8,6 +8,7 @@ import {
   type WorkflowEngine,
   WorkflowParseError,
 } from '@relavium/core';
+import { liveMcpChildPids } from '@relavium/mcp';
 import type { McpClient, McpServerConfig } from '@relavium/mcp';
 
 import { loadResolvedConfig } from '../config/load.js';
@@ -27,6 +28,7 @@ import { sweepCommittedEffects } from '../engine/effect-retention.js';
 import { createCliHost } from '../engine/host.js';
 import {
   connectWorkflowMcp,
+  workflowDeclaresMcp,
   type StdioConsentGate,
   surfaceMcpSkipped,
   type WorkflowMcpRuntime,
@@ -46,6 +48,7 @@ import type { GatePrompter } from '../gate/prompter.js';
 import { selectGatePrompter } from '../gate/select-prompter.js';
 import type { OpenedHistory } from '../history/open.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
+import { guardMcpTeardown } from '../engine/mcp-signal-teardown.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
@@ -178,6 +181,37 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
   // the store cannot be opened until the definition it must freeze is known.
   let opened: OpenedHistory | undefined;
   let mcpRuntime: WorkflowMcpRuntime | undefined;
+  /**
+   * The signal guard, armed BEFORE the connect (ADR-0088 §1.3).
+   *
+   * Arming it after `connectWorkflowMcp` resolved was the first attempt, and a review found the hole: the
+   * SDK spawns each stdio child inside `start()`, so for up to 120 s per server — precisely the silent window
+   * where a user reaches for Ctrl-C — the children existed with no guard armed. Two things follow from arming
+   * early: the pids are read LAZILY (there are none yet at this point), and the connect itself is given a
+   * cancel signal so a Ctrl-C during it actually stops rather than merely being survived.
+   *
+   * `reapOnly`: `driveRun` owns this surface's documented signal contract — Ctrl-C drains to `run:cancelled`
+   * and exits `1` (commands.md). This guard reaps children; it must not race that exit code.
+   */
+  const mcpConnectCancel = new AbortController();
+  // **Only when there is something to guard.** Arming unconditionally was the first attempt, and this
+  // command's own SIGINT contract test caught it: `drive.ts` identifies its handler by set-delta and asserts
+  // exactly one was added, so a guard installed for a workflow that declares no MCP server is a second
+  // listener with nothing to reap — breaking a documented invariant to protect children that do not exist.
+  const unguardMcp = workflowDeclaresMcp(def)
+    ? guardMcpTeardown(
+        async () => {
+          mcpConnectCancel.abort(); // stops an in-flight connect; a no-op once one completed
+          await mcpRuntime?.client.close();
+        },
+        // The live registry, not the assembled client's snapshot: `mcpRuntime` is undefined for the whole
+        // connect, which is exactly the window a child exists with no handshake yet. See `agent-run.ts` for
+        // the reproduction — this surface survives it only because `reapOnly` keeps it from exiting early,
+        // which is a property of ITS signal contract rather than of the reaper. Both now read the same source.
+        () => liveMcpChildPids(),
+        { reapOnly: true },
+      )
+    : (): void => undefined;
   try {
     // Inbound MCP (2.R Step 3b): aggregate the `mcp_servers` declared by the workflow's INLINE agents, start
     // them fail-loud (a connect/discovery failure is an exit-2 CliError, cause stripped), and rewrite the
@@ -185,6 +219,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // inline agent declared a server. The spawned children are torn down at the run terminal (the finally).
     mcpRuntime = await connectWorkflowMcp(def, {
       cwd: deps.global.cwd,
+      connectSignal: mcpConnectCancel.signal,
       resolveSecret: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
       registrations: config.mcpServers,
       // The file that declared them, for the prompt — the imported-artifact case naming its own file (§7).
@@ -401,9 +436,23 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // Present only when an inline agent declared a server; idempotent. A teardown error must never mask the run
     // outcome (closeAll swallows per-connection; the db close is best-effort here too).
     try {
-      opened?.close();
+      try {
+        opened?.close();
+      } finally {
+        await mcpRuntime?.client.close();
+      }
     } finally {
-      await mcpRuntime?.client.close();
+      // **Released LAST, after the MCP close has finished** — and it was released first, which left the one
+      // window that matters uncovered. `client.close()` runs the SDK's ladder against a trapping child
+      // (`stdin.end()` → 2 s → SIGTERM → 2 s → SIGKILL, ~4 s), and for all of it the children are alive. A
+      // `SIGTERM` arriving there with the guard already gone is default-handled: the process dies without
+      // `process.on('exit')`, and the children it was mid-way through reaping are orphaned at `ppid 1` — the
+      // exact failure `guardMcpTeardown` was measured against and exists to close.
+      //
+      // Safe because `closeAll` clears its connection map before awaiting, so the guard's own close racing
+      // this one finds nothing left to do. `agent run` already had this order: its MCP teardown happens inside
+      // `runOneShotTurn`, i.e. before its `unguardMcp()`. This makes the two surfaces agree.
+      unguardMcp();
     }
   }
 }

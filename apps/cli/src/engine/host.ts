@@ -202,14 +202,17 @@ export function createCliHost(
     // The host media-egress mechanism (1.AF/D9, ADR-0043): re-host a public-HTTPS `url` media source to a
     // handle via `@relavium/db`'s `fetchMediaBytes` — the SSRF-validated, size-bounded connect, canonically
     // homed there (see ADR-0043 §2-3 / the `media-egress.ts` header + its test suite). The wiring
-    // rationale: `allowPrivate: false` is the default-deny posture (the BYOK local-endpoint opt-in is deferred,
-    // security-review.md); the engine owns the `maxBytes` policy + the run `AbortSignal`; always wired (a
-    // text-only run never invokes it); `signal` is spread conditionally so an absent one is OMITTED, not
-    // assigned `undefined` (which `exactOptionalPropertyTypes` rejects).
+    // rationale: the engine owns the `maxBytes` policy + the run `AbortSignal`; always wired (a text-only run
+    // never invokes it); `signal` is spread conditionally so an absent one is OMITTED, not assigned
+    // `undefined` (which `exactOptionalPropertyTypes` rejects). The default-deny posture is the ABSENT
+    // local-endpoint policy described below — this used to say `allowPrivate: false`, a flag ADR-0088 §4
+    // removed, and contradicted the comment two lines under it.
     fetchMedia: (url, maxBytes, signal) =>
+      // No `localEndpoint`: media bytes come from a url the model or a provider produced, so there is no
+      // authored opt-in to honour. Private/loopback/metadata targets stay blocked (ADR-0088 §4 replaced the
+      // old `allowPrivate: false` with an absent policy — the same answer, one fewer flag to flip).
       fetchMediaBytes(url, {
         maxBytes,
-        allowPrivate: false,
         ...(signal === undefined ? {} : { signal }),
       }),
     // The media ports (2.S), each spread in only when its config (above) was supplied — `undefined` is OMITTED,

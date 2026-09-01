@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { McpConnectTimeoutSchema } from './agent.js';
 import { URL_HAS_CREDENTIALS, nonEmptyString, nonNegativeInt, positiveInt } from './common.js';
 import { validateDeclaredEnv } from './declared-env.js';
 import {
@@ -34,6 +35,7 @@ interface McpRegistrationDraft {
   url?: string | undefined;
   env?: Record<string, string> | undefined;
   allow_local_endpoint?: boolean | undefined;
+  connect_timeout_ms?: number | undefined;
 }
 
 /** `stdio` registration: needs a `command`; rejects the network-only `url` / `allow_local_endpoint` so a committed
@@ -128,6 +130,9 @@ export const McpServerRegistrationSchema = z
     env: z.record(z.string(), z.string()).optional(),
     // Opt into a private/loopback network endpoint (ADR-0053 §3) — see `McpServerRefSchema`. Network transports only.
     allow_local_endpoint: z.boolean().optional(),
+    // Raise this server's connect deadline (ADR-0088 §1.4). The SAME schema the inline form uses, deliberately:
+    // a registration that accepted a value the inline form refuses would make `ref` a way around the ceiling.
+    connect_timeout_ms: McpConnectTimeoutSchema.optional(),
   })
   // .strict(): a typo in a committed MCP key (e.g. `autostrat`) fails loudly — strict config per ADR-0033 (which amends ADR-0023's config carve-out).
   .strict()

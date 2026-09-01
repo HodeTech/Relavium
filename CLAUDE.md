@@ -56,7 +56,7 @@ browsers, competitor-breadth tools, settings/theming/`en`+`tr` localization, and
 run-ops resume follow-up.
 
 **An interlude is running between Wave 1 and Wave 2 of the remediation: Phase 2.6.5 (Core reliability),
-25 of 48 items closed** — `W0` (PR #82, 2026-08-11), `W1`, the eight P0 blockers plus `CR-92`, merged
+28 of 48 items closed** — `W0` (PR #82, 2026-08-11), `W1`, the eight P0 blockers plus `CR-92`, merged
 2026-08-24 (PR #83) behind [ADR-0078](docs/decisions/0078-ordered-durable-append-and-the-terminal-outbox.md)–[ADR-0084](docs/decisions/0084-consent-before-a-local-mcp-spawn.md):
 ordered durable append, cross-process run ownership, the durable effect journal, untrusted compaction summaries,
 the stream-grammar seam obligation, engine-side input admission and resume identity, and consent before a local
@@ -65,11 +65,20 @@ MCP spawn. **`W2` — liveness and deadlines — merged 2026-08-28 (PR #85)** be
 agent `timeout_ms` now bounds the node, every media call is bounded, a resume re-arms the run cap and a
 pending gate at their REMAINING time rather than renewing them (the node bound is the deliberate exception —
 ADR-0085 §2 records why), and an executor that ignores its signal can no longer leave a run without a
-terminal. **`W3` — resource governance and bounds — is complete on `development`** behind
-[ADR-0086](docs/decisions/0086-absolute-admission-ceilings-on-authored-values.md): ADR-0036's no-drop bounded
-stream is finally enforced on both entry points, authored values carry absolute admission ceilings, node
-output / workflow state / durable events are size-bounded, and a long-lived engine no longer retains every
-finished run. No new product surface — only the invariants an existing surface already claims.
+terminal. **`W3` — resource governance and bounds — merged 2026-08-30 (PR #86) behind
+[ADR-0086](docs/decisions/0086-absolute-admission-ceilings-on-authored-values.md)**: authored values carry
+absolute admission ceilings, node output / workflow state / durable events are size-bounded, and a long-lived
+engine no longer retains every finished run. **It merged with a live blocker** — an un-pulled event stream
+drops the terminal event, breaching ADR-0036's gap-free contract — plus nine verified findings, all recorded
+in the `W3` residuals of [deferred-tasks.md](docs/roadmap/deferred-tasks.md).
+[ADR-0087](docs/decisions/0087-consumed-streams-size-bounds-and-run-retention.md) records the fix and is
+**Proposed, not Accepted**. **`W4` — the hostile MCP boundary — is REVIEW-BLOCKED on PR #87 (2026-09-01)
+behind [ADR-0088](docs/decisions/0088-the-mcp-boundary-is-hostile.md)**: every MCP call is bounded and
+cancellable, `http`/`sse` connect by validated pinned IP, a redirect is refused, a remote `websocket` is
+refused at admission, a server's ingress is bounded at two levels, and its tool DEFINITIONS are treated as
+untrusted. No new product surface in either wave — only the invariants an existing surface already claims.
+A systematic review of PR #87 found **five merge blockers** in `W4` — all reproduced, all fixed on the branch,
+awaiting re-review; the phase doc's `W4` section records what they were and what the pattern says.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);

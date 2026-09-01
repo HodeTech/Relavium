@@ -61,13 +61,40 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   hook, it must apply these runtime checks. The current `assertHttpsBaseUrl` and `refineInFlightMediaPart`
   URL validation are construction-time / seam-ingestion-time policy; they catch malformed URLs but cannot
   catch DNS rebinding or a public hostname resolving to a private IP. **Scope split (resolving the earlier "Phase 2" framing):** the **media** url-carrier mechanism is **pulled into 1.AF** on a new bytes-shaped media-egress capability ([ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)); the **CLI tool** `EgressCapability.fetch` **landed in 2.5.E** ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md)) — `apps/cli/src/engine/tool-host/egress.ts` over the shared `connectValidated` connect-by-validated-IP mechanism (`packages/db/src/safe-egress.ts`), with the Host/`:authority`-header strip; the **desktop** surface's fetch hook still lands when the desktop implements it. *(packages/core/src/tools/types.ts; security-review.md; media → 1.AF/ADR-0043; CLI tool → 2.5.E/ADR-0057; desktop → surface fetch hook)*
-- [ ] **MCP SDK network transport — upgrade to connect-by-validated-IP ([ADR-0053](../decisions/0053-mcp-network-transport-egress-security.md) §2).** 2.R ships **pre-connect host validation** as the floor for the `http` (Streamable HTTP) / `websocket` MCP transports — the `@modelcontextprotocol/sdk` opens its **own** socket, architecturally distinct from the `EgressCapability.fetch` hook above. When the SDK transport exposes an injectable `fetch`/dialer hook, upgrade to **connect-by-validated-IP**: resolve DNS → validate the IP against the shared range-block primitive → connect to that IP, re-validating on each redirect hop — closing the residual DNS-rebind window. **The dialer + redirect re-validation MUST enforce the authored `host:port`** (ADR-0053 §3 / SEC-EGRESS-3), not just the host: an `allow_local_endpoint` server is permitted exactly its declared `host:port`, so a resolved/redirected target on a *different* port of the same permitted-private host (`:6379`/`:5432`/`:22`/the Docker socket) must be re-blocked. (2.R's pre-connect floor is host:port-safe by construction — the SDK dials exactly the one authored url — so this constraint binds the dialer, not the floor.) Each MCP network mechanism gets a dedicated security-review pass when it lands. *(packages/mcp/src; ADR-0053 §2/§3; ADR-0043 mechanism)*
+- [x] **MCP SDK network transport — upgrade to connect-by-validated-IP ([ADR-0053](../decisions/0053-mcp-network-transport-egress-security.md) §2).** *Closed in 2.6.5 `W4` Step 2 ([ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md) §2–§4). `http`/`sse` take an injected validated `fetch`, so the pin covers the whole session rather than the first dial, and the local opt-in's `host:port` scope is enforced at the dial — which is what `SEC-EGRESS-3` required of any wiring of it. Two clauses of the entry below were NOT met as written and were superseded rather than quietly dropped: a redirect is **refused** instead of re-validated per hop, and `websocket` — whose SDK transport accepts no dialer and parses frames before Relavium sees a byte — is **narrowed to a local endpoint** instead of carrying the floor. The original text is kept below for the record.*  2.R ships **pre-connect host validation** as the floor for the `http` (Streamable HTTP) / `websocket` MCP transports — the `@modelcontextprotocol/sdk` opens its **own** socket, architecturally distinct from the `EgressCapability.fetch` hook above. When the SDK transport exposes an injectable `fetch`/dialer hook, upgrade to **connect-by-validated-IP**: resolve DNS → validate the IP against the shared range-block primitive → connect to that IP, re-validating on each redirect hop — closing the residual DNS-rebind window. **The dialer + redirect re-validation MUST enforce the authored `host:port`** (ADR-0053 §3 / SEC-EGRESS-3), not just the host: an `allow_local_endpoint` server is permitted exactly its declared `host:port`, so a resolved/redirected target on a *different* port of the same permitted-private host (`:6379`/`:5432`/`:22`/the Docker socket) must be re-blocked. (2.R's pre-connect floor is host:port-safe by construction — the SDK dials exactly the one authored url — so this constraint binds the dialer, not the floor.) Each MCP network mechanism gets a dedicated security-review pass when it lands. *(packages/mcp/src; ADR-0053 §2/§3; ADR-0043 mechanism)*
 - [x] **MCP `stdio` spawn — consent before a local spawn ([ADR-0084](../decisions/0084-consent-before-a-local-mcp-spawn.md), CR-16).** *Closed in 2.6.5 CR-16, and **re-scoped on the way**: the original entry gated only an "untrusted-provenance" import, which drew the line in the wrong place — a `git pull` changes a committed `.relavium.yaml` with no import step, and "my own repo" is a provenance claim about a file, not about the program it names. ADR-0084 gates **every** stdio server on **every** CLI path that can open an MCP-bearing artifact, per machine and per resolved declaration. Resolution happens **before** the decision and the resolved absolute path is what is spawned, so a `PATH` change cannot substitute a binary under an approved fingerprint; the declared-environment denylist is now shared with `run_command`. The desktop's Rust spawner is **outside** this gate and owes the same contract — see [mcp-integration.md](../reference/shared-core/mcp-integration.md#consent-before-a-local-stdio-spawn-cross-surface-contract). *(apps/cli/src/engine/mcp-consent\*.ts; packages/shared/src/{canonical,declared-env}.ts; ADR-0084)*
+- [ ] **MCP admission and dialer canonicalize a url differently.** The admission parses the AUTHORED string
+  with `extractEgressAuthority`; the dialer parses `new URL(spec.url).href`, i.e. the WHATWG-canonicalized
+  form. They diverge on the expanded IPv6 form (`[0:0:0:0:0:0:0:1]` vs `::1`), on IDNA/UTS-46 mappings
+  (`127。0。0。1`, `ⓛocalhost`, fullwidth text), and on anything else `new URL` normalizes. **Every divergence
+  fails CLOSED today** — the `host:port` scope stops matching, the range block then refuses the resolved
+  private host — so the exposure is a usability one: an author who writes the expanded IPv6 form of a local
+  endpoint gets a server that is admitted and then permanently refused. But the invariant the code comment
+  asserts ("the dialer's scope is derived from the SAME parse the admission approved") is not true, and it is
+  untrue in the one place a `host:port` policy is compared. Fix by canonicalizing once at admission and
+  passing the canonical string down. Note the parse-time `z.string().url()` is a third reader of the same
+  bytes. *(medium · apps/cli/src/engine/mcp-servers.ts; ADR-0088 §2.2)*
+- [ ] **The MCP hop does not go through `withEgressTimeout`.** `createMcpFetch` is the only `connectValidated`
+  caller that omits it — media egress, the tool-egress arm and the provider fetch all use it. Two
+  consequences: a raw resolver throw (`getaddrinfo ENOTFOUND <host>`) or a `TypeError [ERR_INVALID_URL]` whose
+  `.input` is the whole url can escape un-normalized, which breaks `safe-egress.ts`'s stated "reason only,
+  never the url" contract (contained today by `McpConnectError`'s cause-strip, but the shared mechanism is not
+  supposed to delegate that); and the DNS phase of a post-connect request — a session-terminate DELETE, a GET
+  stream reconnect — is unbounded, since `dns.promises.lookup` is not abortable. *(medium ·
+  apps/cli/src/engine/mcp-fetch.ts; ADR-0088 §2.1)*
+- [ ] **`allow_local_endpoint` may name a host whose RESOLUTION an attacker steers.**
+  `isPrivateOrLocalHost` treats `*.local` / `*.internal` / `*.localhost` as local from the suffix alone, so
+  `http://svc.local:4000` is an opt-in to whatever the LAN's mDNS responder claims. Since 2.6.5 `W4` the
+  dialer refuses a public or metadata answer and pins the private one, so the residual is narrower than it
+  was: a LAN-adjacent attacker who answers with its own RFC1918 address becomes the MCP server, with no
+  consent gate (ADR-0084 covers `stdio` only). Consider restricting what the opt-in may name to an IP
+  literal or `localhost`, or extending consent to a network server. *(medium ·
+  packages/shared/src/content.ts, apps/cli/src/engine/mcp-servers.ts; ADR-0088 §4)*
 - [ ] **MCP `stdio` spawn — `npx` dependency pinning ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §2).** The **other half** of the entry above, deliberately left open: consent answers *"may this program run?"*, not *"is this program the same code it was yesterday?"* An approved `npx -y @acme/server` re-resolves the package on every spawn, so the registry — not the grant — decides what executes, and the fingerprint cannot see it (the declaration is byte-identical). Pin the package version/integrity for the built-in auto-install servers, and consider surfacing the resolved version at the consent prompt. Unscheduled: it needs a decision on where a lockfile for a *tool the user declared* would live. *(packages/mcp/src; apps/cli; ADR-0052 §2; ADR-0029 trust model)*
 - [ ] **MCP lazy connect — connect on first tool call, not at session start ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §3).** Every declared MCP server is spawned/connected at session or run **start**, so a session that never calls an MCP tool still paid for every server — and, since [ADR-0084](../decisions/0084-consent-before-a-local-mcp-spawn.md), still asked the user to consent to every local program it never ran. **Blocker:** ADR-0052 §3's registry is **immutable after assembly** — the tool list must be known before the first turn, and that is exactly what discovery connects to obtain. **Unblocker:** the durable cross-invocation **tool-list cache** in the MCP follow-ups entry below — with a cached list, the registry can be assembled without connecting, leaving the connect (and the consent prompt) to the first actual call. Order matters: the cache lands first. ADR-0084 §8 explicitly does **not** decide this, and notes the consent model already fits — a grant is per declaration, so deferring the spawn defers the prompt without changing what is decided. *(packages/mcp/src; apps/cli/src/engine/mcp-servers.ts; ADR-0052 §3; ADR-0084 §8)*
 - [x] **MCP host boundary — strip `McpConnectError.cause` from `--json` / event output (2.R Step 3, [ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §2).** *Resolved in the 2.R Step 3 host wiring:* `startMcpClientFailLoud` (apps/cli/src/engine/mcp-servers.ts) wraps an `McpError` into a typed `CliError` whose message is the secret-free MCP summary with **no** `{ cause }` attached, and the top-level `--json` renderer (apps/cli/src/process/render-error.ts) serializes only `{ type, code, message }` — never `cause`. Regression-locked by `run.test.ts` (`expect(err.cause).toBeUndefined()`). *(apps/cli; packages/mcp/src/errors.ts; 2.R Step 3)*
 - [ ] **MCP network transport — header-based auth ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §6).** 2.R injects `{{secrets.*}}` only into a **stdio** child's `env`; the network (`http`/`websocket`) specs carry only `{ url }`, so a network server's `env` is **rejected at parse** (fail-closed, never silently dropped). When network MCP servers need credentials, add a host-resolved auth-header field (e.g. `Authorization: 'Bearer {{secrets.<name>}}'`) wired through the SDK transport's `requestInit`/headers, resolved from the same isolated `mcp-secret:*` namespace and never logged/serialized. **Scheduled → 2.6.I.** *(packages/mcp/src/sdk-http.ts; apps/cli/src/engine/mcp-servers.ts; ADR-0052 §6)*
-- [ ] **MCP follow-ups (non-security).** A durable cross-invocation **tool-list cache** (mcp-integration.md ~1h per-`(command,args)`, with a transport-covering key) — 2.R re-runs discovery per process ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §3); and a generalized **`SecretResolver`** seam beyond the 2.R `mcp-secret:*` keychain namespace ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §6); and reconciling the `types.ts` `ToolId` "register dynamically" comment to "host-side assembled" when 2.R touches `packages/core`; and **mid-call abort propagation** — the engine's `AbortSignalLike` is not forwarded to the in-flight MCP `tools/call` (the SDK transport wants a DOM `AbortSignal`), so a turn cancel tears the connection down but does not cancel an in-flight call (`@relavium/mcp` `manager.ts`). **The tool-list-cache + mid-call-abort halves are scheduled → 2.6.I** (the rest stays opportunistic). *(packages/mcp/src; packages/core; Phase-3)*
+- [ ] **MCP follow-ups (non-security).** A durable cross-invocation **tool-list cache** (mcp-integration.md ~1h per-`(command,args)`, with a transport-covering key) — 2.R re-runs discovery per process ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §3); and a generalized **`SecretResolver`** seam beyond the 2.R `mcp-secret:*` keychain namespace ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §6); and reconciling the `types.ts` `ToolId` "register dynamically" comment to "host-side assembled" when 2.R touches `packages/core`; and ~~**mid-call abort propagation**~~ — *closed in 2.6.5 `W4` Step 1 ([ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md) §1.2): the engine's `AbortSignalLike` is bridged to a real `AbortSignal` at the SDK fence and threaded through `callTool` and the discovery walk into `RequestOptions.signal`, so a turn cancel now reaches the server rather than only abandoning the caller. The connect is cancellable too. Pulled forward from 2.6.I because the deadline work touched the same call path.* **The tool-list-cache half remains scheduled → 2.6.I** (the rest stays opportunistic). *(packages/mcp/src; packages/core; Phase-3)*
 - [ ] **Streaming media triad (`media_start`/`media_delta`/`media_end`) — host-deferred ([ADR-0046](../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md) §4).**
   1.AG Section B delivers inline media-out through the non-streaming `generate()` path (the in-flight
   `media` `ContentPart` is de-inlined at `#emitDurable`). The **streaming** triad stays RESERVED: its Node
@@ -319,6 +346,78 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   throttles/queues subsequent egresses or only surfaces a one-time advisory event. Deferred until
   there is concrete surface demand or telemetry showing operators need an earlier signal.
   *(1.AC; ADR-0028; config-spec.md; workflow-yaml-spec.md)*
+
+## Phase 2.6.5 `W3` residuals (PR #86, merged 2026-08-30)
+
+The PR #86 review returned 18 findings; an independent verification round reproduced or refuted each. Seven
+were fixed before the merge. **These ten went in open**, and the first is a blocker — recorded here with the
+severity, the trigger and the product claim each narrows, per exit criterion 2.
+
+- [ ] **An un-pulled stream DROPS the terminal event ([ADR-0036](../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)).**
+  *Blocker.* Reproduced on `main`: a `BoundedEventStream` at capacity 2 given three pushes and a `close()`
+  delivers a clean EOF and never the terminal, with no `sequenceNumber` gap to signal it. **The claim it
+  narrows:** ADR-0036 promises a gap-free, no-drop canonical stream, and `run-handle.ts` repeats it — neither
+  is true today for a stream nobody iterates. **Trigger:** any consumer that attaches after `capacity` events,
+  which on the session path is every consumer. The fix is
+  [ADR-0087](../decisions/0087-consumed-streams-size-bounds-and-run-retention.md) §1 — a handle declares
+  whether its stream is consumed — and that ADR is **Proposed, not Accepted**: it merged unapproved.
+  *(packages/core/src/engine/event-stream.ts, run-handle.ts, session-handle.ts)*
+
+- [ ] **Media is measured as a handle but RETAINED as base64.** *Medium.* `state.output`, the completed state
+  and every downstream template hold the raw bytes while the durable event holds the handle. **The claim it
+  narrows:** [ADR-0042](../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)'s
+  "the engine references media by handle", and CR-32's own memory bound — a 1 MiB image passes a 256 KiB
+  node-output limit and is then held in full. **Trigger:** any media-producing node. ADR-0087 §3 records the
+  fix (de-inline once, at the node boundary). *(packages/core/src/engine/size-bounds.ts, engine.ts)*
+
+- [ ] **`whenDrained()` does not atomically reserve the slot it grants.** *Medium.* Several producers each get
+  a resolved promise for the same free slot; measured peak `capacity + N − 1` (11 against a ceiling of 4 with
+  8 producers). **The claim it narrows:** "a hard per-consumer ceiling". **Trigger:** concurrent producers,
+  i.e. any `max_parallel` above 1. **Do not apply the obvious fix:** a permit with a consume/release lifecycle
+  was prototyped and measured to REINTRODUCE the freeze — `agent-turn.ts` awaits readiness before `foldChunk`,
+  and `tool_call_*`, `reasoning_start/end`, `stop`, `media_*` and `tool_result` emit nothing, so every such
+  chunk leaks a permit. The correct shape moves the await to the emit site, which revises CR-30's producer-await
+  and therefore wants an ADR. *(packages/core/src/engine/event-stream.ts)*
+
+- [ ] **Dispatch headroom is computed but not reserved.** *Medium.* Retry timers can dispatch from the same
+  headroom during a batch's durable `node:started` awaits, so a pre-selected batch still starts.
+  **The claim it narrows:** ADR-0086 §4's 500-dispatch cap as an exact bound. **Trigger:** a retrying node
+  concurrent with a wide ready batch near the cap. *(packages/core/src/engine/engine.ts)*
+
+- [ ] **A redundant `conditionId:handle` edge counts toward fan-out.** *Medium.* The handle is stripped and the
+  edge counted as ordinary width, so the same semantic workflow is admitted written one documented way and
+  refused written the other. **The claim it narrows:** the spec's statement that a condition's branches are
+  alternatives and do not count toward width. **Trigger:** an author who writes the redundant explicit edge
+  form the spec documents. *(packages/core/src/limits.ts)*
+
+- [ ] **A human-gate payload skips the CR-32 bounds.** *Medium.* `measureNodeOutput` is called and its breach
+  discarded, and no aggregate state check runs. **The claim it narrows:** the 256 KiB per-node and 4 MiB
+  accumulated-state contracts. **Trigger:** a gate whose decision carries a payload — the one node output a
+  user supplies directly. *(packages/core/src/engine/engine.ts)*
+
+- [ ] **`JSON.stringify` is used as a size measure and validates nothing.** *Medium.* Nested functions and
+  symbols vanish, `Map`/`Set` become `{}`, array holes become `null`, and a custom `toJSON` changes the value —
+  so a live run and a resumed one can see different data. **The claim it narrows:** that checkpoint/resume
+  replays the same state. **Trigger:** any node output holding a non-JSON value.
+  *(packages/core/src/engine/size-bounds.ts)*
+
+- [ ] **The durable-event bound has no engine-level test.** *Medium.* `measureDraft` is unit-tested; nothing
+  proves an oversized non-terminal event is refused on the real `#emitDurable` path. **The claim it narrows:**
+  the phase's own acceptance rule that a test fails when its production change is reverted.
+  *(packages/core/src/engine/engine.test.ts)*
+
+- [ ] **ADR-0086 §9.3's host override does not exist.** *Medium.* The ADR promises ceilings "resolve from named
+  constants that a host may override" so an operator "does not fork the engine". There is no such seam.
+  **The claim it narrows:** the migration story ADR-0086 offers for a previously-valid workflow. **Trigger:** a
+  legitimate outlier above any ceiling. Either build the seam or supersede that clause. *(packages/core/src/limits.ts)*
+
+- [ ] **Two reference-doc nits.** *Low.* `agent-yaml-spec.md`'s field table lists `tools` twice; `run-plan.md`'s
+  ceiling bullet omits condition targets and data-reference edges from its list of authored edge sources.
+  *(docs/reference/)*
+
+**One finding was REFUTED and is recorded so it is not re-raised**: "resume seed accepts oversized or invalid
+outputs". `CheckpointState` is derived by replaying the durable log, never stored, so a checkpoint carrying
+state the current bounds would refuse cannot exist in the shape the finding describes.
 
 ## Phase 2.6.5 `W2` residuals ([ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md), 2026-08-25)
 
@@ -1061,6 +1160,24 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   `RunEventSchema.superRefine` (where the runId/sessionId cross-check already lives). Low value, left
   for the consumer that needs the guarantee.
 
+- [ ] **The MCP schema compiler's denylist silently DROPS unsupported assertions** *(High · pre-existing ·
+  surfaced by the PR #87 review, 2026-09-01)* — `compileJsonSchemaToZod` refuses a finite list of unsupported
+  constructs and passes everything else through, so a keyword it does not implement is ignored rather than
+  refused. Reproduced: `{ "type": "number", "exclusiveMinimum": 0 }` compiles **ok** and the resulting
+  validator **accepts `0`**. Same for any sibling assertion outside the list (`multipleOf`, `pattern` on a
+  non-string, `minItems`, …).
+
+  This contradicts [ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md)'s
+  "an `inputSchema` outside the supported subset **drops the tool at discovery** (fail closed)": the tool is
+  admitted, and our dispatch gate is weaker than the schema the server published. The server still validates
+  on its own side, so this is a weaker gate rather than an open door — which is why it is recorded rather than
+  rushed.
+
+  **Not a `W4` regression** and deliberately not fixed inside it: the correct shape is a per-type **supported-key
+  allowlist**, which starts REFUSING schemas that work today, so it needs its own change with its own
+  compatibility review. Scoped that way, or an explicit ADR note narrowing ADR-0052's claim to the keys the
+  compiler actually implements.
+
 ## Test depth
 
 - [ ] **dist-resolution packaging test** — the migration runner is tested only from `src/`; add
@@ -1185,6 +1302,25 @@ future test cannot silently re-acquire it.
       ternary, three `RunApp.tsx` array-index keys, two `'never' is overridden` union types, two
       `.some()` → `.includes()`, `openai.ts:481` nested template literals, `node.ts:60` `String.raw`, plus
       ~10 test-only nits (`toHaveLength`, parameterised tests, `test.skip()`).
+- [ ] **2026-09-02 Sonar sweep during the PR #87 review — three findings in code the wave did not touch.**
+      Same standing policy: a behaviour-preserving refactor of merged, tested code is its own change. The
+      findings inside the `W4` diff were fixed in it (`scanSchema` and `isMetadataOrLinkLocal` split along the
+      JSON type union and the address family; `buildServerToolDefs`'s gate sequence extracted verbatim into
+      `admitTool`); these three are outside it:
+      - `apps/cli/src/commands/run.ts:153` — `runCommand` cognitive complexity **26 → 15**. A ~300-line
+        orchestration (parse → engine → drive → outcome → exit code) with the CLI's densest test coverage
+        around it. The natural seam is per-phase extraction; it wants its own change, not a review fold.
+      - `packages/shared/src/content.ts:1430` — `extractEgressAuthority` **24 → 15**. A security-critical URL
+        parser where each branch is a documented refusal case. Its sibling `isMetadataOrLinkLocal` has already
+        shipped one bug from branch interaction (`::1` read as metadata), so a refactor here needs the same
+        before/after verdict sweep that one got, deliberately and not incidentally.
+      - `packages/db/src/safe-egress.ts:198` — "prefer an optional chain" on
+        `local !== undefined && target.host === local.host && target.port === local.port`. **Declined, not
+        deferred:** `local?.host === target.host && local?.port === target.port` is equivalent but reads as
+        two independent comparisons, losing the "there IS an authored opt-in AND it matches" structure that is
+        the whole precondition of the local-endpoint policy. Worth marking won't-fix in SonarQube rather than
+        re-surfacing each sweep.
+
       **Not actioned, with reasons:** the `--ignore-scripts` findings on all four workflows are declined —
       `pnpm.onlyBuiltDependencies` (root `package.json`) already allowlists the only two packages permitted
       to run install scripts, and adding the flag would break both while weakening nothing else; the

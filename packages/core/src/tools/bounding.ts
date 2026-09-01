@@ -17,6 +17,12 @@ import {
   type AbortSignalLike,
 } from '@relavium/shared';
 
+import { utf8ByteLength } from '@relavium/shared';
+
+// Re-exported so this module's existing consumers (`engine/size-bounds.ts`, the tests) keep one import path
+// while the IMPLEMENTATION lives in `@relavium/shared` — see its header for why it moved.
+export { utf8ByteLength };
+
 import type { ToolHost, ToolResultLimits } from './types.js';
 
 export interface BoundedResult {
@@ -29,32 +35,6 @@ export interface BoundedResult {
 
 /** Display cap (chars) for the event `outputSummary` — distinct from the model-facing ceiling. */
 const SUMMARY_MAX = 500;
-
-/** UTF-8 byte length without `TextEncoder` (kept dependency- and global-free for engine purity). */
-export function utf8ByteLength(text: string): number {
-  let bytes = 0;
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    if (code < 0x80) {
-      bytes += 1;
-    } else if (code < 0x800) {
-      bytes += 2;
-    } else if (code >= 0xd800 && code <= 0xdbff) {
-      // A high surrogate: only a 4-byte code point when FOLLOWED by a low surrogate. A lone high surrogate
-      // is 3 bytes (WTF-8) and must not consume the next unit.
-      const next = text.charCodeAt(i + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) {
-        bytes += 4;
-        i++;
-      } else {
-        bytes += 3;
-      }
-    } else {
-      bytes += 3;
-    }
-  }
-  return bytes;
-}
 
 function countLines(text: string): number {
   if (text.length === 0) {

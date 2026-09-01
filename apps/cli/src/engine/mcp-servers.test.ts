@@ -3,6 +3,8 @@ import {
   McpError,
   type McpClient,
   type McpConnection,
+  type HttpServerSpec,
+  type WebSocketServerSpec,
   type McpServerConfig,
   type StdioServerSpec,
 } from '@relavium/mcp';
@@ -10,6 +12,7 @@ import type { Agent, McpServerRef, McpServerRegistration } from '@relavium/share
 import { describe, expect, it } from 'vitest';
 
 import { CliError, isCliError } from '../process/errors.js';
+import type { McpFetch, McpFetchConfig } from './mcp-fetch.js';
 import { captureIo } from '../test-support.js';
 import type { ResolvedStdioSpawn } from './mcp-consent.js';
 import {
@@ -28,6 +31,7 @@ function fakeClient(overrides: Partial<McpClient> = {}): McpClient {
     capability: { call: () => Promise.resolve({ content: [], isError: false }) },
     toolDefs: [],
     toolIdsByServer: new Map(),
+    childPids: [],
     skipped: [],
     close: () => Promise.resolve(),
     ...overrides,
@@ -61,6 +65,149 @@ describe('resolveServerConfigs', () => {
     expect(configs[0]?.id).toBe('fs');
     expect(configs[0]?.toolsAllowlist).toEqual(['read', 'write']);
     expect(typeof configs[0]?.open).toBe('function'); // not invoked here — no spawn in a unit test
+  });
+
+  it('carries an authored connect_timeout_ms all the way into the STDIO spawn spec (ADR-0088 §1.4)', async () => {
+    // **The journey a review proved untested.** Four independent mutations — dropping the forwarding in
+    // `buildStdioConfig`, in `buildNetworkConfig`, in the registration carry-through, and in all four
+    // adapters' `spec.connectTimeoutMs ?? DEFAULT` — each left every suite green. `packages/shared` proves
+    // the SHAPE is admitted; nothing proved the admitted value is USED, so the whole field was decorative.
+    let seen: StdioServerSpec | undefined;
+    const configs = resolveServerConfigs(
+      [stdioRef({ connect_timeout_ms: 300_000 })],
+      '/work',
+      undefined,
+      {
+        stdio: (_id, spec) => {
+          seen = spec;
+          return Promise.reject(new Error('not connecting in a unit test'));
+        },
+      },
+    );
+    await expect(configs[0]?.open()).rejects.toThrow('not connecting');
+    expect(seen?.connectTimeoutMs).toBe(300_000);
+  });
+
+  it('omits connectTimeoutMs entirely when unauthored, so the adapter default applies', async () => {
+    // `exactOptionalPropertyTypes`: an explicit `undefined` would be a different value from absent, and the
+    // adapter's `spec.connectTimeoutMs ?? MCP_DEADLINES.x` reads absent as "use the default".
+    //
+    // **Two assertions, because the single one was vacuous.** It read
+    // `expect(seen !== undefined && 'connectTimeoutMs' in seen).toBe(false)`, which is satisfied by `seen`
+    // being undefined — so an opener that never ran, or ran and threw before assigning, passed the test
+    // exactly as an opener that correctly omitted the key. The absence has to be asserted on a spec that
+    // demonstrably exists.
+    let seen: StdioServerSpec | undefined;
+    const configs = resolveServerConfigs([stdioRef()], '/work', undefined, {
+      stdio: (_id, spec) => {
+        seen = spec;
+        return Promise.reject(new Error('stop'));
+      },
+    });
+    await expect(configs[0]?.open()).rejects.toThrow('stop'); // the opener ran
+    expect(seen).toBeDefined();
+    expect(Object.keys(seen ?? {})).not.toContain('connectTimeoutMs');
+  });
+
+  it('carries an authored connect_timeout_ms into a NETWORK connect spec too', async () => {
+    let seen: HttpServerSpec | undefined;
+    const configs = resolveServerConfigs(
+      [
+        {
+          id: 'docs',
+          transport: 'http',
+          url: 'https://docs.example/mcp',
+          connect_timeout_ms: 45_000,
+        },
+      ],
+      '/work',
+      undefined,
+      {
+        http: (_id, spec) => {
+          seen = spec;
+          return Promise.reject(new Error('not connecting in a unit test'));
+        },
+      },
+    );
+    await expect(configs[0]?.open()).rejects.toThrow('not connecting');
+    // A RANGE, not `toBe(45_000)`: the adapter is handed what REMAINS of the one window (ADR-0088 §1.1), so
+    // the value is 45 000 minus however long the preflight took — zero here, but an exact assertion would be
+    // a wall-clock race the moment a millisecond elapsed between opening the window and reading it.
+    expect(seen?.connectTimeoutMs).toBeLessThanOrEqual(45_000);
+    expect(seen?.connectTimeoutMs).toBeGreaterThan(44_000);
+  });
+
+  it('SHARES one window across the websocket DNS preflight and the connect', async () => {
+    // **The preflight used to open its own fixed 30 s window**, so the total connect budget was
+    // `preflight + authored` and an author who RAISED `connect_timeout_ms` did not raise the DNS half at all
+    // — two windows where §1.1 says one. Asserted by making the preflight slow and reading what is left.
+    let seen: WebSocketServerSpec | undefined;
+    const configs = resolveServerConfigs(
+      [
+        {
+          id: 'local',
+          transport: 'websocket',
+          url: 'ws://localhost:8080/mcp',
+          allow_local_endpoint: true,
+          connect_timeout_ms: 30_000,
+        },
+      ],
+      '/work',
+      undefined,
+      {
+        resolveHost: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          return ['127.0.0.1'];
+        },
+        websocket: (_id, spec) => {
+          seen = spec;
+          return Promise.reject(new Error('not connecting in a unit test'));
+        },
+      },
+    );
+    await expect(configs[0]?.open()).rejects.toThrow('not connecting');
+    // The preflight's ~120 ms came OUT of the 30 s, not on top of it.
+    expect(seen?.connectTimeoutMs).toBeLessThan(30_000);
+    expect(seen?.connectTimeoutMs).toBeGreaterThan(29_000);
+  });
+
+  it('hands the CONNECT SIGNAL to the opener — a parameter, not a dropped argument', async () => {
+    // **The defect this pins was found one layer up from where it was fixed.** The adapters took a `signal`,
+    // `startMcpClient` passed one, and the closure built HERE was written `open: () => …` — which accepts the
+    // call and silently drops the argument. TypeScript is happy; the cancel path type-checks and cannot fire.
+    // A Ctrl-C during a cold `npx` therefore stopped nothing, and the child was orphaned, because
+    // `McpClient.childPids` stays empty until a connect fully succeeds so neither reaper had a pid either.
+    //
+    // Asserting IDENTITY, not merely presence: a closure that captured some other controller's signal would
+    // pass a presence check and still not be cancellable by the caller who owns the teardown.
+    const controller = new AbortController();
+    let seenSignal: unknown = 'never called';
+    const configs = resolveServerConfigs([stdioRef()], '/work', undefined, {
+      stdio: (_id, _spec, signal) => {
+        seenSignal = signal;
+        return Promise.reject(new Error('not connecting in a unit test'));
+      },
+    });
+    await expect(configs[0]?.open(controller.signal)).rejects.toThrow('not connecting');
+    expect(seenSignal).toBe(controller.signal);
+  });
+
+  it('hands the connect signal to a NETWORK opener too', async () => {
+    const controller = new AbortController();
+    let seenSignal: unknown = 'never called';
+    const configs = resolveServerConfigs(
+      [{ id: 'docs', transport: 'http', url: 'https://docs.example/mcp' }],
+      '/work',
+      undefined,
+      {
+        http: (_id, _spec, signal) => {
+          seenSignal = signal;
+          return Promise.reject(new Error('not connecting in a unit test'));
+        },
+      },
+    );
+    await expect(configs[0]?.open(controller.signal)).rejects.toThrow('not connecting');
+    expect(seenSignal).toBe(controller.signal);
   });
 
   it('omits toolsAllowlist when the ref declares none (exactOptionalPropertyTypes — never an explicit undefined)', () => {
@@ -191,7 +338,13 @@ describe('resolveServerConfigs', () => {
       [
         { id: 'a', transport: 'http', url: 'https://h/mcp' },
         { id: 'b', transport: 'sse', url: 'https://h/sse' },
-        { id: 'c', transport: 'websocket', url: 'wss://h/ws' },
+        // LOCAL, because ADR-0088 §2.3 refuses a REMOTE websocket at admission — see the dedicated test.
+        {
+          id: 'c',
+          transport: 'websocket',
+          url: 'ws://localhost:9000/ws',
+          allow_local_endpoint: true,
+        },
       ],
       '/work',
       undefined,
@@ -201,7 +354,7 @@ describe('resolveServerConfigs', () => {
     expect(calls.sort()).toEqual([
       'http:a:https://h/mcp',
       'sse:b:https://h/sse',
-      'ws:c:wss://h/ws',
+      'ws:c:ws://localhost:9000/ws',
     ]);
   });
 
@@ -280,9 +433,32 @@ describe('SSRF floor (resolveServerConfigs network gate, 2.R Step 4c / ADR-0053)
   const build = (over: Partial<McpServerRef> = {}): McpServerConfig[] =>
     resolveServerConfigs([netRef(over)], '/work');
 
-  it('accepts a remote https/wss endpoint', () => {
+  it('accepts a remote https endpoint', () => {
     expect(build({ url: 'https://api.example/mcp' })).toHaveLength(1);
-    expect(build({ transport: 'websocket', url: 'wss://api.example/ws' })).toHaveLength(1);
+    expect(build({ transport: 'sse', url: 'https://api.example/sse' })).toHaveLength(1);
+  });
+
+  it('REFUSES a remote websocket outright, naming the transport that carries it safely (ADR-0088 §2.3)', () => {
+    // A deliberate narrowing, not a bug. `WebSocketClientTransport` takes a `URL` and nothing else — no
+    // `fetch`, no dialer, no socket factory — and its `onmessage` runs `JSON.parse(event.data)` before any
+    // Relavium code sees a byte. So on that transport there is neither §2.1's pin nor §5's byte bound to give
+    // a server the user never consented to run. This test previously asserted `wss://api.example/ws` was
+    // ACCEPTED; the assertion is inverted because the decision changed, and the message has to be actionable
+    // because the fix is a one-word edit in the author's YAML.
+    expect(() => build({ transport: 'websocket', url: 'wss://api.example/ws' })).toThrow(
+      /remote 'websocket' MCP server is not supported/,
+    );
+    expect(() => build({ transport: 'websocket', url: 'wss://api.example/ws' })).toThrow(
+      /transport: 'http'/,
+    );
+  });
+
+  it('still permits a LOCAL opted-in websocket — an unbounded transport must be local and admitted', () => {
+    // The other half of §2.3, and the reason it is a narrowing rather than a removal: a local endpoint is an
+    // explicit opt-in to an address the author wrote down, which is the same line `stdio` sits on.
+    expect(
+      build({ transport: 'websocket', url: 'ws://localhost:9000/ws', allow_local_endpoint: true }),
+    ).toHaveLength(1);
   });
 
   it('rejects a private/loopback/link-local host without allow_local_endpoint', () => {
@@ -291,10 +467,26 @@ describe('SSRF floor (resolveServerConfigs network gate, 2.R Step 4c / ADR-0053)
       'http://localhost:4000/mcp',
       'http://10.0.0.5/mcp',
       'http://192.168.1.2/mcp',
-      'http://169.254.169.254/latest', // the cloud metadata endpoint
       'http://[::1]/mcp',
     ]) {
       expect(() => build({ url })).toThrow(/private\/loopback/);
+    }
+  });
+
+  it('refuses the cloud-metadata address with its OWN message, and even WITH the opt-in', () => {
+    // **A review found this reachable.** `169.254.169.254` is inside the private ranges, so it satisfied
+    // every condition for an authored "local endpoint" — and would then have been dialled over PLAINTEXT
+    // with the range check lifted. It is the credential endpoint ADR-0053's Context names as the motivating
+    // threat, so it gets a refusal of its own that no opt-in can lift.
+    for (const url of [
+      'http://169.254.169.254/latest',
+      'http://[::ffff:169.254.169.254]/latest', // the IPv4-mapped tunnel
+      'http://0.0.0.0:4000/mcp',
+    ]) {
+      expect(() => build({ url })).toThrow(/link-local or cloud-metadata/);
+      expect(() => build({ url, allow_local_endpoint: true })).toThrow(
+        /link-local or cloud-metadata/,
+      );
     }
   });
 
@@ -307,7 +499,6 @@ describe('SSRF floor (resolveServerConfigs network gate, 2.R Step 4c / ADR-0053)
       'http://127.1/mcp', // inet_aton short form
       'http://LOCALHOST./mcp', // uppercase + trailing FQDN dot
       'http://[::ffff:127.0.0.1]/mcp', // IPv4-mapped IPv6
-      'http://0.0.0.0/mcp', // the "this host" wildcard
     ]) {
       expect(() => build({ url })).toThrow(/private\/loopback/);
     }
@@ -331,9 +522,157 @@ describe('SSRF floor (resolveServerConfigs network gate, 2.R Step 4c / ADR-0053)
     expect(() => build({ transport: 'sse', url: 'http://api.example/sse' })).toThrow(
       /must use https\/wss/,
     ); // the sse alias is gated identically
+    // A remote plaintext websocket is refused too — by the §2.3 narrowing, which runs first because a remote
+    // websocket has no safe form at all. The rule it would otherwise have hit is the same one.
     expect(() => build({ transport: 'websocket', url: 'ws://api.example/ws' })).toThrow(
-      /must use https\/wss/,
+      /remote 'websocket' MCP server is not supported/,
     );
+  });
+
+  it('hands the VALIDATED FETCH to an http/sse opener, carrying that server’s local scope', async () => {
+    // **The half ADR-0053 §2 called the target and left as a tracked follow-up.** The admission checks the
+    // AUTHORED host, so a name that DNS-resolves to a private IP was never caught by it — the pin is what
+    // closes that, and it only exists if the fetch actually reaches the transport. Asserting the CONFIG the
+    // factory was built with is what binds the scope: an opted-in `localhost:4000` server must not hand the
+    // dialer a policy that would also admit `localhost:6379`.
+    const built: McpFetchConfig[] = [];
+    const marker: McpFetch = () => Promise.reject(new Error('unused'));
+    let seen: unknown = 'never called';
+    const configs = resolveServerConfigs(
+      [
+        {
+          id: 'local',
+          transport: 'http',
+          url: 'http://localhost:4000/mcp',
+          allow_local_endpoint: true,
+        },
+      ],
+      '/work',
+      undefined,
+      {
+        makeFetch: (config) => {
+          built.push(config);
+          return marker;
+        },
+        http: (_id, spec) => {
+          seen = spec.fetch;
+          return Promise.reject(new Error('not connecting'));
+        },
+      },
+    );
+    // Awaited, not fire-and-forget: `open()` is async now — it awaits the websocket pre-connect resolve
+    // before dispatching — so a synchronous assertion after it would read the state before the call.
+    await configs[0]?.open().catch(() => undefined);
+
+    expect(built).toEqual([{ localEndpoint: { host: 'localhost', port: 4000 } }]);
+    expect(seen).toBe(marker);
+  });
+
+  it('builds a REMOTE http server’s fetch with NO local policy at all', () => {
+    // Absence is the secure default, and it has to be absence rather than a false-y flag: `connectValidated`
+    // reads "no localEndpoint" as HTTPS-only with every private range blocked.
+    const built: McpFetchConfig[] = [];
+    resolveServerConfigs(
+      [{ id: 'r', transport: 'http', url: 'https://api.example/mcp' }],
+      '/work',
+      undefined,
+      {
+        makeFetch: (config) => {
+          built.push(config);
+          return () => Promise.reject(new Error('unused'));
+        },
+      },
+    );
+    expect(built).toEqual([{}]);
+  });
+
+  it('RESOLVES a local websocket and refuses a name that answers PUBLIC (ADR-0088 §2.3)', async () => {
+    // **The check §2.3 promises and the first implementation omitted entirely.** websocket cannot be pinned —
+    // that residual is accepted — but the ADR still requires the pre-connect resolve-and-range-block, and
+    // without it the transport had NO address check beyond the authored literal. That mattered because
+    // `isPrivateOrLocalHost` treats `*.local` / `*.internal` / `*.localhost` as local from the SUFFIX alone:
+    // a cloned repo declaring `ws://mcp-relay.local:8080` with the opt-in was admitted (so the §2.3 remote
+    // refusal never fired), connected in plaintext, and pointed wherever the LAN's mDNS responder said — with
+    // no consent gate, because ADR-0084 covers `stdio` only.
+    const wsRef = {
+      id: 'relay',
+      transport: 'websocket' as const,
+      url: 'ws://mcp-relay.local:8080/',
+      allow_local_endpoint: true,
+    };
+    const publicAnswer = resolveServerConfigs([wsRef], '/work', undefined, {
+      resolveHost: () => Promise.resolve(['93.184.216.34']),
+      websocket: () => Promise.reject(new Error('must not connect')),
+    });
+    await expect(publicAnswer[0]?.open()).rejects.toThrow(/resolves to a public address/);
+  });
+
+  it('refuses a local websocket whose name answers into the METADATA space', async () => {
+    const wsRef = {
+      id: 'relay',
+      transport: 'websocket' as const,
+      url: 'ws://mcp-relay.local:8080/',
+      allow_local_endpoint: true,
+    };
+    const configs = resolveServerConfigs([wsRef], '/work', undefined, {
+      resolveHost: () => Promise.resolve(['169.254.169.254']),
+      websocket: () => Promise.reject(new Error('must not connect')),
+    });
+    await expect(configs[0]?.open()).rejects.toThrow(/link-local or cloud-metadata/);
+  });
+
+  it('CONNECTS a local websocket whose name genuinely answers private — the narrowing is not a removal', async () => {
+    // The other half of §2.3, and the reason it is a narrowing: a local endpoint that really is local still
+    // works. Without this the refusal tests would pass against an implementation that refused everything.
+    let connected = false;
+    const configs = resolveServerConfigs(
+      [
+        {
+          id: 'relay',
+          transport: 'websocket',
+          url: 'ws://mcp-relay.local:8080/',
+          allow_local_endpoint: true,
+        },
+      ],
+      '/work',
+      undefined,
+      {
+        resolveHost: () => Promise.resolve(['192.168.1.50']),
+        websocket: () => {
+          connected = true;
+          return Promise.reject(new Error('not connecting in a unit test'));
+        },
+      },
+    );
+    await expect(configs[0]?.open()).rejects.toThrow('not connecting');
+    expect(connected).toBe(true);
+  });
+
+  it('builds NO validated dialer for a websocket server — there is no hook to hand it to (ADR-0088 §2.3)', () => {
+    // The type system already proves the stronger half: `WebSocketServerSpec` has no `fetch` field, so a
+    // version that tried to pass one would not compile. What a test can add is the runtime half — that the
+    // factory is not even CALLED, so no policy is built for a transport that cannot honour one. Together they
+    // say why this transport is local-only: not "we forgot", but "there is nowhere to put the guarantee".
+    let factoryCalls = 0;
+    resolveServerConfigs(
+      [
+        {
+          id: 'w',
+          transport: 'websocket',
+          url: 'ws://localhost:9000/ws',
+          allow_local_endpoint: true,
+        },
+      ],
+      '/work',
+      undefined,
+      {
+        makeFetch: () => {
+          factoryCalls += 1;
+          return () => Promise.reject(new Error('unused'));
+        },
+      },
+    );
+    expect(factoryCalls).toBe(0);
   });
 
   it('rejects an embedded-credentials url (the flag never relaxes it)', () => {
@@ -626,6 +965,50 @@ describe('connectWorkflowMcp (run path)', () => {
         startMcpClient: fakeStart(new Map()),
       }),
     ).rejects.toThrow(/conflicting settings/);
+  });
+
+  it('fails loud when two agents share a server id but DIFFER on connect_timeout_ms', async () => {
+    // **A review deleted `d: ref.connect_timeout_ms ?? null` from `serverFingerprint` and all 2534 CLI tests
+    // stayed green.** Every sibling identity field (`env`, `tools_allowlist`, `allow_local_endpoint`) has a
+    // fail-loud test; this one had none, so the comment claiming it "enters the fingerprint for the reason
+    // `allow_local_endpoint` already does" was unbacked. Two authors would silently share a bound neither
+    // wrote — first-wins.
+    const def = wf(
+      [
+        '    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x, connect_timeout_ms: 5000 }] }',
+        '    - { id: writer, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x, connect_timeout_ms: 300000 }] }',
+        '',
+      ].join('\n'),
+    );
+    await expect(
+      connectWorkflowMcp(def, {
+        cwd: '/w',
+        consentGate: PASS_CONSENT,
+        startMcpClient: fakeStart(new Map()),
+      }),
+    ).rejects.toThrow(/conflicting settings/);
+  });
+
+  it('shares ONE connection when the two declarations agree on connect_timeout_ms', async () => {
+    // The negative control. Without it the test above would also pass against a fingerprint that treats every
+    // declaration as unique — which would break legitimate sharing rather than catch a conflict.
+    let startedWith: readonly McpServerConfig[] = [];
+    const def = wf(
+      [
+        '    - { id: scanner, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x, connect_timeout_ms: 5000 }] }',
+        '    - { id: writer, model: claude-sonnet-4-6, provider: anthropic, system_prompt: go, mcp_servers: [{ id: fs, transport: stdio, command: x, connect_timeout_ms: 5000 }] }',
+        '',
+      ].join('\n'),
+    );
+    await connectWorkflowMcp(def, {
+      cwd: '/w',
+      consentGate: PASS_CONSENT,
+      startMcpClient: (servers) => {
+        startedWith = servers;
+        return Promise.resolve(fakeClient({ toolIdsByServer: new Map([['fs', []]]) }));
+      },
+    });
+    expect(startedWith).toHaveLength(1);
   });
 
   it('fails loud when two agents share a server id but declare DIFFERENT tools_allowlist (no escalation)', async () => {
@@ -928,6 +1311,21 @@ describe('resolveMcpServerRef (by-name resolution, 2.R Step 4b)', () => {
       args: ['--stdio'],
       env: { GH: '1' },
       tools_allowlist: ['issue'],
+    });
+  });
+
+  it('preserves a registration `connect_timeout_ms` on the resolved ref (ADR-0088 §1.4)', () => {
+    // The registration owns the connection, so it owns the deadline — and the schema refuses an inline
+    // override alongside a `ref`, so this carry-through is the ONLY way an authored value reaches a by-name
+    // server. Deleting the carry line was measured to cost nothing.
+    const regs: McpServerRegistration[] = [
+      { name: 'gh', transport: 'stdio', command: 'npx', connect_timeout_ms: 300_000 },
+    ];
+    expect(resolveMcpServerRef({ ref: 'gh' }, regs)).toMatchObject({
+      id: 'gh',
+      transport: 'stdio',
+      command: 'npx',
+      connect_timeout_ms: 300_000,
     });
   });
 

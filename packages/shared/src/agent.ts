@@ -9,7 +9,12 @@ import {
   positiveInt,
   temperatureSchema,
 } from './common.js';
-import { LLM_PROVIDERS, REASONING_EFFORTS, RETRYABLE_ERROR_CODES } from './constants.js';
+import {
+  LLM_PROVIDERS,
+  MCP_CONNECT_TIMEOUT_CEILING_MS,
+  REASONING_EFFORTS,
+  RETRYABLE_ERROR_CODES,
+} from './constants.js';
 import { validateDeclaredEnv } from './declared-env.js';
 
 /**
@@ -74,7 +79,29 @@ const INLINE_CONNECTION_FIELDS = [
   'env',
   'url',
   'allow_local_endpoint',
+  // `connect_timeout_ms` is a CONNECTION property, not a preference, so it belongs here rather than beside
+  // `tools_allowlist` ([ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md) §1.4). Listing it means no
+  // precedence rule is needed: the registration owns the connection, and an inline override alongside a `ref`
+  // is refused at parse rather than resolved by a rule a reader would have to look up.
+  'connect_timeout_ms',
 ] as const;
+
+/**
+ * An authored MCP connect deadline in milliseconds — a positive integer, at most
+ * {@link MCP_CONNECT_TIMEOUT_CEILING_MS} ([ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md) §1.4).
+ *
+ * Shared by `McpServerRefSchema` (inline) and `McpServerRegistrationSchema` (config) so the two forms cannot
+ * drift — a registration that accepted a value the inline form refuses would make `ref` a way around the
+ * ceiling.
+ */
+export const McpConnectTimeoutSchema = z
+  .number()
+  .int()
+  .positive()
+  .max(
+    MCP_CONNECT_TIMEOUT_CEILING_MS,
+    `connect_timeout_ms must be at most ${MCP_CONNECT_TIMEOUT_CEILING_MS} ms`,
+  );
 
 /** The authored shape `McpServerRefSchema.superRefine` validates (every field optional pre-refinement). */
 interface McpServerRefDraft {
@@ -85,6 +112,7 @@ interface McpServerRefDraft {
   env?: Record<string, string> | undefined;
   url?: string | undefined;
   allow_local_endpoint?: boolean | undefined;
+  connect_timeout_ms?: number | undefined;
   ref?: string | undefined;
   tools_allowlist?: readonly string[] | undefined;
 }
@@ -194,6 +222,9 @@ export const McpServerRefSchema = z
     // Opt into a private/loopback network endpoint (ADR-0053 §3), scoped to the declared host:port — relaxes the
     // SSRF range-block AND permits plaintext for THAT local endpoint only. Network transports only.
     allow_local_endpoint: z.boolean().optional(),
+    // Raise this server's connect deadline (ADR-0088 §1.4) — every transport, not just stdio: a network server
+    // behind a cold container can be slow too. Absent ⇒ the per-transport default.
+    connect_timeout_ms: McpConnectTimeoutSchema.optional(),
     ref: nonEmptyString.optional(),
     // A declared allowlist must name at least one tool — an empty `[]` would silently grant the agent ZERO tools
     // from that server (a footgun); OMIT the field to admit all discovered tools.

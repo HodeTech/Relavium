@@ -28,6 +28,7 @@ import {
 } from '@relavium/llm';
 import type { ManagerSkippedTool, McpClient, McpServerConfig } from '@relavium/mcp';
 import type {
+  AbortSignalLike,
   AgentSessionRecord,
   Budget,
   McpServerRegistration,
@@ -118,6 +119,13 @@ export interface BuildChatSessionOptions {
    */
   readonly mcpRegistrations?: readonly McpServerRegistration[];
   /**
+   * Cancels the MCP connect + discovery ([ADR-0088](../../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md)
+   * §1.1). A connect can be the longest thing a session start does — up to `stdio`'s 120 s while a cold `npx`
+   * resolves — so a surface that reaps children on a signal needs the connect itself to be interruptible, not
+   * merely survivable.
+   */
+  readonly mcpConnectSignal?: AbortSignalLike;
+  /**
    * Disable inbound MCP entirely for this session — the agent's `mcp_servers` are NOT connected (no config
    * build, no spawn, no dial), so the session is fully offline. `relavium agent run --fixture` (cassette replay)
    * sets this so a recorded run never touches a real server; the cassette already carries any tool results.
@@ -205,7 +213,21 @@ export interface BuiltChatSession {
    * Tear down the session's MCP connections (2.R) — present only when the agent declared `mcp_servers`. The
    * command MUST `await` it on session teardown (its `finally`), mirroring `persister.close()`. Idempotent.
    */
-  readonly closeMcp?: () => Promise<void>;
+  /**
+   * Tear the session's MCP connections down, optionally REPORTING a per-server teardown fault.
+   *
+   * The reporter is threaded rather than swallowed here because the caller is what owns an output channel —
+   * and because without it `McpClient.close`'s own `onCloseError` (added by `#207` so a misbehaving transport
+   * could be reported) had no production caller at all. It was offered by the manager, accepted by the type,
+   * and reachable from nowhere.
+   */
+  readonly closeMcp?: (onError?: (serverId: string, cause: unknown) => void) => Promise<void>;
+  /**
+   * The spawned `stdio` children's pids — for a **synchronous** last-resort reap on `process.on('exit')`
+   * ([ADR-0088](../../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §1.3). {@link closeMcp} is
+   * async, and an exit path that cannot await it re-orphans exactly the children that obligation is about.
+   */
+  readonly mcpChildPids?: readonly number[];
   /**
    * The budget wiring, when the chat config declares a cap — surfaced so the caller can attach the durable
    * conservative-commitment writer once the persister exists (ADR-0074 §4), and so a surface can offer §1's
@@ -524,12 +546,33 @@ function bindChatAgent(opts: BuildChatSessionOptions): ResolvedChatAgent {
  * spread-or-nothing shape is what keeps a caller that did not wire a dependency from asserting it wired one
  * to `undefined`.
  */
+/**
+ * Exactly the fields {@link mcpOptionsFor} reads — deliberately NOT `BuildChatSessionOptions`.
+ *
+ * The fresh and resumed paths carry two different option types, and the mapper has no business requiring
+ * either whole. Naming the five it actually consumes is what lets both satisfy it structurally, and makes a
+ * sixth option impossible to add on one path only: it has to be added here, and then both call sites see it.
+ */
+type McpConnectInputs = Pick<
+  BuildChatSessionOptions,
+  'consentGate' | 'startMcpClient' | 'mcpSecretResolver' | 'mcpRegistrations' | 'mcpConnectSignal'
+>;
+
+/**
+ * The ONE mapper from build options to `connectAgentMcp` options, used by BOTH the fresh and the resumed path.
+ *
+ * `cwd` and `artifact` differ between them and are therefore parameters; everything else is shared. The
+ * resumed path used to build this record inline, and the cost is recorded rather than guessed: a newly-added
+ * `connectSignal` was wired on the fresh path and dead on the resumed one — the "wired and still dead" shape,
+ * caused by exactly this duplication. A second option added tomorrow would have drifted the same way.
+ */
 function mcpOptionsFor(
-  opts: BuildChatSessionOptions,
+  opts: McpConnectInputs,
   mcpArtifact: string | undefined,
+  cwd: string,
 ): ConnectAgentMcpOptions {
   return {
-    cwd: opts.cwd,
+    cwd,
     ...(opts.consentGate === undefined ? {} : { consentGate: opts.consentGate }),
     // The caller's label wins (`agent run` names the ref the user typed); otherwise the path the agent was
     // actually read from — §7's "declared in <file>" for the imported-artifact case.
@@ -537,6 +580,7 @@ function mcpOptionsFor(
     ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
     ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
     ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
+    ...(opts.mcpConnectSignal === undefined ? {} : { connectSignal: opts.mcpConnectSignal }),
   };
 }
 
@@ -559,7 +603,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
   // (fixture/offline replay) bypasses the path entirely — no config build, no spawn, no dial.
   const mcp = opts.disableMcp
     ? undefined
-    : await connectAgentMcp(agent.mcp_servers, mcpOptionsFor(opts, mcpArtifact));
+    : await connectAgentMcp(agent.mcp_servers, mcpOptionsFor(opts, mcpArtifact, opts.cwd));
 
   try {
     const { bus, deps, emit, host, governor, attachDurabilityProbe, attachEffectJournal } =
@@ -593,7 +637,12 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       tools: deps.tools,
       emitSessionEvent: emit,
       mcpSkipped: mcp?.skipped ?? [],
-      ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
+      ...(mcp === undefined
+        ? {}
+        : {
+            closeMcp: (onError?: (id: string, cause: unknown) => void) => mcp.close(onError),
+            mcpChildPids: mcp.childPids,
+          }),
       attachDurabilityProbe,
       attachEffectJournal,
       ...(governor === undefined ? {} : { governor }),
@@ -707,8 +756,19 @@ export interface BuildResumedChatSessionOptions {
   readonly providers?: ProviderResolver;
   /** The tool-execution host (injectable for tests); defaults to the full-capability chat host (chat-read-write); its writes/egress are gated by the ADR-0057 approval regime, not capability absence. */
   readonly toolHost?: ToolHost;
-  /** Injectable MCP connect-all (2.R; see {@link BuildChatSessionOptions.startMcpClient}). */
-  readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  /**
+   * Injectable MCP connect-all (2.R; see {@link BuildChatSessionOptions.startMcpClient}).
+   *
+   * **The `signal` parameter is not decoration.** This declared a ONE-argument function while the fresh
+   * path's declared two, and TypeScript accepts a shorter parameter list — so the resumed path's contract
+   * silently said "there is no connect signal here" while the runtime passed one anyway. That is the same
+   * shape as the dropped `open: () =>` closure ADR-0088 §1.3 records: a signal that type-checks its way out
+   * of existing. Kept identical to the fresh declaration so the two paths cannot disagree again.
+   */
+  readonly startMcpClient?: (
+    servers: readonly McpServerConfig[],
+    signal?: AbortSignalLike,
+  ) => Promise<McpClient>;
   /**
    * The consent gate ([ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §1) —
    * threaded to {@link connectAgentMcp} so a chat session's declared stdio server is not spawned until the
@@ -722,6 +782,13 @@ export interface BuildResumedChatSessionOptions {
   readonly mcpSecretResolver?: McpSecretResolver;
   /** Config `[[mcp_servers]]` registrations for by-name `ref` resolution (2.R Step 4b; see {@link BuildChatSessionOptions.mcpRegistrations}). */
   readonly mcpRegistrations?: readonly McpServerRegistration[];
+  /**
+   * Cancels the MCP connect + discovery ([ADR-0088](../../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md)
+   * §1.1). A connect can be the longest thing a session start does — up to `stdio`'s 120 s while a cold `npx`
+   * resolves — so a surface that reaps children on a signal needs the connect itself to be interruptible, not
+   * merely survivable.
+   */
+  readonly mcpConnectSignal?: AbortSignalLike;
   /** Sink for an `on_exceed: 'warn'` pre-egress budget warning (see {@link BuildChatSessionOptions}). */
   readonly onBudgetWarning?: (warning: ChatBudgetWarning) => void;
   /** The ADR-0065 §2 user-pricing overlay (2.5.G S10; see {@link BuildChatSessionOptions.resolvePrice}) — so a
@@ -761,17 +828,16 @@ export async function buildResumedChatSession(
   // agent, NOT a baked tool grant, so a server whose tool set changed is picked up correctly. The spawn cwd is
   // the session's frozen working dir. Connect last (after the sync reconstruct/validate) so a reconstruct fault
   // never leaks an opened connection.
-  const mcp = await connectAgentMcp(agent.mcp_servers, {
-    cwd: context.workingDir,
-    ...(opts.consentGate === undefined ? {} : { consentGate: opts.consentGate }),
-    // The SESSION, not a file. A resume runs the agent SNAPSHOT frozen at session start, so the file the
-    // agent originally came from may have changed or be gone — naming it would tell the user to go review
-    // bytes that are not what is about to run (ADR-0084 §7).
-    artifact: opts.mcpArtifact ?? `resumed session ${record.id}`,
-    ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
-    ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
-    ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
-  });
+  // Through the SHARED mapper, with this path's two differences passed in — rather than a second inline copy
+  // of the same record. The copy is how `connectSignal` came to be wired on one path and dead on the other.
+  //
+  // The artifact label is the SESSION, not a file. A resume runs the agent SNAPSHOT frozen at session start,
+  // so the file the agent originally came from may have changed or be gone — naming it would tell the user to
+  // go review bytes that are not what is about to run (ADR-0084 §7).
+  const mcp = await connectAgentMcp(
+    agent.mcp_servers,
+    mcpOptionsFor(opts, opts.mcpArtifact ?? `resumed session ${record.id}`, context.workingDir),
+  );
 
   try {
     const { bus, deps, emit, host, governor, attachDurabilityProbe, attachEffectJournal } =
@@ -812,7 +878,12 @@ export async function buildResumedChatSession(
       resumeState,
       nextSequenceNumber,
       mcpSkipped: mcp?.skipped ?? [],
-      ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
+      ...(mcp === undefined
+        ? {}
+        : {
+            closeMcp: (onError?: (id: string, cause: unknown) => void) => mcp.close(onError),
+            mcpChildPids: mcp.childPids,
+          }),
       attachDurabilityProbe,
       attachEffectJournal,
       ...(governor === undefined ? {} : { governor }),

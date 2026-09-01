@@ -188,7 +188,7 @@ relavium run ./workflows/code-review.relavium.yaml --input file=./src/index.ts -
 
 - `--input k=v` (repeatable, one distinct key per input) supplies typed workflow inputs (see the `inputs` block in [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md)). Each value is coerced to the input's declared type; an unknown key, a repeated key, a missing required input, or a value that does not coerce is an invalid invocation (exit `2`).
 - `--json` switches to NDJSON [RunEvent](../contracts/sse-event-schema.md) output.
-- `Ctrl-C` (SIGINT) requests a cooperative cancel; the run drains to `run:cancelled` and exits non-zero (`1`).
+- `Ctrl-C` (SIGINT) requests a cooperative cancel; the run drains to `run:cancelled` and exits non-zero (`1`). This is unchanged when the workflow declares `mcp_servers`: the spawned servers are torn down alongside the drain, and the MCP teardown deliberately does **not** take the exit code — a signalled run still records its terminal and releases its lease ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1.3).
 - A missing API key for an inline agent's **primary** provider is caught **pre-flight** as an invalid invocation (exit `2`) naming the `RELAVIUM_<PROVIDER>_API_KEY` to set, before the run starts. The pre-flight is a strict subset of the keys a run may touch, so it never blocks a valid run: a `fallback_chain` provider's key (read only if the chain fails over to it) and a `$ref`-resolved external agent's key (until `$ref` resolution lands, 2.M–2.Q) are conditional and instead surface mid-run as a run failure (exit `1`).
 - `--allow-mcp-stdio <digest>` (repeatable) authorizes a **local MCP program** for this invocation only, when there is no one to prompt. A workflow declaring a `stdio` MCP server that has not been approved on this machine exits `2` before anything spawns — see [Local MCP servers need consent](#local-mcp-servers-need-consent).
 - On a `human_gate` node the run **pauses**: in interactive mode it prompts inline; in CI mode it exits with the gate-paused code (`3`, see [Exit codes](#exit-codes)) and can be resumed with `relavium gate`. The emitted `human_gate:paused` event carries the `runId` + `gateId` needed for the resume (`relavium gate <runId> --gate <gateId>`); with `--json` they are on the NDJSON event line, otherwise the plain/TUI renderer prints them inline (`paused at gate <gateId> (<type>)`, also echoed in the final summary). (`relavium status`, `relavium logs <runId>`, and `relavium gate list` also surface pending `gateId`s, 2.I.)
@@ -325,7 +325,8 @@ echo "review it" | relavium agent run code-reviewer --fixture ./fixtures/review.
 - `--json` emits the [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) NDJSON stream on stdout (the same shape `chat --json` produces); otherwise the assistant reply streams in human form.
 - `--allow-mcp-stdio <digest>` (repeatable) authorizes a **local MCP program** for this invocation only. `agent run` is the one-shot, pipeline-facing member of the chat family — its stdin carries the prompt, so it can never prompt for consent, and an agent declaring an unapproved `stdio` MCP server exits `2` before anything spawns. See [Local MCP servers need consent](#local-mcp-servers-need-consent).
 - **The transcript is not persisted** — a stateless invoke (no session/message row), unlike the REPL. It does still **open `history.db`** to attach the effect journal ([effect-journal.md](../shared-core/effect-journal.md)): an external effect is carried forward by the target, not by the run, so an unattached journal would refuse every effectful tool on this surface. The rows it writes are never read back. A `history.db` that cannot be opened fails the invocation.
-- The exit code is the **turn's outcome**: `0` on success, `1` on a turn error; an invocation fault is `2`. It is **never** `4` (that is the interactive REPL's session-ended code).
+- The exit code is the **turn's outcome**: `0` on success, `1` on a turn error; an invocation fault is `2`. It is **never** `4` (that is the interactive REPL's session-ended code). A termination **signal** exits `128+signo` (`130` on Ctrl-C) after tearing any MCP servers down — this surface has no cooperative-cancel contract to preserve, unlike `run` ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1.3).
+- **Ctrl-C leaves no orphan.** Any `stdio` MCP server this invocation spawned is reaped before the process exits, including on a `kill`, a closed terminal window, or a second impatient Ctrl-C.
 
 ### `relavium provider`
 
@@ -398,7 +399,11 @@ pipeline invokes; the interactive chat family answers at the prompt instead.
 
 ## Exit codes
 
-CI relies on deterministic exit codes:
+CI relies on deterministic exit codes. The table is the closed set for `run` and `gate`; the signal codes
+`128+signo` (`129` SIGHUP, `130` SIGINT, `131` SIGQUIT, `143` SIGTERM) belong to the surfaces that end **on** a
+signal rather than draining through one — the interactive Home and `agent run`. `relavium run` is deliberately
+not one of them: its Ctrl-C is a cooperative cancel that exits `1`.
+
 
 | Code | Meaning |
 |------|---------|
