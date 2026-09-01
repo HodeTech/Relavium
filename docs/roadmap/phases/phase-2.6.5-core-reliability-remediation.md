@@ -1418,7 +1418,7 @@ held one and broke the other, the second held that one and lost the first. They 
 
 ---
 
-## W4 — MCP hostile boundary · 🔄 IN PROGRESS ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md))
+## W4 — MCP hostile boundary · ✅ COMPLETE 2026-09-01 ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md))
 
 Executes Wave 2's MCP queue (see [Phase boundary](#phase-boundary)). One security sitting covers this group
 plus `CR-16`.
@@ -1508,6 +1508,54 @@ never answers is cancelled within its deadline and leaves **no orphan process** 
 table, not on the promise); a DNS record resolving to loopback, to an RFC1918 range and to the cloud metadata
 address are each refused; a redirect to any of those is refused; oversized discovery and results are rejected
 with typed errors **before** they reach the prompt.
+
+### Step 4 — untrusted tool definitions and config trust · ✅ (`#202`, `G19`)
+
+`Untrusted<T>` covers tool RESULTS; a `description` and an `inputSchema` reach the model in the tool spec
+itself and never pass that boundary. They are deliberately not given the brand — §7.2 records why — and get
+the split §7.1 decides instead: presentation text sanitized at discovery, a semantic field never rewritten but
+fail-closed dropped. `G19`'s last-writer-wins merge became a loud refusal, because a registration names a
+program and a secret rather than a preference.
+
+### Step 5 — the error taxonomy and the queue's remainder · ✅ (`#203`, `#204`, `#206`, `#207`, `#208`)
+
+Every connect failure had collapsed into one sentence, and every identifier was interpolated rather than
+carried — the package's own tests had to regex human prose to find a server id. Fields and a `reason` now,
+derived from the caught error's SHAPE, never from its text.
+
+### W4 closing register
+
+**The register, per exit criterion 7 — the code that closes each item, so a reader can check the claim.**
+
+| Item | Closed by | The test that fails if it is reverted |
+|------|-----------|----------------------------------------|
+| `CR-40` | the connect window opens before any I/O and races the whole `client.connect()`; the signal reaches `RequestOptions.signal` | `deadlines.test.ts` — a transport whose `start()` never settles; `network-adapters.test.ts` — a real `McpServer` observing its own cancellation |
+| `CR-41` | `http`/`sse` take a host-injected validated `fetch`; a redirect is refused; a remote `websocket` is refused at admission; the local opt-in is one bound policy | `mcp-fetch.test.ts` (rebind, redirect, sibling port); `mcp-servers.test.ts` (the dialer is handed over, the narrowing holds) |
+| `CR-42` | seven bounds at two levels; the aggregate is order-stable; the diagnostic is bounded too | `ingress-bounds.test.ts` — the measured 50 000-tool catalogue, refused |
+| `#21` | a cooperative signal teardown plus a synchronous `process.on('exit')` reap | `mcp-orphan.e2e.test.ts` — a real `SIGTERM`-trapping child, asserted against the process table |
+| `#202` | presentation sanitized at discovery, semantic fields fail-closed | `tool-mapping.test.ts` |
+| `G19` | a cross-layer (and same-layer) name collision refuses | `resolve.test.ts` |
+| `#35`, `G32`, `#205` | four named deadlines; authored `connect_timeout_ms` with an admission ceiling | `deadlines.test.ts`, `agent.test.ts`, `config.test.ts` |
+| `G33`, `#201`, `#209`, `#288` | the transport message bound, the discovery budget, the schema string bounds, the result text bound | `mcp-fetch.test.ts`, `ingress-bounds.test.ts`, `schema-compiler.test.ts` |
+| `#203`, `#204`, `#206`, `#207`, `#208` | structured fields, a `reason` from the error's shape, fail-loud args, a reportable teardown, a host-supplied version | `errors.test.ts` |
+| `#287` | is `CR-41` | as above |
+
+**What this wave cost that a reader should know.** Two previously-working configurations are now refused: a
+remote `websocket` server (declare it as `http`), and a project config redefining a global MCP registration.
+Both are in the reference specs with the remedy named.
+
+**What it did NOT close**, recorded in [deferred-tasks.md](../deferred-tasks.md) rather than implied: the
+admission and the dialer canonicalize a url differently (fails closed, so it costs usability not safety); the
+MCP hop does not go through `withEgressTimeout`; and `allow_local_endpoint` may still name a host whose
+resolution a LAN-adjacent attacker steers, narrowed but not eliminated by the dialer's refusal of a public or
+metadata answer. `#297` (per-file adapter coverage) is satisfied incidentally by the tests above rather than
+by a coverage threshold, and is left as a coverage-gate question rather than claimed.
+
+**Eight review rounds ran over this wave** — four Opus and four Sonnet, across five steps. They found three
+blockers and nine highs, and the pattern was consistent enough to be worth stating: **every blocker was in a
+fix rather than in the original code**, and the recurring shape was a guarantee asserted in a comment, an ADR
+or a commit message with nothing between it and the code. The wave's own tests were the other half of that —
+four could not fail at all, each stopping at a seam one layer above the thing it claimed to prove.
 
 ---
 

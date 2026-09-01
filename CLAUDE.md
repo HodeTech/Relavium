@@ -72,7 +72,11 @@ engine no longer retains every finished run. **It merged with a live blocker** �
 drops the terminal event, breaching ADR-0036's gap-free contract — plus nine verified findings, all recorded
 in the `W3` residuals of [deferred-tasks.md](docs/roadmap/deferred-tasks.md).
 [ADR-0087](docs/decisions/0087-consumed-streams-size-bounds-and-run-retention.md) records the fix and is
-**Proposed, not Accepted**. No new product surface — only the invariants an existing surface already claims.
+**Proposed, not Accepted**. **`W4` — the hostile MCP boundary — is complete on `development` (2026-09-01)
+behind [ADR-0088](docs/decisions/0088-the-mcp-boundary-is-hostile.md)**: every MCP call is bounded and
+cancellable, `http`/`sse` connect by validated pinned IP, a redirect is refused, a remote `websocket` is
+refused at admission, a server's ingress is bounded at two levels, and its tool DEFINITIONS are treated as
+untrusted. No new product surface in either wave — only the invariants an existing surface already claims.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);
