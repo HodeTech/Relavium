@@ -1457,7 +1457,23 @@ The dispatch context can carry a signal, but the manager's `callTool` chain does
 connection nor the stdio SDK call accepts an abort or deadline. After a user cancels, the remote or child effect
 continues and child processes can survive.
 
-### CR-41 — The MCP SSRF floor does not cover DNS or redirects · High
+### Step 2 — the validated dialer · ✅ (`CR-41`, `#287`)
+
+The codebase's ONE tracked exception to its own SSRF discipline: every other egress path connects by
+validated pinned IP, while the MCP network transports checked the authored hostname once and handed the
+socket to the vendor SDK. ADR-0053 §2 named the gap in June and scoped the fix out because it depended on an
+SDK hook. The hook exists on two of the three transports, and the third turned out to have no safe remote
+form at all.
+
+Three decisions came out of building it, each recorded in
+[ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) rather than discovered in the diff: a
+redirect is **refused** rather than re-validated per hop (an MCP server is the exact url its author declared,
+and no range-block expresses "and it is still that server"); the local opt-in became **one bound policy**
+instead of two independent flags that would have inverted ADR-0053 §3's own "a remote endpoint is always
+https" rule; and a remote **`websocket` is refused at admission**, because its transport takes a `URL` and
+nothing else and parses each frame before Relavium sees a byte.
+
+### CR-41 — The MCP SSRF floor does not cover DNS or redirects · High · ✅ CLOSED 2026-09-01 ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §2–§4)
 The network config checks the authored hostname and scheme, then hands the raw opener to the SDK. The code
 itself documents the DNS-to-private and redirect-to-private holes. A public-looking domain can resolve to
 loopback, RFC1918 or a metadata IP.

@@ -104,7 +104,9 @@ autostart = true                   # accepted, reserved for a future always-on p
 
 A `transport = "http"` / `"websocket"` registration requires a `url` (`http(s)` for `http`, `ws(s)` for
 `websocket`); the url is SSRF-guarded (a private/loopback host is rejected unless `allow_local_endpoint` is set;
-a remote host must be `https`/`wss`) and must not embed credentials. A registration's transport is
+a remote host must be `https`/`wss`) and must not embed credentials. **A `websocket` registration must be
+local** — a remote one is refused, because that transport can be neither address-pinned nor byte-bounded; use
+`http` ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §2.3). A registration's transport is
 **`stdio | http | websocket`**, plus the deprecated **`sse`** alias of `http` (accepted for older servers, same
 `http(s)` url) — symmetric with an inline `agent.mcp_servers` entry; prefer `http` for new servers. The
 stdio-only fields (`command`/`args`/`env`) are rejected on a network registration, and the network-only fields
