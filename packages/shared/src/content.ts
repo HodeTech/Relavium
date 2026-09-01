@@ -1110,6 +1110,18 @@ export function isMetadataOrLinkLocal(host: string): boolean {
     if (groups === null) return false;
     const first = groups[0] ?? 0;
     if (first >= 0xfe80 && first <= 0xfebf) return true; // fe80::/10
+    // AWS IMDS over IPv6 — `fd00:ec2::254`, a fixed address inside the ULA range `isPrivateOrLocalHost`
+    // already treats as private. That is exactly why it needed naming HERE: "private" is what the local
+    // opt-in LIFTS, so a provider's metadata endpoint sitting inside the private space is reachable by an
+    // `allow_local_endpoint` that names it. Verified reachable before this line existed.
+    if (
+      first === 0xfd00 &&
+      groups[1] === 0x0ec2 &&
+      groups.slice(2, 7).every((g) => g === 0) &&
+      groups[7] === 0x254
+    ) {
+      return true;
+    }
     // `::` and `::1` are the unspecified and loopback addresses, and they must return FIRST — exactly as
     // `isPrivateIpv6Groups` returns for them before its own tunnel checks. Without this, `::1` falls into the
     // IPv4-COMPATIBLE branch below, reads as `0.0.0.1`, matches the `0.` prefix and is reported as
@@ -1136,7 +1148,14 @@ export function isMetadataOrLinkLocal(host: string): boolean {
   // there is caught where every resolved address is range-checked.
   const dotted = canonicalizeNumericIpv4(h);
   if (dotted === null) return false;
-  return dotted.startsWith('169.254.') || dotted.startsWith('0.');
+  // `169.254.0.0/16` (link-local, and the IMDS address every cloud shares) and `0.0.0.0/8` ("this host").
+  if (dotted.startsWith('169.254.') || dotted.startsWith('0.')) return true;
+  // **Alibaba Cloud's metadata service at `100.100.100.200`**, inside `100.64.0.0/10` — the CGNAT range,
+  // which `isPrivateOrLocalHost` treats as private. Same reasoning as the AWS IPv6 address above: private is
+  // what the opt-in lifts, so a metadata endpoint inside the private space is reachable through it unless
+  // this predicate names it. The whole `/24` rather than the single host, because Alibaba documents sibling
+  // endpoints there and a one-address carve-out would be a bypass with a different last octet.
+  return dotted.startsWith('100.100.100.');
 }
 
 /** Block the 172.16/12 private range (172.16.0.0 – 172.31.255.255) on a dotted-decimal host. */

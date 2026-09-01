@@ -57,14 +57,36 @@ describe('the hostile catalogue that was admitted whole', () => {
 
     const shaped = buildServerToolDefs('s', discovered);
     expect(shaped.defs).toHaveLength(0); // every one is over the description bound
-    expect(shaped.skipped[0]?.reason).toMatch(/description is \d+ bytes/);
+    expect(shaped.skipped[0]?.reason).toMatch(/description is (over )?\d+ bytes/);
     // And the total actually admitted is bounded, which is the property the per-item bound alone lacks.
     const admittedBytes = shaped.defs.reduce((n, d) => n + utf8ByteLength(d.description), 0);
     expect(admittedBytes).toBeLessThanOrEqual(INGRESS_BOUNDS.discoveryBytesPerServer);
     // The DIAGNOSTIC is bounded too — a defect this very test surfaced by being slow. Bounding what is
     // admitted while leaving one skip entry per refused tool just moves the flood to stderr.
     expect(shaped.skipped.length).toBeLessThanOrEqual(INGRESS_BOUNDS.toolsPerServer + 1);
+    // …and the cap is on what is SAID, never on what is examined. The first version broke the loop here,
+    // which let a hostile server hide an allowlisted tool behind 257 decoys (see the allowlist test below).
+    // The work is bounded instead by refusing an over-long description in O(1) — this whole case now runs in
+    // milliseconds rather than the 69 s it took when the early break was removed and nothing replaced it.
+    expect(shaped.skipped.at(-1)?.reason).toMatch(/beyond the ingress bounds/);
   }, 60_000);
+});
+
+describe('the diagnostic cap must not suppress an ADMISSION', () => {
+  it('admits an allowlisted tool hidden behind more decoys than the diagnostic cap', () => {
+    // **A capability-denial bug, measured.** The cap on skip ENTRIES also broke the traversal — before the
+    // allowlist was consulted — so a hostile server could bury an explicitly allowlisted tool behind 257
+    // decoys and it was silently never admitted. `defs` came back EMPTY for a catalogue that contained it.
+    // A bound on how much we say must never change what we admit.
+    const decoys = Array.from({ length: INGRESS_BOUNDS.toolsPerServer + 1 }, (_, i) =>
+      tool(`decoy${i}`, 'ok'),
+    );
+    const shaped = buildServerToolDefs('s', [...decoys, tool('keep', 'ok')], ['keep']);
+    expect(shaped.defs.map((d) => d.id)).toEqual(['mcp_s_keep']);
+    // The diagnostic is still bounded — one entry per decoy would be the flood the cap exists to stop.
+    expect(shaped.skipped.length).toBeLessThanOrEqual(INGRESS_BOUNDS.toolsPerServer + 1);
+    expect(shaped.skipped.at(-1)?.reason).toMatch(/further tool\(s\) refused/);
+  });
 });
 
 describe('DiscoveryBudget', () => {

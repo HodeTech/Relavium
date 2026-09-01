@@ -39,6 +39,25 @@ export type McpFetch = (url: string | URL, init?: RequestInit) => Promise<Respon
 /** Statuses that MUST carry a null body (a `Response` with a body and one of these throws). */
 const NULL_BODY_STATUS: ReadonlySet<number> = new Set([204, 205, 304]);
 
+/**
+ * Is this response an SSE stream — the only body shape with message boundaries we may reset a counter on?
+ *
+ * **The bound reset on blank lines in EVERY body, and that is a hole with a measured exploit.** A JSON body
+ * has no delimiters: trailing whitespace is legal and unbounded, so `"{}" + "\n\n".repeat(10000)` was
+ * accepted against a 4-BYTE configured bound — 20 002 raw bytes admitted — because every blank line zeroed
+ * the counter. The SDK then calls `Response.json()` on the POST path, which buffers the whole body, so this
+ * was the §5 peak-memory guarantee failing on its own terms rather than a cosmetic miscount.
+ *
+ * Matched on the media type only, case-insensitively, with any `; charset=…` ignored.
+ */
+function isEventStream(headers: Readonly<Record<string, string>>): boolean {
+  for (const [name, value] of Object.entries(headers)) {
+    if (name.toLowerCase() !== 'content-type') continue;
+    return (value.split(';')[0] ?? '').trim().toLowerCase() === 'text/event-stream';
+  }
+  return false;
+}
+
 export interface McpFetchConfig {
   /** The authored local endpoint this server may reach, when it opted in. Absent ⇒ remote rules apply. */
   readonly localEndpoint?: LocalEndpoint;
@@ -159,7 +178,11 @@ function toResponse(hop: HopResponse, maxMessageBytes: number): Response {
     return mapResponse(() => new Response(null, { status: hop.status, headers }));
   }
   return mapResponse(
-    () => new Response(hopBodyToStream(hop, maxMessageBytes), { status: hop.status, headers }),
+    () =>
+      new Response(hopBodyToStream(hop, maxMessageBytes, isEventStream(headers)), {
+        status: hop.status,
+        headers,
+      }),
     hop,
   );
 }
@@ -207,7 +230,11 @@ function mapResponse(build: () => Response, hop?: HopResponse): Response {
  * on a perfectly healthy stream. The CR/LF state carries ACROSS chunks, so a server writing one byte at a
  * time still resets.
  */
-function hopBodyToStream(hop: HopResponse, maxMessageBytes: number): ReadableStream<Uint8Array> {
+function hopBodyToStream(
+  hop: HopResponse,
+  maxMessageBytes: number,
+  eventStream: boolean,
+): ReadableStream<Uint8Array> {
   const iterator = hop.body[Symbol.asyncIterator]();
   let disposed = false;
   let messageBytes = 0;
@@ -230,9 +257,20 @@ function hopBodyToStream(hop: HopResponse, maxMessageBytes: number): ReadableStr
    * excused it outright. A bound that only looks at the tail of a chunk is not a bound.
    */
   const chargeAndReset = (chunk: Uint8Array): boolean => {
+    if (!eventStream) {
+      // **A body with no message framing is ONE message, delimiters included.** No resets, and the newline
+      // bytes are charged like any other: a JSON response's trailing whitespace is unbounded and legal, so a
+      // counter that skipped it (or zeroed on it) bounded nothing at all.
+      messageBytes += chunk.length;
+      return messageBytes <= maxMessageBytes;
+    }
     for (const byte of chunk) {
       const isCr = byte === 0x0d;
       const isLf = byte === 0x0a;
+      // **Charged BEFORE any boundary handling**, so a stream of nothing but blank lines still hits the bound.
+      // Skipping the delimiters made an all-delimiter body free, which is the same hole one level down.
+      messageBytes += 1;
+      if (messageBytes > maxMessageBytes) return false;
       if (isLf && pendingCr) {
         // The LF half of a CRLF — the CR already ended this line, so it must not end a second one.
         pendingCr = false;
@@ -251,8 +289,6 @@ function hopBodyToStream(hop: HopResponse, maxMessageBytes: number): ReadableStr
       }
       pendingCr = false;
       afterTerminator = false;
-      messageBytes += 1;
-      if (messageBytes > maxMessageBytes) return false;
     }
     return true;
   };

@@ -234,6 +234,58 @@ describe('createMcpFetch — response mapping', () => {
   });
 });
 
+describe('createMcpFetch — a body with no framing is ONE message (ADR-0088 §5.4)', () => {
+  /**
+   * The reset belongs to `text/event-stream` alone, and the note worth keeping is what it does NOT buy.
+   *
+   * A first draft here asserted an SSE stream of bare delimiters was refused. It is a stream of empty events,
+   * and refusing it would kill a healthy session: §5.4 bounds peak MEMORY per message, never the total of a
+   * stream with no defined length. The JSON case below is the opposite — an unframed body has exactly one
+   * message, so bounding it IS bounding the total, and that is why the two must be told apart.
+   */
+  const jsonDeps = (body: string, contentType = 'application/json'): EgressDeps =>
+    fakeDeps({
+      body: [new TextEncoder().encode(body)],
+      responseHeaders: { 'content-type': contentType },
+    }).deps;
+
+  it('refuses a JSON body padded with blank lines past the bound', async () => {
+    // **The measured bypass.** The counter reset at every blank line, in EVERY body — but JSON has no message
+    // framing and its trailing whitespace is unbounded and legal. `"{}" + "\n\n" x 10000` was accepted whole
+    // against a FOUR-byte configured bound: 20 002 raw bytes admitted, then handed to the SDK, which calls
+    // `Response.json()` on the POST path and buffers all of it. That is §5's peak-memory guarantee failing on
+    // its own terms.
+    const body = '{}' + '\n\n'.repeat(10_000);
+    const response = await createMcpFetch({ deps: jsonDeps(body), maxMessageBytes: 4 })(
+      'https://api.example/mcp',
+    );
+    await expect(response.text()).rejects.toThrow(/exceeded the maximum/);
+  });
+
+  it('admits a JSON body at the bound and refuses one byte past it', async () => {
+    const at = await createMcpFetch({ deps: jsonDeps('{"a":1}'), maxMessageBytes: 7 })(
+      'https://api.example/mcp',
+    );
+    expect(JSON.parse(await at.text())).toEqual({ a: 1 });
+
+    const over = await createMcpFetch({ deps: jsonDeps('{"a":1}'), maxMessageBytes: 6 })(
+      'https://api.example/mcp',
+    );
+    await expect(over.text()).rejects.toThrow(/exceeded the maximum/);
+  });
+
+  it('still resets per EVENT on a real SSE stream — the case the reset exists for', async () => {
+    // The bound must not fire on a healthy long-lived stream: many small events, each inside the bound, sum
+    // far past it. Only `text/event-stream` gets that treatment now, which is the whole distinction.
+    const events = Array.from({ length: 50 }, (_, i) => `data: {"n":${i}}\n\n`).join('');
+    const response = await createMcpFetch({
+      deps: jsonDeps(events, 'text/event-stream; charset=utf-8'),
+      maxMessageBytes: 32,
+    })('https://api.example/mcp');
+    expect((await response.text()).length).toBe(events.length); // whole stream, no refusal
+  });
+});
+
 describe('createMcpFetch — the per-message byte bound (ADR-0088 §5.4)', () => {
   /**
    * The TRANSPORT-level half of §5, and the only place in the MCP path that can have one: these bytes are
@@ -242,6 +294,15 @@ describe('createMcpFetch — the per-message byte bound (ADR-0088 §5.4)', () =>
    * opted into") is only true because `http`/`sse` have this.
    */
   const bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
+  /**
+   * An SSE response, declared as one.
+   *
+   * These fixtures used to omit the content type, which was fine when EVERY body got event-boundary
+   * treatment — and that was the bug: a JSON body's unbounded trailing whitespace reset the counter too. The
+   * reset now belongs to `text/event-stream` alone, so a test about event boundaries has to say it is one.
+   */
+  const sseDeps = (body: readonly Uint8Array[]): EgressDeps =>
+    fakeDeps({ body, responseHeaders: { 'content-type': 'text/event-stream' } }).deps;
 
   it('refuses a single oversized message mid-stream, with a typed error', async () => {
     const { deps } = fakeDeps({ body: [bytes('x'.repeat(64)), bytes('y'.repeat(64))] });
@@ -257,7 +318,7 @@ describe('createMcpFetch — the per-message byte bound (ADR-0088 §5.4)', () =>
     // The property a whole-body cap cannot have: this stream carries far more total bytes than the bound and
     // is perfectly healthy, because no single message is over it. A body cap would fire on success.
     const event = 'data: ' + 'z'.repeat(50) + '\n\n';
-    const { deps } = fakeDeps({ body: Array.from({ length: 20 }, () => bytes(event)) });
+    const deps = sseDeps(Array.from({ length: 20 }, () => bytes(event)));
     const response = await createMcpFetch({ deps, maxMessageBytes: 100 })(
       'https://api.example/mcp',
     );
@@ -275,7 +336,7 @@ describe('createMcpFetch — the per-message byte bound (ADR-0088 §5.4)', () =>
     // A counter that only looked within a chunk would never reset here, so a byte-at-a-time server would trip
     // the bound on a healthy stream. The scan carries the previous chunk's trailing newline.
     const body = [...('a'.repeat(60) + '\n\n' + 'b'.repeat(60))].map((c) => bytes(c));
-    const { deps } = fakeDeps({ body });
+    const deps = sseDeps(body);
     const response = await createMcpFetch({ deps, maxMessageBytes: 100 })(
       'https://api.example/mcp',
     );
@@ -325,7 +386,7 @@ describe('createMcpFetch — the per-message byte bound (ADR-0088 §5.4)', () =>
     // CRLF server, so the bound would fire on a perfectly healthy stream — a false refusal, which for a
     // memory bound is the failure mode that gets it turned off.
     const event = 'data: ' + 'z'.repeat(50) + boundary;
-    const { deps } = fakeDeps({ body: Array.from({ length: 20 }, () => bytes(event)) });
+    const deps = sseDeps(Array.from({ length: 20 }, () => bytes(event)));
     const response = await createMcpFetch({ deps, maxMessageBytes: 100 })(
       'https://api.example/mcp',
     );

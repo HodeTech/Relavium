@@ -8,7 +8,7 @@ import { z } from 'zod';
 import type { McpConnection } from './connection.js';
 import { MCP_DEADLINES, McpDeadlineError, openWindow, raceDeadline } from './deadlines.js';
 import { McpError } from './errors.js';
-import { openHttpConnection } from './sdk-http.js';
+import { openHttpConnection, type HttpServerSpec } from './sdk-http.js';
 import { openSseConnection } from './sdk-sse.js';
 import { connectSdkTransport, MAX_TOOL_PAGES } from './sdk-stdio.js';
 import { openWebSocketConnection } from './sdk-websocket.js';
@@ -22,10 +22,29 @@ import { openWebSocketConnection } from './sdk-websocket.js';
  * (no port, no network), so the initialize handshake + listTools + callTool + close are genuinely exercised.
  */
 
+/** A `fetch` that must never be reached — the spec REQUIRES one (§2.1), and these tests never dial. */
+const unreachableFetch = (): Promise<Response> => {
+  throw new Error('this test must not dial');
+};
+
 describe('openHttpConnection / openSseConnection (malformed url)', () => {
   it('a malformed url is a typed McpConnectError, not a raw throw', async () => {
-    await expect(openHttpConnection('h', { url: 'not a url' })).rejects.toThrow(McpError);
-    await expect(openSseConnection('s', { url: ':::bad' })).rejects.toThrow(McpError);
+    await expect(
+      openHttpConnection('h', { url: 'not a url', fetch: unreachableFetch }),
+    ).rejects.toThrow(McpError);
+    await expect(
+      openSseConnection('s', { url: ':::bad', fetch: unreachableFetch }),
+    ).rejects.toThrow(McpError);
+  });
+
+  it('the validated fetch is REQUIRED by the type, not merely supplied by today’s only host', () => {
+    // **A compile-time claim, asserted the only way a compile-time claim can be.** It was optional, and
+    // absence meant the SDK's global `fetch`: no IP pin, no redirect refusal, no transport byte bound — every
+    // §2 guarantee gone at once, silently, on a PUBLIC opener. `@ts-expect-error` fails the build if the
+    // omission ever becomes legal again, which is exactly the regression to catch.
+    // @ts-expect-error - `fetch` is required; omitting it must not compile
+    const withoutFetch: HttpServerSpec = { url: 'https://api.example/mcp' };
+    expect(withoutFetch.url).toBe('https://api.example/mcp');
   });
 });
 

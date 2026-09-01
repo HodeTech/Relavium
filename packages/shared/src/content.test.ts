@@ -1096,6 +1096,15 @@ describe('isMetadataOrLinkLocal', () => {
     ['6to4-tunnelled metadata', '2002:a9fe:a9fe::1'],
     ['a bracketed literal', '[::ffff:169.254.169.254]'],
     ['a decimal-encoded literal', '2852039166'], // 169.254.169.254, the inet_aton form
+    // **The two a review found reachable**, and both are reachable for the same reason: they sit INSIDE the
+    // private ranges, and private is precisely what `allow_local_endpoint` lifts. A predicate that names only
+    // `169.254/16` leaves every provider whose metadata lives elsewhere in the private space wide open to an
+    // opt-in that names it. Verified reachable through `connectValidated` before these lines existed.
+    ['AWS IMDS over IPv6', 'fd00:ec2::254'],
+    ['AWS IMDS over IPv6, bracketed', '[fd00:ec2::254]'],
+    ['the Alibaba Cloud metadata service', '100.100.100.200'],
+    ['a sibling in the Alibaba metadata /24', '100.100.100.1'],
+    ['the Alibaba endpoint through an IPv4-mapped tunnel', '::ffff:100.100.100.200'],
   ])('is true for %s', (_label, host) => {
     expect(isMetadataOrLinkLocal(host)).toBe(true);
   });
@@ -1109,6 +1118,12 @@ describe('isMetadataOrLinkLocal', () => {
     ['a public address', '93.184.216.34'],
     ['a NAME, however local-looking', 'metadata.local'],
     ['a name that merely starts with the digits', '169.254.example.com'],
+    // The carve-outs stay narrow: a plain ULA and the rest of the CGNAT range are ordinary private space, and
+    // a local MCP server may legitimately live there.
+    ['an ordinary ULA address', 'fd00::1'],
+    ['a ULA that merely shares the fd00 prefix', 'fd00:ec2::1'],
+    ['the rest of the CGNAT range', '100.64.0.1'],
+    ['a CGNAT address one octet off the metadata /24', '100.100.101.200'],
   ])('is FALSE for %s — it is narrower than the private-range block', (_label, host) => {
     expect(isMetadataOrLinkLocal(host)).toBe(false);
   });

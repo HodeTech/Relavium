@@ -225,14 +225,32 @@ export interface ServerOpeners {
   ) => Promise<McpConnection>;
 }
 
-/** The network transports — all take the same `{ url }` connect spec, so the dispatch is a keyed lookup. */
+/**
+ * The network transports. Each opener keeps its OWN spec type rather than sharing one erased shape.
+ *
+ * **The erased version is what let an unpinned connect type-check.** It declared `fetch?: McpFetch`, so a
+ * dispatch through it satisfied the compiler with no dialer at all — even after `HttpServerSpec.fetch` became
+ * required, this alias would have kept saying it was optional. `websocket` genuinely has no `fetch` (§2.3),
+ * and that difference is now in the types instead of being flattened away by them.
+ */
 type NetworkTransport = 'http' | 'sse' | 'websocket';
-type NetworkOpener = (
-  serverId: string,
-  spec: { readonly url: string; readonly connectTimeoutMs?: number; readonly fetch?: McpFetch },
-  signal?: AbortSignalLike,
-) => Promise<McpConnection>;
-type NetworkOpeners = Record<NetworkTransport, NetworkOpener>;
+type NetworkOpeners = {
+  readonly http: (
+    serverId: string,
+    spec: HttpServerSpec,
+    signal?: AbortSignalLike,
+  ) => Promise<McpConnection>;
+  readonly sse: (
+    serverId: string,
+    spec: SseServerSpec,
+    signal?: AbortSignalLike,
+  ) => Promise<McpConnection>;
+  readonly websocket: (
+    serverId: string,
+    spec: WebSocketServerSpec,
+    signal?: AbortSignalLike,
+  ) => Promise<McpConnection>;
+};
 
 /**
  * Map an agent's inline `mcp_servers` to {@link McpServerConfig}s, dispatching by transport — `stdio` spawns a
@@ -384,7 +402,6 @@ function buildNetworkConfig(
     transport,
     ref.allow_local_endpoint === true,
   );
-  const open = openers[transport]; // `http` (Streamable HTTP) | `sse` (legacy HTTP+SSE alias) | `websocket`
   const connectTimeoutMs = ref.connect_timeout_ms;
   // **The validated dialer, per server** (ADR-0088 §2.1). `http`/`sse` accept an injected `fetch`, so every
   // request on those transports — the initialize POST, each `tools/call`, the long-lived GET stream — rides
@@ -415,15 +432,25 @@ function buildNetworkConfig(
       if (needsPreflight) {
         await assertResolvesLocal(serverId, url, resolveHost, signal);
       }
-      return open(
-        serverId,
-        {
-          url,
-          ...(connectTimeoutMs === undefined ? {} : { connectTimeoutMs }),
-          ...(validatedFetch === undefined ? {} : { fetch: validatedFetch }),
-        },
-        signal,
-      );
+      // **Dispatched per transport so the COMPILER carries the §2.1 obligation**, rather than spreading one
+      // union-typed spec that let an absent `fetch` type-check. `HttpServerSpec.fetch` is required now; a
+      // single `open(serverId, {...})` against the union hid that from exactly the site that must satisfy it.
+      const timeout = connectTimeoutMs === undefined ? {} : { connectTimeoutMs };
+      if (transport === 'websocket') {
+        return openers.websocket(serverId, { url, ...timeout }, signal);
+      }
+      if (validatedFetch === undefined) {
+        // Unreachable: `validatedFetch` is absent only for `websocket`, returned above. Fail closed rather
+        // than reach the SDK's unpinned global `fetch` if that ever stops being true.
+        throw new CliError(
+          'invalid_invocation',
+          `MCP server '${serverId}': no validated dialer for a ${transport} transport`,
+        );
+      }
+      const spec: HttpServerSpec = { url, fetch: validatedFetch, ...timeout };
+      return transport === 'http'
+        ? openers.http(serverId, spec, signal)
+        : openers.sse(serverId, spec, signal);
     },
   };
 }

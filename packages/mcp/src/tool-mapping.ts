@@ -110,22 +110,25 @@ export function buildServerToolDefs(
   // 2 MiB before a single schema is counted, and the measured hostile catalogue was 50 000 tools / 52 GB.
   const budget = new DiscoveryBudget();
 
-  for (const tool of tools) {
-    // **The diagnostic is bounded by the same catalogue limit as the admission**, and this guard is here
-    // because the regression test was slow rather than because anyone read it: bounding what is ADMITTED
-    // while recording one entry per REFUSED tool just moves the flood — the measured 50 000-tool catalogue
-    // produced 50 000 skip entries, each of which the host renders to stderr. Past this point a server has
-    // already told us its catalogue is beyond the bound; further entries add nothing.
+  // **The DIAGNOSTIC is capped; the TRAVERSAL is not — and conflating the two was a capability-denial bug.**
+  // Bounding what is admitted while recording one entry per refused tool just moves the flood: the measured
+  // 50 000-tool catalogue produced 50 000 skip entries, each rendered to stderr. But the first version stopped
+  // the LOOP at that cap, before the allowlist was even consulted, so a hostile server could hide an
+  // explicitly allowlisted tool behind 257 decoys and it was silently never admitted — measured: `defs` came
+  // back empty for a catalogue whose allowlisted tool was present. A cap on how much we SAY must never change
+  // what we ADMIT.
+  let suppressedDiagnostics = 0;
+  const noteSkip = (name: string, reason: string): void => {
     if (skipped.length >= INGRESS_BOUNDS.toolsPerServer) {
-      const remaining = tools.length - tools.indexOf(tool);
-      skip(
-        tool.name,
-        `and ${remaining} further tool(s) refused — the server's catalogue is beyond the ingress bounds`,
-      );
-      break;
+      suppressedDiagnostics += 1;
+      return;
     }
+    skip(name, reason);
+  };
+
+  for (const tool of tools) {
     if (allow !== undefined && !allow.has(tool.name)) {
-      skip(tool.name, 'not in the server tools_allowlist');
+      noteSkip(tool.name, 'not in the server tools_allowlist');
       continue;
     }
     // **Bounded BEFORE the schema is compiled**, because compiling is the expensive part and a hostile server
@@ -133,7 +136,7 @@ export function buildServerToolDefs(
     // catalogue too, deliberately — see `DiscoveryBudget.admit`.
     const oversized = overSizedDescription(tool.description);
     if (oversized !== undefined) {
-      skip(tool.name, oversized);
+      noteSkip(tool.name, oversized);
       continue;
     }
     const exhausted = budget.admit(toolDefinitionBytes(tool));
@@ -148,16 +151,16 @@ export function buildServerToolDefs(
       break;
     }
     if (tool.name.trim() === '') {
-      skip(tool.name, 'empty tool name');
+      noteSkip(tool.name, 'empty tool name');
       continue;
     }
     const id = namespacedId(serverId, tool.name);
     if (id === undefined) {
-      skip(tool.name, 'tool name is not a valid LLM tool id after namespacing');
+      noteSkip(tool.name, 'tool name is not a valid LLM tool id after namespacing');
       continue;
     }
     if (seenToolIds.has(id)) {
-      skip(tool.name, `namespaced id collides with another tool ("${id}")`);
+      noteSkip(tool.name, `namespaced id collides with another tool ("${id}")`);
       continue;
     }
     // **Presentation text is sanitized; a SEMANTIC field is never rewritten** (ADR-0088 §7.1, `#202`).
@@ -170,12 +173,28 @@ export function buildServerToolDefs(
     // TOOL, fail-closed, through the same path an unsupported schema takes.
     const unsafeField = semanticControlByte(tool);
     if (unsafeField !== undefined) {
-      skip(tool.name, unsafeField);
+      noteSkip(tool.name, unsafeField);
       continue;
     }
-    const compiled = compileJsonSchemaToZod(tool.inputSchema);
+    // Semantic fields fail closed here; presentation text INSIDE the schema is cleaned into a copy (§7.1).
+    // The copy is what `llmVisibleParams` carries, so a poisoned nested `description` reaches neither the
+    // provider nor a render — and does not cost the server a working tool, which is what dropping it did.
+    const scanned = scanSchema(tool.inputSchema, { visited: 0 });
+    if (!scanned.ok) {
+      noteSkip(tool.name, scanned.reason);
+      continue;
+    }
+    // The scan returns `unknown`; `llmVisibleParams` wants a record. A schema that is not an object is not a
+    // usable tool spec anyway, and the compiler above would refuse it — check here rather than assert, so the
+    // narrowing is a real one.
+    const safeSchema = scanned.schema;
+    if (!isPlainRecord(safeSchema)) {
+      noteSkip(tool.name, 'inputSchema must be a JSON object');
+      continue;
+    }
+    const compiled = compileJsonSchemaToZod(safeSchema);
     if (!compiled.ok) {
-      skip(tool.name, `unsupported inputSchema: ${compiled.reason}`);
+      noteSkip(tool.name, `unsupported inputSchema: ${compiled.reason}`);
       continue;
     }
     seenToolIds.add(id);
@@ -188,7 +207,7 @@ export function buildServerToolDefs(
       // otherwise reaches a log, an approval prompt and the provider before anyone strips it (§7.1).
       description: stripTerminalControls(tool.description ?? ''),
       parseArgs: (raw: unknown): unknown => validator.parse(raw) as unknown,
-      llmVisibleParams: tool.inputSchema,
+      llmVisibleParams: safeSchema,
       policy: MCP_TOOL_POLICY,
       // **Every discovered MCP tool is tier 3, unconditionally** (ADR-0080 §5). Not a placeholder pending
       // richer metadata: an MCP server's own annotations (`readOnlyHint` / `idempotentHint` / …) are
@@ -203,6 +222,14 @@ export function buildServerToolDefs(
         }
         return mcp.call({ server: serverId, tool: originalName, args }, ctx.signal);
       },
+    });
+  }
+  // One line for everything the cap swallowed, so a host still learns the catalogue was beyond the bounds
+  // rather than seeing a diagnostic that simply stops.
+  if (suppressedDiagnostics > 0) {
+    skipped.push({
+      name: '',
+      reason: `and ${suppressedDiagnostics} further tool(s) refused — the server's catalogue is beyond the ingress bounds`,
     });
   }
   return { defs, skipped };
@@ -221,20 +248,54 @@ function semanticControlByte(tool: DiscoveredTool): string | undefined {
   if (hasControlByte(tool.name)) {
     return 'tool name contains a terminal-control or bidi character';
   }
-  return schemaHasControlByte(tool.inputSchema, { visited: 0 })
-    ? 'inputSchema contains a terminal-control or bidi character'
-    : undefined;
-}
-
-/** Whether stripping changes the string — i.e. it carried a terminal-control or bidi byte. */
-function hasControlByte(text: string): boolean {
-  return stripTerminalControls(text) !== text;
+  return undefined;
 }
 
 /**
- * Walk a JSON value for a control byte in ANY string — a key or a value, at any depth.
+ * Does this SEMANTIC string carry a control or bidi character?
  *
- * **A walker rather than a check on the serialized form, and the difference is a hole I shipped first.**
+ * **Not the display sanitizer, and using it here was a real hole.** `stripTerminalControls` is a PRESENTATION
+ * primitive: it deliberately preserves TAB and LINE FEED, because stripping them from a description would
+ * mangle legitimate text. So `hasControlByte` — defined as "stripping changes the string" — answered `false`
+ * for `read\nINJECT`, and both a tool NAME and a schema PROPERTY NAME carrying a newline were admitted.
+ * Measured on HEAD before this change.
+ *
+ * A semantic field has no legitimate use for ANY C0/C1 byte (§7.1's "a legitimate server has no reason to put
+ * a control character in a property name"), so this is the strict predicate: the whole C0 range including TAB,
+ * LF and CR, DEL, the C1 range, and the Trojan-Source bidi set.
+ */
+/* eslint-disable no-control-regex */
+const SEMANTIC_UNSAFE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/;
+/* eslint-enable no-control-regex */
+
+function hasControlByte(text: string): boolean {
+  return SEMANTIC_UNSAFE.test(text);
+}
+
+/**
+ * The keys whose VALUE is presentation text inside a JSON Schema — sanitized, never a reason to drop a tool.
+ *
+ * §7.1 draws the line at what a rewrite would break: a `description` or `title` is shown to a model or a
+ * human and stripping it changes nothing else, while a property NAME, a `const`/`enum` value or a `required`
+ * entry is simultaneously the model-visible schema, the validator's expectation and the wire contract.
+ */
+const PRESENTATION_KEYS: ReadonlySet<string> = new Set(['description', 'title']);
+
+/** Why a schema was refused, or the cleaned copy to hand the provider. */
+type SchemaScan =
+  | { readonly ok: true; readonly schema: unknown }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * Walk a JSON Schema, SANITIZING presentation text and failing closed on a semantic field.
+ *
+ * **The classification was inverted in both directions, and §7.1 spells out both.** The previous walker
+ * returned a single boolean for "any string anywhere carries a control byte", which meant a poisoned nested
+ * `description` — presentation, per the ADR — dropped the whole tool instead of being cleaned, while a
+ * newline in a property NAME sailed through because the predicate it used preserves LF. A server whose
+ * descriptions contain a stray escape lost a working tool; a server that put a newline in a key kept one.
+ *
+ * **A walker rather than a check on the serialized form, and the difference is a hole shipped first.**
  * `JSON.stringify` escapes C0 controls into six-character TEXT (`\u001b`), so the byte being hunted is not in
  * the serialization at all — a property name of `bad\u001b[31m` sailed straight through. It does NOT escape
  * DEL, C1, or the bidi controls, so the serialized check caught some cases and missed others, which is worse
@@ -243,27 +304,55 @@ function hasControlByte(text: string): boolean {
  * **Bounded by NODES VISITED, not by depth — and a review proved why that distinction matters.** A first
  * version used a depth ceiling of 16, "mirroring the compiler's `MAX_DEPTH`". It does not mirror it: the
  * compiler counts one level per schema-semantic transition, while a JS walk also descends through each
- * `properties` container, so the walk's depth grows about twice as fast. Measured: a control-byte-free schema
- * nested to semantic depth 8 — comfortably inside the compiler's budget — was already reported "unsafe", and
- * a legitimate tool was dropped with a message naming a defect it did not have.
+ * `properties` container, so the walk's depth grows about twice as fast.
  *
- * A node budget is the honest bound anyway: total work is what a DoS guard is about, and 2000 is the same
- * ceiling `MAX_NODES` gives the compiler — so a schema this walk cannot finish is one the compiler refuses on
- * its own terms. The depth ceiling stays only as a stack guard, far above any real schema.
+ * **Exhausting that budget is its OWN reason**, and reporting it as a control byte was a lie a review caught:
+ * a clean 400-property schema the compiler ACCEPTS was dropped with "inputSchema contains a terminal-control
+ * or bidi character". The refusal is still correct — a schema this walk cannot finish is one we cannot
+ * certify — but the diagnostic has to say what actually happened.
  */
-function schemaHasControlByte(value: unknown, budget: { visited: number }, depth = 0): boolean {
-  if (depth > MAX_SCHEMA_WALK_DEPTH) return true;
-  if ((budget.visited += 1) > MAX_SCHEMA_WALK_NODES) return true;
-  if (typeof value === 'string') return hasControlByte(value);
+function scanSchema(value: unknown, budget: { visited: number }, depth = 0): SchemaScan {
+  if (depth > MAX_SCHEMA_WALK_DEPTH) {
+    return { ok: false, reason: 'inputSchema nests deeper than this boundary will walk' };
+  }
+  if ((budget.visited += 1) > MAX_SCHEMA_WALK_NODES) {
+    return {
+      ok: false,
+      reason: `inputSchema exceeds the maximum of ${MAX_SCHEMA_WALK_NODES} nodes this boundary will scan`,
+    };
+  }
+  if (typeof value === 'string') {
+    return hasControlByte(value)
+      ? { ok: false, reason: 'inputSchema contains a terminal-control or bidi character' }
+      : { ok: true, schema: value };
+  }
   if (Array.isArray(value)) {
-    return value.some((item) => schemaHasControlByte(item, budget, depth + 1));
+    const out: unknown[] = [];
+    for (const item of value) {
+      const scanned = scanSchema(item, budget, depth + 1);
+      if (!scanned.ok) return scanned;
+      out.push(scanned.schema);
+    }
+    return { ok: true, schema: out };
   }
   if (typeof value === 'object' && value !== null) {
-    return Object.entries(value).some(
-      ([key, item]) => hasControlByte(key) || schemaHasControlByte(item, budget, depth + 1),
-    );
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      // A KEY is always semantic — it is a property name, which is the wire contract.
+      if (hasControlByte(key)) {
+        return { ok: false, reason: 'inputSchema contains a terminal-control or bidi character' };
+      }
+      if (PRESENTATION_KEYS.has(key) && typeof item === 'string') {
+        out[key] = stripTerminalControls(item);
+        continue;
+      }
+      const scanned = scanSchema(item, budget, depth + 1);
+      if (!scanned.ok) return scanned;
+      out[key] = scanned.schema;
+    }
+    return { ok: true, schema: out };
   }
-  return false;
+  return { ok: true, schema: value };
 }
 
 /** The compiler's own total-work ceiling (`MAX_NODES`) — a schema past it is refused there anyway. */
@@ -282,4 +371,9 @@ function namespacedId(serverId: string, toolName: string): string | undefined {
     return undefined;
   }
   return id;
+}
+
+/** A JSON object, narrowed for  — an array or a scalar is not a usable tool spec. */
+function isPlainRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

@@ -35,12 +35,17 @@ export interface HttpServerSpec {
   /** The authored `connect_timeout_ms` (ADR-0088 §1.4). Absent ⇒ {@link MCP_DEADLINES.networkConnectMs}. */
   readonly connectTimeoutMs?: number;
   /**
-   * The host's validated `fetch` (ADR-0088 §2.1). **Absent means the runtime's global `fetch`, which is NOT
-   * pinned** — the SDK opens its own socket, so without this the DNS-rebind and redirect-to-private holes
-   * ADR-0053 §2 named stay open. The CLI host always supplies one; the parameter is optional only because a
-   * unit test that never dials does not need to build one.
+   * The host's validated `fetch` — **REQUIRED**, and it used to be optional
+   * ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §2.1, §6).
+   *
+   * Absence meant the runtime's global `fetch`, which is not pinned: the SDK opens its own socket, so all
+   * three §2 guarantees — connect-by-validated-IP, redirect refusal, and the transport byte bound — were gone
+   * at once, silently. The justification was that a unit test which never dials need not build one, and that
+   * is exactly the trade §6 refuses: a remote transport is pinned and bounded, or it is not admitted. These
+   * openers are part of this package's PUBLIC surface, so "the CLI always supplies one" is a property of
+   * today's only host, not of the seam. A test that never dials passes a `fetch` that throws.
    */
-  readonly fetch?: McpFetch;
+  readonly fetch: McpFetch;
 }
 
 /** Connect a Streamable HTTP MCP server and run the initialize handshake; returns the live connection. */
@@ -67,7 +72,7 @@ export async function openHttpConnection(
     // The injected hop. Every request on this transport — the initialize POST, each `tools/call`, and the
     // long-lived GET stream — goes through it, which is what makes §2.1's pinning cover the session rather
     // than only its first dial.
-    spec.fetch === undefined ? undefined : { fetch: spec.fetch },
+    { fetch: spec.fetch },
   );
   return connectSdkTransport(serverId, transport, {
     timeoutMs: spec.connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs,
