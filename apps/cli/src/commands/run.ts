@@ -8,6 +8,7 @@ import {
   type WorkflowEngine,
   WorkflowParseError,
 } from '@relavium/core';
+import { liveMcpChildPids } from '@relavium/mcp';
 import type { McpClient, McpServerConfig } from '@relavium/mcp';
 
 import { loadResolvedConfig } from '../config/load.js';
@@ -203,7 +204,11 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
           mcpConnectCancel.abort(); // stops an in-flight connect; a no-op once one completed
           await mcpRuntime?.client.close();
         },
-        () => mcpRuntime?.client.childPids ?? [],
+        // The live registry, not the assembled client's snapshot: `mcpRuntime` is undefined for the whole
+        // connect, which is exactly the window a child exists with no handshake yet. See `agent-run.ts` for
+        // the reproduction — this surface survives it only because `reapOnly` keeps it from exiting early,
+        // which is a property of ITS signal contract rather than of the reaper. Both now read the same source.
+        () => liveMcpChildPids(),
         { reapOnly: true },
       )
     : (): void => undefined;

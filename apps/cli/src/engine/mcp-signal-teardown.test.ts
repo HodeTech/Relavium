@@ -239,10 +239,16 @@ describe('guardMcpTeardown — the synchronous exit net', () => {
 });
 
 describe('guardMcpTeardown — the production defaults', () => {
-  it('registers on the REAL process signals and exit, and removes both', () => {
+  it('registers on the REAL process signals and removes them; the exit reaper is process-scoped', () => {
     // Every other test injects `subscribeSignals`, so the default — the four-signal subscription every
     // surface shares — was never taken. A review pointed out that with the surface binding also missing, the
     // real registration path had zero coverage from either end.
+    //
+    // **The `exit` half deliberately does NOT come back off**, and this test used to assert that it did. A
+    // real-subprocess reproduction showed why that was wrong: tied to a guard's lifetime, the net was removed
+    // by whichever `unguardMcp()` ran first — on `agent run` that is the build's own `.catch`, which fires on
+    // an aborted connect BEFORE the cooperative half exits, so the reaper was gone exactly when a live child
+    // needed it. An `exit` listener does not hold the event loop open, so keeping it costs nothing.
     const before = {
       sigint: process.listenerCount('SIGINT'),
       sigterm: process.listenerCount('SIGTERM'),
@@ -255,13 +261,27 @@ describe('guardMcpTeardown — the production defaults', () => {
     expect(process.listenerCount('SIGTERM')).toBe(before.sigterm + 1);
     expect(process.listenerCount('SIGHUP')).toBe(before.sighup + 1);
     expect(process.listenerCount('SIGQUIT')).toBe(before.sigquit + 1);
-    expect(process.listenerCount('exit')).toBe(before.exit + 1);
     unguard();
+    // The SIGNAL half is released — a normally-exiting process must not keep a handler that changes how a
+    // later Ctrl-C behaves.
     expect(process.listenerCount('SIGINT')).toBe(before.sigint);
     expect(process.listenerCount('SIGTERM')).toBe(before.sigterm);
     expect(process.listenerCount('SIGHUP')).toBe(before.sighup);
     expect(process.listenerCount('SIGQUIT')).toBe(before.sigquit);
-    expect(process.listenerCount('exit')).toBe(before.exit);
+  });
+
+  it('installs exactly ONE `exit` listener however many guards run', () => {
+    // The reaper is process-scoped, so the thing to bound is accumulation: a long-lived host running many
+    // commands must not gain a listener per command. One Node listener, running a set of reaps.
+    const before = process.listenerCount('exit');
+    const guards = [
+      guardMcpTeardown(() => Promise.resolve(), none),
+      guardMcpTeardown(() => Promise.resolve(), none),
+      guardMcpTeardown(() => Promise.resolve(), none),
+    ];
+    expect(process.listenerCount('exit')).toBeLessThanOrEqual(before + 1);
+    for (const unguard of guards) unguard();
+    expect(process.listenerCount('exit')).toBeLessThanOrEqual(before + 1);
   });
 
   it('keeps the grace short enough to serve its own stated purpose', () => {

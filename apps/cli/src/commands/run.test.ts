@@ -1185,7 +1185,6 @@ describe('runCommand', () => {
       close: () => Promise.resolve(),
     };
     const baselineSigint = process.listenerCount('SIGINT');
-    const baselineExit = process.listenerCount('exit');
     let sigintDuringConnect = -1;
     let exitDuringConnect = -1;
 
@@ -1212,12 +1211,16 @@ describe('runCommand', () => {
     );
 
     expect(code).toBe(EXIT_CODES.success);
-    // The cooperative half AND the synchronous `process.on('exit')` reaper are both armed during the connect.
+    // The cooperative half is armed during the connect — the window the SDK spawns children in.
     expect(sigintDuringConnect).toBeGreaterThan(baselineSigint);
-    expect(exitDuringConnect).toBe(baselineExit + 1);
-    // …and both are released on the normal path, where the command's own `finally` owns the teardown.
+    // The synchronous reaper is PROCESS-scoped, so a per-guard delta is no longer the right claim (a guard
+    // built earlier in this file already installed it). That it exists, reads the live registry, and survives
+    // an `unguard` mid-teardown is pinned where it belongs: `mcp-signal-teardown.test.ts` for the mechanism,
+    // and `tools/cli-smoke/check.mjs` for the end-to-end orphan, which needs a real process to mean anything.
+    expect(exitDuringConnect).toBeGreaterThanOrEqual(1);
+    // The SIGNAL half is released on the normal path, where the command's own `finally` owns the teardown.
+    // The `exit` reaper is process-scoped by design and stays — see `mcp-signal-teardown.ts`.
     expect(process.listenerCount('SIGINT')).toBe(baselineSigint);
-    expect(process.listenerCount('exit')).toBe(baselineExit);
   });
 
   it('holds the guard THROUGH the MCP teardown, not merely up to it (ADR-0088 §1.3)', async () => {
@@ -1232,7 +1235,6 @@ describe('runCommand', () => {
     // The observation point is the connection's `close()`, which runs INSIDE `mcpRuntime.client.close()`.
     const path = writeWorkflow('mcp-guard-teardown.relavium.yaml', MCP_WF);
     const { io } = captureIo();
-    const baselineExit = process.listenerCount('exit');
     const baselineSigint = process.listenerCount('SIGINT');
     let exitDuringClose = -1;
     let sigintDuringClose = -1;
@@ -1265,12 +1267,12 @@ describe('runCommand', () => {
     );
 
     expect(code).toBe(EXIT_CODES.success);
-    // Both halves still armed while the children are being reaped — the synchronous net is the load-bearing
-    // one here, because it is the only thing that runs on a path nobody awaits.
-    expect(exitDuringClose).toBe(baselineExit + 1);
+    // The cooperative half is still armed while the children are being reaped — the ordering this test is
+    // about. The synchronous reaper is process-scoped (see the note in the test above).
     expect(sigintDuringClose).toBeGreaterThan(baselineSigint);
-    // …and released once the teardown is done, so a normally-exiting process holds no listener.
-    expect(process.listenerCount('exit')).toBe(baselineExit);
+    expect(exitDuringClose).toBeGreaterThanOrEqual(1);
+    // …and the SIGNAL half released once the teardown is done. The exit reaper is process-scoped and stays,
+    // which is what keeps it armed through a teardown some other path's `unguard` would otherwise cut short.
     expect(process.listenerCount('SIGINT')).toBe(baselineSigint);
   });
 

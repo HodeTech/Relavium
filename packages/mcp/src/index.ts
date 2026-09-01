@@ -60,6 +60,7 @@ export {
 } from './ingress-bounds.js';
 export { buildServerToolDefs, type ServerToolDefs, type SkippedTool } from './tool-mapping.js';
 export {
+  liveMcpChildPids,
   openStdioConnection,
   setMcpClientVersion,
   type ConnectBound,

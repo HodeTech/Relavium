@@ -90,7 +90,6 @@ export function guardMcpTeardown(
   options: McpTeardownGuardOptions = {},
 ): () => void {
   const subscribe = options.subscribeSignals ?? defaultSubscribeSignals;
-  const subscribeExit = options.subscribeProcessExit ?? defaultSubscribeProcessExit;
   const kill = options.killPid ?? defaultKillPid;
   const exit = options.exit ?? exitAfterFlush;
   const delay = options.delay ?? defaultDelay;
@@ -102,7 +101,7 @@ export function guardMcpTeardown(
   // so one throwing kill must not end the loop and strand the rest. The default kill already swallows its
   // ESRCH/EPERM, which is exactly what made the bare loop look correct — the isolation belongs to the loop,
   // which owns the guarantee, not to one implementation of the thing it calls.
-  const unsubscribeExit = subscribeExit(() => {
+  const reap = (): void => {
     for (const pid of livePids()) {
       try {
         kill(pid);
@@ -110,7 +109,21 @@ export function guardMcpTeardown(
         // Nothing to report to at exit time — and the next child still has to die.
       }
     }
-  });
+  };
+  // **Installed for the PROCESS, not for this guard** — and a real-subprocess reproduction is why. Tied to the
+  // guard's lifetime, the net was removed by whichever `unguardMcp()` ran first, and on `agent run` that is
+  // the build's own `.catch`: an aborted connect rejects, the catch releases the guard, and only THEN does the
+  // cooperative half's `exit(128+signo)` run — with no net left. Measured end to end against a real
+  // `agent run` subprocess: the unguard ran, the exit net never did, host exit 143, child at `ppid 1`.
+  //
+  // "SIGKILL any MCP child this process still owns, at exit" is a process-level invariant, so binding it to a
+  // command's lifecycle is a race by construction — this is the second one in this file. An `exit` listener
+  // does not hold the event loop open, so keeping it costs nothing. Tests inject `subscribeProcessExit` and
+  // keep the old per-guard behaviour, which is what lets them drive the net directly.
+  const unsubscribeExit =
+    options.subscribeProcessExit === undefined
+      ? installProcessExitReaper(reap)
+      : options.subscribeProcessExit(reap);
 
   let tearingDown = false;
   const unsubscribeSignals = subscribe((signo) => {
@@ -128,16 +141,32 @@ export function guardMcpTeardown(
 
   return () => {
     unsubscribeSignals();
-    unsubscribeExit();
+    // The PROCESS reaper is deliberately not removed here — see its comment above. Only an injected one is,
+    // so a test can still assert the guard cleans up what it was given.
+    if (options.subscribeProcessExit !== undefined) unsubscribeExit();
   };
 }
 
-/** The default `process.on('exit')` net — synchronous by definition, which is why the reap it runs must be. */
-function defaultSubscribeProcessExit(onExit: () => void): () => void {
-  process.on('exit', onExit);
-  return () => {
-    process.removeListener('exit', onExit);
-  };
+/**
+ * The one process-wide `process.on('exit')` reaper: a single Node listener, running every registered reap.
+ *
+ * A SET rather than a single latched function, because a latch would silently ignore the second guard's
+ * `livePids` — both CLI surfaces happen to pass the same registry today, and a guarantee that holds only
+ * because two call sites agree is the shape this wave keeps finding. One Node listener, so a long-lived host
+ * that runs many commands does not accumulate them.
+ */
+const processReapers = new Set<() => void>();
+let exitListenerInstalled = false;
+
+function installProcessExitReaper(reap: () => void): () => void {
+  processReapers.add(reap);
+  if (!exitListenerInstalled) {
+    exitListenerInstalled = true;
+    process.on('exit', () => {
+      for (const run of processReapers) run();
+    });
+  }
+  return () => undefined; // never removed — see `unsubscribeExit`'s comment
 }
 
 /**

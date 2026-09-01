@@ -356,12 +356,15 @@ export default tseslint.config(
       // `URL` / `fetch` / `AbortSignal` are for `sync-models-dev` (ADR-0071): it resolves the snapshot path
       // relative to its own module, fetches the upstream catalog, and bounds that fetch with a timeout — a hung
       // sync in CI is a silent one. All three are Node-22 globals (ADR-0067's floor), so no polyfill is implied.
+      // `setTimeout` is for `cli-smoke`'s poll loops: its MCP-orphan check waits on a real process table, so it
+      // needs to sleep between reads rather than assume a fixed delay is enough on a loaded runner.
       globals: {
         console: 'readonly',
         process: 'readonly',
         URL: 'readonly',
         fetch: 'readonly',
         AbortSignal: 'readonly',
+        setTimeout: 'readonly',
       },
     },
   },

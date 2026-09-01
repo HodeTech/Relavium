@@ -9,6 +9,8 @@ import { cassetteResolver, loadCassette } from '../chat/fixture.js';
 import { onceEffortNotice } from '../chat/effort-notice.js';
 import { buildChatSession, type BuiltChatSession } from '../chat/session-host.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
+import { liveMcpChildPids } from '@relavium/mcp';
+
 import { guardMcpTeardown } from '../engine/mcp-signal-teardown.js';
 import type { StdioConsentGate } from '../engine/mcp-servers.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
@@ -118,7 +120,13 @@ export async function agentRunCommand(
       mcpConnectCancel.abort();
       await session?.closeMcp?.();
     },
-    () => session?.mcpChildPids ?? [],
+    // **`liveMcpChildPids()`, not `session?.mcpChildPids`** — and a review reproduced why against a real
+    // subprocess. `session` is undefined for the whole connect, so on a signal there the cooperative close
+    // resolved instantly, the guard exited `128+signo`, and the exit net asked a `session` that did not exist
+    // for pids: it killed nothing while the SDK's ~4 s close ladder had barely started. Measured: the host
+    // exited 143 and the MCP child kept running at `ppid 1`. The registry is populated at SPAWN time, so the
+    // synchronous net can see a child the connect has not finished handshaking with.
+    () => liveMcpChildPids(),
   );
 
   const built = await (async (): Promise<BuiltChatSession> => {

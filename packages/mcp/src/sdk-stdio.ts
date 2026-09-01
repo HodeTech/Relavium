@@ -137,13 +137,134 @@ export async function openStdioConnection(
     ...(spec.args === undefined ? {} : { args: [...spec.args] }),
     ...(spec.cwd === undefined ? {} : { cwd: spec.cwd }),
   });
-  return connectSdkTransport(serverId, transport, {
-    timeoutMs: spec.connectTimeoutMs ?? MCP_DEADLINES.stdioConnectMs,
-    ...(signal === undefined ? {} : { signal }),
-    // The SDK exposes the spawned pid; carrying it out is what lets a host reap synchronously on an exit path
-    // that cannot await an async close (ADR-0088 §1.3). `?? undefined` normalizes the SDK's `null`.
-    childPid: () => transport.pid ?? undefined,
-  });
+  // **Registered BEFORE the connect, because the connect is when the child is spawned.** `childPid` below is
+  // read only once the connect RESOLVES, which left the whole spawn-to-`initialize` window — up to 120 s on a
+  // cold `npx` — with a live process no synchronous reaper could see. A review reproduced the consequence
+  // against a real subprocess: `agent run` signalled mid-connect exited 143 while its MCP child kept running
+  // at `ppid 1`. The registry is a THUNK list rather than a pid list for the same reason the bound's
+  // `childPid` is a thunk: the pid does not exist yet at registration time, and does by the time an exit
+  // handler evaluates it.
+  const release = registerLiveChild(latchPid(() => transport.pid ?? undefined));
+  try {
+    const connection = await connectSdkTransport(serverId, transport, {
+      timeoutMs: spec.connectTimeoutMs ?? MCP_DEADLINES.stdioConnectMs,
+      ...(signal === undefined ? {} : { signal }),
+      // The SDK exposes the spawned pid; carrying it out is what lets a host reap synchronously on an exit
+      // path that cannot await an async close (ADR-0088 §1.3). `?? undefined` normalizes the SDK's `null`.
+      childPid: () => transport.pid ?? undefined,
+    });
+    return releaseOnClose(connection, release);
+  } catch (err) {
+    // **Released LATE, and releasing it here synchronously is what let the measured orphan through.**
+    // `connectSdkTransport`'s catch does close the transport — but that ladder is ASYNCHRONOUS and, on an
+    // aborted connect, still running. Dropping the registration the instant the connect promise rejected
+    // meant the exit net asked for live pids while the child was mid-kill and was told there were none.
+    // Reproduced against a real subprocess with this exact line in place: host exit 143, child at `ppid 1`.
+    //
+    // An unref'd timer sized past the SDK's ~4 s ladder, so the registration outlives the teardown it is
+    // protecting and still cannot hold the process open or accumulate forever.
+    releaseAfterTeardown(release);
+    throw err;
+  }
+}
+
+/**
+ * How long a failed connect's registration outlives the connect.
+ *
+ * The SDK's stdio close ladder is `stdin.end()` → race(2 s) → `SIGTERM` → race(2 s) → `SIGKILL`, so ~4 s
+ * against a child that ignores both. This is that, plus margin: the registration must still be readable when
+ * a synchronous exit handler runs at any point during the ladder.
+ */
+const TEARDOWN_LADDER_MS = 6_000;
+
+function releaseAfterTeardown(release: () => void): void {
+  // Never hold the process open for a cleanup: if the host exits first, the registration is exactly what the
+  // exit net needs, and it dies with the process.
+  setTimeout(release, TEARDOWN_LADDER_MS).unref?.();
+}
+
+/**
+ * Every stdio child this PROCESS has spawned and not yet closed, as pid thunks.
+ *
+ * Process-global on purpose: the set of child processes a process owns is an observation of the OS, not a
+ * policy, and the synchronous `process.on('exit')` reaper that needs it has no other way to learn a pid that
+ * appeared inside an in-flight connect. It lives in `packages/mcp` — which already spawns processes and
+ * fences the SDK — never in `packages/core`, which owns no process and must stay platform-free.
+ */
+const liveChildren = new Set<() => number | undefined>();
+
+/**
+ * Latch the first pid the transport reports, and keep returning it.
+ *
+ * **Measured against the SDK, and it inverts the naive reading.** `StdioClientTransport.close()` sets
+ * `this._process = undefined` on its FIRST line — before `stdin.end()`, before `SIGTERM`, before the ~4 s
+ * ladder runs — so `transport.pid` reports `null` while the child is still very much alive. A thunk that read
+ * it live therefore went blind at exactly the moment a reaper needs it, and the exit net was handed an empty
+ * list during a teardown in progress.
+ *
+ * The short unref'd interval exists because the pid does not exist at registration time either: the spawn
+ * happens inside `client.connect()`, which is the call this registration wraps. It stops as soon as it has a
+ * pid, never holds the loop open, and is the price of not monkey-patching an SDK object's `start`.
+ */
+function latchPid(readPid: () => number | undefined): () => number | undefined {
+  let latched = readPid();
+  if (latched === undefined) {
+    const poll = setInterval(() => {
+      latched = readPid();
+      if (latched !== undefined) clearInterval(poll);
+    }, PID_LATCH_INTERVAL_MS);
+    poll.unref?.();
+  }
+  return () => latched;
+}
+
+/** How often to look for a pid that does not exist yet — fast enough to catch a spawn, idle when it has one. */
+const PID_LATCH_INTERVAL_MS = 20;
+
+function registerLiveChild(readPid: () => number | undefined): () => void {
+  liveChildren.add(readPid);
+  return () => {
+    liveChildren.delete(readPid);
+  };
+}
+
+/**
+ * The pids of every live stdio child, for a host's synchronous last-resort reap.
+ *
+ * Distinct from {@link McpClient.childPids}, which is a SNAPSHOT taken when the client was assembled and is
+ * therefore empty for exactly the window this covers: between the spawn and a completed handshake.
+ */
+export function liveMcpChildPids(): readonly number[] {
+  const pids: number[] = [];
+  for (const readPid of liveChildren) {
+    const pid = readPid();
+    // `undefined` here means "no pid yet", never "the child is gone" — the latch above makes sure of that —
+    // so this must NOT prune. Registrations are dropped by their owner: the close wrapper on success, the
+    // post-ladder timer on a failed connect.
+    if (pid !== undefined) pids.push(pid);
+  }
+  return pids;
+}
+
+/**
+ * Wrap a connection so closing it also drops its live-child registration. Idempotent, as `close` is.
+ *
+ * Every member is forwarded EXPLICITLY rather than spread: `SdkConnection` is a class, so its methods live on
+ * the prototype and a spread would silently produce an object missing all of them.
+ */
+function releaseOnClose(connection: McpConnection, release: () => void): McpConnection {
+  return {
+    listTools: (signal) => connection.listTools(signal),
+    callTool: (name, args, signal) => connection.callTool(name, args, signal),
+    close: async () => {
+      try {
+        await connection.close();
+      } finally {
+        release();
+      }
+    },
+    childPid: connection.childPid,
+  };
 }
 
 /**
