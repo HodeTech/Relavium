@@ -277,9 +277,9 @@ to correct.
 | `CR-31` | made 2026-08-28 — default concurrency **8** (omitted `max_parallel`), and absolute ceilings: **500** nodes · **2000** edges · fan-out **50** · fallback-chain **5** entries · `retry.max` **10** · per-entry `max_attempts` **10** · `max_parallel` **64** · **16** tool calls in one model response · **500** node dispatches per run. Over-ceiling is a REJECTION, never a clamp | [ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md) | no | — |
 | `CR-32` | made 2026-08-28 — **256 KiB** node output, **4 MiB** total workflow state, **1 MiB** per durable event; typed `validation` REJECTION, never a truncation (half an output flowing into the next template is a wrong answer that looks right). **A terminal event is measured and never refused** — exactly-one-terminal ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) outranks every size rule, and [ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §6 draws the same line for a store fault. The three are separate bounds because one shared number is either useless at the state limit or absurd per node | — | no | — |
 | `CR-33` | made 2026-08-28 — **count-based, N = 100** settled runs, FIFO eviction (no clock, so engine purity is untouched); the `#executor` quarantine half stays a `W2` residual and is NOT claimed by this bound | — | no | — |
-| `CR-40` | made (forward signal + deadline) | with `CR-16`'s | no | hostile MCP |
-| `CR-41` | made (apply the built-in egress floor) | with `CR-16`'s | no | hostile MCP |
-| `CR-42` | **open** — the ingress bounds | with `CR-16`'s | no | hostile MCP |
+| `CR-40` | made (forward signal + deadline) · ✅ closed 2026-09-01 | [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1 | no | hostile MCP |
+| `CR-41` | made 2026-08-31 (full pinning on `http`/`sse`; a **remote `websocket` is refused at admission**; a redirect is refused, not followed; the local opt-in is ONE bound policy) | [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §2–§4 | no | hostile MCP |
+| `CR-42` | made 2026-08-31 — **256** tools/server · **8 KiB** description · **1 MiB** discovery/server · **4 KiB** schema string · **256 B** property name · **1 MiB** result text · **4 MiB** per `http`/`sse` message. Transport-level (pre-parse, memory) and application-level (post-parse, admission) are separate guarantees; a local transport has only the second, and its bound is the consent gate | [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §5–§6 | no | hostile MCP |
 | `CR-50` | **open** — complete the handle path, or remove the tool | — | yes | media bytes |
 | `CR-51` | made (gate on model-level capability) | — | no | — |
 | `CR-52` | made (pull [ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md)'s deferral forward) | ADR-0039 follow-up | no | — |
@@ -1418,12 +1418,41 @@ held one and broke the other, the second held that one and lost the first. They 
 
 ---
 
-## W4 — MCP hostile boundary
+## W4 — MCP hostile boundary · 🔄 IN PROGRESS ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md))
 
 Executes Wave 2's MCP queue (see [Phase boundary](#phase-boundary)). One security sitting covers this group
 plus `CR-16`.
 
-### CR-40 — Cancellation and deadlines never reach the MCP transport · High
+**Scope, settled 2026-08-31.** The maintainer took the whole 2.5.5 MCP queue that
+[current.md](../current.md) binds to this wave (`#35`, `G32`, `#205`, `G33`, `#201`, `#209`, `#288`, `#203`,
+`#204`, `#206`, `#207`, `#297`, `#208`) **plus** `#202` (tool-definition poisoning), `#21` (`agent run`
+orphaning MCP children on a signal) and `G19` (a project config hijacking a global registration name) — all
+the same threat class and the same security sitting, so splitting them would book the reviewer twice.
+
+**The decisions this wave needed are in [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md)**, on
+one invariant: *a transport that reaches a REMOTE server is pinned and byte-bounded; a transport that can be
+neither must be local and explicitly opted into.* That is what forced the two hardest calls — a **remote
+`websocket` server is now refused at admission** (the SDK's transport takes a URL and nothing else, and parses
+each frame before any Relavium code sees a byte), and the `allow_local_endpoint` opt-in became **one bound
+policy** rather than two independent relaxations that would have let a remote host connect over plaintext.
+
+### Step 1 — deadlines and cancellation · ✅ (`CR-40`, `#35`, `G32`, `#205`, `#21`)
+
+Three measurements opened it, each reproduced before it was believed: a transport whose `start()` never
+resolves hung the connect **forever** (the SDK's own timeout reaches only the `initialize` request that
+follows `start()`); an aborted `tools/call` was still pending 500 ms later; and a signalled host left its
+child alive with **`ppid 1`**, because Node's default signal handling never unwinds the `finally` both
+commands tear down in.
+
+Four review rounds over the result found three blockers, all in the fix rather than the original code — the
+guard raced `driveRun`'s documented cancel contract and won; the new typed errors were flattened one frame
+above the code that preserved them; and the guard was armed *after* the connect, leaving the 120 s cold-`npx`
+window it existed for uncovered. A fifth round proved **four of the wave's own tests could not fail**: a clean
+revert of the whole guard from both commands left all 2534 CLI tests green. The wave now owns
+[ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §11's hardest bullet — a real spawned child
+that traps `SIGTERM`, reaped and asserted against the **process table**, never against a promise.
+
+### CR-40 — Cancellation and deadlines never reach the MCP transport · High · ✅ CLOSED 2026-09-01 ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1)
 The dispatch context can carry a signal, but the manager's `callTool` chain does not forward it, and neither the
 connection nor the stdio SDK call accepts an abort or deadline. After a user cancels, the remote or child effect
 continues and child processes can survive.

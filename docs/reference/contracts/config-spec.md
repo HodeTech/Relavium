@@ -99,6 +99,7 @@ autostart = true                   # accepted, reserved for a future always-on p
 # url = "https://host/mcp"         # for transport = http (Streamable HTTP); a `websocket` server uses wss://
 # env = { TOKEN = "{{secrets.github_token}}" }   # stdio only — resolved from the isolated mcp-secret:* keychain, injected into the spawned child; rejected on a network transport (header-auth is a follow-up)
 # allow_local_endpoint = true      # opt into a private/loopback url (network transports only, ADR-0053 §3)
+# connect_timeout_ms = 180000      # raise this server's connect deadline (any transport; max 600000, ADR-0088 §1.4)
 ```
 
 A `transport = "http"` / `"websocket"` registration requires a `url` (`http(s)` for `http`, `ws(s)` for
@@ -107,8 +108,11 @@ a remote host must be `https`/`wss`) and must not embed credentials. A registrat
 **`stdio | http | websocket`**, plus the deprecated **`sse`** alias of `http` (accepted for older servers, same
 `http(s)` url) — symmetric with an inline `agent.mcp_servers` entry; prefer `http` for new servers. The
 stdio-only fields (`command`/`args`/`env`) are rejected on a network registration, and the network-only fields
-(`url`/`allow_local_endpoint`) on a stdio one. An agent consumes a registration with `- ref: filesystem` (see
-[../shared-core/mcp-integration.md](../shared-core/mcp-integration.md)).
+(`url`/`allow_local_endpoint`) on a stdio one. **`connect_timeout_ms` is the one connection field legal on every
+transport** — a cold container is slow the same way a cold `npx` is — and it is validated by the *same* schema
+the inline form uses (max 600 000, rejected rather than clamped), so a by-name `ref` is not a way around the
+ceiling ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1.4). An agent consumes a registration
+with `- ref: filesystem` (see [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md)).
 
 A stdio registration's **`env` may not declare a name that redirects the interpreter, the dynamic loader, or a
 tool's configuration** — `NODE_OPTIONS`, `PATH`, `ZDOTDIR`, `BASH_ENV`, `HOME`, `LD_*`, `DYLD_*`, `GIT_*`,

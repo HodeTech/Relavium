@@ -53,14 +53,49 @@ mcp_servers:
     transport: http
     url: 'http://localhost:4000/mcp'
     allow_local_endpoint: true    # opt into a private/loopback url (relaxes the SSRF block + plaintext for it)
+  - id: slow-start
+    transport: stdio
+    command: npx
+    args: ['-y', '@acme/big-server']
+    connect_timeout_ms: 300000    # raise the connect deadline (any transport; max 600000, ADR-0088 §1.4)
   # 2. BY-NAME `ref` — identity + connection come from a [[mcp_servers]] registration
-  - ref: shared-fs                # mutually exclusive with id/transport/command/url/env
+  - ref: shared-fs                # mutually exclusive with id/transport/command/args/env/url/
+                                  # allow_local_endpoint/connect_timeout_ms
     tools_allowlist: [read_file]  # the only field allowed alongside `ref`
 ```
 
 The **transport vocabulary** is reconciled to the current MCP spec: `http` is the **Streamable HTTP** transport (the SDK's `StreamableHTTPClientTransport`); `sse` is a **deprecated alias** of `http` (the legacy HTTP+SSE transport, accepted for older servers, same `http(s)` url); `websocket` uses a `wss://` url. A network `url` is SSRF-guarded (below). The vocabulary is the **same on both surfaces** — an inline `agent.mcp_servers` entry and a `[[mcp_servers]]` config registration both accept `stdio | http | websocket` plus the `sse` alias (prefer `http` for new servers). The stdio-only fields (`command`/`args`/`env`) are rejected on a network transport, and the network-only fields (`url`/`allow_local_endpoint`) on stdio — symmetric across both schemas.
 
 Server **registrations** also live globally in `~/.relavium/config.toml` under repeatable `[[mcp_servers]]` entries, so a server can be registered once and referenced **by name** (`ref:`) from many agents. A referenced server connects **on demand** when an agent that uses it starts; the registration's `autostart` field is accepted by the schema but reserved for a future always-on pool (not acted on in 2.R). The merge of global and project-scoped servers follows the normal config resolution order — see [../contracts/config-spec.md](../contracts/config-spec.md).
+
+### Connect and call deadlines
+
+Every MCP interaction is bounded, and the bound is Relavium's rather than the SDK's
+([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1). The connect bound covers the transport's
+own start — the spawn or the dial — not only the `initialize` request that follows it, because that is where an
+unbounded wait actually lives.
+
+| Phase | Default | Raise it with |
+| --- | --- | --- |
+| `stdio` connect — spawn through `initialize` | **120 000 ms** | `connect_timeout_ms` |
+| network connect — dial through `initialize` | **30 000 ms** | `connect_timeout_ms` |
+| `tools/list` discovery — the WHOLE paged walk, not one page | **60 000 ms** | — |
+| `tools/call` | **60 000 ms** | — |
+
+`stdio` gets the longest window because the canonical authored example is `command: npx`, and a cold resolution
+routinely outruns a tighter one before the child speaks MCP at all. The discovery bound covers the whole walk
+so a server that answers each page slowly cannot outlive its deadline by paginating.
+
+**A run or turn cancel reaches the server.** The engine's signal is threaded through `tools/call` and the
+discovery walk to the SDK request, so a cancelled call is cancelled at the server rather than merely abandoned
+by the caller. A deadline and a cancellation are distinct typed failures: a user who pressed Esc is not told
+the server was slow, and precedence is decided when the failure is classified rather than by which timer the
+runtime happened to fire first.
+
+**A signalled one-shot command reaps its children.** `relavium run` and `relavium agent run` tear their MCP
+connections down on `SIGINT`/`SIGTERM`/`SIGHUP`/`SIGQUIT`, and a synchronous last-resort reap covers the exit
+paths that cannot await a teardown. `run` keeps its documented cancel contract — the run still drains to
+`run:cancelled` and exits `1`; the teardown does not take the exit code from it.
 
 ### Tool discovery
 
