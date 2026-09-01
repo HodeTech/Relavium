@@ -57,7 +57,7 @@ flowchart LR
 3. **Project** (`project.toml`) — project-specific overrides.
 4. **Per-invocation** — a CLI flag or environment variable for a single run; highest precedence. See [../cli/commands.md](../cli/commands.md).
 
-MCP server registrations **union** across layers rather than following this precedence: globally registered servers (`config.toml`) plus any project-scoped servers, and a name declared in more than one layer is **refused, not overridden** — see the **Project-scoped MCP servers** note under [`project.toml` / `workspace.toml`](#projecttoml--workspacetoml-project--keys) for the rule and its remedy, and [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md) for the registration shape.
+MCP server registrations **union** across layers rather than following this precedence: globally registered servers (`config.toml`) plus any project-scoped servers. A duplicate `name` is **refused, not overridden** — whether it appears in more than one layer, or twice within a single file — see the **Project-scoped MCP servers** note under [`project.toml` / `workspace.toml`](#projecttoml--workspacetoml-project--keys) for the rule and its remedies, and [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md) for the registration shape.
 
 ## `config.toml` (global) — keys
 
@@ -191,12 +191,19 @@ allowed_command_globs = []         # opt-in glob form of the !-shell allowlist (
 
 > **Project-scoped MCP servers.** `project.toml` / `workspace.toml` may also declare
 > `[[mcp_servers]]` entries (the same shape as the global block above); they **union** with the global
-> registrations. Unlike every other setting, a `[[mcp_servers]]` name that appears in **more than one layer is
-> a loud refusal** (exit `2`), not a last-writer-wins override
+> registrations. Unlike every other setting, a duplicate `[[mcp_servers]]` **name is a loud refusal** (exit
+> `2`), not a last-writer-wins override
 > ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §8): a registration is not a preference —
 > it names a **program to execute** and a **secret to inject** — and a project config arrives with a cloned
 > repository, so a silent override would hand a global server's provisioned `{{secrets.*}}` to whatever the
-> project's entry names. Rename the project entry, or remove the duplicate.
+> project's entry names. Two cases, same answer:
+>
+> - **Across layers** (e.g. `config.toml` and `project.toml` both register `github`) — rename the project
+>   entry, or remove the duplicate.
+> - **Twice within ONE file.** TOML accepts two `[[mcp_servers]]` tables with the same name and neither the
+>   registration schema nor the config schema rejects it, so a copy-paste silently let the last entry win.
+>   Lower stakes than the cross-layer case (same trust tier, no privilege crossing) and the same reasoning, so
+>   the same refusal — **remove the duplicate entry.**
 > (Schema: `ProjectConfigSchema.mcp_servers`.)
 
 > The `[chat]` block sets defaults for the **agent-first** chat entry point

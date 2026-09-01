@@ -136,8 +136,7 @@ export function toolDefinitionBytes(tool: {
  * Separate from the budget because this refuses ONE tool without exhausting anything: a single enormous
  * description is a bad tool, not a bad server, and the rest of the catalogue is still usable.
  */
-export function overSizedDescription(description: string | undefined): string | undefined {
-  const text = description ?? '';
+export function overSizedDescription(text = ''): string | undefined {
   // **Short-circuit on UTF-16 LENGTH before counting bytes**, because this runs once per discovered tool and
   // a hostile catalogue is where it runs 50 000 times. Every UTF-16 unit is at least one UTF-8 byte, so
   // `length > limit` already proves the bound is exceeded — and the exact count on a 1 MiB string is O(n)

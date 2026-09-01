@@ -12,7 +12,6 @@ import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { liveMcpChildPids } from '@relavium/mcp';
 
 import { guardMcpTeardown } from '../engine/mcp-signal-teardown.js';
-import { sanitizeInline, sanitizeUntrustedInline } from '../render/sanitize.js';
 import type { StdioConsentGate } from '../engine/mcp-servers.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { loadResolvedConfig } from '../config/load.js';
@@ -25,7 +24,7 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { makePlainPrinter } from './chat.js';
-import { stringifyJsonLine } from '../render/sanitize.js';
+import { sanitizeInline, sanitizeUntrustedInline, stringifyJsonLine } from '../render/sanitize.js';
 import { createEffectJournalPort, createEffectJournalStore } from '@relavium/db';
 import { openSessionStore } from '../history/session-open.js';
 

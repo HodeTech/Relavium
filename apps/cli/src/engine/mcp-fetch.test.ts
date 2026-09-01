@@ -282,7 +282,7 @@ describe('createMcpFetch — a body with no framing is ONE message (ADR-0088 §5
       deps: jsonDeps(events, 'text/event-stream; charset=utf-8'),
       maxMessageBytes: 32,
     })('https://api.example/mcp');
-    expect((await response.text()).length).toBe(events.length); // whole stream, no refusal
+    expect(await response.text()).toHaveLength(events.length); // whole stream, no refusal
   });
 });
 

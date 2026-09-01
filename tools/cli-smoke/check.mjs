@@ -117,8 +117,11 @@ async function assertNoMcpOrphanOnSignal(home) {
     ].join('\n'),
   );
 
+  // **`/bin/ps`, not `ps`.** Resolving the name through `PATH` lets whatever is first on it decide what this
+  // check reads the process table with — and a check whose whole job is to prove a hostile-boundary guarantee
+  // should not itself depend on a mutable lookup. `/bin/ps` is a fixed location on macOS and Linux alike.
   const survivors = () =>
-    spawnSync('ps', ['-A', '-o', 'pid=,args='], { encoding: 'utf8' })
+    spawnSync('/bin/ps', ['-A', '-o', 'pid=,args='], { encoding: 'utf8' })
       .stdout.split('\n')
       .filter((line) => line.includes('silent-mcp-server.mjs'))
       .map((line) => Number.parseInt(line.trim().split(/\s+/)[0] ?? '', 10))

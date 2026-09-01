@@ -227,25 +227,41 @@ const liveChildren = new Set<() => number | undefined>();
  * happens inside `client.connect()`, which is the call this registration wraps. It stops as soon as it has a
  * pid, never holds the loop open, and is the price of not monkey-patching an SDK object's `start`.
  */
-function latchPid(readPid: () => number | undefined): () => number | undefined {
+function latchPid(readPid: () => number | undefined): LatchedPid {
   let latched = readPid();
-  if (latched === undefined) {
-    const poll = setInterval(() => {
-      latched = readPid();
-      if (latched !== undefined) clearInterval(poll);
-    }, PID_LATCH_INTERVAL_MS);
-    poll.unref?.();
-  }
-  return () => latched;
+  if (latched !== undefined) return { read: () => latched, stop: () => undefined };
+  const poll = setInterval(() => {
+    latched = readPid();
+    if (latched !== undefined) clearInterval(poll);
+  }, PID_LATCH_INTERVAL_MS);
+  poll.unref?.();
+  return {
+    read: () => latched,
+    // **The poll must be stoppable, and leaving it self-terminating only was a leak.** It clears itself when
+    // a pid appears — but a spawn that FAILS (a typo'd `command`, the ordinary `ENOENT`) never produces one,
+    // so the interval ran for the life of the process, once per failed connect. Measured: three failed spawns
+    // left three pollers running at 20 ms, still firing 300 ms later. Unref'd, so it never held the process
+    // open — which is exactly why nothing noticed.
+    stop: () => clearInterval(poll),
+  };
+}
+
+/** A latched pid plus the means to stop looking for one — see {@link latchPid}. */
+interface LatchedPid {
+  readonly read: () => number | undefined;
+  readonly stop: () => void;
 }
 
 /** How often to look for a pid that does not exist yet — fast enough to catch a spawn, idle when it has one. */
 const PID_LATCH_INTERVAL_MS = 20;
 
-function registerLiveChild(readPid: () => number | undefined): () => void {
-  liveChildren.add(readPid);
+function registerLiveChild(latched: LatchedPid): () => void {
+  liveChildren.add(latched.read);
+  // Releasing a registration also stops its poll — the two have the same lifetime, so one owner keeps them
+  // from drifting apart. Both release paths (the close wrapper, the post-ladder timer) go through here.
   return () => {
-    liveChildren.delete(readPid);
+    liveChildren.delete(latched.read);
+    latched.stop();
   };
 }
 

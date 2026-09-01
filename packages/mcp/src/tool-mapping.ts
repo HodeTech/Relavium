@@ -312,6 +312,24 @@ type SchemaScan =
  * certify — but the diagnostic has to say what actually happened.
  */
 function scanSchema(value: unknown, budget: { visited: number }, depth = 0): SchemaScan {
+  const spent = chargeWalk(budget, depth);
+  if (spent !== undefined) return spent;
+  if (typeof value === 'string') {
+    return hasControlByte(value) ? UNSAFE_SCHEMA : { ok: true, schema: value };
+  }
+  if (Array.isArray(value)) return scanArray(value, budget, depth);
+  if (typeof value === 'object' && value !== null) return scanObject(value, budget, depth);
+  return { ok: true, schema: value }; // a number, boolean or null carries no text to inspect
+}
+
+/** The one refusal for a control byte, so every arm answers with the SAME sentence. */
+const UNSAFE_SCHEMA: SchemaScan = {
+  ok: false,
+  reason: 'inputSchema contains a terminal-control or bidi character',
+};
+
+/** Charge one node against the walk budget; `undefined` when there is room left. */
+function chargeWalk(budget: { visited: number }, depth: number): SchemaScan | undefined {
   if (depth > MAX_SCHEMA_WALK_DEPTH) {
     return { ok: false, reason: 'inputSchema nests deeper than this boundary will walk' };
   }
@@ -321,38 +339,37 @@ function scanSchema(value: unknown, budget: { visited: number }, depth = 0): Sch
       reason: `inputSchema exceeds the maximum of ${MAX_SCHEMA_WALK_NODES} nodes this boundary will scan`,
     };
   }
-  if (typeof value === 'string') {
-    return hasControlByte(value)
-      ? { ok: false, reason: 'inputSchema contains a terminal-control or bidi character' }
-      : { ok: true, schema: value };
+  return undefined;
+}
+
+function scanArray(
+  value: readonly unknown[],
+  budget: { visited: number },
+  depth: number,
+): SchemaScan {
+  const out: unknown[] = [];
+  for (const item of value) {
+    const scanned = scanSchema(item, budget, depth + 1);
+    if (!scanned.ok) return scanned;
+    out.push(scanned.schema);
   }
-  if (Array.isArray(value)) {
-    const out: unknown[] = [];
-    for (const item of value) {
-      const scanned = scanSchema(item, budget, depth + 1);
-      if (!scanned.ok) return scanned;
-      out.push(scanned.schema);
+  return { ok: true, schema: out };
+}
+
+function scanObject(value: object, budget: { visited: number }, depth: number): SchemaScan {
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    // A KEY is always semantic — it is a property name, which is the wire contract.
+    if (hasControlByte(key)) return UNSAFE_SCHEMA;
+    if (PRESENTATION_KEYS.has(key) && typeof item === 'string') {
+      out[key] = stripTerminalControls(item);
+      continue;
     }
-    return { ok: true, schema: out };
+    const scanned = scanSchema(item, budget, depth + 1);
+    if (!scanned.ok) return scanned;
+    out[key] = scanned.schema;
   }
-  if (typeof value === 'object' && value !== null) {
-    const out: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value)) {
-      // A KEY is always semantic — it is a property name, which is the wire contract.
-      if (hasControlByte(key)) {
-        return { ok: false, reason: 'inputSchema contains a terminal-control or bidi character' };
-      }
-      if (PRESENTATION_KEYS.has(key) && typeof item === 'string') {
-        out[key] = stripTerminalControls(item);
-        continue;
-      }
-      const scanned = scanSchema(item, budget, depth + 1);
-      if (!scanned.ok) return scanned;
-      out[key] = scanned.schema;
-    }
-    return { ok: true, schema: out };
-  }
-  return { ok: true, schema: value };
+  return { ok: true, schema: out };
 }
 
 /**

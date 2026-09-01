@@ -272,10 +272,13 @@ describe('tool DEFINITIONS are untrusted content (#202, ADR-0088 §7.1)', () => 
     expect(shaped.skipped).toEqual([]);
     expect(shaped.defs).toHaveLength(1);
     // The CLEANED copy is what the provider receives — the original is never handed on.
-    const params = JSON.stringify(shaped.defs[0]?.llmVisibleParams);
-    expect(params).toContain('hiddentext');
-    expect(params).toContain('title');
-    expect(params).not.toContain('\u202E');
+    // Read the VALUES, not the serialized blob: `toContain('title')` matched the KEY name, so it passed
+    // whether or not the escape survived in the value — the assertion the fix would have satisfied by accident.
+    const params = shaped.defs[0]?.llmVisibleParams;
+    const prop =
+      isRecord(params) && isRecord(params['properties']) ? params['properties']['a'] : undefined;
+    expect(isRecord(prop) ? prop['description'] : undefined).toBe('hiddentext');
+    expect(isRecord(prop) ? prop['title'] : undefined).toBe('title'); // `ti<ESC>[31mtle` cleaned
   });
 
   it('DROPS a tool whose NAME or PROPERTY NAME carries a NEWLINE — not just an escape', () => {
@@ -365,3 +368,8 @@ describe('tool DEFINITIONS are untrusted content (#202, ADR-0088 §7.1)', () => 
     );
   });
 });
+
+/** A plain object, so the schema copy can be read without an unsafe cast. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}

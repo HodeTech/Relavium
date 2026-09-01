@@ -1107,55 +1107,82 @@ export function isMetadataOrLinkLocal(host: string): boolean {
   }
   if (h.includes(':')) {
     const groups = parseIpv6Groups(h);
-    if (groups === null) return false;
-    const first = groups[0] ?? 0;
-    if (first >= 0xfe80 && first <= 0xfebf) return true; // fe80::/10
-    // AWS IMDS over IPv6 — `fd00:ec2::254`, a fixed address inside the ULA range `isPrivateOrLocalHost`
-    // already treats as private. That is exactly why it needed naming HERE: "private" is what the local
-    // opt-in LIFTS, so a provider's metadata endpoint sitting inside the private space is reachable by an
-    // `allow_local_endpoint` that names it. Verified reachable before this line existed.
-    if (
-      first === 0xfd00 &&
-      groups[1] === 0x0ec2 &&
-      groups.slice(2, 7).every((g) => g === 0) &&
-      groups[7] === 0x254
-    ) {
-      return true;
-    }
-    // `::` and `::1` are the unspecified and loopback addresses, and they must return FIRST — exactly as
-    // `isPrivateIpv6Groups` returns for them before its own tunnel checks. Without this, `::1` falls into the
-    // IPv4-COMPATIBLE branch below, reads as `0.0.0.1`, matches the `0.` prefix and is reported as
-    // metadata — which is how a plain loopback MCP endpoint got refused with the wrong reason.
-    if (groups.every((g) => g === 0)) return false;
-    if (groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1) return false;
-    // The embedded-IPv4 tunnels, in the same order and by the same reasoning as `isPrivateIpv6Groups`:
-    // `::ffff:a.b.c.d` (mapped), `::a.b.c.d` (compatible), `64:ff9b::/96` (NAT64) put the address in the
-    // low 32 bits; `2002::/16` (6to4) puts it in bits 16–47. Without them `::ffff:169.254.169.254` would
-    // walk straight past a dotted-decimal check.
-    const zeroHigh = groups.slice(0, 5).every((g) => g === 0);
-    if (zeroHigh && (groups[5] === 0xffff || groups[5] === 0)) {
-      return isMetadataOrLinkLocal(ipv4FromGroups(groups[6] ?? 0, groups[7] ?? 0));
-    }
-    if (first === 0x0064 && groups[1] === 0xff9b && groups.slice(2, 6).every((g) => g === 0)) {
-      return isMetadataOrLinkLocal(ipv4FromGroups(groups[6] ?? 0, groups[7] ?? 0));
-    }
-    if (first === 0x2002) {
-      return isMetadataOrLinkLocal(ipv4FromGroups(groups[1] ?? 0, groups[2] ?? 0));
-    }
-    return false;
+    return groups === null ? false : ipv6IsMetadataOrLinkLocal(groups);
   }
   // Only a canonicalized numeric IPv4 — a NAME is never metadata by its own text, and a name that resolves
   // there is caught where every resolved address is range-checked.
   const dotted = canonicalizeNumericIpv4(h);
-  if (dotted === null) return false;
+  return dotted === null ? false : ipv4IsMetadata(dotted);
+}
+
+/**
+ * The IPv4 half: the ranges no local-endpoint opt-in may name.
+ *
+ * Split from the IPv6 half rather than sharing one long body, because the two answer the same question from
+ * completely different evidence — and this predicate has already shipped one bug (`::1` read as metadata)
+ * that came from an IPv6 case falling through into IPv4 reasoning.
+ */
+function ipv4IsMetadata(dotted: string): boolean {
   // `169.254.0.0/16` (link-local, and the IMDS address every cloud shares) and `0.0.0.0/8` ("this host").
   if (dotted.startsWith('169.254.') || dotted.startsWith('0.')) return true;
   // **Alibaba Cloud's metadata service at `100.100.100.200`**, inside `100.64.0.0/10` — the CGNAT range,
-  // which `isPrivateOrLocalHost` treats as private. Same reasoning as the AWS IPv6 address above: private is
-  // what the opt-in lifts, so a metadata endpoint inside the private space is reachable through it unless
-  // this predicate names it. The whole `/24` rather than the single host, because Alibaba documents sibling
+  // which `isPrivateOrLocalHost` treats as private. Same reasoning as the AWS IPv6 address: private is what
+  // the opt-in lifts, so a metadata endpoint inside the private space is reachable through it unless this
+  // predicate names it. The whole `/24` rather than the single host, because Alibaba documents sibling
   // endpoints there and a one-address carve-out would be a bypass with a different last octet.
   return dotted.startsWith('100.100.100.');
+}
+
+/** AWS IMDS over IPv6 — the fixed `fd00:ec2::254`, inside the ULA range treated as private elsewhere. */
+function isAwsImdsV6(groups: readonly number[]): boolean {
+  return (
+    groups[0] === 0xfd00 &&
+    groups[1] === 0x0ec2 &&
+    groups.slice(2, 7).every((g) => g === 0) &&
+    groups[7] === 0x254
+  );
+}
+
+/** `::` and `::1` — the unspecified and loopback addresses, neither of them metadata. */
+function isUnspecifiedOrLoopbackV6(groups: readonly number[]): boolean {
+  if (groups.every((g) => g === 0)) return true;
+  return groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1;
+}
+
+/**
+ * The embedded-IPv4 tunnel forms, or `null` when this is not one.
+ *
+ * Same order and same reasoning as `isPrivateIpv6Groups`: `::ffff:a.b.c.d` (mapped), `::a.b.c.d` (compatible)
+ * and `64:ff9b::/96` (NAT64) put the address in the low 32 bits; `2002::/16` (6to4) puts it in bits 16–47.
+ * Without them `::ffff:169.254.169.254` would walk straight past a dotted-decimal check.
+ */
+function tunnelledIpv4(groups: readonly number[]): string | null {
+  const first = groups[0] ?? 0;
+  const zeroHigh = groups.slice(0, 5).every((g) => g === 0);
+  if (zeroHigh && (groups[5] === 0xffff || groups[5] === 0)) {
+    return ipv4FromGroups(groups[6] ?? 0, groups[7] ?? 0);
+  }
+  if (first === 0x0064 && groups[1] === 0xff9b && groups.slice(2, 6).every((g) => g === 0)) {
+    return ipv4FromGroups(groups[6] ?? 0, groups[7] ?? 0);
+  }
+  if (first === 0x2002) return ipv4FromGroups(groups[1] ?? 0, groups[2] ?? 0);
+  return null;
+}
+
+/**
+ * The IPv6 half.
+ *
+ * **Order is load-bearing.** `::`/`::1` must be answered BEFORE the tunnel forms — without that, `::1` falls
+ * into the IPv4-compatible branch, reads as `0.0.0.1`, matches the `0.` prefix and is reported as metadata,
+ * which is how a plain loopback MCP endpoint once got refused with the wrong reason.
+ */
+function ipv6IsMetadataOrLinkLocal(groups: readonly number[]): boolean {
+  const first = groups[0] ?? 0;
+  if (first >= 0xfe80 && first <= 0xfebf) return true; // fe80::/10
+  if (isAwsImdsV6(groups)) return true;
+  if (isUnspecifiedOrLoopbackV6(groups)) return false;
+  const tunnelled = tunnelledIpv4(groups);
+  return tunnelled === null ? false : isMetadataOrLinkLocal(tunnelled);
 }
 
 /** Block the 172.16/12 private range (172.16.0.0 – 172.31.255.255) on a dotted-decimal host. */
