@@ -185,7 +185,25 @@ async function resolveValidatedIps(
 ): Promise<readonly string[]> {
   const isAuthoredLocal =
     local !== undefined && target.host === local.host && target.port === local.port;
-  if (isAuthoredLocal && isMetadataOrLinkLocal(target.host)) {
+  assertHostLiteralAllowed(target.host, isAuthoredLocal);
+  const ips = await deps.resolveHost(target.host);
+  if (ips.length === 0) {
+    throw new SafeEgressError('blocked_host', 'egress target did not resolve to an address');
+  }
+  for (const ip of ips) assertResolvedIpAllowed(ip, isAuthoredLocal);
+  return ips;
+}
+
+/**
+ * The PRE-DNS half: what the authored host text alone already disqualifies.
+ *
+ * Split from the resolved-address half because they are two different guarantees, not one long function —
+ * the docblock above has always described them as two, and a test isolates this one specifically (it needs an
+ * injected resolver that answers something else, because with a real one an IP literal short-circuits to
+ * itself and only the second guard is observable).
+ */
+function assertHostLiteralAllowed(host: string, isAuthoredLocal: boolean): void {
+  if (isAuthoredLocal && isMetadataOrLinkLocal(host)) {
     // **The opt-in may not name the metadata space, and this is where a review found it could.**
     // `169.254.169.254` is inside the private ranges `isPrivateOrLocalHost` blocks, so it satisfied every
     // condition for an authored "local endpoint" — and would then have been reachable over PLAINTEXT with
@@ -196,46 +214,45 @@ async function resolveValidatedIps(
       'a local endpoint may not name a link-local or cloud-metadata address',
     );
   }
-  if (!isAuthoredLocal && isPrivateOrLocalHost(target.host)) {
+  if (!isAuthoredLocal && isPrivateOrLocalHost(host)) {
     throw new SafeEgressError('blocked_host', 'egress target is a private/loopback address');
   }
-  const ips = await deps.resolveHost(target.host);
-  if (ips.length === 0) {
-    throw new SafeEgressError('blocked_host', 'egress target did not resolve to an address');
+}
+
+/**
+ * The POST-DNS half, applied to EVERY answer: a multi-record name with one bad address fails the whole fetch.
+ *
+ * The three local-endpoint arms are not one condition with cases — they are three separate ways the opt-in
+ * could be widened, each refused for its own reason.
+ */
+function assertResolvedIpAllowed(ip: string, isAuthoredLocal: boolean): void {
+  // Every resolved value MUST be an IP literal — otherwise a (buggy/malicious) resolver returning a
+  // hostname would pass the range-block (a hostname is not a private IP) and become the pinned `lookup`
+  // target, defeating the connect-by-validated-IP guarantee. Fail-closed on a non-IP.
+  if (isIP(ip) === 0) {
+    throw new SafeEgressError('blocked_host', 'egress resolver returned a non-IP address');
   }
-  for (const ip of ips) {
-    // Every resolved value MUST be an IP literal — otherwise a (buggy/malicious) resolver returning a
-    // hostname would pass the range-block (a hostname is not a private IP) and become the pinned `lookup`
-    // target, defeating the connect-by-validated-IP guarantee. Fail-closed on a non-IP.
-    if (isIP(ip) === 0) {
-      throw new SafeEgressError('blocked_host', 'egress resolver returned a non-IP address');
-    }
-    const privateIp = isPrivateOrLocalHost(ip);
-    if (!isAuthoredLocal && privateIp) {
-      throw new SafeEgressError(
-        'blocked_host',
-        'egress target resolves to a private/loopback address',
-      );
-    }
-    if (isAuthoredLocal && isMetadataOrLinkLocal(ip)) {
-      // The same rule on the RESOLVED address, because a name is what an attacker steers. A `*.local`
-      // opt-in whose mDNS answer is `169.254.169.254` must not become a plaintext hop to the metadata
-      // service just because the authored text looked innocuous.
-      throw new SafeEgressError(
-        'blocked_host',
-        'a local endpoint may not resolve to a link-local or cloud-metadata address',
-      );
-    }
-    if (isAuthoredLocal && !privateIp) {
-      // The opt-in NARROWS; it never widens. A declared local endpoint that resolves public would otherwise
-      // be a plaintext connection to a remote host, which is the inversion this policy exists to prevent.
-      throw new SafeEgressError(
-        'blocked_host',
-        'a local-endpoint target must resolve to a private/loopback address',
-      );
-    }
+  const privateIp = isPrivateOrLocalHost(ip);
+  if (!isAuthoredLocal && privateIp) {
+    throw new SafeEgressError('blocked_host', 'egress target resolves to a private/loopback address');
   }
-  return ips;
+  if (isAuthoredLocal && isMetadataOrLinkLocal(ip)) {
+    // The same rule on the RESOLVED address, because a name is what an attacker steers. A `*.local`
+    // opt-in whose mDNS answer is `169.254.169.254` must not become a plaintext hop to the metadata
+    // service just because the authored text looked innocuous.
+    throw new SafeEgressError(
+      'blocked_host',
+      'a local endpoint may not resolve to a link-local or cloud-metadata address',
+    );
+  }
+  if (isAuthoredLocal && !privateIp) {
+    // The opt-in NARROWS; it never widens. A declared local endpoint that resolves public would otherwise
+    // be a plaintext connection to a remote host, which is the inversion this policy exists to prevent.
+    throw new SafeEgressError(
+      'blocked_host',
+      'a local-endpoint target must resolve to a private/loopback address',
+    );
+  }
 }
 
 /**
