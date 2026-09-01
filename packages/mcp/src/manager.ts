@@ -2,7 +2,12 @@ import type { McpCapability, ToolDef } from '@relavium/core';
 import type { AbortSignalLike } from '@relavium/shared';
 
 import type { McpConnection } from './connection.js';
-import { McpConnectError, McpError } from './errors.js';
+import {
+  McpConnectError,
+  McpDuplicateServerError,
+  McpError,
+  McpNoConnectionError,
+} from './errors.js';
 import { buildServerToolDefs } from './tool-mapping.js';
 
 /**
@@ -55,8 +60,14 @@ export interface McpClient {
   readonly toolIdsByServer: ReadonlyMap<string, readonly string[]>;
   /** Tools dropped at discovery, per server. */
   readonly skipped: readonly ManagerSkippedTool[];
-  /** Tear down every connection (idempotent). */
-  close(): Promise<void>;
+  /**
+   * Tear down every connection (idempotent).
+   *
+   * `onCloseError` is optional (`#207`): a teardown fault is swallowed by default, because "the child is
+   * exiting" is true almost always — but a caller that has somewhere to report can hear about the times it
+   * is not, which is when an orphaned-process report would otherwise have no trace to start from.
+   */
+  close(onCloseError?: (serverId: string, cause: unknown) => void): Promise<void>;
   /**
    * The pids of the spawned `stdio` children, for a host's **synchronous** last-resort reap on
    * `process.on('exit')` ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §1.3).
@@ -82,7 +93,7 @@ export async function startMcpClient(
   const seenServerIds = new Set<string>();
   for (const server of servers) {
     if (seenServerIds.has(server.id)) {
-      throw new McpError(`duplicate MCP server id "${server.id}"`);
+      throw new McpDuplicateServerError(server.id);
     }
     seenServerIds.add(server.id);
   }
@@ -139,7 +150,7 @@ export async function startMcpClient(
     call: (input, signal) => {
       const connection = connections.get(input.server);
       if (connection === undefined) {
-        return Promise.reject(new McpError(`no MCP connection for server "${input.server}"`));
+        return Promise.reject(new McpNoConnectionError(input.server));
       }
       return connection.callTool(input.tool, input.args, signal);
     },
@@ -157,13 +168,28 @@ export async function startMcpClient(
     toolIdsByServer,
     skipped,
     childPids,
-    close: () => closeAll(connections),
+    close: (onCloseError) => closeAll(connections, onCloseError),
   };
 }
 
 /** Close every connection, swallowing teardown errors (the children are exiting); clears the map (idempotent). */
-async function closeAll(connections: Map<string, McpConnection>): Promise<void> {
-  const all = [...connections.values()];
+async function closeAll(
+  connections: Map<string, McpConnection>,
+  onCloseError?: (serverId: string, cause: unknown) => void,
+): Promise<void> {
+  const all = [...connections.entries()];
   connections.clear();
-  await Promise.all(all.map((connection) => connection.close().catch(() => undefined)));
+  await Promise.all(
+    all.map(([serverId, connection]) =>
+      connection.close().catch((cause: unknown) => {
+        // **Reported when a caller asked to hear it, swallowed otherwise** (`#207`). The unconditional
+        // discard was defensible — "the child is exiting" is true almost always — but "almost always" is
+        // exactly the case where a genuinely misbehaving transport produces an orphaned-process report with
+        // no trace to diagnose it from. The callback is optional so the pervasive `.catch(() => undefined)`
+        // convention at every existing call site keeps working unchanged; a caller that HAS somewhere to
+        // report can now opt in, which is what the finding asked for and what makes the change complete.
+        onCloseError?.(serverId, cause);
+      }),
+    ),
+  );
 }

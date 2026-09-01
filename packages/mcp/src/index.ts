@@ -32,7 +32,16 @@ export type {
   McpTextContent,
   McpNonTextContent,
 } from './connection.js';
-export { McpError, McpConnectError, McpHostUnavailableError } from './errors.js';
+export {
+  classifyConnectFailure,
+  connectHint,
+  McpConnectError,
+  McpDuplicateServerError,
+  McpError,
+  McpHostUnavailableError,
+  McpNoConnectionError,
+  type McpConnectReason,
+} from './errors.js';
 export {
   MCP_DEADLINES,
   McpAbortedError,
@@ -48,7 +57,12 @@ export {
   toolDefinitionBytes,
 } from './ingress-bounds.js';
 export { buildServerToolDefs, type ServerToolDefs, type SkippedTool } from './tool-mapping.js';
-export { openStdioConnection, type ConnectBound, type StdioServerSpec } from './sdk-stdio.js';
+export {
+  openStdioConnection,
+  setMcpClientVersion,
+  type ConnectBound,
+  type StdioServerSpec,
+} from './sdk-stdio.js';
 export { openHttpConnection, type HttpServerSpec } from './sdk-http.js';
 export { openSseConnection, type SseServerSpec } from './sdk-sse.js';
 export { openWebSocketConnection, type WebSocketServerSpec } from './sdk-websocket.js';

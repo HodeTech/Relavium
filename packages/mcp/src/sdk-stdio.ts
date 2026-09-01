@@ -45,7 +45,29 @@ export interface StdioServerSpec {
   readonly connectTimeoutMs?: number;
 }
 
-const CLIENT_INFO = { name: 'relavium', version: '0.1.0' } as const;
+/**
+ * What we tell an MCP server we are, in the `initialize` handshake.
+ *
+ * The version is **host-supplied** (`#208`). It was a hand-maintained `'0.1.0'` literal that had already
+ * drifted past the shipped CLI, and a server that logs or version-gates on it saw a permanently stale
+ * number no maintainer would remember to bump. `packages/mcp` has no release version of its own — it is a
+ * workspace package — so the host injects the one it actually ships, and the default names the gap rather
+ * than inventing a number.
+ */
+let clientVersion = 'unknown';
+
+/**
+ * Set the version reported to every MCP server. Called once by the host at startup, from the same build-time
+ * token `--version` uses, so the two cannot drift.
+ */
+export function setMcpClientVersion(version: string): void {
+  clientVersion = version;
+}
+
+const clientInfo = (): { name: string; version: string } => ({
+  name: 'relavium',
+  version: clientVersion,
+});
 
 /** A bound on the `tools/list` pages followed — a hostile server returning an endless cursor can't loop forever. */
 export const MAX_TOOL_PAGES = 100;
@@ -183,7 +205,7 @@ export async function connectSdkTransport(
 ): Promise<McpConnection> {
   const window = openWindow(bound.timeoutMs);
   const bridged = toAbortSignal(bound.signal);
-  const client = new Client(CLIENT_INFO, { capabilities: {} });
+  const client = new Client(clientInfo(), { capabilities: {} });
   try {
     await raceDeadline(
       serverId,
@@ -245,11 +267,7 @@ class SdkConnection implements McpConnection {
   async callTool(name: string, args: unknown, signal?: AbortSignalLike): Promise<McpToolResult> {
     const window = openWindow(MCP_DEADLINES.callMs);
     const result = await this.#request('call', window, signal, (options) =>
-      this.#client.callTool(
-        { name, arguments: isRecord(args) ? args : undefined },
-        undefined,
-        options,
-      ),
+      this.#client.callTool({ name, arguments: assertRecordArgs(name, args) }, undefined, options),
     );
     return shapeToolResult(result);
   }
@@ -303,4 +321,22 @@ async function safeClose(client: Client): Promise<void> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The `arguments` a `tools/call` may carry — or a typed refusal (`#206`).
+ *
+ * **`undefined` for "none" is right; `undefined` for "I did not understand what you sent" is not.** The old
+ * `isRecord(args) ? args : undefined` invoked the tool with NO arguments when handed a non-object, which is a
+ * silent wrong-behaviour path in a package that fails loud at every other boundary. It is not dead code: the
+ * registry coerces a discovered tool's top-level args to a `Record` before dispatch, but the `mcp_call`
+ * built-in has a NESTED `args: z.unknown().optional()` that bypasses that coercion, so a model routing
+ * through the low-level escape hatch reaches here directly.
+ */
+function assertRecordArgs(name: string, args: unknown): Record<string, unknown> | undefined {
+  if (args === undefined || args === null) return undefined;
+  if (isRecord(args)) return args;
+  throw new McpError(
+    `MCP tool "${name}" was called with non-object arguments — a tools/call takes an object or nothing`,
+  );
 }
