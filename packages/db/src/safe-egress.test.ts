@@ -310,6 +310,23 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
     ).rejects.toMatchObject({ code: 'insecure_url' });
   });
 
+  it('refuses embedded credentials on the PLAINTEXT local-endpoint path too', async () => {
+    // **The arm `urlHasCredentials` does not cover.** That helper is HTTPS-only — it answers `false` for an
+    // `http` url whatever its authority — and it was the whole credential story until ADR-0088 §4 admitted a
+    // plaintext local endpoint. What catches this is the second check: `hasCredentials` off the scheme-
+    // agnostic `extractEgressAuthority`. Untested until now, on a path that carries a user's dev-server
+    // password to a socket, so the refusal rested on a helper that cannot see it.
+    const deps = fakeDeps({ resolve: { localhost: ['127.0.0.1'] } });
+    await expect(
+      connectValidated(
+        'http://user:pass@localhost:4000/mcp',
+        { method: 'GET', localEndpoint: { host: 'localhost', port: 4000 } },
+        deps,
+        sig(),
+      ),
+    ).rejects.toMatchObject({ code: 'insecure_url' });
+  });
+
   it('refuses a local endpoint that NAMES the cloud-metadata space, opt-in or not', async () => {
     // **A review found this reachable, and a mutation found the check unbound.** `169.254.169.254` sits
     // INSIDE the private ranges, so it satisfied every condition for an authored "local endpoint" — and

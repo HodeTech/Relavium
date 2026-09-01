@@ -57,7 +57,7 @@ flowchart LR
 3. **Project** (`project.toml`) — project-specific overrides.
 4. **Per-invocation** — a CLI flag or environment variable for a single run; highest precedence. See [../cli/commands.md](../cli/commands.md).
 
-MCP server registrations follow the same merge: globally registered servers (`config.toml`) plus any project-scoped servers. See [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md).
+MCP server registrations **union** across layers rather than following this precedence: globally registered servers (`config.toml`) plus any project-scoped servers, and a name declared in more than one layer is **refused, not overridden** — see the **Project-scoped MCP servers** note under [`project.toml` / `workspace.toml`](#projecttoml--workspacetoml-project--keys) for the rule and its remedy, and [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md) for the registration shape.
 
 ## `config.toml` (global) — keys
 

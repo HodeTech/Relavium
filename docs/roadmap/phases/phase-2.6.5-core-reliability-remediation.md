@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker** (25 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28); `W4` is next
+- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` complete on `development` 2026-09-01, in review as PR #87** (28 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28)
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -1477,8 +1477,13 @@ nothing else and parses each frame before Relavium sees a byte.
 The network config checks the authored hostname and scheme, then hands the raw opener to the SDK. The code
 itself documents the DNS-to-private and redirect-to-private holes. A public-looking domain can resolve to
 loopback, RFC1918 or a metadata IP.
-**Fix.** Apply the built-in egress mechanism — resolve-all, range-block, pinned IP — to the MCP HTTP, SSE and
-WebSocket transports.
+**Fix (as written when the item was opened).** Apply the built-in egress mechanism — resolve-all, range-block,
+pinned IP — to the MCP HTTP, SSE and WebSocket transports.
+**What actually landed**, and why the third differs: `http`/`sse` accept an injectable `fetch` and got exactly
+that mechanism. `WebSocketClientTransport` takes a `URL` and nothing else, so there is no seam to pin it
+through — a remote `websocket` is **refused at admission** instead ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md)
+§2.3). Refusal is the stronger answer, not a weaker one; the transport is still reachable for a local endpoint
+opted into via `allow_local_endpoint`.
 
 ### Step 3 — the ingress bounds · ✅ (`CR-42`, `G33`, `#201`, `#209`, `#288`)
 
@@ -1540,9 +1545,14 @@ derived from the caught error's SHAPE, never from its text.
 | `#203`, `#204`, `#206`, `#207`, `#208` | structured fields, a `reason` from the error's shape, fail-loud args, a reportable teardown, a host-supplied version | `errors.test.ts` |
 | `#287` | is `CR-41` | as above |
 
-**What this wave cost that a reader should know.** Two previously-working configurations are now refused: a
-remote `websocket` server (declare it as `http`), and a project config redefining a global MCP registration.
-Both are in the reference specs with the remedy named.
+**What this wave cost that a reader should know.** Two previously-working configurations are now refused, and
+both remedies are in the reference specs:
+
+- A **remote `websocket` server**. The remedy is not a one-word YAML edit — changing `transport:` does not
+  convert a `wss://` endpoint into a Streamable HTTP one. Point the entry at an `https://` endpoint the same
+  server exposes for `http`/`sse` (most MCP servers offer one), or, if it is genuinely local, keep `websocket`
+  and opt in with `allow_local_endpoint`.
+- A **project config redefining a global MCP registration**. Rename the project entry, or remove the duplicate.
 
 **What it did NOT close**, recorded in [deferred-tasks.md](../deferred-tasks.md) rather than implied: the
 admission and the dialer canonicalize a url differently (fails closed, so it costs usability not safety); the
@@ -1550,6 +1560,17 @@ MCP hop does not go through `withEgressTimeout`; and `allow_local_endpoint` may 
 resolution a LAN-adjacent attacker steers, narrowed but not eliminated by the dialer's refusal of a public or
 metadata answer. `#297` (per-file adapter coverage) is satisfied incidentally by the tests above rather than
 by a coverage threshold, and is left as a coverage-gate question rather than claimed.
+
+**The PR #87 review round (2026-09-01)** found nine more, and their distribution repeats the wave's own
+lesson rather than departing from it. Two were live gaps in the boundaries the ADR claims: a `required`-only
+property name escaped `schemaPropertyNameBytes` entirely (refused at 257 bytes through the `properties` door,
+admitted at 200 KiB through the other), and `relavium run` released the signal guard BEFORE awaiting the MCP
+teardown — leaving the ~4 s ladder against a trapping child with no reaper, which is the exact orphan the
+guard exists to prevent, inside the guard's own teardown path. Four were tests that could not fail: one built
+an `AbortSignal` and never passed it, one carried a name its assertion did not support, one hand-rolled the
+loop it claimed to test `listTools` through, and one asserted a request body under a comment about connection
+pinning. Adding the missing test for the plaintext credential path found that removing the check it covers left
+**every other test in the repository green**.
 
 **Eight review rounds ran over this wave** — four Opus and four Sonnet, across five steps. They found three
 blockers and nine highs, and the pattern was consistent enough to be worth stating: **every blocker was in a

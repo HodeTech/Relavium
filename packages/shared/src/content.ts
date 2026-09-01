@@ -1426,7 +1426,7 @@ export function extractEgressAuthority(url: string): EgressAuthority | null {
   let port = defaultPort;
   if (portPart !== '') {
     // Digits only: a `:80abc` or a `:` with nothing after it is a malformed authority, not a default.
-    if (!/^[0-9]+$/.test(portPart)) return null;
+    if (!/^\d+$/.test(portPart)) return null;
     port = Number.parseInt(portPart, 10);
     if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
   }
@@ -1434,10 +1434,17 @@ export function extractEgressAuthority(url: string): EgressAuthority | null {
 }
 
 /**
- * Returns `true` when an HTTPS URL string contains credentials (`user:pass@`) in its authority
- * component. Used by the SSRF policy to reject URLs that embed secrets in the URL itself
- * (security-review.md). HTTPS-only, matching {@link extractHttpsHost} (a non-HTTPS URL is rejected
- * upstream by the same scheme check, so the two never disagree on scheme).
+ * Returns `true` when an **HTTPS** URL string contains credentials (`user:pass@`) in its authority component.
+ * Used by the SSRF policy to reject URLs that embed secrets in the URL itself (security-review.md).
+ *
+ * **HTTPS-only, and that is now a real limitation rather than a tautology.** It matches
+ * {@link extractHttpsHost}, and its callers — the OpenAI adapter's base-url check and `relavium provider` —
+ * are HTTPS-only by their own rules, so for them a non-HTTPS url is refused on scheme before this is
+ * consulted. That was the whole story until [ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md)
+ * §4 admitted a plaintext local endpoint: `validateEgressTarget` calls this AND then checks
+ * `parsed.hasCredentials` from {@link extractEgressAuthority}, which is scheme-agnostic, and it is that second
+ * check — not this one — that catches `http://user:pass@localhost:4000`. A new caller on a path that can carry
+ * `http`, `ws` or `wss` must use `extractEgressAuthority`; this function will answer `false` for all three.
  */
 export function urlHasCredentials(url: string): boolean {
   const match = HTTPS_AUTHORITY_PATTERN.exec(url);
