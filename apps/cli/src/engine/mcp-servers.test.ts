@@ -11,6 +11,7 @@ import type { Agent, McpServerRef, McpServerRegistration } from '@relavium/share
 import { describe, expect, it } from 'vitest';
 
 import { CliError, isCliError } from '../process/errors.js';
+import type { McpFetch, McpFetchConfig } from './mcp-fetch.js';
 import { captureIo } from '../test-support.js';
 import type { ResolvedStdioSpawn } from './mcp-consent.js';
 import {
@@ -291,7 +292,13 @@ describe('resolveServerConfigs', () => {
       [
         { id: 'a', transport: 'http', url: 'https://h/mcp' },
         { id: 'b', transport: 'sse', url: 'https://h/sse' },
-        { id: 'c', transport: 'websocket', url: 'wss://h/ws' },
+        // LOCAL, because ADR-0088 §2.3 refuses a REMOTE websocket at admission — see the dedicated test.
+        {
+          id: 'c',
+          transport: 'websocket',
+          url: 'ws://localhost:9000/ws',
+          allow_local_endpoint: true,
+        },
       ],
       '/work',
       undefined,
@@ -301,7 +308,7 @@ describe('resolveServerConfigs', () => {
     expect(calls.sort()).toEqual([
       'http:a:https://h/mcp',
       'sse:b:https://h/sse',
-      'ws:c:wss://h/ws',
+      'ws:c:ws://localhost:9000/ws',
     ]);
   });
 
@@ -380,9 +387,32 @@ describe('SSRF floor (resolveServerConfigs network gate, 2.R Step 4c / ADR-0053)
   const build = (over: Partial<McpServerRef> = {}): McpServerConfig[] =>
     resolveServerConfigs([netRef(over)], '/work');
 
-  it('accepts a remote https/wss endpoint', () => {
+  it('accepts a remote https endpoint', () => {
     expect(build({ url: 'https://api.example/mcp' })).toHaveLength(1);
-    expect(build({ transport: 'websocket', url: 'wss://api.example/ws' })).toHaveLength(1);
+    expect(build({ transport: 'sse', url: 'https://api.example/sse' })).toHaveLength(1);
+  });
+
+  it('REFUSES a remote websocket outright, naming the transport that carries it safely (ADR-0088 §2.3)', () => {
+    // A deliberate narrowing, not a bug. `WebSocketClientTransport` takes a `URL` and nothing else — no
+    // `fetch`, no dialer, no socket factory — and its `onmessage` runs `JSON.parse(event.data)` before any
+    // Relavium code sees a byte. So on that transport there is neither §2.1's pin nor §5's byte bound to give
+    // a server the user never consented to run. This test previously asserted `wss://api.example/ws` was
+    // ACCEPTED; the assertion is inverted because the decision changed, and the message has to be actionable
+    // because the fix is a one-word edit in the author's YAML.
+    expect(() => build({ transport: 'websocket', url: 'wss://api.example/ws' })).toThrow(
+      /remote 'websocket' MCP server is not supported/,
+    );
+    expect(() => build({ transport: 'websocket', url: 'wss://api.example/ws' })).toThrow(
+      /transport: 'http'/,
+    );
+  });
+
+  it('still permits a LOCAL opted-in websocket — an unbounded transport must be local and admitted', () => {
+    // The other half of §2.3, and the reason it is a narrowing rather than a removal: a local endpoint is an
+    // explicit opt-in to an address the author wrote down, which is the same line `stdio` sits on.
+    expect(
+      build({ transport: 'websocket', url: 'ws://localhost:9000/ws', allow_local_endpoint: true }),
+    ).toHaveLength(1);
   });
 
   it('rejects a private/loopback/link-local host without allow_local_endpoint', () => {
@@ -431,9 +461,94 @@ describe('SSRF floor (resolveServerConfigs network gate, 2.R Step 4c / ADR-0053)
     expect(() => build({ transport: 'sse', url: 'http://api.example/sse' })).toThrow(
       /must use https\/wss/,
     ); // the sse alias is gated identically
+    // A remote plaintext websocket is refused too — by the §2.3 narrowing, which runs first because a remote
+    // websocket has no safe form at all. The rule it would otherwise have hit is the same one.
     expect(() => build({ transport: 'websocket', url: 'ws://api.example/ws' })).toThrow(
-      /must use https\/wss/,
+      /remote 'websocket' MCP server is not supported/,
     );
+  });
+
+  it('hands the VALIDATED FETCH to an http/sse opener, carrying that server’s local scope', () => {
+    // **The half ADR-0053 §2 called the target and left as a tracked follow-up.** The admission checks the
+    // AUTHORED host, so a name that DNS-resolves to a private IP was never caught by it — the pin is what
+    // closes that, and it only exists if the fetch actually reaches the transport. Asserting the CONFIG the
+    // factory was built with is what binds the scope: an opted-in `localhost:4000` server must not hand the
+    // dialer a policy that would also admit `localhost:6379`.
+    const built: McpFetchConfig[] = [];
+    const marker: McpFetch = () => Promise.reject(new Error('unused'));
+    let seen: unknown = 'never called';
+    resolveServerConfigs(
+      [
+        {
+          id: 'local',
+          transport: 'http',
+          url: 'http://localhost:4000/mcp',
+          allow_local_endpoint: true,
+        },
+      ],
+      '/work',
+      undefined,
+      {
+        makeFetch: (config) => {
+          built.push(config);
+          return marker;
+        },
+        http: (_id, spec) => {
+          seen = spec.fetch;
+          return Promise.reject(new Error('not connecting'));
+        },
+      },
+    )[0]
+      ?.open()
+      .catch(() => undefined);
+
+    expect(built).toEqual([{ localEndpoint: { host: 'localhost', port: 4000 } }]);
+    expect(seen).toBe(marker);
+  });
+
+  it('builds a REMOTE http server’s fetch with NO local policy at all', () => {
+    // Absence is the secure default, and it has to be absence rather than a false-y flag: `connectValidated`
+    // reads "no localEndpoint" as HTTPS-only with every private range blocked.
+    const built: McpFetchConfig[] = [];
+    resolveServerConfigs(
+      [{ id: 'r', transport: 'http', url: 'https://api.example/mcp' }],
+      '/work',
+      undefined,
+      {
+        makeFetch: (config) => {
+          built.push(config);
+          return () => Promise.reject(new Error('unused'));
+        },
+      },
+    );
+    expect(built).toEqual([{}]);
+  });
+
+  it('builds NO validated dialer for a websocket server — there is no hook to hand it to (ADR-0088 §2.3)', () => {
+    // The type system already proves the stronger half: `WebSocketServerSpec` has no `fetch` field, so a
+    // version that tried to pass one would not compile. What a test can add is the runtime half — that the
+    // factory is not even CALLED, so no policy is built for a transport that cannot honour one. Together they
+    // say why this transport is local-only: not "we forgot", but "there is nowhere to put the guarantee".
+    let factoryCalls = 0;
+    resolveServerConfigs(
+      [
+        {
+          id: 'w',
+          transport: 'websocket',
+          url: 'ws://localhost:9000/ws',
+          allow_local_endpoint: true,
+        },
+      ],
+      '/work',
+      undefined,
+      {
+        makeFetch: () => {
+          factoryCalls += 1;
+          return () => Promise.reject(new Error('unused'));
+        },
+      },
+    );
+    expect(factoryCalls).toBe(0);
   });
 
   it('rejects an embedded-credentials url (the flag never relaxes it)', () => {

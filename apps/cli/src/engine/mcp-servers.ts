@@ -16,9 +16,12 @@ import {
   type StdioServerSpec,
   type WebSocketServerSpec,
 } from '@relavium/mcp';
+import type { LocalEndpoint } from '@relavium/db';
 import {
+  extractEgressAuthority,
   isForbiddenDeclaredEnvKey,
   isPrivateOrLocalHost,
+  urlHasCredentials,
   MCP_CONNECT_TIMEOUT_CEILING_MS,
   type AbortSignalLike,
   type Agent,
@@ -28,6 +31,7 @@ import {
 } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
+import { createMcpFetch, type McpFetch, type McpFetchConfig } from './mcp-fetch.js';
 import type { ResolvedStdioSpawn } from './mcp-consent.js';
 import type { CliIo } from '../process/io.js';
 import { sanitizeInline } from '../render/tui/chat-projection.js';
@@ -187,6 +191,12 @@ export type OpenStdioConnection = (
  * observe the built spec (or assert the SSRF gate) without a real spawn/connect.
  */
 export interface ServerOpeners {
+  /**
+   * Build the validated `fetch` for one network server (ADR-0088 §2.1). Injectable so a test can observe the
+   * `host:port` scope the admission derived — and so the SSRF policy is exercised against fake DNS rather
+   * than the network. Production is {@link createMcpFetch}.
+   */
+  readonly makeFetch?: (config: McpFetchConfig) => McpFetch;
   readonly stdio?: OpenStdioConnection;
   readonly http?: (
     serverId: string,
@@ -209,7 +219,7 @@ export interface ServerOpeners {
 type NetworkTransport = 'http' | 'sse' | 'websocket';
 type NetworkOpener = (
   serverId: string,
-  spec: { readonly url: string; readonly connectTimeoutMs?: number },
+  spec: { readonly url: string; readonly connectTimeoutMs?: number; readonly fetch?: McpFetch },
   signal?: AbortSignalLike,
 ) => Promise<McpConnection>;
 type NetworkOpeners = Record<NetworkTransport, NetworkOpener>;
@@ -237,6 +247,7 @@ export function resolveServerConfigs(
   consented?: ReadonlyMap<string, ResolvedStdioSpawn>,
 ): McpServerConfig[] {
   const openStdio = openers.stdio ?? openStdioConnection;
+  const makeFetch = openers.makeFetch ?? createMcpFetch;
   const network: NetworkOpeners = {
     http: openers.http ?? openHttpConnection,
     sse: openers.sse ?? openSseConnection,
@@ -254,7 +265,7 @@ export function resolveServerConfigs(
     configs.push(
       ref.transport === 'stdio'
         ? buildStdioConfig(ref.id, ref, cwd, resolveSecret, openStdio, consented?.get(ref.id))
-        : buildNetworkConfig(ref.id, ref.transport, ref, network),
+        : buildNetworkConfig(ref.id, ref.transport, ref, network, makeFetch),
     );
   }
   return configs;
@@ -335,6 +346,7 @@ function buildNetworkConfig(
   transport: NetworkTransport,
   ref: McpServerRef,
   openers: NetworkOpeners,
+  makeFetch: (config: McpFetchConfig) => McpFetch,
 ): McpServerConfig {
   // The schema guarantees a `url` and forbids `env` on a network transport; re-assert both defensively so a
   // programmatic caller that bypassed the schema fails loud rather than silently dropping (an `env` secret).
@@ -351,11 +363,25 @@ function buildNetworkConfig(
     );
   }
   const url = ref.url;
-  // The SSRF pre-connect floor — rejects a private/loopback/link-local host (unless opted in) and a plaintext
-  // remote (ADR-0053). The connect-by-validated-IP dialer upgrade (DNS-rebind) is the tracked follow-up.
-  assertSafeNetworkEndpoint(serverId, url, ref.allow_local_endpoint === true);
+  // Admission: scheme, credentials, the private-range rule, and — for `websocket` — the §2.3 narrowing.
+  // Returns the authored `host:port` when the server opted into a local endpoint, which is the scope the
+  // dialer then enforces (ADR-0088 §2.2/§4).
+  const localEndpoint = assertSafeNetworkEndpoint(
+    serverId,
+    url,
+    transport,
+    ref.allow_local_endpoint === true,
+  );
   const open = openers[transport]; // `http` (Streamable HTTP) | `sse` (legacy HTTP+SSE alias) | `websocket`
   const connectTimeoutMs = ref.connect_timeout_ms;
+  // **The validated dialer, per server** (ADR-0088 §2.1). `http`/`sse` accept an injected `fetch`, so every
+  // request on those transports — the initialize POST, each `tools/call`, the long-lived GET stream — rides
+  // the ONE shared connect-by-validated-IP hop carrying this server's own local-endpoint scope. `websocket`
+  // accepts no such hook, which is why §2.3 narrows it to a local endpoint rather than pretending otherwise.
+  const validatedFetch =
+    transport === 'websocket'
+      ? undefined
+      : makeFetch({ ...(localEndpoint === undefined ? {} : { localEndpoint }) });
   return {
     id: serverId,
     ...toolsAllowlistFields(ref),
@@ -366,6 +392,7 @@ function buildNetworkConfig(
         {
           url,
           ...(connectTimeoutMs === undefined ? {} : { connectTimeoutMs }),
+          ...(validatedFetch === undefined ? {} : { fetch: validatedFetch }),
         },
         signal,
       ),
@@ -373,61 +400,72 @@ function buildNetworkConfig(
 }
 
 /**
- * The **SSRF pre-connect floor** for a network MCP `url` (2.R Step 4c, [ADR-0053](../../../docs/decisions/0053-mcp-network-transport-egress-security.md)).
- * Reuses the ONE shared `isPrivateOrLocalHost` range-block primitive (never re-implemented). A private/loopback/
- * link-local/metadata host is rejected UNLESS `allow_local_endpoint` is set (which, for that local endpoint,
- * also permits plaintext `http`/`ws` — a local-dev server is typically plaintext); a **remote** host must use
- * `https`/`wss` regardless of the flag. The no-embedded-credentials check is enforced here too (the flag never
- * relaxes it).
+ * **Admission** for a network MCP `url` — what may be declared at all
+ * ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §2.2–§4,
+ * [ADR-0053](../../../docs/decisions/0053-mcp-network-transport-egress-security.md)). Reuses the ONE shared
+ * `isPrivateOrLocalHost` range-block primitive (never re-implemented), and returns the authored `host:port`
+ * when the server opted into a local endpoint — the scope the dialer then enforces on every resolved address.
  *
- * **Scope (ADR-0053 §3 / SEC-EGRESS-3):** the opt-in relaxes exactly the **authored `host:port`** — the SDK
- * transport dials precisely the validated `url`, so today the relaxation cannot reach a sibling private port
- * (e.g. `:6379`/`:22`) on the same host. This is the host-validated **FLOOR**: it checks the AUTHORED host, so a
- * hostname that DNS-resolves to a private IP, and a redirect-to-private, are NOT caught here — the
- * connect-by-validated-IP dialer + per-hop re-validation (which **must** re-block any resolved/redirected
- * `host:port` other than the authored one) is the tracked follow-up (deferred-tasks.md).
+ * It is no longer the whole story, and that is the point of §2.1: this checks the AUTHORED host, so a name
+ * that DNS-resolves to a private IP is caught by the **dialer**, not here. What stays here is what can only be
+ * decided from the declaration:
+ *
+ * - **no embedded credentials**, which the opt-in never relaxes;
+ * - **the scheme family**, rejected before any relaxation so an opted-in local endpoint can never wave through
+ *   a `file:`/`javascript:` scheme;
+ * - **a remote endpoint is `https`/`wss`**, always — the rule two independent relaxation flags would have
+ *   inverted (ADR-0088 §4);
+ * - **a remote `websocket` is refused outright** (§2.3). `WebSocketClientTransport` takes a `URL` and nothing
+ *   else and parses each frame before Relavium sees a byte, so on that transport there is neither a pin nor a
+ *   byte bound to give a server the user never consented to run. A local opted-in one is permitted: an
+ *   unbounded transport must be local and explicitly admitted, which is the same line `stdio` sits on.
  */
-function assertSafeNetworkEndpoint(serverId: string, url: string, allowLocal: boolean): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new CliError('invalid_invocation', `MCP server '${serverId}': malformed url.`);
+function assertSafeNetworkEndpoint(
+  serverId: string,
+  url: string,
+  transport: NetworkTransport,
+  allowLocal: boolean,
+): LocalEndpoint | undefined {
+  const parsed = extractEgressAuthority(url);
+  if (parsed === null) {
+    // The ONE parser. `new URL` here would have been a second reading of the same bytes, and the dialer's
+    // `host:port` scope must be derived from the SAME parse the admission approved or the two can disagree.
+    throw new CliError(
+      'invalid_invocation',
+      `MCP server '${serverId}': malformed url or unsupported scheme (http/https/ws/wss only).`,
+    );
   }
-  if (parsed.username !== '' || parsed.password !== '') {
+  if (parsed.hasCredentials || urlHasCredentials(url)) {
     throw new CliError(
       'invalid_invocation',
       `MCP server '${serverId}': the url must not embed credentials (user:pass@…) — use env/keychain auth.`,
     );
   }
-  // Validate the scheme FIRST — the schema already constrains it per transport, but as a host-side floor reject
-  // anything outside the http/ws family BEFORE the `allow_local_endpoint` relaxation, so an opt-in local endpoint
-  // can never wave through a `file:`/`javascript:`/etc. scheme (defense-in-depth, ADR-0053).
-  const scheme = parsed.protocol;
-  if (scheme !== 'http:' && scheme !== 'https:' && scheme !== 'ws:' && scheme !== 'wss:') {
+  const isLocalHost = isPrivateOrLocalHost(parsed.host);
+  if (isLocalHost && !allowLocal) {
     throw new CliError(
       'invalid_invocation',
-      `MCP server '${serverId}': unsupported url scheme '${scheme.replace(':', '')}' (http/https/ws/wss only).`,
+      `MCP server '${serverId}': '${parsed.host}' is a private/loopback/link-local address. ` +
+        `Set 'allow_local_endpoint: true' on the server to permit a local MCP endpoint.`,
     );
   }
-  const host = parsed.hostname.replace(/^\[/, '').replace(/\]$/, '');
-  const isSecure = scheme === 'https:' || scheme === 'wss:';
-  if (isPrivateOrLocalHost(host)) {
-    if (!allowLocal) {
-      throw new CliError(
-        'invalid_invocation',
-        `MCP server '${serverId}': '${host}' is a private/loopback/link-local address. ` +
-          `Set 'allow_local_endpoint: true' on the server to permit a local MCP endpoint.`,
-      );
-    }
-    return; // a local endpoint with the explicit opt-in — plaintext is permitted for it (ADR-0053 §3).
-  }
-  if (!isSecure) {
+  if (transport === 'websocket' && !isLocalHost) {
     throw new CliError(
       'invalid_invocation',
-      `MCP server '${serverId}': a remote MCP url must use https/wss (got '${parsed.protocol.replace(':', '')}').`,
+      `MCP server '${serverId}': a remote 'websocket' MCP server is not supported — its transport cannot be ` +
+        `pinned to a validated address or byte-bounded, so it is refused rather than connected unsafely. ` +
+        `Use transport: 'http' (Streamable HTTP), which carries the same server safely.`,
     );
   }
+  if (!isLocalHost && parsed.scheme !== 'https' && parsed.scheme !== 'wss') {
+    throw new CliError(
+      'invalid_invocation',
+      `MCP server '${serverId}': a remote MCP url must use https/wss (got '${parsed.scheme}').`,
+    );
+  }
+  // A local endpoint's scope: exactly this `host:port`, which is what lets the dialer refuse a sibling port
+  // on the same permitted host (`:6379`, `:5432`, `:22`, a container socket) — SEC-EGRESS-3's requirement.
+  return isLocalHost ? { host: parsed.host, port: parsed.port } : undefined;
 }
 
 /**

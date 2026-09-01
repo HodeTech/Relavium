@@ -1280,14 +1280,14 @@ function ipv4FromGroups(hi: number, lo: number): string {
  *  for the two URL policy helpers below, so their scheme + capture can never drift apart. */
 const HTTPS_AUTHORITY_PATTERN = /^https:\/\/([^/?#]+)/i;
 
-/** The `http`/`https` authority, with the scheme captured. Same shape, one scheme wider — see
- *  {@link extractEgressAuthority} for why the plaintext form exists at all. */
-const HTTP_AUTHORITY_PATTERN = /^(https?):\/\/([^/?#]+)/i;
+/** The `http`/`https`/`ws`/`wss` authority, with the scheme captured. One grammar, four schemes — see
+ *  {@link extractEgressAuthority} for why the plaintext and websocket forms are parsed at all. */
+const EGRESS_AUTHORITY_PATTERN = /^(https?|wss?):\/\/([^/?#]+)/i;
 
 /** An egress target's scheme, host and port — the shape a connect-by-validated-IP dialer needs. */
 export interface EgressAuthority {
-  /** `'https'` or `'http'`, lowercased. */
-  readonly scheme: 'http' | 'https';
+  /** Lowercased. `ws`/`wss` are parsed because MCP declares them; a dialer must still refuse what it cannot dial. */
+  readonly scheme: 'http' | 'https' | 'ws' | 'wss';
   /** Lowercased, brackets stripped, trailing FQDN dots removed. */
   readonly host: string;
   /** The explicit port, or the scheme default (443 / 80). */
@@ -1311,16 +1311,33 @@ export interface EgressAuthority {
  * decides whether plaintext is acceptable lives in the dialer, which permits it only for a target that
  * resolves private AND matches an authored `host:port`.
  *
- * Returns `null` for a non-`http(s)` scheme or a malformed authority — the same fail-closed answer, and for
- * the same reasons, as its HTTPS-only sibling: a smuggling character or a percent-encoded authority is never
- * a literal host.
+ * **`ws`/`wss` are parsed too**, because MCP's authored transport vocabulary includes them
+ * ([ADR-0053](../../../docs/decisions/0053-mcp-network-transport-egress-security.md) §1) and the authority
+ * grammar is identical — the alternative was normalizing `ws://` to `http://` before parsing, which is a
+ * rewrite of the very bytes a security check is about. Parsing a scheme grants nothing: a dialer that cannot
+ * speak it must still refuse it, and `connectValidated` does.
+ *
+ * Returns `null` for any other scheme or a malformed authority — the same fail-closed answer, and for the same
+ * reasons, as its HTTPS-only sibling: a smuggling character or a percent-encoded authority is never a literal
+ * host.
  */
+function normalizeScheme(raw: string): EgressAuthority['scheme'] | null {
+  const lower = raw.toLowerCase();
+  // A lookup rather than a cast — the project forbids an unsafe `as`, and a member the pattern could match
+  // but this list forgot must fail closed rather than be coerced into the nearest neighbour.
+  const schemes: readonly EgressAuthority['scheme'][] = ['http', 'https', 'ws', 'wss'];
+  return schemes.find((candidate) => candidate === lower) ?? null;
+}
+
 export function extractEgressAuthority(url: string): EgressAuthority | null {
-  const match = HTTP_AUTHORITY_PATTERN.exec(url);
+  const match = EGRESS_AUTHORITY_PATTERN.exec(url);
   if (match === null) {
     return null;
   }
-  const scheme = (match[1] ?? '').toLowerCase() === 'http' ? 'http' : 'https';
+  const scheme = normalizeScheme(match[1] ?? '');
+  if (scheme === null) {
+    return null;
+  }
   const rawAuthority = match[2] ?? '';
   if (hasSmugglingChar(rawAuthority) || rawAuthority.includes('%')) {
     return null;
@@ -1353,7 +1370,7 @@ export function extractEgressAuthority(url: string): EgressAuthority | null {
   if (host === '') {
     return null;
   }
-  const defaultPort = scheme === 'https' ? 443 : 80;
+  const defaultPort = scheme === 'https' || scheme === 'wss' ? 443 : 80;
   let port = defaultPort;
   if (portPart !== '') {
     // Digits only: a `:80abc` or a `:` with nothing after it is a malformed authority, not a default.

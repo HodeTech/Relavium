@@ -8,7 +8,6 @@ import {
   isPrivateOrLocalHost,
   urlHasCredentials,
   type AbortSignalLike,
-  type EgressAuthority,
 } from '@relavium/shared';
 
 /**
@@ -114,6 +113,13 @@ export function isRedirectStatus(status: number): boolean {
  * `:22`, a container socket) stays blocked — which is the port-allow-list decision `SEC-EGRESS-3` requires
  * of anyone wiring this at all.
  */
+/** A target this hop can actually dial — the two schemes {@link HopRequest} accepts, after validation. */
+interface DialableTarget {
+  readonly scheme: 'http' | 'https';
+  readonly host: string;
+  readonly port: number;
+}
+
 export interface LocalEndpoint {
   /** Lowercased, brackets stripped — compare against {@link EgressAuthority.host}. */
   readonly host: string;
@@ -128,7 +134,7 @@ export interface LocalEndpoint {
  * Plaintext `http` is admitted here ONLY when it is the authored local endpoint; every other target is
  * HTTPS-only exactly as before. The credential rule is never relaxed by the opt-in.
  */
-function validateEgressTarget(url: string, local: LocalEndpoint | undefined): EgressAuthority {
+function validateEgressTarget(url: string, local: LocalEndpoint | undefined): DialableTarget {
   if (urlHasCredentials(url)) {
     throw new SafeEgressError('insecure_url', 'egress url must not embed credentials');
   }
@@ -139,12 +145,21 @@ function validateEgressTarget(url: string, local: LocalEndpoint | undefined): Eg
   if (parsed.hasCredentials) {
     throw new SafeEgressError('insecure_url', 'egress url must not embed credentials');
   }
+  if (parsed.scheme !== 'http' && parsed.scheme !== 'https') {
+    // Parsed by the shared authority reader because MCP declares those schemes, but this hop dials HTTP.
+    // Refusing here rather than silently treating `wss` as `https` keeps "what was parsed" and "what will be
+    // dialled" the same thing — a websocket target reaching an HTTP dialer is a wiring bug, not a downgrade.
+    throw new SafeEgressError('insecure_url', 'egress url must be a well-formed https url');
+  }
   const isAuthoredLocal =
     local !== undefined && parsed.host === local.host && parsed.port === local.port;
   if (parsed.scheme !== 'https' && !isAuthoredLocal) {
     throw new SafeEgressError('insecure_url', 'egress url must be a well-formed https url');
   }
-  return parsed;
+  // Re-stated rather than returned as-is, so the narrowing above becomes part of the TYPE the rest of this
+  // hop works with. `HopRequest.scheme` is `'http' | 'https'` for a reason — a `ws` target reaching the HTTP
+  // opener would be a wiring bug — and the compiler should be what prevents it, not this comment.
+  return { scheme: parsed.scheme, host: parsed.host, port: parsed.port };
 }
 
 /**
@@ -156,7 +171,7 @@ function validateEgressTarget(url: string, local: LocalEndpoint | undefined): Eg
  * private. A local-endpoint declaration pointing at a public address is refused, not downgraded.
  */
 async function resolveValidatedIps(
-  target: EgressAuthority,
+  target: DialableTarget,
   deps: EgressDeps,
   local: LocalEndpoint | undefined,
 ): Promise<readonly string[]> {

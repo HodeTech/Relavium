@@ -157,6 +157,8 @@ export {
   // consume them from `@relavium/db`); export them directly here rather than only via the media-egress alias.
   type HopRequest,
   type HopResponse,
+  // The one local-endpoint relaxation (ADR-0088 §4) — the MCP host builds one per opted-in server.
+  type LocalEndpoint,
 } from './safe-egress.js';
 
 // Media references (1.AF/D12c + D11, ADR-0042/0044) — the media_objects/media_references retention + authz

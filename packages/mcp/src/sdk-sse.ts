@@ -3,6 +3,7 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import type { AbortSignalLike } from '@relavium/shared';
 
 import type { McpConnection } from './connection.js';
+import type { McpFetch } from './sdk-http.js';
 import { MCP_DEADLINES } from './deadlines.js';
 import { McpConnectError } from './errors.js';
 import { connectSdkTransport } from './sdk-stdio.js';
@@ -21,6 +22,8 @@ export interface SseServerSpec {
   readonly url: string;
   /** The authored `connect_timeout_ms` (ADR-0088 §1.4). Absent ⇒ {@link MCP_DEADLINES.networkConnectMs}. */
   readonly connectTimeoutMs?: number;
+  /** The host's validated `fetch` (ADR-0088 §2.1) — see `HttpServerSpec.fetch` for what absence costs. */
+  readonly fetch?: McpFetch;
 }
 
 /** Connect a legacy HTTP+SSE MCP server and run the initialize handshake; returns the live connection. */
@@ -35,7 +38,11 @@ export async function openSseConnection(
   } catch (err) {
     throw new McpConnectError(serverId, { cause: err });
   }
-  return connectSdkTransport(serverId, new SSEClientTransport(endpoint), {
+  const transport = new SSEClientTransport(
+    endpoint,
+    spec.fetch === undefined ? undefined : { fetch: spec.fetch },
+  );
+  return connectSdkTransport(serverId, transport, {
     timeoutMs: spec.connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs,
     ...(signal === undefined ? {} : { signal }),
   });
