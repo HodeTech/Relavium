@@ -65,6 +65,13 @@ export interface HopRequest {
    * permission to downgrade anything else.
    */
   readonly scheme: 'http' | 'https';
+  /**
+   * The validated port — the SAME number the local-endpoint `host:port` match was decided on, carried rather
+   * than re-derived from {@link url}. Two parses of one url that disagree is the shape `SEC-EGRESS-3`'s port
+   * decision cannot survive: the admission would scope the opt-in to one port while the dialer connected to
+   * another. Defaulted at admission (80 for `http`, 443 for `https`), so it is always explicit here.
+   */
+  readonly port: number;
   /** The pre-validated IP the connection MUST be pinned to (TOCTOU defense — never re-resolve here). */
   readonly pinnedIp: string;
   readonly method: EgressMethod;
@@ -268,6 +275,7 @@ export async function connectValidated(
       url: target,
       hostname: authority.host,
       scheme: authority.scheme,
+      port: authority.port,
       pinnedIp,
       method: opts.method,
       headers: sanitizeHopHeaders(opts.headers),
@@ -432,13 +440,19 @@ export const nodeEgressDeps: EgressDeps = {
         {
           protocol: `${request.scheme}:`,
           hostname: request.hostname,
-          // The URL's port is honored as-is — a public CDN/API URL may legitimately serve over a non-443
-          // HTTPS port. Safe under the default wiring (no `localEndpoint`): the private/loopback/link-local
-          // IP range block (`resolveValidatedIps`) prevents reaching an internal service on ANY port, so no
-          // port allow-list is needed there. **`SEC-EGRESS-3`'s required port decision is now made**, in the
-          // one place that relaxes the range block: `LocalEndpoint` is a `host:port` pair and the target must
-          // match BOTH, so an opted-in `localhost:4000` cannot reach `localhost:6379` (ADR-0088 §4).
-          port: parsed.port === '' ? (request.scheme === 'http' ? 80 : 443) : Number(parsed.port),
+          // The port the ADMISSION validated, not a second reading of the url. It is honored as-is — a public
+          // CDN/API URL may legitimately serve over a non-443 HTTPS port — and that is safe under the default
+          // wiring (no `localEndpoint`), because the private/loopback/link-local range block prevents reaching
+          // an internal service on ANY port. **`SEC-EGRESS-3`'s required port decision is made** in the one
+          // place that relaxes that block: `LocalEndpoint` is a `host:port` pair and the target must match
+          // BOTH, so an opted-in `localhost:4000` cannot reach `localhost:6379` (ADR-0088 §4).
+          //
+          // Carried rather than re-derived precisely BECAUSE of that match. This branch used to re-parse
+          // `request.url` and re-apply the scheme default itself, so the number the opt-in was scoped to and
+          // the number dialled came from two independent readings of one string. They agree today; a divergence
+          // would connect somewhere the admission never approved, which is the whole failure the pin exists to
+          // prevent, one layer up.
+          port: request.port,
           path: `${parsed.pathname}${parsed.search}`,
           method: request.method,
           ...(request.headers === undefined ? {} : { headers: request.headers }),

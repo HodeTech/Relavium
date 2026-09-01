@@ -204,6 +204,28 @@ describe('createMcpFetch — response mapping', () => {
     );
   });
 
+  it('types a malformed response HEADER on BOTH arms, including the null-body one', async () => {
+    // **The asymmetry a review found.** The streaming arm wrapped the `Response` construction so an invalid
+    // header became a typed `SafeEgressError`; the null-body arm (204/205/304) constructed it bare, so the
+    // same hostile header escaped as a raw `TypeError` — untyped, and every caller here classifies on the
+    // type. The socket was never at risk; the classification was.
+    const bad = { 'x y': 'v' }; // a space is illegal in a header name — `new Headers` throws
+    for (const status of [200, 204]) {
+      const { deps } = fakeDeps({ status, responseHeaders: bad, body: [] });
+      await expect(createMcpFetch({ deps })('https://api.example/mcp')).rejects.toBeInstanceOf(
+        SafeEgressError,
+      );
+    }
+  });
+
+  it('maps a null-body status to a null-body Response, rather than an empty stream', async () => {
+    // The reason that arm exists at all: `new Response(<body>, { status: 204 })` throws outright.
+    const { deps } = fakeDeps({ status: 204, body: [] });
+    const response = await createMcpFetch({ deps })('https://api.example/mcp');
+    expect(response.status).toBe(204);
+    expect(response.body).toBeNull();
+  });
+
   it('refuses a method the shared hop cannot carry, rather than downgrading it', async () => {
     const { deps } = fakeDeps();
     await expect(

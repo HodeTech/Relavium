@@ -148,14 +148,33 @@ function toResponse(hop: HopResponse, maxMessageBytes: number): Response {
     throw new SafeEgressError('network', 'egress returned an out-of-range HTTP status');
   }
   const headers = hop.headers ?? {};
+  // **Both arms map through the same guard.** `new Response(…, { headers })` runs the `Headers` constructor,
+  // which throws a raw `TypeError` on a name or value it considers invalid — and these headers come from a
+  // hostile server, flattened out of Node's parser, which does not agree with `undici`'s validator in every
+  // case. The streaming arm already converted that into a typed `SafeEgressError`; the null-body arm did not,
+  // so a `204` with a malformed header name escaped this module as an untyped throw. The socket was never at
+  // risk (`dispose` runs first either way) — the error TYPE was, and every caller here classifies on it.
   if (NULL_BODY_STATUS.has(hop.status)) {
     hop.dispose();
-    return new Response(null, { status: hop.status, headers });
+    return mapResponse(() => new Response(null, { status: hop.status, headers }));
   }
+  return mapResponse(
+    () => new Response(hopBodyToStream(hop, maxMessageBytes), { status: hop.status, headers }),
+    hop,
+  );
+}
+
+/**
+ * Build a `Response`, converting a constructor throw into a typed {@link SafeEgressError}.
+ *
+ * `hop` is passed only where the socket is still live: the null-body arm has already disposed, and disposing
+ * twice would be harmless but would misstate who owns the teardown.
+ */
+function mapResponse(build: () => Response, hop?: HopResponse): Response {
   try {
-    return new Response(hopBodyToStream(hop, maxMessageBytes), { status: hop.status, headers });
+    return build();
   } catch (err) {
-    hop.dispose();
+    hop?.dispose();
     throw err instanceof SafeEgressError
       ? err
       : new SafeEgressError('network', 'egress response could not be mapped');

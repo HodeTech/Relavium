@@ -1220,6 +1220,60 @@ describe('runCommand', () => {
     expect(process.listenerCount('exit')).toBe(baselineExit);
   });
 
+  it('holds the guard THROUGH the MCP teardown, not merely up to it (ADR-0088 §1.3)', async () => {
+    // **The window the ordering above does not cover, and it is the one the children are alive in.** The
+    // guard was released FIRST in the command's `finally`, before `client.close()` was awaited — and that
+    // close is where the SDK runs its ladder against a trapping child (`stdin.end()` → 2 s → SIGTERM → 2 s →
+    // SIGKILL, ~4 s). A `SIGTERM` arriving in those seconds with no listener is default-handled: Node
+    // terminates without running `process.on('exit')`, so the synchronous reaper never fires and the children
+    // being torn down are orphaned at `ppid 1`. That is precisely the measured failure `guardMcpTeardown`
+    // exists to close, left open in its own teardown path.
+    //
+    // The observation point is the connection's `close()`, which runs INSIDE `mcpRuntime.client.close()`.
+    const path = writeWorkflow('mcp-guard-teardown.relavium.yaml', MCP_WF);
+    const { io } = captureIo();
+    const baselineExit = process.listenerCount('exit');
+    const baselineSigint = process.listenerCount('SIGINT');
+    let exitDuringClose = -1;
+    let sigintDuringClose = -1;
+    const conn: McpConnection = {
+      listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
+      callTool: () =>
+        Promise.resolve({ content: [{ type: 'text', text: 'fs result' }], isError: false }),
+      close: () => {
+        exitDuringClose = process.listenerCount('exit');
+        sigintDuringClose = process.listenerCount('SIGINT');
+        return Promise.resolve();
+      },
+    };
+
+    const code = await runCommand(
+      { workflow: path, input: [], allowMcpStdio: [] },
+      {
+        io,
+        global: globalOptions(),
+        providers: scriptedResolver([toolUseTurn('c1', 'mcp_fs_read'), textTurn('done')]),
+        buildEngine: (opts) =>
+          buildEngine({
+            ...opts,
+            host: createInMemoryHost(),
+            effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+          }),
+        consentGate: PASS_CONSENT,
+        startMcpClient: () => realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(conn) }]),
+      },
+    );
+
+    expect(code).toBe(EXIT_CODES.success);
+    // Both halves still armed while the children are being reaped — the synchronous net is the load-bearing
+    // one here, because it is the only thing that runs on a path nobody awaits.
+    expect(exitDuringClose).toBe(baselineExit + 1);
+    expect(sigintDuringClose).toBeGreaterThan(baselineSigint);
+    // …and released once the teardown is done, so a normally-exiting process holds no listener.
+    expect(process.listenerCount('exit')).toBe(baselineExit);
+    expect(process.listenerCount('SIGINT')).toBe(baselineSigint);
+  });
+
   it('freezes the AUGMENTED graph — the store is opened with the workflow that RUNS (ADR-0083 §5)', async () => {
     // `runs.workflow_definition_snapshot` is what a cross-process `relavium gate` rebuilds the run from, and
     // what ADR-0083 §5 verifies a resume against. The store used to be opened with the PRE-augmentation

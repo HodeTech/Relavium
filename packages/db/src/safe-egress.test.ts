@@ -84,6 +84,26 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
     expect(captured?.body).toBe('{"a":1}');
   });
 
+  it('carries the VALIDATED port onto the hop — the same number the local-endpoint match used', async () => {
+    // **One reading of the url, not two.** The dialer used to re-parse `request.url` and re-apply the scheme
+    // default itself, so the port the opt-in was scoped to (`LocalEndpoint`'s `host:port`) and the port
+    // actually dialled came from two independent parses of one string. They agreed; a divergence would connect
+    // somewhere admission never approved. The port now travels with the request that was validated.
+    const cases: readonly (readonly [string, number])[] = [
+      ['https://api.example.com:8443/a', 8443], // explicit, non-default
+      ['https://api.example.com/a', 443], // scheme default, made explicit at admission
+    ];
+    for (const [url, port] of cases) {
+      let captured: HopRequest | undefined;
+      const deps = fakeDeps({
+        resolve: { 'api.example.com': ['203.0.113.5'] },
+        onOpen: (request) => (captured = request),
+      });
+      await connectValidated(url, { method: 'GET' }, deps, sig());
+      expect(captured?.port).toBe(port);
+    }
+  });
+
   it('STRIPS a caller-supplied Host / :authority header (virtual-host-confusion SSRF defense)', async () => {
     let captured: HopRequest | undefined;
     const deps = fakeDeps({
@@ -472,6 +492,17 @@ function stubClientRequest(): {
   return { on: vi.fn(), write: vi.fn(), end: vi.fn(), destroy: vi.fn() };
 }
 
+/** The plaintext sibling of {@link lastHttpsCall} — same narrowing, `node:http` instead of `node:https`. */
+function lastHttpCallOptions(): CapturedHttpsOptions {
+  const call = vi.mocked(httpRequest).mock.calls.at(-1);
+  if (call === undefined) throw new Error('expected http.request to have been called');
+  const [options] = call;
+  if (typeof options !== 'object' || options === null || options instanceof URL) {
+    throw new Error('expected http.request(optionsObject, …)');
+  }
+  return options;
+}
+
 function lastHttpsCall(): {
   options: CapturedHttpsOptions;
   onResponse: (incoming: FakeIncoming) => void;
@@ -498,6 +529,7 @@ describe('nodeEgressDeps.openConnection — the concrete body/headers wire path 
       url: 'https://api.example.com/p',
       hostname: 'api.example.com',
       scheme: 'https',
+      port: 443,
       pinnedIp: '203.0.113.5',
       method: 'POST',
       headers: { authorization: 'Bearer SECRET-VALUE' },
@@ -520,6 +552,7 @@ describe('nodeEgressDeps.openConnection — the concrete body/headers wire path 
         url: 'https://api.example.com/x',
         hostname: 'api.example.com',
         scheme: 'https',
+        port: 443,
         pinnedIp: '203.0.113.5',
         method: 'GET',
       },
@@ -550,6 +583,7 @@ describe('nodeEgressDeps.openConnection — the concrete body/headers wire path 
         url: 'https://api.example.com/x',
         hostname: 'api.example.com',
         scheme: 'https',
+        port: 443,
         pinnedIp: '2606:2800:220:1:248:1893:25c8:1946',
         method: 'GET',
       },
@@ -573,6 +607,7 @@ describe('nodeEgressDeps.openConnection — the concrete body/headers wire path 
         url: 'https://api.example.com/x',
         hostname: 'api.example.com',
         scheme: 'https',
+        port: 443,
         pinnedIp: '203.0.113.5',
         method: 'GET',
       },
@@ -595,6 +630,7 @@ describe('nodeEgressDeps.openConnection — the plaintext branch (ADR-0088 §4)'
       url: 'http://localhost:4000/mcp',
       hostname: 'localhost',
       scheme: 'http',
+      port: 4000,
       pinnedIp: '127.0.0.1',
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -604,9 +640,17 @@ describe('nodeEgressDeps.openConnection — the plaintext branch (ADR-0088 §4)'
 
     expect(vi.mocked(httpRequest)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(httpsRequest)).not.toHaveBeenCalled();
-    const options = vi.mocked(httpRequest).mock.calls.at(-1)?.[0];
+    const options = lastHttpCallOptions();
     expect(options).toMatchObject({ protocol: 'http:', hostname: 'localhost', port: 4000 });
-    // The pin still applies on this branch — plaintext relaxes the SCHEME, never the address.
+    // **The pin still applies on this branch — plaintext relaxes the SCHEME, never the address.** That
+    // sentence sat above an assertion about the request BODY, which proves nothing about pinning: the
+    // plaintext dialer could have dropped `lookup` entirely and re-resolved `localhost` and this test stayed
+    // green. Asserted through the lookup itself, which is the only place the pin exists.
+    let pinned: string | undefined;
+    options.lookup?.('localhost', {}, (_err, address) => {
+      pinned = address;
+    });
+    expect(pinned).toBe('127.0.0.1');
     expect(client.write).toHaveBeenCalledWith('{}');
   });
 
@@ -618,6 +662,7 @@ describe('nodeEgressDeps.openConnection — the plaintext branch (ADR-0088 §4)'
         url: 'http://dev.internal/mcp',
         hostname: 'dev.internal',
         scheme: 'http',
+        port: 80,
         pinnedIp: '10.0.0.5',
         method: 'GET',
       },

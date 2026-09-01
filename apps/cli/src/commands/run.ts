@@ -431,12 +431,23 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // Present only when an inline agent declared a server; idempotent. A teardown error must never mask the run
     // outcome (closeAll swallows per-connection; the db close is best-effort here too).
     try {
-      // Remove the signal guard FIRST: from here the teardown below owns the children, and leaving it
-      // registered would hold a signal listener AND a `process.on('exit')` net on a process exiting normally.
-      unguardMcp();
-      opened?.close();
+      try {
+        opened?.close();
+      } finally {
+        await mcpRuntime?.client.close();
+      }
     } finally {
-      await mcpRuntime?.client.close();
+      // **Released LAST, after the MCP close has finished** — and it was released first, which left the one
+      // window that matters uncovered. `client.close()` runs the SDK's ladder against a trapping child
+      // (`stdin.end()` → 2 s → SIGTERM → 2 s → SIGKILL, ~4 s), and for all of it the children are alive. A
+      // `SIGTERM` arriving there with the guard already gone is default-handled: the process dies without
+      // `process.on('exit')`, and the children it was mid-way through reaping are orphaned at `ppid 1` — the
+      // exact failure `guardMcpTeardown` was measured against and exists to close.
+      //
+      // Safe because `closeAll` clears its connection map before awaiting, so the guard's own close racing
+      // this one finds nothing left to do. `agent run` already had this order: its MCP teardown happens inside
+      // `runOneShotTurn`, i.e. before its `unguardMcp()`. This makes the two surfaces agree.
+      unguardMcp();
     }
   }
 }
