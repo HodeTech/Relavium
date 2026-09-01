@@ -5,6 +5,8 @@ import {
   McpDeadlineError,
   McpError,
   openWindow,
+  remainingMs,
+  type DeadlineWindow,
   raceDeadline,
   openHttpConnection,
   openSseConnection,
@@ -429,13 +431,21 @@ function buildNetworkConfig(
       // whole config array and the abandoned lookup surfaced as an unhandled rejection. And it ran before
       // any deadline or signal existed, so a hung `.local` resolver — the exact case §2.3 is about — hung
       // the whole connect with Ctrl-C doing nothing.
+      // **ONE window across the preflight AND the connect** (ADR-0088 §1.1). The preflight used to open its
+      // own fixed 30 s window and the adapter then opened a second one, so the total connect budget was
+      // `preflight + authored` — and an author who RAISED `connect_timeout_ms` did not raise the DNS half at
+      // all. Opened here, the remaining time is what the adapter is given.
+      const window = openWindow(connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs);
       if (needsPreflight) {
-        await assertResolvesLocal(serverId, url, resolveHost, signal);
+        await assertResolvesLocal(serverId, url, resolveHost, window, signal);
       }
       // **Dispatched per transport so the COMPILER carries the §2.1 obligation**, rather than spreading one
       // union-typed spec that let an absent `fetch` type-check. `HttpServerSpec.fetch` is required now; a
       // single `open(serverId, {...})` against the union hid that from exactly the site that must satisfy it.
-      const timeout = connectTimeoutMs === undefined ? {} : { connectTimeoutMs };
+      // What is LEFT of the window, so the preflight's cost comes out of the same budget rather than being
+      // added to it. `remainingMs` floors at 1, so an already-spent window still reaches the adapter's own
+      // deadline check rather than silently becoming "no bound".
+      const timeout = { connectTimeoutMs: remainingMs(window) };
       if (transport === 'websocket') {
         return openers.websocket(serverId, { url, ...timeout }, signal);
       }
@@ -473,16 +483,18 @@ async function assertResolvesLocal(
   serverId: string,
   url: string,
   resolveHost: (hostname: string) => Promise<readonly string[]>,
+  window: DeadlineWindow,
   signal?: AbortSignalLike,
 ): Promise<void> {
   const parsed = extractEgressAuthority(url);
   if (parsed === null) return; // already refused by the admission — nothing to add
   let addresses: readonly string[];
   try {
+    // The CALLER's window, not one of our own — see the note at the call site.
     addresses = await raceDeadline(
       serverId,
       'connect',
-      openWindow(MCP_DEADLINES.networkConnectMs),
+      window,
       () => resolveHost(parsed.host),
       signal,
     );

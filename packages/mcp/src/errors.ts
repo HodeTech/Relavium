@@ -28,6 +28,7 @@ export type McpConnectReason =
   | 'blocked' // our own SSRF policy refused the target
   | 'redirect' // the endpoint redirected; an MCP server is the exact url its author declared
   | 'protocol' // the handshake completed but the server speaks something we cannot
+  | 'too_large' // the server's response exceeded the transport byte bound (ADR-0088 §5)
   | 'unknown';
 
 /**
@@ -42,8 +43,15 @@ export function classifyConnectFailure(cause: unknown): McpConnectReason {
   const name = readString(cause, 'name');
   const code = readString(cause, 'code');
   if (name === 'SafeEgressError') {
-    // Our own egress refusal. `insecure_url` covers the redirect case, which carries its own message.
-    return code === 'blocked_host' ? 'blocked' : 'redirect';
+    // **Every code mapped, because the shortcut was actively wrong.** This read
+    // `code === 'blocked_host' ? 'blocked' : 'redirect'`, so `network`, `too_large`, `bad_status` and every
+    // `insecure_url` that is NOT a redirect all reported "the endpoint redirected" — including the transport
+    // byte bound firing, which is the one refusal whose remedy has nothing to do with a redirect. A user was
+    // told to check for a redirect while their server was sending too much data.
+    //
+    // Exhaustive over `SafeEgressErrorCode` rather than a default arm: the union lives in `@relavium/db`, and
+    // a `default` here is how a code added there would silently inherit the wrong reason.
+    return classifyEgressCode(code);
   }
   if (code === 'ENOENT' || code === 'EACCES' || code === 'EPERM') return 'spawn_failed';
   if (
@@ -89,11 +97,43 @@ export function connectHint(reason: McpConnectReason): string {
       return ' The endpoint could not be reached — check the url and that the server is running.';
     case 'protocol':
       return ' The server speaks a protocol version this client does not support.';
+    // **These three had no hint at all, and a review pointed out what that costs.** The typed reason existed
+    // and was thrown away at the surface: a user saw only "could not be connected or listed" for a refusal
+    // whose remedy is specific and stated in the specs. §3's "a typed failure that NAMES the redirect" is a
+    // claim about what the user sees, not only about what a program can switch on.
     case 'blocked':
+      return ' The target resolves to a private, loopback or cloud-metadata address — a remote MCP server must be public, and a local one needs allow_local_endpoint.';
     case 'redirect':
+      return ' The endpoint redirected — an MCP server is the exact url its author declared; declare the final url instead.';
+    case 'too_large':
+      return ' The server sent more than the transport byte bound allows in one message.';
     case 'unknown':
       return '';
   }
+}
+
+/**
+ * Map one `SafeEgressErrorCode` to a connect reason — the whole union, arm by arm.
+ *
+ * Keyed by string rather than by the union itself because `@relavium/mcp` does not depend on `@relavium/db`,
+ * and a type import is not worth a new package edge. The exhaustiveness is enforced where both ARE visible:
+ * `apps/cli` iterates the exported `SAFE_EGRESS_ERROR_CODES` and asserts every one classifies to something
+ * other than `unknown`, so a code added there fails a test rather than silently defaulting.
+ */
+const EGRESS_REASON: Readonly<Record<string, McpConnectReason>> = {
+  blocked_host: 'blocked',
+  // A redirect is refused with `insecure_url`, and so is a credentialed or non-https url. They share a code,
+  // so this arm is the one place the mapping is genuinely lossy — `redirect` is the reading that matters for
+  // an MCP endpoint, and the hint names both remedies.
+  insecure_url: 'redirect',
+  too_many_redirects: 'redirect',
+  too_large: 'too_large',
+  bad_status: 'network',
+  network: 'network',
+};
+
+function classifyEgressCode(code: string): McpConnectReason {
+  return EGRESS_REASON[code] ?? 'unknown';
 }
 
 /**

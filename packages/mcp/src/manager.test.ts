@@ -238,3 +238,42 @@ describe('McpCapability.call — cancellation reaches the connection (ADR-0088 �
     await client.close();
   });
 });
+
+describe('a teardown fault reaches the caller who asked to hear it (#207)', () => {
+  it('reports a rejecting close through onCloseError', async () => {
+    // **The callback existed and was unreachable.** `SdkConnection.close()` routed through `safeClose`, which
+    // swallows — so no REAL adapter could ever trigger the reporter the manager offered and the host could
+    // pass. Wired end to end, dead in the middle. `safeClose` now belongs to the connect-failure path only,
+    // where an original error must not be masked.
+    const boom = new Error('transport wedged');
+    const client = await startMcpClient([
+      {
+        id: 'bad',
+        open: () =>
+          Promise.resolve({
+            listTools: () => Promise.resolve([]),
+            callTool: () => Promise.resolve({ content: [], isError: false }),
+            close: () => Promise.reject(boom),
+          }),
+      },
+    ]);
+    const seen: { id: string; cause: unknown }[] = [];
+    await client.close((id, cause) => seen.push({ id, cause }));
+    expect(seen).toEqual([{ id: 'bad', cause: boom }]);
+  });
+
+  it('still resolves when no reporter is supplied — the default stays best-effort', async () => {
+    const client = await startMcpClient([
+      {
+        id: 'bad',
+        open: () =>
+          Promise.resolve({
+            listTools: () => Promise.resolve([]),
+            callTool: () => Promise.resolve({ content: [], isError: false }),
+            close: () => Promise.reject(new Error('wedged')),
+          }),
+      },
+    ]);
+    await expect(client.close()).resolves.toBeUndefined();
+  });
+});

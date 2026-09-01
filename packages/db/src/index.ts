@@ -150,6 +150,7 @@ export {
   isRedirectStatus,
   nodeEgressDeps,
   SafeEgressError,
+  SAFE_EGRESS_ERROR_CODES,
   type SafeEgressErrorCode,
   type EgressDeps,
   type EgressMethod,

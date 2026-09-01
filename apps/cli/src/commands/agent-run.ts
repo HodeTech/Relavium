@@ -12,6 +12,7 @@ import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { liveMcpChildPids } from '@relavium/mcp';
 
 import { guardMcpTeardown } from '../engine/mcp-signal-teardown.js';
+import { sanitizeInline, sanitizeUntrustedInline } from '../render/sanitize.js';
 import type { StdioConsentGate } from '../engine/mcp-servers.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { loadResolvedConfig } from '../config/load.js';
@@ -307,11 +308,23 @@ async function runOneShotTurn(
     unsubscribe();
     // Tear down the MCP connections (2.R) after the one-shot turn; present only when `mcp_servers` is declared.
     // Best-effort: a teardown rejection must NOT override the computed one-shot exit code (warn, don't throw).
-    await built.closeMcp?.().catch((e: unknown) => {
-      deps.io.writeErr(
-        `warning: MCP teardown failed: ${e instanceof Error ? e.message : String(e)}\n`,
-      );
-    });
+    // **Per-server, through the manager's own reporter.** The `.catch` below is a backstop and used to be the
+    // only mechanism — which meant it never fired: `closeAll` swallows each connection's rejection unless a
+    // reporter is supplied, so a wedged transport produced silence. `sanitizeUntrustedInline` because the
+    // cause is the SDK's, and it can carry a spawn command or a path.
+    await built
+      .closeMcp?.((serverId, cause) => {
+        deps.io.writeErr(
+          `warning: MCP server '${sanitizeInline(serverId)}' teardown failed: ${sanitizeUntrustedInline(
+            cause instanceof Error ? cause.message : String(cause),
+          )}\n`,
+        );
+      })
+      .catch((e: unknown) => {
+        deps.io.writeErr(
+          `warning: MCP teardown failed: ${sanitizeUntrustedInline(e instanceof Error ? e.message : String(e))}\n`,
+        );
+      });
   }
   return turnErrorCode;
 }

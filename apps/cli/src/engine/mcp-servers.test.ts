@@ -4,6 +4,7 @@ import {
   type McpClient,
   type McpConnection,
   type HttpServerSpec,
+  type WebSocketServerSpec,
   type McpServerConfig,
   type StdioServerSpec,
 } from '@relavium/mcp';
@@ -129,7 +130,45 @@ describe('resolveServerConfigs', () => {
       },
     );
     await expect(configs[0]?.open()).rejects.toThrow('not connecting');
-    expect(seen?.connectTimeoutMs).toBe(45_000);
+    // A RANGE, not `toBe(45_000)`: the adapter is handed what REMAINS of the one window (ADR-0088 §1.1), so
+    // the value is 45 000 minus however long the preflight took — zero here, but an exact assertion would be
+    // a wall-clock race the moment a millisecond elapsed between opening the window and reading it.
+    expect(seen?.connectTimeoutMs).toBeLessThanOrEqual(45_000);
+    expect(seen?.connectTimeoutMs).toBeGreaterThan(44_000);
+  });
+
+  it('SHARES one window across the websocket DNS preflight and the connect', async () => {
+    // **The preflight used to open its own fixed 30 s window**, so the total connect budget was
+    // `preflight + authored` and an author who RAISED `connect_timeout_ms` did not raise the DNS half at all
+    // — two windows where §1.1 says one. Asserted by making the preflight slow and reading what is left.
+    let seen: WebSocketServerSpec | undefined;
+    const configs = resolveServerConfigs(
+      [
+        {
+          id: 'local',
+          transport: 'websocket',
+          url: 'ws://localhost:8080/mcp',
+          allow_local_endpoint: true,
+          connect_timeout_ms: 30_000,
+        },
+      ],
+      '/work',
+      undefined,
+      {
+        resolveHost: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          return ['127.0.0.1'];
+        },
+        websocket: (_id, spec) => {
+          seen = spec;
+          return Promise.reject(new Error('not connecting in a unit test'));
+        },
+      },
+    );
+    await expect(configs[0]?.open()).rejects.toThrow('not connecting');
+    // The preflight's ~120 ms came OUT of the 30 s, not on top of it.
+    expect(seen?.connectTimeoutMs).toBeLessThan(30_000);
+    expect(seen?.connectTimeoutMs).toBeGreaterThan(29_000);
   });
 
   it('hands the CONNECT SIGNAL to the opener — a parameter, not a dropped argument', async () => {

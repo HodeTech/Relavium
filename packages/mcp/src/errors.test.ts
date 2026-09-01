@@ -99,14 +99,42 @@ describe('the message a user actually reads', () => {
     expect(err.message).toMatch(/could not be started/);
   });
 
-  it('adds NO hint where the underlying message already says everything', () => {
-    // A blocked host and a refused redirect carry their own reason-only messages; a generic hint after one
-    // would be noise, and `#204` asked for a diagnostic rather than more prose.
+  it('NAMES the remedy for a blocked host and for a refused redirect', () => {
+    // **This asserted the opposite, on a premise the very next test refutes.** It said a hint would be noise
+    // because "the underlying message already says everything" — but the cause is deliberately opaque and
+    // never surfaced, so the user saw only "could not be connected or listed" for a refusal whose remedy is
+    // specific and written down in the specs. ADR-0088 §3's "a typed failure that NAMES the redirect" is a
+    // claim about what a person reads, not only about what a program can switch on.
     const blocked = new McpConnectError('gh', {
       cause: Object.assign(new Error('blocked'), { name: 'SafeEgressError', code: 'blocked_host' }),
     });
     expect(blocked.reason).toBe('blocked');
-    expect(blocked.message).toBe('MCP server "gh" could not be connected or listed.');
+    expect(blocked.message).toMatch(/private, loopback or cloud-metadata/);
+    expect(blocked.message).toMatch(/allow_local_endpoint/);
+
+    const redirected = new McpConnectError('gh', {
+      cause: Object.assign(new Error('redirect'), {
+        name: 'SafeEgressError',
+        code: 'insecure_url',
+      }),
+    });
+    expect(redirected.reason).toBe('redirect');
+    expect(redirected.message).toMatch(/declare the final url/);
+  });
+
+  it('does not report every egress refusal as a REDIRECT', () => {
+    // The mapping was `code === 'blocked_host' ? 'blocked' : 'redirect'`, so four of the six codes lied —
+    // including `too_large`, which is the transport byte bound firing and has nothing to do with a redirect.
+    // A user was told to look for a redirect while their server was sending too much data.
+    const reasonFor = (code: string): string =>
+      new McpConnectError('s', {
+        cause: Object.assign(new Error('x'), { name: 'SafeEgressError', code }),
+      }).reason;
+    expect(reasonFor('too_large')).toBe('too_large');
+    expect(reasonFor('network')).toBe('network');
+    expect(reasonFor('bad_status')).toBe('network');
+    expect(reasonFor('blocked_host')).toBe('blocked');
+    expect(reasonFor('too_many_redirects')).toBe('redirect');
   });
 
   it('never carries the cause into the message — the cause stays opaque', () => {

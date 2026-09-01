@@ -34,13 +34,24 @@ import {
  */
 
 /** Why a safe-egress fetch failed — a secret-free, reason-only discriminant. */
-export type SafeEgressErrorCode =
-  | 'insecure_url' // not HTTPS, embeds credentials, or a malformed authority
-  | 'blocked_host' // resolves to (or is) a private/loopback/link-local/metadata address
-  | 'too_many_redirects'
-  | 'too_large' // body exceeded the configured maximum download size
-  | 'bad_status' // a non-200, non-redirect HTTP status (media only; the tool returns any status)
-  | 'network'; // the connection failed / was aborted
+/**
+ * Every egress failure code, as a VALUE — so a consumer can enumerate them.
+ *
+ * A bare union cannot be iterated at runtime, and `@relavium/mcp` maps each of these to a user-facing reason
+ * without depending on this package. That mapping was wrong for four of the six (everything but
+ * `blocked_host` reported "the endpoint redirected", including the byte bound firing) and nothing could
+ * notice, because there was no list to check the mapping against. This is that list.
+ */
+export const SAFE_EGRESS_ERROR_CODES = [
+  'insecure_url', // not HTTPS, embeds credentials, or a malformed authority
+  'blocked_host', // resolves to (or is) a private/loopback/link-local/metadata address
+  'too_many_redirects',
+  'too_large', // body exceeded the configured maximum download size
+  'bad_status', // a non-200, non-redirect HTTP status (media only; the tool returns any status)
+  'network', // the connection failed / was aborted
+] as const;
+
+export type SafeEgressErrorCode = (typeof SAFE_EGRESS_ERROR_CODES)[number];
 
 /** A typed egress failure. The `message` names a reason only — never the url/IP/bytes (secret-free). */
 export class SafeEgressError extends Error {

@@ -213,7 +213,15 @@ export interface BuiltChatSession {
    * Tear down the session's MCP connections (2.R) — present only when the agent declared `mcp_servers`. The
    * command MUST `await` it on session teardown (its `finally`), mirroring `persister.close()`. Idempotent.
    */
-  readonly closeMcp?: () => Promise<void>;
+  /**
+   * Tear the session's MCP connections down, optionally REPORTING a per-server teardown fault.
+   *
+   * The reporter is threaded rather than swallowed here because the caller is what owns an output channel —
+   * and because without it `McpClient.close`'s own `onCloseError` (added by `#207` so a misbehaving transport
+   * could be reported) had no production caller at all. It was offered by the manager, accepted by the type,
+   * and reachable from nowhere.
+   */
+  readonly closeMcp?: (onError?: (serverId: string, cause: unknown) => void) => Promise<void>;
   /**
    * The spawned `stdio` children's pids — for a **synchronous** last-resort reap on `process.on('exit')`
    * ([ADR-0088](../../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md) §1.3). {@link closeMcp} is
@@ -629,7 +637,12 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       tools: deps.tools,
       emitSessionEvent: emit,
       mcpSkipped: mcp?.skipped ?? [],
-      ...(mcp === undefined ? {} : { closeMcp: () => mcp.close(), mcpChildPids: mcp.childPids }),
+      ...(mcp === undefined
+        ? {}
+        : {
+            closeMcp: (onError?: (id: string, cause: unknown) => void) => mcp.close(onError),
+            mcpChildPids: mcp.childPids,
+          }),
       attachDurabilityProbe,
       attachEffectJournal,
       ...(governor === undefined ? {} : { governor }),
@@ -865,7 +878,12 @@ export async function buildResumedChatSession(
       resumeState,
       nextSequenceNumber,
       mcpSkipped: mcp?.skipped ?? [],
-      ...(mcp === undefined ? {} : { closeMcp: () => mcp.close(), mcpChildPids: mcp.childPids }),
+      ...(mcp === undefined
+        ? {}
+        : {
+            closeMcp: (onError?: (id: string, cause: unknown) => void) => mcp.close(onError),
+            mcpChildPids: mcp.childPids,
+          }),
       attachDurabilityProbe,
       attachEffectJournal,
       ...(governor === undefined ? {} : { governor }),

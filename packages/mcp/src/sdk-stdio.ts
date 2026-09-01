@@ -18,6 +18,7 @@ import {
   type DeadlineWindow,
 } from './deadlines.js';
 import { McpConnectError, McpError } from './errors.js';
+import { INGRESS_BOUNDS, toolDefinitionBytes } from './ingress-bounds.js';
 import { shapeToolResult } from './result.js';
 
 /**
@@ -95,6 +96,7 @@ export async function collectAllTools(
   listPage: (cursor: string | undefined) => Promise<ToolListPage>,
 ): Promise<DiscoveredTool[]> {
   const tools: DiscoveredTool[] = [];
+  let bytes = 0;
   let cursor: string | undefined;
   for (let page = 0; page < MAX_TOOL_PAGES; page += 1) {
     const result = await listPage(cursor);
@@ -104,6 +106,25 @@ export async function collectAllTools(
         ...(tool.description === undefined ? {} : { description: tool.description }),
         inputSchema: tool.inputSchema,
       });
+      bytes += toolDefinitionBytes(tool);
+    }
+    // **Stop PAGING, not just admitting** ([ADR-0088](../../../docs/decisions/0088-the-mcp-boundary-is-hostile.md)
+    // §5.2: "dropped along with every tool after it, and paging stops").
+    //
+    // It did not, and the gap was the whole point of the bound. The budget lived one layer up in
+    // `buildServerToolDefs`, so a server was paged to exhaustion FIRST and bounded afterwards: 100 pages at up
+    // to 4 MiB each is ~400 MiB held on a remote transport before admission began, and `stdio` has no
+    // transport byte bound at all, so there is no ceiling on that side. Bounding what is admitted while
+    // fetching everything is a bound on the wrong thing.
+    //
+    // Measured on the RAW definitions rather than the shaped ones, deliberately: the shaping is what we are
+    // trying not to have to do 50 000 times. The admission budget in `buildServerToolDefs` is unchanged and
+    // still decides what is ADMITTED — this only stops asking for more once no further page could contribute.
+    if (
+      tools.length >= INGRESS_BOUNDS.toolsPerServer ||
+      bytes > INGRESS_BOUNDS.discoveryBytesPerServer
+    ) {
+      return tools;
     }
     if (result.nextCursor === undefined) return tools;
     cursor = result.nextCursor;
@@ -393,8 +414,17 @@ class SdkConnection implements McpConnection {
     return shapeToolResult(result);
   }
 
+  /**
+   * Tear the connection down. **Rejects on a genuine teardown fault**, and it used to swallow every one.
+   *
+   * `safeClose` exists for the CONNECT failure path, where an error must not mask the original fault. Using
+   * it here too meant `close()` could never reject — so `closeAll`'s `onCloseError` callback, added by `#207`
+   * precisely so a misbehaving transport could be reported, was unreachable through any real adapter. A
+   * feature wired end to end and dead in the middle: the manager offered it, the host could pass it, and no
+   * SDK connection could ever trigger it.
+   */
   async close(): Promise<void> {
-    await safeClose(this.#client);
+    await this.#client.close();
   }
 
   /**
@@ -432,6 +462,13 @@ class SdkConnection implements McpConnection {
   }
 }
 
+/**
+ * Close a client, swallowing the fault — for the CONNECT-failure path only.
+ *
+ * There the original error is what the caller must see, and a teardown fault on top of it would mask a
+ * spawn/handshake failure with a close failure. On the ORDINARY teardown path there is no original error to
+ * protect, and swallowing is what made `onCloseError` unreachable — see {@link SdkConnection.close}.
+ */
 async function safeClose(client: Client): Promise<void> {
   try {
     await client.close();

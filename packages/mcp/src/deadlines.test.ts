@@ -197,16 +197,25 @@ describe('raceDeadline', () => {
     // The realistic delivery it models: our `setTimeout` fires in the timers phase while the user's Esc
     // arrives in the poll phase of the same iteration. ADR-0082 §5: a user who pressed Esc must not be told
     // the server was slow.
-    const startedAt = Date.now();
-    const silentlyCancelled: AbortSignalLike = {
-      get aborted() {
-        return Date.now() - startedAt >= 10;
-      },
-      addEventListener: () => undefined,
-      removeEventListener: () => undefined,
-    };
-    await expect(
-      raceDeadline(
+    //
+    // **On a controlled clock, because the property is logical and the timing was not.** It used to key the
+    // signal's `aborted` getter to `Date.now() - startedAt >= 10` against a 10 ms window — two real-time
+    // events on the same millisecond boundary, which a review reported failing about 1 run in 25 (I could not
+    // reproduce it in 65 runs here, including under scheduling load, so this is for determinism rather than
+    // against a measured rate). Nothing about the property needs a wall clock: the timer must win the race,
+    // and `cancelled()` must be true when the failure is classified.
+    vi.useFakeTimers();
+    try {
+      let cancelled = false;
+      const silentlyCancelled: AbortSignalLike = {
+        get aborted() {
+          return cancelled;
+        },
+        // Never fires an abort EVENT, so the guard's abort branch cannot win — the timer necessarily does.
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      };
+      const raced = raceDeadline(
         's',
         'call',
         openWindow(10),
@@ -215,8 +224,15 @@ describe('raceDeadline', () => {
             // never settles — the timer is what ends this
           }),
         silentlyCancelled,
-      ),
-    ).rejects.toBeInstanceOf(McpAbortedError);
+      );
+      // Attach a catch before advancing so the rejection is never unhandled while the timer fires.
+      void raced.catch(() => undefined);
+      cancelled = true; // the user pressed Esc, silently, before the window elapsed
+      await vi.advanceTimersByTimeAsync(20);
+      await expect(raced).rejects.toBeInstanceOf(McpAbortedError);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does NOT relabel an error the operation itself produced, even mid-cancel', async () => {

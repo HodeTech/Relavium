@@ -53,8 +53,15 @@ describe('the hostile catalogue that was admitted whole', () => {
         ...(page < 100 ? { nextCursor: String(page) } : {}),
       });
     });
-    expect(discovered).toHaveLength(50_000); // paging itself is unchanged — the bound is at admission
+    // **Paging STOPS at the aggregate bound** (§5.2: "dropped along with every tool after it, and paging
+    // stops"). This line used to assert `toHaveLength(50_000)` — it contracted the exact behaviour the ADR
+    // forbids, and made the "bound" a bound on what was admitted after fetching everything: 100 pages at up
+    // to 4 MiB is ~400 MiB held on a remote transport, and `stdio` has no transport byte bound at all.
+    expect(page).toBeLessThan(100); // it did not walk the catalogue to the end
+    expect(discovered.length).toBeLessThan(50_000);
 
+    // Admission is unchanged and still decides what is ADMITTED — the paging bound only stops asking for
+    // pages no admission could use.
     const shaped = buildServerToolDefs('s', discovered);
     expect(shaped.defs).toHaveLength(0); // every one is over the description bound
     expect(shaped.skipped[0]?.reason).toMatch(/description is (over )?\d+ bytes/);
@@ -86,6 +93,67 @@ describe('the diagnostic cap must not suppress an ADMISSION', () => {
     // The diagnostic is still bounded — one entry per decoy would be the flood the cap exists to stop.
     expect(shaped.skipped.length).toBeLessThanOrEqual(INGRESS_BOUNDS.toolsPerServer + 1);
     expect(shaped.skipped.at(-1)?.reason).toMatch(/further tool\(s\) refused/);
+  });
+});
+
+describe('paging stops at the aggregate bound (ADR-0088 §5.2)', () => {
+  it('stops asking for pages once the raw discovery budget is spent', async () => {
+    // A server whose pages are individually modest but whose TOTAL crosses the budget. The page fetcher
+    // counts its own calls, which is the only observation that distinguishes "bounded at admission" from
+    // "bounded at the wire" — and the difference is whether the bytes were ever held.
+    const perPage = 8;
+    const chunk = 'x'.repeat(64 * 1024); // 64 KiB per tool, legal on its own
+    let pages = 0;
+    const discovered = await collectAllTools(() => {
+      pages += 1;
+      return Promise.resolve({
+        tools: Array.from({ length: perPage }, (_, i) => ({
+          name: `p${pages}_${i}`,
+          description: chunk,
+          inputSchema: schema,
+        })),
+        nextCursor: String(pages), // an endless catalogue: only the budget can stop this
+      });
+    });
+    // 1 MiB / (8 × 64 KiB) = 2 pages' worth, so it stops at the third at the latest — nowhere near 100.
+    expect(pages).toBeLessThanOrEqual(3);
+    expect(discovered.length).toBeLessThanOrEqual(perPage * 3);
+  });
+
+  it('stops on the TOOL COUNT too, not only on bytes', async () => {
+    // The other half of the same aggregate: many tiny tools never cross the byte budget, so a count-blind
+    // version would page an endless catalogue forever (up to MAX_TOOL_PAGES).
+    let pages = 0;
+    const discovered = await collectAllTools(() => {
+      pages += 1;
+      return Promise.resolve({
+        tools: Array.from({ length: 64 }, (_, i) => ({
+          name: `t${pages}_${i}`,
+          inputSchema: schema,
+        })),
+        nextCursor: String(pages),
+      });
+    });
+    expect(pages).toBeLessThanOrEqual(5); // 256 / 64 = 4
+    expect(discovered.length).toBeGreaterThanOrEqual(INGRESS_BOUNDS.toolsPerServer);
+  });
+
+  it('still returns a SHORT catalogue whole — the bound must not truncate a normal server', () => {
+    // The false-refusal side: a real server is 5–50 tools with small descriptions, and must page to the end.
+    let pages = 0;
+    return collectAllTools(() => {
+      pages += 1;
+      return Promise.resolve({
+        tools: Array.from({ length: 10 }, (_, i) => ({
+          name: `t${pages}_${i}`,
+          inputSchema: schema,
+        })),
+        ...(pages < 3 ? { nextCursor: String(pages) } : {}),
+      });
+    }).then((discovered) => {
+      expect(pages).toBe(3);
+      expect(discovered).toHaveLength(30);
+    });
   });
 });
 
