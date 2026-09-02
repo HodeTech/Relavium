@@ -371,6 +371,20 @@ Severity is the review's verified rating. Check an item off in the PR that resol
       gap and pins `catalogPricing(id)?.mediaOutputRates` as `undefined` so it fails loudly the day a snapshot
       ships one; closing it properly needs that snapshot row (or a fixture catalog).
       *(low · apps/cli/src/engine/model-catalog-view.test.ts; ADR-0089 §4(c))*
+- [ ] **The widened `onUnpriced` modality argument is unproven at the CLI host boundary.** The governor's own
+      test proves `checkPreEgress` passes `[modality]` to an injected sink, and `effort-notice.test.ts` proves
+      `unpricedModelNote` renders the right sentence from it — but the three hand-written arrow functions that
+      join them (`apps/cli/src/commands/run.ts`, `commands/gate.ts`, `chat/session-host.ts`) have no test
+      exercising them with a non-empty `modalities`. That is structurally the same "TypeScript accepts a shorter
+      parameter list, so the argument dies silently" risk this wave already fixed one layer down. The existing
+      `session-host.test.ts` coverage is for the unpriced-MODEL (no-modality) shape only.
+      *(medium · apps/cli/src/commands/{run,gate}.ts, apps/cli/src/chat/session-host.ts; ADR-0089 §4)*
+- [ ] **No single test runs `models pricing --image` from argv to `ModelPricing.mediaOutputRates`.** Coverage
+      exists as four adjacent segments — argv→args (`dispatch.test.ts`), args→real store (`models-pricing.test.ts`),
+      store row→listing (`model-catalog-store.test.ts`), listing→overlay (`model-catalog-view.test.ts`) — each
+      pair joined by a shared TypeScript type and, for the CLI registration half, by the pre-existing
+      commander↔manifest parity test. The seams are typed, so the risk is real but bounded.
+      *(low · apps/cli; ADR-0089 §4(c))*
 - [ ] **A `node:failed` message can carry an unsanitized model id.** The new strict refusal interpolates the
       model id into `BudgetExceededError.message`, which reaches the terminal renderer through
       `run:failed.error.message`. The CLI's own `unpricedModelNote` sanitizes for exactly this reason, but

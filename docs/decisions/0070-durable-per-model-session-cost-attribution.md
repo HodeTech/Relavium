@@ -24,6 +24,8 @@
 > continues to hold by arithmetic — the node terminal's delta is `max(0, cumulative − sum so far)`, so once the
 > attempt rows have advanced that sum the terminal contributes zero. No reconciliation step, no second key.
 
+> **Amended 2026-09-02 by [ADR-0089](0089-media-correctness-four-boundaries.md) — §6's DERIVATION, not its shape.** A refinement, not a reversal: `priced?: boolean` and the durable `unpriced_calls` counter are unchanged, and the counter deliberately stays keyed per `(session, model)` rather than being widened to a modality tuple. What changed is **what sets the flag**. §6 below records it as derived from `record.cost !== undefined`; it is now `record.priced !== false`, read from the attempt record the `FallbackChain` stamps. The old formula answers only "was the MODEL priceable" — for a priced model whose produced media modality has no rate, `record.cost` IS defined and its figure is a token-only FLOOR, so the event claimed `priced: true` over a charge it had omitted. `priced: false` therefore now means "this figure is not the whole charge", which covers both cases; `costMicrocents` is `0` only in the unpriced-model one.
+
 ## Context
 
 2.6.C promises a **per-model `/cost` breakdown**. Today `/cost` is one line off in-memory state — `costNotice()` ([repl-info.ts](../../apps/cli/src/chat/repl-info.ts) L15–17), wired at [chat.ts](../../apps/cli/src/commands/chat.ts) L1098–1100 — and in the bare Home it is inert (`showCost: () => undefined`, [home-controller.ts](../../apps/cli/src/render/tui/home-controller.ts) L932). There is nothing durable to render a breakdown *from*.

@@ -161,6 +161,81 @@ function baseParams(
   return params;
 }
 
+describe('an unpriced MODALITY holds its reservation conservatively (ADR-0089 §4)', () => {
+  // The OTHER half of the one-line `priced` fix, and the half nothing covered. `agent-turn` chooses between
+  // `settle(realized)` and `settleAtReservedEstimate()` for each attempt, and the sibling branch's own comment
+  // says why the second exists: "there is no trustworthy actual price, not proof of a free call — keep the
+  // reservation as the conservative charge."
+  //
+  // A priced model with an unrated media modality IS that case, arriving with the wrong shape: `record.cost` is
+  // DEFINED and its figure is a token-only floor. Keying on `record.cost === undefined` therefore released the
+  // reservation at that floor, so a charge we know happened and cannot price left the governor's view entirely.
+  // Reverting the condition to `record.cost === undefined` must redden this.
+  it('settles at the reserved estimate, never at the token-only realized floor', async () => {
+    const provider = scriptedProvider('anthropic', [
+      [
+        { type: 'text_delta', text: 'ok' },
+        {
+          type: 'stop',
+        stopReason: 'stop',
+          // The real shape: a token-based provider reports audio as a raw token COUNT, which no per-second
+          // rate can price — so the model prices for tokens and not for this.
+          usage: {
+            inputTokens: 1_000,
+            outputTokens: 10,
+            mediaUnits: [{ modality: 'audio', direction: 'output', units: 500, unit: 'count' }],
+          },
+        },
+      ],
+    ]);
+    let realizedSettlements = 0;
+    let conservativeSettlements = 0;
+    const admission = {
+      settle: (): void => {
+        realizedSettlements += 1;
+      },
+      settleAtReservedEstimate: (): void => {
+        conservativeSettlements += 1;
+      },
+      release: (): void => undefined,
+    };
+    const params = baseParams(provider, { preEgress: () => admission });
+    await runAgentTurn(params);
+
+    expect(conservativeSettlements).toBe(1);
+    expect(realizedSettlements).toBe(0);
+    // …and the event says so too, so the two halves of the fix are pinned independently rather than one
+    // standing in for the other.
+    const cost = eventsOf(params).find((e) => e.type === 'cost:updated');
+    expect(cost?.type === 'cost:updated' && cost.priced).toBe(false);
+  });
+
+  it('settles at the REALIZED figure when nothing was unpriced — the ordinary path is unchanged', async () => {
+    // Without this, the test above would also pass if every attempt settled conservatively, which would hold a
+    // reservation forever and make the cap steadily over-count.
+    const provider = scriptedProvider('anthropic', [
+      [
+        { type: 'text_delta', text: 'ok' },
+        { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1_000, outputTokens: 10 } },
+      ],
+    ]);
+    let realizedSettlements = 0;
+    let conservativeSettlements = 0;
+    const admission = {
+      settle: (): void => {
+        realizedSettlements += 1;
+      },
+      settleAtReservedEstimate: (): void => {
+        conservativeSettlements += 1;
+      },
+      release: (): void => undefined,
+    };
+    await runAgentTurn(baseParams(provider, { preEgress: () => admission }));
+    expect(realizedSettlements).toBe(1);
+    expect(conservativeSettlements).toBe(0);
+  });
+});
+
 /** Typed side-channel: the events the default `emit` captured for a given params object. */
 const capturedEvents = new WeakMap<AgentTurnParams, NodeStreamEvent[]>();
 

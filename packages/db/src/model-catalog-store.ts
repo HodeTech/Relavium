@@ -76,6 +76,8 @@ export interface ModelCatalogUpsert {
   readonly cachedInputCostPerMtokMicrocents?: number;
   /** Did the USER state the cache rate (ADR-0071 §10)? Absent ⇒ preserve whatever the row already says. */
   readonly cachedInputStated?: boolean;
+  /** Did the USER state the token rates (ADR-0089 §4)? Absent ⇒ preserve. Rides with the two rates, or neither. */
+  readonly tokenRatesStated?: boolean;
   /** The provenance discriminant ([ADR-0064] §4). OMITTED ⇒ `'static'` (a hardcoded seed), so every existing
    *  media-routing caller is unchanged; the live refresh writes `'live'`; user pricing writes `'user'`. */
   readonly source?: ModelCatalogSource;
@@ -105,6 +107,17 @@ export interface ModelCatalogListing {
   readonly cachedInputCostPerMtokMicrocents: number;
   /** `true` ⇒ the number above is the user's own; `false` ⇒ they never said, so a reader derives it (ADR-0071 §10). */
   readonly cachedInputStated: boolean;
+  /**
+   * `true` ⇒ the INPUT/OUTPUT rates above are the user's own, zero included; `false` ⇒ they never stated them,
+   * so a reader must inherit the catalog's rather than read the `NOT NULL DEFAULT 0` columns as values
+   * (migration 0016, [ADR-0089](../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4).
+   *
+   * The sibling of {@link cachedInputStated}, and it exists for the same reason that one does. It became
+   * load-bearing when a MEDIA-ONLY `models pricing` invocation became legal: without it, pricing an image rate
+   * on a model the catalog prices for tokens writes `0`/`0`, the user row outranks the catalog, and every token
+   * on that model bills at nothing — `CR-55`'s own defect, reintroduced by its remedy, on the bigger cost axis.
+   */
+  readonly tokenRatesStated: boolean;
   /**
    * Per-modality media-OUTPUT rates in integer µ¢ per billed unit — per image, per audio-second, per
    * video-second ([ADR-0089](../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4).
@@ -269,6 +282,7 @@ function toListing(row: ModelCatalogRow): ModelCatalogListing {
     outputCostPerMtokMicrocents: row.outputCostPerMtokMicrocents,
     cachedInputCostPerMtokMicrocents: row.cachedInputCostPerMtokMicrocents,
     cachedInputStated: row.cachedInputStated,
+    tokenRatesStated: row.tokenRatesStated,
     // Carried verbatim, `null` included — the projection must not decide what a missing rate means (ADR-0089 §4).
     mediaImageCostMicrocents: row.mediaImageCostMicrocents,
     mediaAudioCostMicrocents: row.mediaAudioCostMicrocents,
@@ -554,6 +568,18 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
               ...(input.cachedInputStated === undefined
                 ? {}
                 : { cachedInputStated: input.cachedInputStated }),
+              // The rates and the FACT of stating them ride together, or neither does — and the store DERIVES the
+              // fact rather than trusting a caller to remember it (ADR-0089 §4). Supplying both rates IS stating
+              // them, so a caller that writes them and forgets the flag would otherwise leave a row whose real
+              // numbers a reader discards in favour of the catalog's. An explicit value still wins, so a caller
+              // with a reason can say otherwise. Omitting both leaves the flag alone, which is what makes a
+              // media-only re-price preserve token rates the user stated earlier.
+              ...(input.tokenRatesStated !== undefined
+                ? { tokenRatesStated: input.tokenRatesStated }
+                : input.inputCostPerMtokMicrocents !== undefined &&
+                    input.outputCostPerMtokMicrocents !== undefined
+                  ? { tokenRatesStated: true }
+                  : {}),
               cachedInputCostPerMtokMicrocents:
                 input.cachedInputCostPerMtokMicrocents ??
                 existing?.cachedInputCostPerMtokMicrocents ??
@@ -645,6 +671,10 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
             outputCostPerMtokMicrocents: 0,
             cachedInputCostPerMtokMicrocents: 0,
             cachedInputStated: false,
+            // Reset with its rates, for the reason the comment above gives: a reused row must start from a clean
+            // baseline, or a later media-only re-price would resurrect a cleared `0`/`0` AS IF the user had
+            // stated it — billing every token on that model at nothing (ADR-0089 §4).
+            tokenRatesStated: false,
             updatedAt: deps.now(),
           })
           .where(

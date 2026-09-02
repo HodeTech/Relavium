@@ -113,6 +113,13 @@
       "when": 1787047057665,
       "tag": "0015_modern_roland_deschain",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1788335100939,
+      "tag": "0016_bold_ancient_one",
+      "breakpoints": true
     }
   ]
 }

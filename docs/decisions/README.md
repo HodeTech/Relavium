@@ -132,7 +132,7 @@ flowchart TD
 | 0086 | [Authored values get absolute admission ceilings, and an omitted concurrency cap is finite](0086-absolute-admission-ceilings-on-authored-values.md) | Accepted | 2026-08-28 |
 | 0087 | [A stream is bounded by whether anyone reads it; outputs and events are bounded by size; finished runs are bounded by count](0087-consumed-streams-size-bounds-and-run-retention.md) | Proposed | 2026-08-29 |
 | 0088 | [The MCP boundary is hostile — a remote server is pinned and bounded, an unbounded one must be local and opted into](0088-the-mcp-boundary-is-hostile.md) | Accepted | 2026-08-30 |
-| 0089 | [Media correctness — the four boundaries `W5` had to choose](0089-media-correctness-four-boundaries.md) | Accepted | 2026-09-02 |
+| 0089 | [Media correctness — the four boundaries `W5` had to choose](0089-media-correctness-four-boundaries.md) (amends 0031, 0039, 0042, 0043, 0044, 0070, 0071) | Accepted | 2026-09-02 |
 
 ## Creating a new ADR
 

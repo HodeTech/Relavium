@@ -44,6 +44,34 @@ describe('createModelCatalogStore (2.S — media routing + load-check reader)', 
     client.sqlite.close();
   });
 
+  it('derives tokenRatesStated from the presence of both rates, so no caller can forget it', () => {
+    // The rule lives in the store, not in `models pricing`, because that command was never the only writer —
+    // and a row whose real token rates a reader discards (because the flag was forgotten) is the same money
+    // defect as a row whose default `0` a reader believes.
+    store.upsert({
+      providerId,
+      modelId: 'stated-pair',
+      source: 'user',
+      inputCostPerMtokMicrocents: 300_000_000,
+      outputCostPerMtokMicrocents: 900_000_000,
+    });
+    expect(store.listAll().find((m) => m.modelId === 'stated-pair')?.tokenRatesStated).toBe(true);
+
+    // A MEDIA-ONLY write states nothing about tokens, so the flag stays down and a reader inherits the
+    // catalog's rates instead of reading the `NOT NULL DEFAULT 0` columns as a price.
+    store.upsert({
+      providerId,
+      modelId: 'media-only',
+      source: 'user',
+      mediaImageCostMicrocents: 4_000_000,
+    });
+    expect(store.listAll().find((m) => m.modelId === 'media-only')?.tokenRatesStated).toBe(false);
+
+    // …and a later media-only re-price does not demote a row that DID state them.
+    store.upsert({ providerId, modelId: 'stated-pair', source: 'user', mediaAudioCostMicrocents: 7 });
+    expect(store.listAll().find((m) => m.modelId === 'stated-pair')?.tokenRatesStated).toBe(true);
+  });
+
   it('listAll carries the media rate columns verbatim, null included (ADR-0089 §4)', () => {
     // `fromRow` (the narrow media/capability record) has carried these since 1.AF; `toListing` — the PRICING
     // projection the cost overlay reads — did not, so a rate on the row could never reach `ModelPricing`. The

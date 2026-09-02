@@ -213,10 +213,24 @@ function mediaRates(
   return Object.keys(rates).length === 0 ? undefined : rates;
 }
 
-function rowToUserPricing(row: ModelCatalogListing, provider: ProviderId): ModelPricing {
-  const base = catalogPricing(row.modelId); // undefined for a model the catalog has never heard of
-  const input = row.inputCostPerMtokMicrocents;
-  const output = row.outputCostPerMtokMicrocents;
+function rowToUserPricing(
+  row: ModelCatalogListing,
+  provider: ProviderId,
+  base: ModelPricing | undefined,
+): ModelPricing {
+  // STATED ⇒ their numbers, zero included. NOT stated ⇒ the catalog's, because the columns are
+  // `NOT NULL DEFAULT 0` and a `0` there is a default, not an instruction — the same rule `cachedInputStated`
+  // already carries, extended to the token pair by migration 0016 (ADR-0089 §4).
+  //
+  // It became load-bearing when a MEDIA-ONLY invocation became legal. Reading these unconditionally meant that
+  // adding an image rate to a catalog-priced model — the documented remedy for a strict-cap media refusal —
+  // wrote `0`/`0`, and this row then OUTRANKED the catalog, billing every token on that model at nothing.
+  const input = row.tokenRatesStated
+    ? row.inputCostPerMtokMicrocents
+    : (base?.inputPerMtokMicrocents ?? row.inputCostPerMtokMicrocents);
+  const output = row.tokenRatesStated
+    ? row.outputCostPerMtokMicrocents
+    : (base?.outputPerMtokMicrocents ?? row.outputCostPerMtokMicrocents);
   // STATED ⇒ their number, zero included. NOT stated ⇒ derive it, because the column's `0` is a default and not an
   // instruction (ADR-0071 §10 — the flag exists precisely so the two can be told apart).
   const cachedInput = row.cachedInputStated
@@ -275,7 +289,17 @@ export function buildUserPricing(input: {
     // `max_cost_microcents` unenforceable on it — while the UI displayed $5/MTok. Not merely silent: actively wrong.
     const anchored = catalogModel(row.modelId)?.provider;
     if (anchored !== undefined && anchored !== slug) continue;
-    map.set(row.modelId, rowToUserPricing(row, slug));
+    const base = catalogPricing(row.modelId); // undefined for a model the catalog has never heard of
+    // A row whose token rates were never stated AND whose model the catalog cannot price has no token price at
+    // all — and `ModelPricing` has no way to say "unpriced", only a number. Emitting `0`/`0` here would tell the
+    // governor the model is FREE, which is precisely the `CR-55` confusion, on the axis that carries most of the
+    // spend. Skipping leaves the model genuinely unpriced: `priceModel` throws, the governor takes its
+    // established unpriced-model path, and `strict_cost_cap` refuses it. The media rate on the row goes with it,
+    // which is correct — there is nothing meaningful about pricing one modality of a model nothing else prices.
+    // `models pricing` refuses to create this shape in the first place; this is the defense-in-depth floor for a
+    // legacy or directly-edited database.
+    if (!row.tokenRatesStated && base === undefined) continue;
+    map.set(row.modelId, rowToUserPricing(row, slug, base));
   }
   return map;
 }

@@ -32,6 +32,7 @@ function modelRow(
     outputCostPerMtokMicrocents: 0,
     cachedInputCostPerMtokMicrocents: 0,
     cachedInputStated: false,
+    tokenRatesStated: true,
     mediaImageCostMicrocents: null,
     mediaAudioCostMicrocents: null,
     mediaVideoCostMicrocents: null,

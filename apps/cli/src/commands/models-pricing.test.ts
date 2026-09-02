@@ -115,6 +115,69 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
       expect(listing?.mediaImageCostMicrocents).toBe(4_000_000);
     });
 
+    it('renders every combination of optional price parts as one clean list', () => {
+      // Each part is independently optional now that media-only and cache-only invocations are legal, so no
+      // part may carry its own separator or assume another precedes it. Stitching them with ad-hoc separators
+      // produced `): , cached $0.5/Mtokimage $0.04/image` for `--cached` + `--image` — a stray comma and two
+      // clauses run together. Every earlier test spread `baseArgs`, which always carries token rates, so the
+      // one shape that breaks the stitching was the one shape nothing exercised.
+      // A CATALOG-PRICED model, deliberately: a media-only invocation on a model nothing prices for tokens is
+      // now refused at write time, because the row it would create carries no usable token price and the media
+      // rate would never be applied. `gpt-4` is anchored to `openai`, the provider this suite registers.
+      const cachedPlusMedia = run({
+        model: 'gpt-4',
+        provider: 'openai',
+        cachedInputUsdPerMtok: 0.5,
+        imageUsdPerCount: 0.04,
+      });
+      expect(cachedPlusMedia.out).toContain('(openai): cached $0.5/Mtok, image $0.04/image.');
+      expect(cachedPlusMedia.out).not.toContain('): ,'); // no leading separator
+      expect(cachedPlusMedia.out).not.toContain('Mtokimage'); // no run-together clauses
+
+      const mediaOnly = run({ model: 'gpt-4', provider: 'openai', videoUsdPerSecond: 0.5 });
+      expect(mediaOnly.out).toContain('(openai): video $0.5/s.');
+      expect(mediaOnly.out).not.toContain('input $');
+
+      const everything = run({ ...baseArgs, cachedInputUsdPerMtok: 1, audioUsdPerSecond: 0.001 });
+      expect(everything.out).toContain(
+        '(openai): input $3/Mtok, output $9/Mtok, cached $1/Mtok, audio $0.001/s.',
+      );
+    });
+
+    it('a media-only write does NOT claim the token rates — it records that they were never stated', () => {
+      // THE defect this flag exists for. `input_/output_cost_per_mtok_microcents` are `NOT NULL DEFAULT 0`, so a
+      // media-only write lands `0`/`0` — and a `source='user'` row OUTRANKS the catalog. Without the flag,
+      // following the strict-cap refusal's own instruction ("add an image rate") billed every token on that
+      // model at nothing, permanently and silently: `CR-55`'s defect, reintroduced by its own remedy, on the
+      // axis that carries most of the spend.
+      run({ model: 'gpt-4', provider: 'openai', imageUsdPerCount: 0.04 });
+      const listing = catalog.listAll().find((m) => m.modelId === 'gpt-4');
+      expect(listing?.mediaImageCostMicrocents).toBe(4_000_000);
+      expect(listing?.tokenRatesStated).toBe(false); // …so a reader inherits the catalog's token rates
+    });
+
+    it('a token write DOES claim them, and a later media-only re-price preserves that claim', () => {
+      run({ ...baseArgs, model: 'gpt-4' });
+      expect(catalog.listAll().find((m) => m.modelId === 'gpt-4')?.tokenRatesStated).toBe(true);
+      // The `--cached` omission rule, applied to the flag: a media-only re-price must not demote token rates the
+      // user stated earlier, or their own numbers would silently revert to the catalog's.
+      run({ model: 'gpt-4', provider: 'openai', audioUsdPerSecond: 0.001 });
+      const listing = catalog.listAll().find((m) => m.modelId === 'gpt-4');
+      expect(listing?.tokenRatesStated).toBe(true);
+      expect(listing?.inputCostPerMtokMicrocents).toBe(300_000_000);
+      expect(listing?.mediaAudioCostMicrocents).toBe(100_000);
+    });
+
+    it('refuses a media-only write on a model NOTHING prices for tokens', () => {
+      // The row would carry no usable token price — the catalog has nothing to inherit and the `0` is a default —
+      // so `buildUserPricing` drops it and the media rate is unreachable. Refusing at write time is the
+      // difference between a clear exit 2 and a strict cap that keeps refusing after the user did what it asked.
+      expect(() =>
+        run({ model: 'acme-custom-1', provider: 'openai', imageUsdPerCount: 0.04 }),
+      ).toThrow(/has no token price/);
+      expect(catalog.listAll().find((m) => m.modelId === 'acme-custom-1')).toBeUndefined();
+    });
+
     it('refuses an implausible per-unit price before writing anything', () => {
       expect(() => run({ ...baseArgs, imageUsdPerCount: 5_000 })).toThrow(/implausibly large/);
       expect(catalog.listAll().find((m) => m.modelId === 'acme-custom-1')).toBeUndefined();

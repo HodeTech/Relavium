@@ -38,6 +38,10 @@ function row(
     outputCostPerMtokMicrocents: 0,
     cachedInputCostPerMtokMicrocents: 0,
     cachedInputStated: false,
+    // `true` by default, matching migration 0016's backfill: every row that predates the flag was written by a
+    // command that demanded `--input`/`--output`, so it stated them. A case testing the NEW media-only shape
+    // overrides this to `false`.
+    tokenRatesStated: true,
     mediaImageCostMicrocents: null,
     mediaAudioCostMicrocents: null,
     mediaVideoCostMicrocents: null,
@@ -428,6 +432,71 @@ describe('media output rates reach the cost path (CR-55, ADR-0089 §4)', () => {
     expect(priced).not.toHaveProperty('mediaOutputRates');
   });
 
+  it('an UNSTATED token pair inherits the catalog rather than reading the NOT-NULL zero as a price', () => {
+    // The read half of the same defect. A media-only `models pricing` write leaves `token_rates_stated = 0` and
+    // the token columns at their `NOT NULL DEFAULT 0`. Reading those as values makes a `source='user'` row —
+    // which OUTRANKS the catalog — declare the model free, so every token bills at nothing and the cap can
+    // never trip on it again. Migration 0016 exists so the two can be told apart.
+    const { id, provider } = firstSnapshotModel();
+    const shipped = catalogPricing(id);
+    const overlay = buildUserPricing({
+      rows: [
+        row({
+          modelId: id,
+          providerId: `p-${provider}`,
+          source: 'user',
+          tokenRatesStated: false,
+          inputCostPerMtokMicrocents: 0,
+          outputCostPerMtokMicrocents: 0,
+          mediaImageCostMicrocents: 4_000_000,
+        }),
+      ],
+      providerSlug: slugResolver({ [`p-${provider}`]: provider }),
+    });
+    const priced = overlay.get(id);
+    expect(priced?.inputPerMtokMicrocents).toBe(shipped?.inputPerMtokMicrocents);
+    expect(priced?.outputPerMtokMicrocents).toBe(shipped?.outputPerMtokMicrocents);
+    expect(priced?.inputPerMtokMicrocents).toBeGreaterThan(0); // the premise: the catalog really prices it
+    expect(priced?.mediaOutputRates).toEqual({ image: 4_000_000 }); // …and the media rate still lands
+  });
+
+  it('a STATED zero is still believed — the flag distinguishes free from never-said', () => {
+    const { id, provider } = firstSnapshotModel();
+    const overlay = buildUserPricing({
+      rows: [
+        row({
+          modelId: id,
+          providerId: `p-${provider}`,
+          source: 'user',
+          tokenRatesStated: true,
+          inputCostPerMtokMicrocents: 0,
+          outputCostPerMtokMicrocents: 0,
+        }),
+      ],
+      providerSlug: slugResolver({ [`p-${provider}`]: provider }),
+    });
+    expect(overlay.get(id)?.inputPerMtokMicrocents).toBe(0);
+  });
+
+  it('drops a row that can be priced by NOBODY — unpriced beats a fabricated zero', () => {
+    // Unstated rates AND a model the catalog never heard of. `ModelPricing` cannot express "unpriced", only a
+    // number, so emitting `0` would tell the governor the model is free. Skipping leaves it genuinely unpriced,
+    // which routes to the established unpriced-model path and lets `strict_cost_cap` refuse it.
+    const overlay = buildUserPricing({
+      rows: [
+        row({
+          modelId: 'acme-unknown-1',
+          providerId: 'p-openai',
+          source: 'user',
+          tokenRatesStated: false,
+          mediaImageCostMicrocents: 4_000_000,
+        }),
+      ],
+      providerSlug: slugResolver({ 'p-openai': 'openai' }),
+    });
+    expect(overlay.get('acme-unknown-1')).toBeUndefined();
+  });
+
   it("a stated modality wins, and an unstated one falls through to the catalog's", () => {
     // RENAMED from 'a partial media override stays partial: an unstated modality inherits the catalog', which
     // promised coverage the body cannot deliver: no shipped row carries a media rate, so the INHERITANCE branch
@@ -524,6 +593,7 @@ describe('a user override of a CATALOG model — a partial override must stay pa
           outputCostPerMtokMicrocents: 100_000_000,
           cachedInputCostPerMtokMicrocents: 0,
           cachedInputStated: true,
+          tokenRatesStated: true,
           mediaImageCostMicrocents: null,
           mediaAudioCostMicrocents: null,
           mediaVideoCostMicrocents: null,

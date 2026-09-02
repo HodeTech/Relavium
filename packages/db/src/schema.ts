@@ -129,6 +129,14 @@ export const modelCatalog = sqliteTable(
      * catalog cache rate is $0.50 would otherwise pay 5× MORE for a cache hit than for a miss).
      */
     cachedInputStated: boolFlag('cached_input_stated', false),
+    /**
+     * Did the USER state the token rates (migration 0016, ADR-0089 §4)? The sibling of `cached_input_stated`,
+     * for the same reason: `input_/output_cost_per_mtok_microcents` are `NOT NULL DEFAULT 0`, so "never said"
+     * and "stated free" are the same bytes. `0` ⇒ a reader inherits the catalog's token rates; `1` ⇒ the
+     * numbers above are the user's own, zero included. Needed only since a MEDIA-ONLY `models pricing`
+     * invocation became legal — before that, a `source='user'` row always carried stated rates.
+     */
+    tokenRatesStated: boolFlag('token_rates_stated', false),
     // Per-modality media-OUTPUT rates (1.AF/D17, ADR-0044 §3) — integer µ¢ per billed unit (per image,
     // per audio-second, per video-second). NULLABLE: a model with no metered media rate degrades to 0
     // (H4). The projection of `ModelPricing.mediaOutputRates`; no shipped model carries one yet.
