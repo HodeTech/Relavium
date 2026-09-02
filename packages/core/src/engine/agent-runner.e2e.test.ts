@@ -68,7 +68,7 @@ const echoRegistry: ToolRegistry = {
     const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'TOOL-OK' };
     return Promise.resolve({
       output: 'TOOL-OK',
-      mediaAttachments: [],
+      mediaAttachments: markUntrusted([]),
       toolResult: markUntrusted(result),
       truncated: false,
       events: {
@@ -670,9 +670,7 @@ describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
             usage: {
               inputTokens: 1_000,
               outputTokens: 10,
-              mediaUnits: [
-                { modality: 'audio', direction: 'output', units: 500, unit: 'count' },
-              ],
+              mediaUnits: [{ modality: 'audio', direction: 'output', units: 500, unit: 'count' }],
             },
           },
         ]),

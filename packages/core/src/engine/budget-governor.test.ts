@@ -113,7 +113,9 @@ describe('BudgetGovernor', () => {
       const { governor, unpricedCalls } = makeGovernor({
         budget: { max_cost_microcents: 1_000_000_000, on_exceed: 'fail' },
       });
-      await expect(governor.checkPreEgress('claude-haiku-4-5', 10, IMAGE_TURN)).resolves.not.toThrow();
+      await expect(
+        governor.checkPreEgress('claude-haiku-4-5', 10, IMAGE_TURN),
+      ).resolves.not.toThrow();
       expect(unpricedCalls).toEqual([{ model: 'claude-haiku-4-5', modalities: ['image'] }]);
 
       // A standing condition of the model, not an event: the second and third identical calls stay silent.
@@ -170,8 +172,12 @@ describe('BudgetGovernor', () => {
         },
         emit: () => Promise.resolve(),
       });
-      await expect(governor.checkPreEgress('claude-haiku-4-5', 10, IMAGE_TURN)).resolves.not.toThrow();
-      await expect(governor.checkPreEgress('claude-haiku-4-5', 10, IMAGE_TURN)).resolves.not.toThrow();
+      await expect(
+        governor.checkPreEgress('claude-haiku-4-5', 10, IMAGE_TURN),
+      ).resolves.not.toThrow();
+      await expect(
+        governor.checkPreEgress('claude-haiku-4-5', 10, IMAGE_TURN),
+      ).resolves.not.toThrow();
       expect(calls).toBe(1);
     });
   });

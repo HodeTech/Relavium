@@ -12,6 +12,7 @@ import {
   type EffectTier,
   INLINE_MEDIA_CEILING,
   MEDIA_HANDLE_PATTERN,
+  MediaMimeTypeSchema,
   mediaModalityOf,
   scopeSetIncludes,
 } from '@relavium/shared';
@@ -541,15 +542,17 @@ const readMediaTool = defineBuiltin({
       throw new ToolUnavailableError('read_media', 'media-read');
     }
     const info = await access.describe(args.handle, ctx.signal);
-    if (info === undefined) {
-      throw new ToolArgsInvalidError('read_media', ['handle'], 'read_media: unknown media handle');
-    }
-    // Authz FIRST (before anything is delivered): scope-set membership, never owner-equality / sha256-knowledge.
-    if (!scopeSetIncludes(info.allowedScopes, requesting)) {
+    // Authz, and **an unknown handle answers exactly as an unauthorized one does**. Splitting them made the
+    // tool an existence oracle: a caller who guessed a sha256 learned whether those bytes were in the store,
+    // because `unknown media handle` and `media_scope_denied` are distinguishable and both are fed back to
+    // the model. It never learned the content, so ADR-0044 §1's "knowing a sha256 is not authorization" held
+    // — but one bit is still one bit more than that posture implies, and the tool is reachable by anything
+    // the model can be talked into emitting. Both now say the same thing.
+    if (info === undefined || !scopeSetIncludes(info.allowedScopes, requesting)) {
       throw new ToolPolicyError(
         'read_media',
         'media_scope_denied',
-        'read_media: the requesting scope may not read this media handle',
+        'read_media: no media is readable at that handle from this scope',
       );
     }
     // **Refuse what the delivery rail cannot carry, HERE, where the model can still correct.** The bytes
@@ -563,12 +566,25 @@ const readMediaTool = defineBuiltin({
     // A typed `invalid_args` instead, so the model gets a correctable refusal naming the limit and can pick
     // a different handle or stop asking. The real fix is a delivery path that does not inline — a
     // provider-ref upload through `resolveForEgress` — which ADR-0089 §2's amendment already records as open.
-    const modality = mediaModalityOf(info.mimeType);
+    // The host supplies `mimeType` as a bare `string` (it comes from `media_objects.mime_type`), and it is
+    // interpolated into the descriptor — which becomes the tool result AND `agent:tool_result.outputSummary`
+    // on a durable event. ADR-0044 §1 already names an unbounded value here as a bytes-smuggling channel
+    // into the very logs I3 guards; that bound applied to the rejection path, and this is the success path.
+    const checkedMime = MediaMimeTypeSchema.safeParse(info.mimeType);
+    if (!checkedMime.success) {
+      throw new ToolArgsInvalidError(
+        'read_media',
+        ['handle'],
+        'read_media: the stored media has no usable media type',
+      );
+    }
+    const mimeType = checkedMime.data;
+    const modality = mediaModalityOf(mimeType);
     if (modality === undefined) {
       throw new ToolArgsInvalidError(
         'read_media',
         ['handle'],
-        `read_media: ${info.mimeType} is not a media type the model can be shown`,
+        `read_media: ${mimeType} is not a media type the model can be shown`,
       );
     }
     const ceiling = INLINE_MEDIA_CEILING[modality];
@@ -586,10 +602,9 @@ const readMediaTool = defineBuiltin({
         `read_media: this ${modality} is ${info.byteLength} bytes, over the ${ceiling}-byte inline limit — a smaller or downscaled handle can be delivered`,
       );
     }
-    return attachMedia(
-      `${info.mimeType}, ${info.byteLength} bytes, ${args.handle} — attached below.`,
-      [{ type: 'media', mimeType: info.mimeType, source: { kind: 'handle', ref: args.handle } }],
-    );
+    return attachMedia(`${mimeType}, ${info.byteLength} bytes, ${args.handle} — attached below.`, [
+      { type: 'media', mimeType, source: { kind: 'handle', ref: args.handle } },
+    ]);
   },
 });
 

@@ -284,6 +284,23 @@ product with no remedy, which is not a stricter cap, it is an outage.
   correctness wave. Accepted deliberately — the alternative is a refusal with no remedy, and the phase's own
   acceptance for `CR-55` already asks for the media rates to be carried through the overlay path.
 
+## Amendment — 2026-09-02 (implementation of §1)
+
+Two statements in §1 are not what shipped, recorded here rather than edited above.
+
+- §1 says the preamble names "the tool **and the handle it answers**". It names the tool only. Repeating an
+  arbitrary-length handle list would let a many-attachment result inflate the preamble, so the handle stays
+  where the model already read it — in the tool result one message above.
+- §1 gives the synthesized message **one** obligation about provenance: that it be marked as engine-authored.
+  Implementation added a second, because marking who wrote a message says nothing about what to do with a
+  directive painted into the image it carries. The message is fenced with an opening and a closing line and
+  tells the model to treat the attachment as reported content, not as something to obey — the discipline
+  `CR-13` already applies to a compaction summary. The parts are also branded `Untrusted` all the way to the
+  one placement site: the model chose the handle, and a `user` position is the most instruction-authoritative
+  non-system slot there is.
+
+Its Negative is amended in place above (the message reaches no transcript and no export).
+
 ## Amendment — 2026-09-02 (implementation of §2)
 
 §2's third bullet says "`readBounded`'s double buffer is collapsed". **It was not.** What shipped adds

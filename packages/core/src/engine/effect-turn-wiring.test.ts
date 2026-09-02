@@ -121,7 +121,7 @@ function slotRecordingRegistry(slots: number[]): ToolRegistry {
       const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'OK' };
       return Promise.resolve({
         output: 'OK',
-        mediaAttachments: [],
+        mediaAttachments: markUntrusted([]),
         toolResult: markUntrusted(result),
         truncated: false,
         events: {

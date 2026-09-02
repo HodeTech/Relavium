@@ -604,7 +604,7 @@ async function dispatch(
   return {
     output: outputMapped,
     toolResult: markUntrusted(toolResult),
-    mediaAttachments,
+    mediaAttachments: markUntrusted(mediaAttachments),
     truncated: bounded.truncated,
     events: {
       call: { toolId: def.id, toolInput: sanitizeInput(def, effective, ctx.secretArgKeys) },

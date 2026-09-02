@@ -461,16 +461,31 @@ describe('read_media (1.AF/D12 + `CR-50` — scope-set authz, whole handle, deli
     }
   });
 
-  it('rejects an unknown handle (describe → undefined)', async () => {
+  it('answers an UNKNOWN handle exactly as an unauthorized one — no existence oracle', async () => {
+    // Splitting the two made the tool tell a caller who guessed a sha256 whether those bytes exist in the
+    // store. It never revealed the content, so ADR-0044 §1's "knowing a sha256 is not authorization" held —
+    // but one bit is one bit, and both errors are fed back to the model. The two answers are now identical,
+    // which is what this asserts: same class, same reason, same message.
     const t = tool('read_media');
     const unknown: MediaReadAccess = {
       describe: () => Promise.resolve(undefined),
       readRange: () => Promise.reject(new Error('must not read')),
     };
-    const err = await rejection(() =>
+    const missing = await rejection(() =>
       t.dispatch(t.parseArgs({ handle: HANDLE }), {}, mediaCtx(SESSION, unknown)),
     );
-    expect(err).toBeInstanceOf(ToolArgsInvalidError);
+    const denied = await rejection(() =>
+      t.dispatch(
+        t.parseArgs({ handle: HANDLE }),
+        {},
+        mediaCtx(SESSION, access([{ kind: 'session', id: 'other' }], 5)),
+      ),
+    );
+    expect(missing).toBeInstanceOf(ToolPolicyError);
+    expect(denied).toBeInstanceOf(ToolPolicyError);
+    expect(missing instanceof Error ? missing.message : 'a').toBe(
+      denied instanceof Error ? denied.message : 'b',
+    );
   });
 
   it('is unavailable when the host wires no media-read delegate', async () => {

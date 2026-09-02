@@ -553,8 +553,15 @@ export interface ToolDispatchOutcome {
    * A tool cannot answer with bytes in its own result: `tool_result.media` is handle-only and nothing lowers
    * it, so the bytes travel the media-INPUT rail instead — the top-level `media` part every adapter already
    * lowers and the chain's egress re-materialization already resolves. Empty for every tool but `read_media`.
+   *
+   * **Branded `Untrusted`, like its sibling above, and for a stronger reason.** This content is chosen by
+   * the MODEL (it picked the handle) and is delivered in a `user` position — the most instruction-
+   * authoritative non-system slot there is. A visual injection painted into an image arrives as user
+   * speech. security-review.md §Prompt-injection requires that boundary to be STRUCTURAL: "with N tool
+   * call-sites, 'remember to wrap it' fails open at exactly one forgotten site." There is one site today;
+   * the brand is what keeps that true when there are two.
    */
-  readonly mediaAttachments: readonly DurableMediaPart[];
+  readonly mediaAttachments: Untrusted<readonly DurableMediaPart[]>;
   /** Whether the model-facing result was truncated (full output spilled to `outputStore`). */
   readonly truncated: boolean;
   /** Sanitized payloads the bus envelopes into `agent:tool_call` / `agent:tool_result`. */

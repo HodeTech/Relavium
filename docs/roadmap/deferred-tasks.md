@@ -286,17 +286,17 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > contract that the 1.AH wiring must resolve coherently (it touches the inert read_media path, so fixing it in
 > isolation now risks conflicting with the 1.AH host design), plus one test-injection gap.
 
-- [ ] **`read_media` result must be schema-conforming for a multi-turn message (1.AH read_media contract).**
-  `read_media` returns a `{ type:'media', source:{ kind:'base64', data } }` MediaPart placed in
-  `tool_result.result`; on the **next** LLM call `LlmMessageSchema.superRefine` runs `containsInlineMediaBytes`
-  over the tool-result part and **rejects inline base64** — so a wired read_media would break the turn. The
-  result should carry a **handle** (durable form, resolved on egress by the seam), not inline base64. **Defer
-  with the 1.AH host wiring** (it co-decides base64-vs-handle for `MediaReadAccess`): (a) read_media returns a
-  handle source; (b) **narrow `MediaReadAccess.readRange`** from `Promise<MediaSource>` to the chosen base64/
-  handle form (today the wide type permits a `url`/`handle` source a host could mis-return → I3/SSRF surface);
-  (c) **thread `AbortSignalLike`** into `MediaReadAccess.describe`/`readRange` (the only host-delegated path with
-  no cancellation, unlike `MediaStore.readRange`). *(Sonnet review HIGH/MEDIUM, latent — read_media is inert;
-  packages/core/src/tools/builtins.ts + types.ts; 1.AH)*
+- [x] **`read_media` result must be schema-conforming for a multi-turn message (1.AH read_media contract).**
+  ~~`read_media` returns a `{ type:'media', source:{ kind:'base64', data } }` MediaPart placed in
+  `tool_result.result` … the result should carry a **handle**.~~ **Closed 2026-09-02 by `CR-50`**
+  ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §1), and closed differently from what
+  this item proposed: the tool returns **no `MediaPart` at all**. Its result is a short text descriptor and
+  the media travels the media-INPUT rail on a synthesized `user` message, because `tool_result.media` is a
+  position nothing lowers. Sub-item (c) — threading `AbortSignalLike` into `describe` — landed and is
+  pinned by a test. Sub-item (b), narrowing `MediaReadAccess.readRange`, is **superseded**: the engine no
+  longer calls `readRange` at all, so the wide type is no longer reachable from here; it is re-recorded in
+  the `CR-50` residuals above as an arm awaiting its 1.AH desktop caller. *(Marked closed rather than
+  deleted: this item and the `CR-50` residual disagreed with each other in the same file for a day.)*
 - [ ] **Budget-governor media-cost block/warn/fail path has no non-zero-estimate test.** No shipped model
   carries a `mediaOutputRates` row, so `estimateMediaCost` always returns 0 and the governor's media-driven
   `warn`/`fail`/`pause` arm is never exercised end-to-end (the units×rate math IS covered in `mediaCost`/
