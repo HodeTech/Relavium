@@ -284,7 +284,7 @@ to correct.
 | `CR-51` | made (gate on model-level capability — `toolCall`/`attachment` join `requestSupportReason`, so the chain pre-skips for free and the adapter refuses; `temperature`/`structuredOutput` stay withheld knobs) · ✅ closed 2026-09-02 | — | no | — |
 | `CR-52` | made 2026-09-02 · ✅ closed 2026-09-02 (pull [ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md)'s deferral forward — an optional `signature` on the canonical `tool_call` part + `tool_call_end`, with a signature-less durable arm; the ADR-0089 §3 sidecar proved unbuildable) | [ADR-0090](../../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md), superseding [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §3 | no | — |
 | `CR-53` | made · ✅ closed 2026-09-02 (bounded stream to the store — end-to-end: `MediaUrlStream` + `MediaStore.putStream?`, `put` narrowed to sub-ceiling, a url with no streaming hook REFUSED) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §2 | no | media bytes |
-| `CR-54` | made (content-hashed handle at first resolution) | — | no | media bytes |
+| `CR-54` | made · ✅ closed 2026-09-02 (content-hashed handle at first resolution — the node OUTPUT is pinned into the run scope, not only into the event copy) | [ADR-0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md) §3 | no | media bytes |
 | `CR-55` | made (missing rate ⇒ unpriced, on both cost paths; strict refuses; the rate path + CLI fields land with it) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §4 | yes | — |
 | `CR-60` | **open** — race semantics, or rename + correct the table | — | no | — |
 | `CR-61` | **open** — needs a JSON-Schema validator dependency | new (dependency ADR) | no | — |
@@ -1637,7 +1637,7 @@ string and the store's decoded copy can all exist at once.
 **Fix + acceptance.** A bounded stream or download lease from the adapter; the host writes straight to the media
 store with a `Content-Length` and streamed-byte ceiling. A large-media test asserts peak memory stays bounded.
 
-### CR-54 — URL media can produce different bytes on resume · High
+### CR-54 — URL media can produce different bytes on resume · High · ✅ closed 2026-09-02
 Remote URL media is resolved again on resume, and the same URL can return different content, a different
 redirect or a different DNS answer. The run appears to have the same inputs while the model sees different bytes.
 **Fix + acceptance.** Convert to a content-hashed handle at first resolution; resume must not re-fetch. Pairs

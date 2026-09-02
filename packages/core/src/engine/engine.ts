@@ -398,6 +398,7 @@ function maskInputs(
  */
 type RunOwnership = 'unclaimed' | 'held' | 'parked' | 'lost' | 'done';
 
+
 class RunExecution {
   readonly runId: string;
   readonly handle: RunHandle;
@@ -728,6 +729,23 @@ class RunExecution {
         this.#closeStream = close;
       },
     );
+  }
+
+  /**
+   * Re-host any `url` media in a node output to a handle, so the run scope holds bytes we own (`CR-54`).
+   *
+   * Best-effort by design: with no `MediaStore` the value is returned unchanged and the emit choke point
+   * makes the same refusal one step later — this is a pinning pass, not a second I3 gate, and duplicating
+   * that gate here would only change WHICH error a media-bearing run without a store reports.
+   *
+   * The overwhelmingly common case is a text output, which pays `deInlineMedia`'s cheap scan and returns
+   * the same reference.
+   */
+  #pinMediaUrls(output: unknown): Promise<unknown> {
+    const store = this.#host.mediaStore;
+    return store === undefined
+      ? Promise.resolve(output)
+      : deInlineMedia(output, store, this.#mediaEgress());
   }
 
   // --- lifecycle ------------------------------------------------------------------------------
@@ -2397,10 +2415,24 @@ class RunExecution {
     }
     this.#workflowStateBytes += measured.bytes;
 
+    // PIN a `url` media source to a content-addressed handle before it enters the run scope (`CR-54`,
+    // [ADR-0043](../../../../docs/decisions/0043-media-egress-failover-rematerialization-ssrf.md) §3).
+    //
+    // A url is not a value; it is a promise about a value the world is free to break — the same URL can
+    // return different bytes, a different redirect, or a different DNS answer on the next fetch. Gemini's
+    // video generation is the live producer: `pollMediaJob` returns `{ kind: 'url' }`.
+    //
+    // The event was already de-inlined at the emit choke point, but on a COPY: `state.output` kept the raw
+    // url, so the durable record said "handle" while the running run said "url". A downstream node reading
+    // `run.outputs[...]` got the url, a RESUME rebuilt the scope from the durable event and got the handle,
+    // and the two could resolve to different bytes — with `CR-17`'s digest hashing the pointer either way.
+    // Pinning here makes one answer: the scope, the event and every later reader see the same handle, and
+    // the url is fetched exactly once, when it was first produced.
+    const pinned = await this.#pinMediaUrls(outcome.output);
     const state = this.#states.get(vertex.id);
     if (state !== undefined) {
       state.status = 'completed';
-      state.output = outcome.output;
+      state.output = pinned;
       if (outcome.kind === 'branch') {
         state.selectedTargets = new Set(outcome.selected);
       }
@@ -2412,7 +2444,10 @@ class RunExecution {
       type: 'node:completed',
       runId: this.runId,
       nodeId: vertex.id,
-      output: outcome.output,
+      // The PINNED output, not the raw one — the same value the run scope now holds. Emitting the raw form
+      // would make the choke point re-run the url fetch it was just pinned by, so the same url would be
+      // fetched twice and the two copies could differ (`CR-54`). One fetch, one handle, one answer.
+      output: pinned,
       tokensUsed: tokens,
       durationMs: Math.max(0, this.#elapsedMs() - startedAtMs),
       // Snapshot the run-wide cost running total onto the durable boundary so cross-process resume can

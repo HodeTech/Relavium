@@ -464,6 +464,103 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
     expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
   });
 
+  describe('a url media OUTPUT is pinned once, into the run scope (CR-54)', () => {
+    /** A host whose streaming egress counts fetches and returns DIFFERENT bytes on each call. */
+    function driftingHost(mediaStore: MediaStore, runStore: InMemoryRunStore) {
+      const fetches: string[] = [];
+      let call = 0;
+      return {
+        fetches,
+        host: createInMemoryHost({
+          store: runStore,
+          mediaStore,
+          streamMedia: (url) => {
+            fetches.push(url);
+            call += 1;
+            const byte = call; // the SAME url yields different bytes on a second fetch
+            return {
+              [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+                let done = false;
+                return {
+                  next: (): Promise<IteratorResult<Uint8Array>> => {
+                    if (done) return Promise.resolve({ done: true, value: undefined });
+                    done = true;
+                    return Promise.resolve({ done: false, value: new Uint8Array([byte]) });
+                  },
+                };
+              },
+            };
+          },
+        }),
+      };
+    }
+
+    const urlPart = {
+      type: 'media' as const,
+      mimeType: 'image/png',
+      source: { kind: 'url' as const, url: 'https://media.example/drifts.png' },
+    };
+
+    it('fetches the url ONCE and puts the SAME handle in the scope and the durable event', async () => {
+      // Before this, the event was de-inlined on a COPY while `state.output` kept the raw url: the durable
+      // record said "handle" and the running run said "url". A downstream node got the url, a RESUME rebuilt
+      // the scope from the event and got the handle, and the two could resolve to different bytes — with
+      // `CR-17`'s digest hashing the pointer either way. Gemini's video generation is the live producer.
+      const { store: mediaStore } = stubMediaStore();
+      const runStore = new InMemoryRunStore();
+      const { host, fetches } = driftingHost(mediaStore, runStore);
+      const events = await drain(
+        engineWith(
+          { work: () => ({ kind: 'completed', output: { clip: urlPart } }) },
+          host,
+        ).start({ workflow: workflow(SEQUENTIAL), inputs: {} }),
+      );
+      expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+      expect(fetches).toEqual(['https://media.example/drifts.png']); // ONCE — not once per reader
+
+      const completed = events.find((e) => e.type === 'node:completed' && e.nodeId === 'work');
+      const serialized = JSON.stringify(completed);
+      expect(serialized).not.toContain('media.example'); // no url survives into the durable record
+      expect(serialized).toContain('media://sha256-');
+    });
+
+    it('hands the DOWNSTREAM node the handle, never the url', async () => {
+      // The half a `node:completed` assertion cannot see: what the next node actually reads out of the run
+      // scope. This is where a drifting url would have been re-fetched by whoever consumed it.
+      const { store: mediaStore } = stubMediaStore();
+      const runStore = new InMemoryRunStore();
+      const { host } = driftingHost(mediaStore, runStore);
+      let seenDownstream: unknown;
+      await drain(
+        engineWith(
+          {
+            work: () => ({ kind: 'completed', output: { clip: urlPart } }),
+            done: (ctx) => {
+              seenDownstream = ctx.runOutputs.get('work');
+              return { kind: 'completed', output: 'ok' };
+            },
+          },
+          host,
+        ).start({ workflow: workflow(SEQUENTIAL), inputs: {} }),
+      );
+      expect(seenDownstream).toMatchObject({ clip: { source: { kind: 'handle' } } });
+    });
+
+    it('leaves a media-free output untouched — the fast path costs a scan, not a store call', async () => {
+      const { store: mediaStore, puts } = stubMediaStore();
+      const runStore = new InMemoryRunStore();
+      const { host, fetches } = driftingHost(mediaStore, runStore);
+      await drain(
+        engineWith({ work: () => ({ kind: 'completed', output: 'plain text' }) }, host).start({
+          workflow: workflow(SEQUENTIAL),
+          inputs: {},
+        }),
+      );
+      expect(fetches).toEqual([]);
+      expect(puts).toHaveLength(0);
+    });
+  });
+
   it('re-hosts a url media node output to a handle via the host media-egress port (D9, no url persisted)', async () => {
     const { store: mediaStore, puts } = stubMediaStore();
     const runStore = new InMemoryRunStore();
