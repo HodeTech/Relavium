@@ -154,6 +154,35 @@ describe('capUsd + unpricedModelNote — the cost-cap notice (ADR-0071 §K7)', (
     expect(workflow).toContain('budget.strict_cost_cap'); // …a workflow user edits the YAML
   });
 
+  it('says something DIFFERENT for an unrated modality — every clause of the model sentence is false there', () => {
+    // The model-level sentence claims the model has no price and the cap does not apply. For a priced model
+    // with an unrated modality both are false, and the remedy it names (`models pricing <id>`) adds no media
+    // rate. Shipping the wrong sentence sends a user to fix something that is not broken, and the fix they
+    // would reach for — restating token rates — writes a row that outranks the catalog for tokens too.
+    const note = unpricedModelNote('claude-opus-4-8', 1_000_000_000, 'budget.strict_cost_cap', [
+      'image',
+    ]);
+    expect(note).toContain('has no image rate');
+    expect(note).not.toContain('has no price');
+    // The cap DID apply to the token side, and saying so is what stops this reading as "the cap is off".
+    expect(note).toContain('token cost still counts');
+    // A runnable remedy, in the canonical BILLED unit (ADR-0044 §3) — not USD/Mtok.
+    expect(note).toContain('--provider <p> --image <usd-per-image>');
+  });
+
+  it('names every unrated modality, each with its own billed unit', () => {
+    const note = unpricedModelNote('m', 1_000_000, 'budget.strict_cost_cap', ['video', 'audio']);
+    expect(note).toContain('audio, video'); // sorted, so the sentence is stable
+    expect(note).toContain('--audio <usd-per-second> --video <usd-per-second>');
+  });
+
+  it('falls back to the model sentence when no modality is given (the ADR-0071 §K7 case)', () => {
+    // An empty array must not produce "has no  rate" — absent and empty are the same condition here.
+    expect(unpricedModelNote('m', 1_000_000, 'budget.strict_cost_cap', [])).toContain(
+      'has no price',
+    );
+  });
+
   it('SANITIZES a hostile model id (the display boundary, like every sibling effort notice)', () => {
     const note = unpricedModelNote('evil[31mid\nsecond', 5_000_000);
     expect(note).not.toContain(''); // no raw ESC

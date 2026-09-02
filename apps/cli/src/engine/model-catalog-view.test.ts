@@ -257,7 +257,7 @@ describe('buildUserPricing (2.5.G S10, ADR-0065 §2)', () => {
           inputCostPerMtokMicrocents: 300_000_000,
           outputCostPerMtokMicrocents: 900_000_000,
           cachedInputCostPerMtokMicrocents: 12_345,
-          cachedInputStated: true,
+          cachedInputStated: true, // they typed `--cached 0`
           mediaImageCostMicrocents: null,
           mediaAudioCostMicrocents: null,
           mediaVideoCostMicrocents: null,
@@ -428,10 +428,16 @@ describe('media output rates reach the cost path (CR-55, ADR-0089 §4)', () => {
     expect(priced).not.toHaveProperty('mediaOutputRates');
   });
 
-  it('a partial media override stays partial: an unstated modality inherits the catalog', () => {
-    // The media analogue of the context-window rule the sibling describe block pins. A user pricing only image
-    // output must not silently erase a catalog audio rate — the same class of bug as reading a NOT-NULL `0`
-    // context window as a value.
+  it("a stated modality wins, and an unstated one falls through to the catalog's", () => {
+    // RENAMED from 'a partial media override stays partial: an unstated modality inherits the catalog', which
+    // promised coverage the body cannot deliver: no shipped row carries a media rate, so the INHERITANCE branch
+    // has nothing to inherit and deleting `?? base?.mediaOutputRates?.[modality]` would keep this green. The
+    // fall-through is asserted as far as it can be — against the catalog's actual (absent) value, with an
+    // explicit tripwire below — and the gap is named here rather than implied. Closing it needs a snapshot that
+    // ships a media rate; recorded in deferred-tasks.md as a `W5` residual.
+    //
+    // The half this DOES prove is the one that regressed in practice: a user pricing only image output must not
+    // have their number dropped — the same class of bug as reading a NOT-NULL `0` context window as a value.
     const { id, provider } = firstSnapshotModel();
     const overlay = buildUserPricing({
       rows: [
@@ -520,7 +526,7 @@ describe('a user override of a CATALOG model — a partial override must stay pa
           cachedInputStated: true,
           mediaImageCostMicrocents: null,
           mediaAudioCostMicrocents: null,
-          mediaVideoCostMicrocents: null, // they typed `--cached 0`
+          mediaVideoCostMicrocents: null,
         }),
       ],
       providerSlug: slugs,

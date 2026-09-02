@@ -249,9 +249,9 @@ Models offered by each provider, including pricing used for local cost tracking.
 | `output_cost_per_mtok_microcents` | INTEGER | NOT NULL DEFAULT 0 |
 | `cached_input_cost_per_mtok_microcents` | INTEGER | NOT NULL DEFAULT 0 |
 | `cached_input_stated` | INTEGER (bool) | NOT NULL DEFAULT 0 — did the USER state the cache rate (migration 0011, ADR-0071 §10)? `0` ⇒ derive it from the catalog discount; `1` ⇒ the number above is the user's own |
-| `media_image_cost_microcents` | INTEGER | NULL — µ¢ per output image (1.AF/D17) |
-| `media_audio_cost_microcents` | INTEGER | NULL — µ¢ per output audio-second |
-| `media_video_cost_microcents` | INTEGER | NULL — µ¢ per output video-second |
+| `media_image_cost_microcents` | INTEGER | NULL — µ¢ per output image (1.AF/D17). **`NULL` ⇒ unpriced; an explicit `0` ⇒ stated free.** The distinction is load-bearing and is why these are NULLABLE where the token columns are `NOT NULL DEFAULT 0` with a `cached_input_stated` companion: a reader that collapses the two makes a modality the cost cap cannot enforce look like one that costs nothing ([ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §4). Written by `models pricing --image`; carried verbatim (`null` included) through `ModelCatalogListing` into `ModelPricing.mediaOutputRates` |
+| `media_audio_cost_microcents` | INTEGER | NULL — µ¢ per output audio-**second**; same `NULL` vs `0` rule. `models pricing --audio` |
+| `media_video_cost_microcents` | INTEGER | NULL — µ¢ per output video-**second**; same `NULL` vs `0` rule. `models pricing --video` |
 | `media_surface` | TEXT | NOT NULL DEFAULT `'chat'` — `'chat'` \| `'generative'`; routes an agent node to the normal turn vs `generateMedia()` (1.AG/ADR-0045 §1) |
 | `supports_tool_calling` | INTEGER (bool) | NOT NULL DEFAULT 0 |
 | `supports_vision` | INTEGER (bool) | NOT NULL DEFAULT 0 |

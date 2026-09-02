@@ -331,7 +331,12 @@ export interface WorkflowEngineDeps {
    * Called once per model when a turn runs UNPRICED, so the cost cap could not apply to it (ADR-0071 §K7). The
    * engine cannot print; the host routes it (`run` → stderr). Absent ⇒ silent (`strict_cost_cap` is the block).
    */
-  readonly onUnpriced?: (model: string, capMicrocents: number) => void;
+  readonly onUnpriced?: (
+    model: string,
+    capMicrocents: number,
+    /** Present ⇒ the MODEL is priced and only these billed modalities are not (ADR-0089 §4). */
+    modalities?: readonly MediaBilledModality[],
+  ) => void;
   /**
    * Called once when new egress is HELD because a resumed media job's cost basis is unknown — a row written
    * before ADR-0074 §3 froze it. §3 requires this fallback be observable; without it a `resume` looks like an
@@ -572,7 +577,11 @@ class RunExecution {
      *  model is enforced by `budget`. Host-injected; the realized path rides the runner's own `resolvePrice`. */
     resolvePrice?: PricingOverlay;
     resolveEndpoint?: (provider: ProviderId) => EndpointKind;
-    onUnpriced?: (model: string, capMicrocents: number) => void;
+    onUnpriced?: (
+      model: string,
+      capMicrocents: number,
+      modalities?: readonly MediaBilledModality[],
+    ) => void;
     onLegacyMediaJobHold?: (nodeIds: readonly string[]) => void;
     /** When present, the run is REHYDRATED from this checkpoint (resume) rather than started fresh (1.R). */
     checkpoint?: CheckpointState;
@@ -4098,7 +4107,13 @@ export class WorkflowEngine {
   // built a governor without an endpoint resolver (ADR-0071 §7 — the estimate assumed `official` and under-
   // authorized a custom-base_url turn) and without an unpriced sink (§K7 — the notice was dead on `run`/`gate`).
   readonly #resolveEndpoint: ((provider: ProviderId) => EndpointKind) | undefined;
-  readonly #onUnpriced: ((model: string, capMicrocents: number) => void) | undefined;
+  readonly #onUnpriced:
+    | ((
+        model: string,
+        capMicrocents: number,
+        modalities?: readonly MediaBilledModality[],
+      ) => void)
+    | undefined;
   /**
    * The THIRD occurrence of the same bug the comment above records, found by the #W15-16 review: declared on
    * `WorkflowEngineDeps`, forwarded by `build-engine.ts` from a real `gate.ts` sentence, and never read here —

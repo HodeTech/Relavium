@@ -289,10 +289,16 @@ export const CostUpdatedEventSchema = z.object({
   attemptNumber: positiveInt.optional(),
   // Whether this egress could be PRICED (ADR-0070 §6). ADDITIVE and OPTIONAL — an older reader ignores it.
   //
-  // An unpriced model still emits this event with its REAL tokens and `costMicrocents: 0` (the CostTracker's
+  // An unpriced MODEL still emits this event with its REAL tokens and `costMicrocents: 0` (the CostTracker's
   // UnknownModelError is swallowed on the cost path), which makes `cost 0 + tokens > 0` ambiguous between "we could
   // not price it" and "the model is genuinely free" — an ambiguity that cannot be resolved from the event without
-  // this flag. The durable `session_costs` row records it as an `unpriced_calls` COUNTER rather than a boolean,
+  // this flag.
+  //
+  // Since [ADR-0089](../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4 it ALSO covers a
+  // priced model whose produced media modality has no rate. There `costMicrocents` is **not** 0 — it is a
+  // FLOOR carrying the token cost and omitting the media charge — so a consumer must read `priced: false` as
+  // "this figure is not the whole charge", never as "this figure is 0". Absent ⇒ fully priced, which is why the
+  // flag is only ever emitted as `false`. The durable `session_costs` row records it as an `unpriced_calls` COUNTER rather than a boolean,
   // because 2.6.Q can price a model MID-session, and a boolean on a per-(session, model) aggregate would become
   // meaningless the moment a row folds both priced and unpriced egresses.
   priced: z.boolean().optional(),

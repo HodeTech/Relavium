@@ -7,7 +7,12 @@ import {
   wireValueFor,
   CANONICAL_ON_TIER,
 } from '@relavium/llm';
-import { EFFORT_TIER_HINT, REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
+import {
+  EFFORT_TIER_HINT,
+  REASONING_EFFORTS,
+  type MediaBilledModality,
+  type ReasoningEffort,
+} from '@relavium/shared';
 
 import { sanitizeInline } from '../render/sanitize.js';
 
@@ -246,9 +251,29 @@ export function unpricedModelNote(
   // in config.toml, a workflow user sets `budget.strict_cost_cap` in the YAML. A generic "strict_cost_cap" makes each
   // guess which file. Default to the bare name for a caller that has no better spelling.
   strictSetting = 'strict_cost_cap',
+  /**
+   * The billed modalities that could not be priced, when the MODEL itself was priced
+   * ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4). Absent ⇒ the
+   * model-level case this function was originally written for.
+   */
+  modalities?: readonly MediaBilledModality[],
 ): string {
   // Sanitize the provider-controlled model id at this display boundary, exactly as the sibling effort notices do —
   // a crafted id must not smuggle a terminal escape into the transcript line (it appears twice, incl. a command).
   const safeModel = sanitizeInline(model);
-  return `${safeModel} has no price, so the cost cap (${capUsd(capMicrocents)}) does not apply to it. Price it with \`relavium models pricing ${safeModel}\`, or set ${strictSetting} to refuse an unpriced model.`;
+  if (modalities !== undefined && modalities.length > 0) {
+    // A DIFFERENT sentence, because every clause of the model-level one is false here: the model IS priced, the
+    // cap DID apply to its token side, and `models pricing <id> --input … --output …` will not add a media rate.
+    // Saying the model has no price would send a user to fix something that is not broken — and the fix they
+    // would reach for (restating token rates) writes a user row that outranks the catalog for tokens too.
+    const sorted = [...modalities].sort();
+    const named = sorted.join(', ');
+    // The flags in their canonical BILLED units — an image is priced per image, audio and video per second
+    // (ADR-0044 §3). Printing `--audio <usd-per-mtok>` would send the user to a number a million times off.
+    const flags = sorted
+      .map((m) => (m === 'image' ? '--image <usd-per-image>' : `--${m} <usd-per-second>`))
+      .join(' ');
+    return `${safeModel} has no ${named} rate, so the cost cap (${capUsd(capMicrocents)}) could not be applied to its ${named} output — its token cost still counts. Add one with \`relavium models pricing ${safeModel} --provider <p> ${flags}\`, or set ${strictSetting} to refuse it instead.`;
+  }
+  return `${safeModel} has no price, so the cost cap (${capUsd(capMicrocents)}) does not apply to it. Price it with \`relavium models pricing ${safeModel} --provider <p> --input <usd-per-mtok> --output <usd-per-mtok>\`, or set ${strictSetting} to refuse an unpriced model.`;
 }

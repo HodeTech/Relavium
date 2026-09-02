@@ -4,6 +4,7 @@ import { CostTracker, cost, mediaCost, priceModel } from './cost-tracker.js';
 import { UnknownModelError } from './errors.js';
 import { catalogPricing, pricedModelIds } from './catalog/pricing.js';
 import type { ModelPricing } from './pricing.js';
+import type { MediaUnitsEntry } from './types.js';
 
 /** A throwaway priced model carrying media-output rates — no 1.AF table row has them, so tests construct one. */
 const PRICED_MEDIA: ModelPricing = {
@@ -120,6 +121,47 @@ describe('cost', () => {
   it('rounds the per-class micro-cent figure (half-up)', () => {
     // gpt-5.4-mini cached input $0.075/MTok = 7_500_000µ¢/MTok → 1 token = 7.5 → rounds to 8.
     expect(cost('gpt-5.4-mini', { inputTokens: 0, outputTokens: 0, cacheReadTokens: 1 }).microcents).toBe(8);
+  });
+});
+
+describe('CostTracker.record carries the pricing gap onto the CostUpdate (ADR-0089 §4)', () => {
+  // The ONE line linking the fixed `mediaCost` to every downstream consumer of `priced: false`. Deleting the
+  // spread in `record()` leaves the whole chat path back at `CR-55` with the rest of the suite green — the
+  // FallbackChain test that looks like it covers this substitutes a hand-built tracker and asserts on a field
+  // the test itself invented, so it proves the chain READS the field, never that a real tracker writes it.
+  const IMAGE_OUT = [
+    { modality: 'image', direction: 'output', units: 2, unit: 'count' },
+  ] as const satisfies readonly MediaUnitsEntry[];
+
+  it('reports the gap for a model with no rate for the produced modality', () => {
+    const update = new CostTracker().record('claude-opus-4-8', {
+      inputTokens: 10,
+      outputTokens: 5,
+      mediaUnits: [...IMAGE_OUT],
+    });
+    expect(update.unpricedModalities).toEqual(['image']);
+    // The PRICED part is still folded — the cap keeps working on what could be priced, and the figure is a
+    // floor rather than an abandoned total.
+    expect(update.costMicrocents).toBeGreaterThan(0);
+    expect(update.cumulativeCostMicrocents).toBe(update.costMicrocents);
+  });
+
+  it('omits the key entirely on a fully-priced call — presence is the signal', () => {
+    const update = new CostTracker().record('claude-opus-4-8', { inputTokens: 10, outputTokens: 5 });
+    expect(update).not.toHaveProperty('unpricedModalities');
+  });
+
+  it('does not fold an unpriced modality into the running total as a fabricated number', () => {
+    const tracker = new CostTracker();
+    const textOnly = tracker.record('claude-opus-4-8', { inputTokens: 10, outputTokens: 5 });
+    const withImage = tracker.record('claude-opus-4-8', {
+      inputTokens: 10,
+      outputTokens: 5,
+      mediaUnits: [...IMAGE_OUT],
+    });
+    // Identical token usage ⇒ identical addend. An unpriced image must add NOTHING to the cumulative total:
+    // inventing a figure for it would put a guess inside the cost cap, which is worse than a reported gap.
+    expect(withImage.costMicrocents).toBe(textOnly.costMicrocents);
   });
 });
 

@@ -74,13 +74,22 @@ export function estimateMediaCost(
   let microcents = 0;
   const unpriced = new Set<MediaBilledModality>();
   for (const { modality, units } of estimate) {
-    if (units <= 0) {
-      continue; // no volume requested ⇒ nothing to charge, so an absent rate is not a gap
-    }
     const rate = p.mediaOutputRates?.[modality];
+    // The rate check comes FIRST, and deliberately does not depend on the unit count. An entry exists here only
+    // because the node's `output_modalities` REQUESTED that modality — the count is a configured guess
+    // (`[defaults].media_cost_estimate`), and that guess is authorable as `0` (`nonNegativeInt`). Skipping on
+    // `units <= 0` first therefore let a git-committable `media_cost_estimate = { image = 0 }` silently disable
+    // the strict cap for image output: no units, so no gap, so no refusal, and the image bills anyway.
+    //
+    // This is the mirror-image of the realized fold's guard and the two must NOT be made symmetric. There,
+    // `units === 0` means the provider reported nothing produced, so an absent rate really is not a gap. Here,
+    // zero means "we cannot guess the volume", which says nothing about whether a charge is coming.
     if (rate === undefined) {
       unpriced.add(modality);
       continue;
+    }
+    if (units <= 0) {
+      continue; // priced, but no volume to multiply — contributes nothing to the estimate
     }
     // Round per entry, exactly as the realized `mediaCost` fold does (cost-tracker.ts), so the pre-egress
     // gate estimate and the realized addend agree to the micro-cent on a fractional duration (N3).

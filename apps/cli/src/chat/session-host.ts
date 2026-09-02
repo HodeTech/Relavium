@@ -36,6 +36,7 @@ import type {
   SessionContext,
   SessionMessage,
   ToolPolicy,
+  MediaBilledModality,
 } from '@relavium/shared';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
@@ -983,8 +984,14 @@ export function buildGovernorWiring(
     ...(onUnpriced === undefined
       ? {}
       : {
-          onUnpriced: (model: string, capMicrocents: number) =>
-            onUnpriced(unpricedModelNote(model, capMicrocents, '[chat] strict_cost_cap')),
+          onUnpriced: (
+            model: string,
+            capMicrocents: number,
+            modalities?: readonly MediaBilledModality[],
+          ) =>
+            onUnpriced(
+              unpricedModelNote(model, capMicrocents, '[chat] strict_cost_cap', modalities),
+            ),
         }),
     emit: (event) => {
       if (event.type === 'budget:estimate_committed') {

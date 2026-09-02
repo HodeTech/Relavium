@@ -87,8 +87,42 @@ describe('estimateMediaCost (1.AF/D17 — pre-egress per-modality media estimate
     });
   });
 
-  it('a zero-unit entry is not a gap (the estimate must not cry wolf on volume nobody asked for)', () => {
+  it('names an unrated modality even at ZERO estimated units — the entry is the request, not the volume', () => {
+    // REPLACES 'a zero-unit entry is not a gap (the estimate must not cry wolf on volume nobody asked for)',
+    // which pinned the wrong reading. An entry reaches this function only because a node's `output_modalities`
+    // asked for that modality; the COUNT is a configured guess (`[defaults].media_cost_estimate`), and that key
+    // is `nonNegativeInt` — so `media_cost_estimate = { video = 0 }` in a git-committable `project.toml` made
+    // the gap vanish and silently disabled `strict_cost_cap` for video output.
+    //
+    // The realized fold's `units === 0` guard is NOT the same rule and must not be unified with this one: there,
+    // zero means the provider produced nothing, so an absent rate genuinely is not a gap.
     expect(estimateMediaCost('claude-opus-4-8', [{ modality: 'video', units: 0 }])).toEqual({
+      microcents: 0,
+      unpricedModalities: ['video'],
+    });
+  });
+
+  it('a zero-unit entry on a RATED modality still contributes no cost', () => {
+    // The other half of the rule above: once a rate EXISTS there is no gap to report, and a zero volume simply
+    // multiplies to nothing. Without this, the fix could have been "always report every modality", which would
+    // make the notice fire on every priced media turn.
+    const overlay: ReadonlyMap<string, ModelPricing> = new Map([
+      [
+        'rated-video',
+        {
+          provider: 'openai',
+          nativeId: 'rated-video',
+          displayName: 'Rated Video',
+          contextWindowTokens: 1_000,
+          maxOutputTokens: 1_000,
+          inputPerMtokMicrocents: 0,
+          outputPerMtokMicrocents: 0,
+          cachedInputPerMtokMicrocents: 0,
+          mediaOutputRates: { video: 9_999 },
+        },
+      ],
+    ]);
+    expect(estimateMediaCost('rated-video', [{ modality: 'video', units: 0 }], overlay)).toEqual({
       microcents: 0,
       unpricedModalities: [],
     });

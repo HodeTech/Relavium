@@ -113,18 +113,13 @@ export type BudgetCheckResult =
    * — not swallowed — so the surface can say so once: a cost cap that silently does not apply is a false sense of
    * safety, and the user who set one deserves to know which model slipped past it.
    */
-  | {
-      readonly kind: 'unpriced';
-      readonly model: string;
-      /**
-       * Which billed modalities had no rate, when the MODEL was priced and only a modality was not
-       * ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4). Absent ⇒ the
-       * model itself is unpriced, the pre-existing ADR-0071 §K7 case. The two read differently to a user —
-       * "this model has no price" is fixed by pricing the model; "this model has no image rate" is fixed by
-       * pricing that modality — so the surface is given enough to say which.
-       */
-      readonly modalities?: readonly MediaBilledModality[];
-    }
+  /**
+   * The MODEL has no price at all (ADR-0071 §K7). A partial gap — a priced model with an unrated modality —
+   * is deliberately NOT this verdict: it carries a real allow/warn/fail result and reports the gap out of band
+   * on {@link BudgetEvaluation.unpricedModalities}, because the cap still applies to the token side
+   * ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4).
+   */
+  | { readonly kind: 'unpriced'; readonly model: string }
   | { readonly kind: 'fail'; readonly error: BudgetExceededError }
   | { readonly kind: 'pause'; readonly error: BudgetPauseError };
 
@@ -489,7 +484,12 @@ export class BudgetGovernor {
     // as though it were free — which is `CR-55`, and the reason the token path and the media path disagreed
     // about what a strict cap means.
     if (estimateResult.unpricedModalities.length > 0 && this.#budget.strict_cost_cap === true) {
-      const named = [...estimateResult.unpricedModalities].sort().join(', ');
+      const sorted = [...estimateResult.unpricedModalities].sort();
+      const named = sorted.join(', ');
+      // Canonical billed units (ADR-0044 §3): an image per image, audio and video per second.
+      const flags = sorted
+        .map((m) => (m === 'image' ? '--image <usd-per-image>' : `--${m} <usd-per-second>`))
+        .join(' ');
       return {
         result: {
           kind: 'fail',
@@ -497,7 +497,11 @@ export class BudgetGovernor {
             this.#cumulativeCostMicrocents,
             this.#budget.max_cost_microcents,
             undefined,
-            `model '${model}' has no ${named} rate, so the ${this.#budget.max_cost_microcents}-micro-cent cap cannot be enforced on this generation (strict_cost_cap is on). Price it with \`relavium models pricing ${model}\`, or turn strict_cost_cap off.`,
+            // The remedy must be a command that RUNS. `relavium models pricing <model>` alone exits 2 on a
+            // missing `--provider`, and the flags that actually add a media rate are `--image`/`--audio`/
+            // `--video` — naming the bare command trains a user to give up and disable the cap instead, which
+            // is the failure ADR-0089 §4(c) exists to prevent.
+            `model '${model}' has no ${named} rate, so the ${this.#budget.max_cost_microcents}-micro-cent cap cannot be enforced on this generation (strict_cost_cap is on). Add one with \`relavium models pricing ${model} --provider <p> ${flags}\`, or turn strict_cost_cap off.`,
           ),
         },
       };

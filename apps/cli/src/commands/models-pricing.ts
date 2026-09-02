@@ -58,11 +58,16 @@ const MAX_USD_PER_MEDIA_UNIT = 1_000;
 /**
  * USD per BILLED MEDIA UNIT → integer µ¢ ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4).
  *
- * The scalar is the same USD→µ¢ conversion {@link usdToMicrocents} uses — what differs is the *denominator*,
- * and that is the whole reason this is a separate function rather than a flag on that one. A token rate is per
- * MILLION tokens; a media rate is per ONE image / ONE second (ADR-0044 §3's canonical billed units). Routing a
- * per-image price through the per-Mtok validator would accept `--image 0.04` and store a rate a million times
- * too small, which is a silent under-bill — the failure class this whole wave is about.
+ * The scalar is the same USD→µ¢ conversion {@link usdToMicrocents} uses; what differs is the *denominator* the
+ * stored number is understood against. A token rate is per MILLION tokens and is divided by 1e6 at use; a media
+ * rate is per ONE image / ONE second and is not (ADR-0044 §3's canonical billed units).
+ *
+ * **An earlier version of this comment claimed routing `--image` through the per-Mtok validator would "store a
+ * rate a million times too small". That is wrong** — both functions multiply by the same constant, so the
+ * stored integer would be identical. The two real differences are the CEILING ({@link MAX_USD_PER_MEDIA_UNIT}
+ * vs the per-Mtok one, and $1000 per image is already absurd where $1000/Mtok is merely expensive) and the
+ * error sentence, which has to name the right denominator or a user pricing one image will enter a millionth
+ * of the number they meant. Kept separate for those two reasons, not for an arithmetic one.
  *
  * `0` is accepted and meaningful: it records "this modality is free, and I am telling you so", which the
  * NULLABLE column can hold distinctly from "nobody has said" (see `mediaRates` in `model-catalog-view.ts`).
@@ -97,10 +102,20 @@ export interface SetPricingArgs {
   /** The provider slug that serves the model — must be registered, AND must be the one the catalog anchors the model
    *  to (a contradicting price would never be applied anywhere, so it is refused rather than stored). */
   readonly provider: string;
-  /** Input (prompt) price, USD per million tokens. */
-  readonly inputUsdPerMtok: number;
-  /** Output (completion) price, USD per million tokens. */
-  readonly outputUsdPerMtok: number;
+  /**
+   * Input and output prices, USD per million tokens. **Given together or not at all.**
+   *
+   * Optional since [ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4(c): a
+   * MEDIA-ONLY invocation (`--image`/`--audio`/`--video` with no token flags) is how a user satisfies a strict
+   * cap that refused a generation on a model the catalog already prices for tokens. Forcing token rates there
+   * would make them restate numbers they may not know into a row that outranks the catalog — and the
+   * plausible-looking `--input 0 --output 0` would then bill every token on that model at nothing.
+   *
+   * The arg builder enforces the pairing and the "at least one price" rule; omitted ⇒ the upsert omits the
+   * columns and the store preserves whatever the row already had.
+   */
+  readonly inputUsdPerMtok?: number;
+  readonly outputUsdPerMtok?: number;
   /**
    * Cache-read price, USD per million tokens.
    *
@@ -193,8 +208,15 @@ export function modelsPricingCommand(
     );
   }
   // Convert + bounds-validate BEFORE the write (a bad `--cached` must not leave a partially-applied row).
-  const inputCostPerMtokMicrocents = usdToMicrocents(args.inputUsdPerMtok, '--input');
-  const outputCostPerMtokMicrocents = usdToMicrocents(args.outputUsdPerMtok, '--output');
+  // Absent on a media-only invocation, in which case the upsert omits them and the store preserves the row.
+  const inputCostPerMtokMicrocents =
+    args.inputUsdPerMtok === undefined
+      ? undefined
+      : usdToMicrocents(args.inputUsdPerMtok, '--input');
+  const outputCostPerMtokMicrocents =
+    args.outputUsdPerMtok === undefined
+      ? undefined
+      : usdToMicrocents(args.outputUsdPerMtok, '--output');
   // OMITTED `--cached` ⇒ `undefined`, so the upsert OMITS the column and the store PRESERVES an existing rate: a
   // re-price must never zero — or overwrite — a cache rate the user hand-entered earlier.
   //
@@ -233,8 +255,8 @@ export function modelsPricingCommand(
     providerId: providerRow.id,
     modelId: args.model,
     source: 'user',
-    inputCostPerMtokMicrocents,
-    outputCostPerMtokMicrocents,
+    ...(inputCostPerMtokMicrocents === undefined ? {} : { inputCostPerMtokMicrocents }),
+    ...(outputCostPerMtokMicrocents === undefined ? {} : { outputCostPerMtokMicrocents }),
     // The rate AND the fact that it was stated ride together, or neither does. Writing the number without the flag
     // would leave a reader deriving a value the user had explicitly typed.
     ...(cachedInputCostPerMtokMicrocents === undefined
@@ -252,11 +274,19 @@ export function modelsPricingCommand(
         model: args.model,
         provider: args.provider,
         source: 'user',
-        inputCostPerMtokMicrocents,
-        outputCostPerMtokMicrocents,
+        // Absent on a media-only invocation, which is exactly what a machine consumer needs to know: the token
+        // columns were PRESERVED, not written. Emitting a `0` here would report a price nobody set.
+        ...(inputCostPerMtokMicrocents === undefined ? {} : { inputCostPerMtokMicrocents }),
+        ...(outputCostPerMtokMicrocents === undefined ? {} : { outputCostPerMtokMicrocents }),
         // The `--json` field stays present as `0` when `--cached` was omitted (unchanged contract) even though the
         // store now PRESERVES the existing cached rate rather than writing this `0` (see the upsert above).
         cachedInputCostPerMtokMicrocents: cachedInputCostPerMtokMicrocents ?? 0,
+        // The media rates this invocation wrote, in the canonical stored unit. Omitted when not stated — a
+        // script automating the strict-cap remedy has to be able to confirm the write it just made, and the
+        // human path already echoes them (ADR-0089 §4(c)).
+        ...(mediaImageCostMicrocents === undefined ? {} : { mediaImageCostMicrocents }),
+        ...(mediaAudioCostMicrocents === undefined ? {} : { mediaAudioCostMicrocents }),
+        ...(mediaVideoCostMicrocents === undefined ? {} : { mediaVideoCostMicrocents }),
         // The catalog price this override REPLACES (ADR-0071 §5) — `null` when the catalog does not price the model
         // at all, which is the case the user tier was originally invented for. A machine consumer must be able to
         // see the divergence for the same reason a human must: the flip removed the guard that made it impossible.
@@ -275,6 +305,11 @@ export function modelsPricingCommand(
     return EXIT_CODES.success;
   }
 
+  // Empty on a media-only invocation — printing `input $undefined/Mtok` is worse than saying nothing.
+  const tokenNote =
+    args.inputUsdPerMtok === undefined
+      ? ''
+      : `input $${args.inputUsdPerMtok}/Mtok, output $${args.outputUsdPerMtok}/Mtok`;
   const cachedNote =
     args.cachedInputUsdPerMtok === undefined ? '' : `, cached $${args.cachedInputUsdPerMtok}/Mtok`;
   // Echoed in the canonical BILLED unit, not USD/Mtok — a user reading back "image $0.04/Mtok" would have every
@@ -290,8 +325,11 @@ export function modelsPricingCommand(
   // shipped model" guard was removed. The user outranks the catalog now; they get what they asked for. What they do
   // NOT get is to do it in silence, so when their number disagrees with the one we shipped, we say both.
   const shipped = catalogPricing(args.model);
+  // Only when TOKEN rates were actually stated. A media-only invocation overrides no catalog token price, so
+  // printing "yours wins" over numbers the user never touched would be false — and alarming, since the whole
+  // point of allowing a media-only set is that it does NOT disturb the catalog's token pricing.
   const divergence =
-    shipped === undefined
+    shipped === undefined || args.inputUsdPerMtok === undefined
       ? ''
       : `\n  Overrides the catalog price for this model: input $${microcentsToUsd(shipped.inputPerMtokMicrocents)}/Mtok, output $${microcentsToUsd(shipped.outputPerMtokMicrocents)}/Mtok. Yours wins. Run \`relavium models pricing ${stripTerminalControls(args.model)} --clear\` to go back to the catalog's.`;
   // Strip any terminal-control byte from the (user-typed) model id before echo — parity with `renderModelList`'s
@@ -300,7 +338,7 @@ export function modelsPricingCommand(
   // (see security-review.md). The provider is a validated (kebab) ProviderId, and the prices are numbers —
   // both already safe.
   deps.io.writeOut(
-    `Set user pricing for ${stripTerminalControls(args.model)} (${args.provider}): input $${args.inputUsdPerMtok}/Mtok, output $${args.outputUsdPerMtok}/Mtok${cachedNote}${mediaNote === '' ? '' : `, ${mediaNote}`}. It applies to your next run/chat and survives \`models refresh\`.${divergence}\n`,
+    `Set user pricing for ${stripTerminalControls(args.model)} (${args.provider}): ${tokenNote}${cachedNote}${mediaNote === '' ? '' : `${tokenNote === '' ? '' : ', '}${mediaNote}`}. It applies to your next run/chat and survives \`relavium models refresh\`.${divergence}\n`,
   );
   return EXIT_CODES.success;
 }

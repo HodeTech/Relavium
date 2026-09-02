@@ -12,6 +12,7 @@ import {
   buildProviderAddArgs,
   buildProviderListArgs,
   buildProviderTestArgs,
+  buildModelsPricingArgs,
   buildRunArgs,
   DISPATCHABLE_COMMAND_IDS,
   executeCommand,
@@ -84,6 +85,72 @@ describe('build*Args (argv → typed core args)', () => {
       allowMcpStdio: [],
     });
     expect(buildRunArgs(input(['wf']))).toEqual({ workflow: 'wf', input: [], allowMcpStdio: [] });
+  });
+
+  describe('models pricing: the argv→args link the strict-cap remedy runs through (ADR-0089 §4)', () => {
+    // This extraction had no test at all, and it is the ONLY path from a real invocation to a stored media rate
+    // — the very thing a `strict_cost_cap` refusal tells the user to do. Dropping a line here leaves the command
+    // exiting 0 with a success message and nothing written, turning a recoverable refusal into an outage.
+    const base = { provider: 'openai', input: '3', output: '9' };
+
+    it('extracts the three media flags in their billed units', () => {
+      expect(
+        buildModelsPricingArgs(
+          input(['m'], { ...base, image: '0.04', audio: '0.001', video: '0.5' }),
+        ),
+      ).toEqual({
+        model: 'm',
+        provider: 'openai',
+        inputUsdPerMtok: 3,
+        outputUsdPerMtok: 9,
+        imageUsdPerCount: 0.04,
+        audioUsdPerSecond: 0.001,
+        videoUsdPerSecond: 0.5,
+      });
+    });
+
+    it('omits a media flag that was not given, rather than defaulting it to 0', () => {
+      // A `0` here would be a STATED free rate on a NULLABLE column — the one distinction the whole design
+      // rests on (`null` = nobody said, `0` = free and someone said so).
+      const args = buildModelsPricingArgs(input(['m'], { ...base, image: '0.04' }));
+      expect(args).not.toHaveProperty('audioUsdPerSecond');
+      expect(args).not.toHaveProperty('videoUsdPerSecond');
+    });
+
+    it('accepts a MEDIA-ONLY invocation — the shape the refusal actually asks for', () => {
+      // Requiring --input/--output here would force a user satisfying a media refusal to restate token rates
+      // into a row that outranks the catalog for tokens too; `--input 0 --output 0` then bills every token on
+      // that model at nothing, silently reopening the cap they were trying to satisfy.
+      const args = buildModelsPricingArgs(input(['m'], { provider: 'openai', image: '0.04' }));
+      expect(args).toEqual({ model: 'm', provider: 'openai', imageUsdPerCount: 0.04 });
+    });
+
+    it('still refuses a bare invocation with no price at all', () => {
+      expect(() => buildModelsPricingArgs(input(['m'], { provider: 'openai' }))).toThrow(
+        /--input/,
+      );
+    });
+
+    it('refuses a half-stated token pair — one rate alone writes a 0 nobody meant', () => {
+      expect(() =>
+        buildModelsPricingArgs(input(['m'], { provider: 'openai', input: '3', image: '0.04' })),
+      ).toThrow(/together/);
+    });
+
+    it('--clear refuses a media flag, not just the token ones', () => {
+      // `--clear` retires the whole row, so accepting a price beside it would discard half the invocation.
+      expect(() =>
+        buildModelsPricingArgs(input(['m'], { provider: 'openai', clear: true, image: '0.04' })),
+      ).toThrow(/--clear removes the price/);
+    });
+
+    it('names the right DENOMINATOR when a media value is unparseable', () => {
+      // The entire reason `parseUsdPerUnit` exists separately: a user told "USD per million tokens" while
+      // pricing one image would reasonably enter a millionth of the number they meant.
+      expect(() => buildModelsPricingArgs(input(['m'], { ...base, image: 'abc' }))).toThrow(
+        /per billed unit/,
+      );
+    });
   });
 
   it('chat: agent is undefined when absent (the built-in default)', () => {

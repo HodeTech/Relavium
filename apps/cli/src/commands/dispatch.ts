@@ -230,8 +230,9 @@ function parseUsdPerMtok(raw: string, flag: string): number {
 
 /** Parse one USD-per-billed-unit option string → a finite number ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md)
  *  §4). Shape only, like its per-Mtok sibling; the command core owns the non-negative + ceiling rules. It is a
- *  separate function purely so the error sentence names the right denominator — a user told "USD per million
- *  tokens" while pricing one image would reasonably enter a millionth of the right number. */
+ *  separate function purely so the error sentence names the right DENOMINATOR — a user told "USD per million
+ *  tokens" while pricing one image would reasonably enter a millionth of the number they meant. The arithmetic
+ *  is identical to `parseUsdPerMtok`'s; only the sentence differs. */
 function parseUsdPerUnit(raw: string, flag: string): number {
   const trimmed = raw.trim();
   const value = Number(trimmed);
@@ -268,24 +269,50 @@ export function buildModelsPricingArgs(input: CommandInput): ModelsPricingComman
   }
   const rawInput = optString(input.options['input']);
   const rawOutput = optString(input.options['output']);
-  if (rawInput === undefined) {
-    throw new CliError('invalid_invocation', 'missing required option --input <usd-per-mtok>.');
-  }
-  if (rawOutput === undefined) {
-    throw new CliError('invalid_invocation', 'missing required option --output <usd-per-mtok>.');
-  }
   const rawCached = optString(input.options['cached']);
-  // Per BILLED UNIT, not per Mtok (ADR-0089 §4) — `parseUsdPerUnit` exists so the two denominators cannot be
-  // confused at the parse boundary either. Each is independently optional: a user pricing only image output
-  // should not have to invent an audio rate.
   const rawImage = optString(input.options['image']);
   const rawAudio = optString(input.options['audio']);
   const rawVideo = optString(input.options['video']);
+  // A MEDIA-ONLY invocation is legitimate, and making it legitimate is part of `CR-55`
+  // ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4(c)). A strict-cap
+  // refusal points the user here to add an image rate to a model the CATALOG already prices for tokens. If
+  // `--input`/`--output` stayed mandatory, satisfying that refusal would force them to restate token rates they
+  // may not know into a `source='user'` row that then OUTRANKS the catalog for tokens too — so the honest-looking
+  // `--input 0 --output 0` would bill every token on that model at nothing, permanently, and silently reopen the
+  // very cap they were trying to satisfy. The store's upsert-omission rule preserves an absent column, so
+  // omitting them here leaves the catalog's token pricing exactly where it was.
+  const hasMedia = rawImage !== undefined || rawAudio !== undefined || rawVideo !== undefined;
+  if (rawInput === undefined && !hasMedia) {
+    throw new CliError(
+      'invalid_invocation',
+      'missing required option --input <usd-per-mtok> (or price a media modality with --image / --audio / --video).',
+    );
+  }
+  if (rawOutput === undefined && !hasMedia) {
+    throw new CliError(
+      'invalid_invocation',
+      'missing required option --output <usd-per-mtok> (or price a media modality with --image / --audio / --video).',
+    );
+  }
+  // Stating ONE token rate without the other is still an error: they are a pair, and a half-stated pair would
+  // write a `0` the reader cannot tell from an instruction.
+  if ((rawInput === undefined) !== (rawOutput === undefined)) {
+    throw new CliError(
+      'invalid_invocation',
+      '--input and --output must be given together (or omit both and price only media rates).',
+    );
+  }
   return {
     model: reqPositional(input, 0, 'model'),
     provider,
-    inputUsdPerMtok: parseUsdPerMtok(rawInput, '--input'),
-    outputUsdPerMtok: parseUsdPerMtok(rawOutput, '--output'),
+    // Per BILLED UNIT for the media three, per Mtok for the token pair — `parseUsdPerUnit` exists so the two
+    // denominators cannot be confused at the parse boundary either.
+    ...(rawInput === undefined || rawOutput === undefined
+      ? {}
+      : {
+          inputUsdPerMtok: parseUsdPerMtok(rawInput, '--input'),
+          outputUsdPerMtok: parseUsdPerMtok(rawOutput, '--output'),
+        }),
     ...(rawCached === undefined
       ? {}
       : { cachedInputUsdPerMtok: parseUsdPerMtok(rawCached, '--cached') }),

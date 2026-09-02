@@ -1654,7 +1654,7 @@ which emits `cost:updated` directly and is not a `FallbackChain` attempt. Under 
 `strict_cost_cap` an unpriced media generation is refused, reusing the existing `BudgetExceededError` on the
 existing pre-egress path (ADR-0044 §3's "no new event or error class" holds; its "degrades to allow" remains the
 **non-strict default**). The rate path lands with it — DB media-rate columns projected into
-`ModelPricing.mediaOutputRates`, user > live > snapshot precedence, missing distinguished from a stated `0`, and
+`ModelPricing.mediaOutputRates`, user > snapshot precedence (the live tier prices nothing — ADR-0064 §6), missing distinguished from a stated `0`, and
 `relavium models pricing` gaining the three media fields — because a refusal whose remedy nobody can perform is
 an outage, not a cap. Break-verify by restoring the zero fallback.
 

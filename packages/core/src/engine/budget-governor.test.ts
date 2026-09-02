@@ -129,14 +129,33 @@ describe('BudgetGovernor', () => {
       ]);
     });
 
-    it('says nothing when no media volume is requested — a zero-unit turn is not a gap', async () => {
-      const { governor, unpricedCalls } = makeGovernor({
+    it('refuses a ZERO-unit estimate too — a config guess of 0 must not disable the cap', async () => {
+      // REPLACES 'says nothing when no media volume is requested — a zero-unit turn is not a gap', which pinned
+      // a reachable bypass as correct. The estimate's unit counts come from `[defaults].media_cost_estimate`,
+      // typed `nonNegativeInt` — so `media_cost_estimate = { video = 0 }` in a git-committable `project.toml`
+      // made the gap disappear and silently turned `strict_cost_cap` off for video, in a file a cloned workflow
+      // repo can carry. The entry existing at all means the node ASKED for that modality; the count is a guess.
+      const { governor } = makeGovernor({
         budget: { max_cost_microcents: 1_000_000_000, on_exceed: 'fail', strict_cost_cap: true },
       });
       await expect(
         governor.checkPreEgress('claude-haiku-4-5', 10, [{ modality: 'video', units: 0 }]),
-      ).resolves.not.toThrow();
-      expect(unpricedCalls).toEqual([]);
+      ).rejects.toThrow(/has no video rate/);
+    });
+
+    it('the refusal names a command that actually runs', async () => {
+      // `relavium models pricing <model>` alone exits 2 (missing --provider), and none of --input/--output add a
+      // media rate. A remedy the user cannot perform trains them to disable the cap, which is the failure
+      // ADR-0089 §4(c) exists to prevent — so the flags and their BILLED units are in the sentence.
+      const { governor } = makeGovernor({
+        budget: { max_cost_microcents: 1_000_000, on_exceed: 'warn', strict_cost_cap: true },
+      });
+      await expect(
+        governor.checkPreEgress('claude-haiku-4-5', 0, [{ modality: 'image', units: 4 }]),
+      ).rejects.toThrow(/--provider <p> --image <usd-per-image>/);
+      await expect(
+        governor.checkPreEgress('claude-haiku-4-5', 0, [{ modality: 'audio', units: 4 }]),
+      ).rejects.toThrow(/--audio <usd-per-second>/);
     });
 
     it('a host notice that THROWS cannot turn the advisory into a blocked call', async () => {

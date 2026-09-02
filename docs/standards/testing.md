@@ -71,12 +71,13 @@ substitute. Each carries its own unit suite with the malicious/edge inputs spell
   a `..` traversal, an absolute path outside the run/session dir, and a **symlink** that escapes it.
 - **The keychain bridge**: the raw key is never returned from an IPC command and never appears in a command
   result; only a key *reference* crosses to the WebView.
-- **`read_media` / byte delivery**: the two callers are tested against the gate each one actually exercises
-  ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §1). **Byte delivery** (the desktop
-  `read_media(ref)` display command) — a negative, reversed (`end < start`), or out-of-bounds `Range` is
-  rejected. **The model-facing `read_media` tool** takes a handle only and has no `Range` to validate — it is
-  tested on scope-set authz and on the handle metadata it returns. For **both**: an oversize upload is
-  rejected, and a cross-session handle read is denied (scope-set authz).
+- **`read_media` / byte delivery**: a negative, reversed (`end < start`), or out-of-bounds `Range` is
+  rejected; an oversize upload is rejected; a cross-session handle read is denied (scope-set authz). The
+  `Range` half is satisfied today by the model-facing tool's own tests, because that is where the gate
+  currently runs. **When [ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §1 lands** the tool
+  narrows to a whole handle and the `Range` requirement re-homes onto the desktop `read_media(ref)` display
+  command — the only caller that will still exercise it. It is **not** dropped in the move: this clause moves
+  with the code, not ahead of it.
 - **`INLINE_MEDIA_CEILING` + per-message caps**: an over-ceiling base64 part, an over-count message, and an
   over-aggregate-bytes message are each rejected (the inputs the happy path never sends).
 

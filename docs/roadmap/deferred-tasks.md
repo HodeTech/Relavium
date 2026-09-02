@@ -347,6 +347,38 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   there is concrete surface demand or telemetry showing operators need an earlier signal.
   *(1.AC; ADR-0028; config-spec.md; workflow-yaml-spec.md)*
 
+## Phase 2.6.5 `W5` residuals — `CR-55` ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §4, 2026-09-02)
+
+> Recorded, not implied. `CR-55` closed the "a missing media rate reads as a price of zero" defect on both cost
+> paths and extended `strict_cost_cap` to an unpriced modality. These two are reachable and named rather than
+> left to be rediscovered — the phase rule is close it or name it, and each of these is genuinely a separate
+> decision rather than an unfinished part of this one.
+
+- [ ] **The pre-egress estimate has no billed-UNIT predicate, so a rate can clear the gate and still not price
+      the call.** `estimateMediaCost` keys only on `{modality}`; the realized `mediaCost` additionally requires
+      `unitMatchesBilledModality` (image=count, audio/video=second). A token-based provider reports audio as a
+      raw token **count** (`openai.ts` maps `completion_tokens_details.audio_tokens` that way, deliberately —
+      ADR-0044 §3 forbids a fabricated tokens→seconds conversion). So `models pricing <m> --audio 0.001` clears
+      a `strict_cost_cap` refusal, and the realized fold *still* reports `audio` unpriced and contributes 0.
+      The estimator cannot fix this alone: it does not know which unit the provider will report. The honest
+      options are a per-COUNT audio rate alongside the per-second one, or refusing the `--audio` remedy for a
+      provider known to bill audio by token. **The call is not mis-billed** — `priced: false` reaches the event
+      and `/cost` says *price unknown* — but the strict gate admits a call it provably cannot price.
+      *(medium · packages/llm/src/budget-estimator.ts, packages/llm/src/cost-tracker.ts; ADR-0089 §4)*
+- [ ] **The media-rate INHERITANCE branch has no test, because nothing to inherit ships.** `mediaRates`
+      (`apps/cli/src/engine/model-catalog-view.ts`) resolves `userRate ?? catalogRate`, and no shipped snapshot
+      row carries a media rate — so deleting the catalog fall-through keeps the suite green. The test names the
+      gap and pins `catalogPricing(id)?.mediaOutputRates` as `undefined` so it fails loudly the day a snapshot
+      ships one; closing it properly needs that snapshot row (or a fixture catalog).
+      *(low · apps/cli/src/engine/model-catalog-view.test.ts; ADR-0089 §4(c))*
+- [ ] **A `node:failed` message can carry an unsanitized model id.** The new strict refusal interpolates the
+      model id into `BudgetExceededError.message`, which reaches the terminal renderer through
+      `run:failed.error.message`. The CLI's own `unpricedModelNote` sanitizes for exactly this reason, but
+      `packages/core` cannot import a surface sanitizer, and the pre-existing unpriced-**model** refusal has the
+      same shape — so this is a replicated pattern, not a new class. The correct fix is host-side stripping of
+      `node:failed` / `run:failed` message text, which is broader than `W5`.
+      *(low · packages/core/src/engine/budget-governor.ts; security-review.md)*
+
 ## Phase 2.6.5 `W3` residuals (PR #86, merged 2026-08-30)
 
 The PR #86 review returned 18 findings; an independent verification round reproduced or refuted each. Seven

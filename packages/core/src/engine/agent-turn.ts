@@ -988,7 +988,19 @@ async function driveAgentTurn(
     // `FallbackChain` intentionally tolerates a CostTracker failure so a successful response stays usable. When
     // that happens there is no trustworthy actual price, not proof of a free call — keep the reservation as the
     // conservative charge. For an unpriced model no admission exists, so its existing allow-degrade path remains.
-    if (record.cost === undefined) {
+    //
+    // The condition is `priced`, not `cost === undefined`
+    // ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4). An unpriced
+    // MODALITY on a priced model produces a DEFINED `cost` whose figure omits the media charge — the textbook
+    // "no trustworthy actual price" this branch was written for, arriving with the wrong shape. Settling at
+    // that token-only floor released the reservation as though the media had been accounted, so a charge we
+    // KNOW happened and CANNOT price left the governor's view entirely. Holding the reservation instead is the
+    // conservative reading, and it is the one the sibling case already takes.
+    //
+    // BOTH conditions are spelled out rather than relying on "priced !== false implies cost is defined". That
+    // implication holds today, but it is an invariant of a type in another package, and the compiler cannot see
+    // it — leaning on it here would be a narrowing that a future chain change could silently invalidate.
+    if (record.priced === false || record.cost === undefined) {
       admission?.settleAtReservedEstimate({
         nodeId: params.nodeId,
         attemptNumber: nonSkippedAttempts,
@@ -1006,10 +1018,16 @@ async function driveAgentTurn(
       // Placeholder — the engine owns the run-wide running total and overwrites this authoritatively.
       cumulativeCostMicrocents: 0,
       attemptNumber: nonSkippedAttempts,
-      // ADR-0070 §6: `record.cost` is absent EXACTLY when the model could not be priced (the chain swallows the
-      // CostTracker's UnknownModelError). Without this flag, `costMicrocents: 0` with real tokens is ambiguous
-      // between "unpriced" and "genuinely free" — and a free-LOOKING row in the /cost breakdown would be a lie.
-      priced: record.cost !== undefined,
+      // ADR-0070 §6. Without this flag, `costMicrocents: 0` with real tokens is ambiguous between "unpriced" and
+      // "genuinely free" — and a free-LOOKING row in the /cost breakdown would be a lie.
+      //
+      // Read from the RECORD, never re-derived from `record.cost !== undefined`
+      // ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4). The two agree
+      // for an unpriced MODEL — the chain swallows `UnknownModelError` and leaves `cost` absent — and they
+      // disagree for the case that ADR exists for: an unpriced MODALITY on a priced model, where `cost` IS
+      // present and its `costMicrocents` is a FLOOR that omits the media charge. Re-deriving here published
+      // `priced: true` for exactly the calls `CR-55` is about, on the path the ADR names as producer #1.
+      priced: record.priced !== false,
     });
     // ADR-0076's durable ledger row, STARTED here and joined at the next barrier (ADR-0077) — this callback
     // cannot await, which is the whole reason the mechanism is a chain plus barriers rather than an inline
@@ -1027,7 +1045,9 @@ async function driveAgentTurn(
       inputTokens: record.usage.inputTokens,
       outputTokens: record.usage.outputTokens,
       costMicrocents: record.cost?.costMicrocents ?? 0,
-      priced: record.cost !== undefined,
+      // Same rule as the event above, and the same reason: this feeds the DURABLE `unpriced_calls` counter, so
+      // a re-derivation here would persist "fully priced" for a call whose media charge was never accounted.
+      priced: record.priced !== false,
     });
   };
 

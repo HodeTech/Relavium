@@ -52,6 +52,7 @@ import {
   type ProviderId,
   type ResponseFormat,
   type ToolDef as LlmToolDef,
+  UnknownModelError,
 } from '@relavium/llm';
 
 import { resolveTemplate } from '../interpolation/resolve.js';
@@ -890,10 +891,12 @@ export function realizedMediaCost(
       costMicrocents: priced.microcents,
       priced: priced.unpricedModalities.length === 0,
     };
-  } catch {
-    // An unknown model — OR any pricing-layer fault. Both mean the same thing to a reader of the event: this
-    // figure is not the charge. (FallbackChain #emitSuccess swallows a pricing throw the same way, and marks
-    // its attempt `priced: false` for it.)
+  } catch (err) {
+    // NARROW, not bare — matching the chain's `#foldUsage`, which was deliberately narrowed for #194 because a
+    // bare catch made a genuine money-path defect (a bad `Usage`, a broken overlay, a throwing tracker) look
+    // exactly like an unpriced model. An unknown model is a fact about the catalog and degrades to unpriced;
+    // anything else is a bug and must be loud. The asymmetry with the chain was undefended before this.
+    if (!(err instanceof UnknownModelError)) throw err;
     return { costMicrocents: 0, priced: false };
   }
 }

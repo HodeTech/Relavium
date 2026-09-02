@@ -44,6 +44,27 @@ describe('createModelCatalogStore (2.S — media routing + load-check reader)', 
     client.sqlite.close();
   });
 
+  it('listAll carries the media rate columns verbatim, null included (ADR-0089 §4)', () => {
+    // `fromRow` (the narrow media/capability record) has carried these since 1.AF; `toListing` — the PRICING
+    // projection the cost overlay reads — did not, so a rate on the row could never reach `ModelPricing`. The
+    // existing media-column tests all read `getByModelId`, a different projection, so this package's own suite
+    // could not have noticed. `null` must survive as `null`: it is "nobody priced this", distinct from a
+    // stated `0`, and the whole strict-cap decision rests on telling those apart.
+    store.upsert({
+      providerId,
+      modelId: 'rate-carrier',
+      source: 'user',
+      inputCostPerMtokMicrocents: 1,
+      outputCostPerMtokMicrocents: 1,
+      mediaImageCostMicrocents: 4_000_000,
+      mediaAudioCostMicrocents: 0,
+    });
+    const listing = store.listAll().find((m) => m.modelId === 'rate-carrier');
+    expect(listing?.mediaImageCostMicrocents).toBe(4_000_000);
+    expect(listing?.mediaAudioCostMicrocents).toBe(0); // stated free — believed, not collapsed to null
+    expect(listing?.mediaVideoCostMicrocents).toBeNull(); // never stated
+  });
+
   it('replaceProviderModels opens an IMMEDIATE write transaction (2.5.I — the ADR-0064 §5 concurrent-refresh path)', () => {
     const txnSpy = vi.spyOn(client.db, 'transaction');
     store.replaceProviderModels(
