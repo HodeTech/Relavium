@@ -426,6 +426,19 @@ types — one file, not a refactor.
 >   (config-time validation, or a gate-level notice like §6's effort gate), not a silent drop. A user-facing notice
 >   for the two silent withholds (so a dropped `temperature` is *said out loud*, §6's own standard) is likewise a
 >   follow-up — the correctness fix (no 400) ships first.
+> - **§12's `tool_call`/`attachment` deferral is RESOLVED (amended 2026-09-02, `CR-51`).** The clause above
+>   deferred gating these two "to a **louder** signal (config-time validation, or a gate-level notice), not a
+>   silent drop" — and both halves of that sentence are honoured. The louder signal is the **config-time
+>   validation** it named first: a workflow whose node grants tools on a model the catalog says rejects them
+>   fails `validateWorkflowWithCatalog` with a field-named error, before a run id exists and before any
+>   upstream node has spent money. The runtime half is a `FallbackChain` **pre-skip**, which is a skip and not
+>   a drop: the chain moves to a model that can serve the request, and when no entry can, the exhausted-chain
+>   error carries every skip reason and classifies as `bad_request` (the engine's `validation`), rather than
+>   the opaque `unknown` it used to. Nothing is silently dropped on either path. The `attachment` half is
+>   runtime-only by necessity — media inputs are runtime values, so no load-time check can see one — and that
+>   asymmetry is deliberate rather than forgotten. `temperature`/`structured_output` are unchanged: they stay
+>   safe silent withholds, because a dropped preference does not change the answer while a dropped tool or a
+>   dropped image does.
 > - **The data populates via the sync, not by hand.** The snapshot is GENERATED (§3); these fields are parsed by
 >   the schema and land on the next `pnpm sync:models`. Until then the mechanism is inert-but-correct (absent ⇒
 >   accepted), and the shipped snapshot is **not hand-edited** — the generated-file discipline holds.

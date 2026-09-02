@@ -1233,8 +1233,15 @@ describe('FallbackChain — capability skip', () => {
 
     const err = await rejectedError(chain.generate(toolReq));
 
-    expect(err.kind).toBe('unknown');
+    // WAS `expect(err.kind).toBe('unknown')`. That pinned the opaque report as correct: `unknown` maps to the
+    // engine's `internal` code — its opaque-bug bucket — while the precise per-entry reasons were computed one
+    // line away and discarded. `CR-51` makes a wholly-skipped plan the COMMON case (a node with no authored
+    // `fallback_chain` has one entry, so a single capability mismatch exhausts it), so the synthesized error is
+    // the only thing the user ever sees. It is a request that cannot be served as written — `bad_request`,
+    // which the engine maps to `validation` — and it names why.
+    expect(err.kind).toBe('bad_request');
     expect(err.message).toMatch(/exhausted/);
+    expect(err.message).toMatch(/'tools' capability not supported/);
   });
 });
 
@@ -1803,7 +1810,9 @@ describe('FallbackChain.stream', () => {
 
     expect(chunks).toHaveLength(1);
     if (chunks[0]?.type === 'error') {
-      expect(chunks[0].error.kind).toBe('unknown');
+      // Same rewrite as the `generate` twin — see its note. A wholly-skipped stream reports the
+      // same actionable kind and the same reasons; the two paths must not disagree.
+      expect(chunks[0].error.kind).toBe('bad_request');
       expect(chunks[0].error.message).toMatch(/exhausted/);
     }
     expect(a.calls).toHaveLength(0);

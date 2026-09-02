@@ -371,6 +371,22 @@ Severity is the review's verified rating. Check an item off in the PR that resol
       gap and pins `catalogPricing(id)?.mediaOutputRates` as `undefined` so it fails loudly the day a snapshot
       ships one; closing it properly needs that snapshot row (or a fixture catalog).
       *(low · apps/cli/src/engine/model-catalog-view.test.ts; ADR-0089 §4(c))*
+- [ ] **A capability skip that SUCCEEDS on a later entry still emits nothing** (`CR-51`). When the chain skips
+      a tool- or attachment-incapable model and a later entry serves the request, the run completes correctly
+      and no event says a model was passed over — `agent-turn.ts` drops a `skipped` attempt record before any
+      emit. The two loud cases are covered (a load-time refusal for an authored tool grant, and a
+      reason-carrying `bad_request` when the whole chain is skipped), so this is the residual quiet case:
+      a fallback silently doing its job, which is also the case where the user is least harmed. Closing it
+      needs an event or a host notice channel that does not exist for chain skips today.
+      *(low · packages/core/src/engine/agent-turn.ts; ADR-0071 §12, `CR-51`)*
+- [ ] **A wrong shipped `toolCall`/`attachment` row has no user override** (`CR-51`). These fields were inert
+      before this wave; now they deny service, and `admitRefreshedModels` deliberately refuses to let any
+      refresh shadow a shipped id (a money guard). So a false-negative in the generated snapshot cannot be
+      corrected by `models refresh`, by the DB catalog, or by any setting — only by a release. Reachable for a
+      user pointing a custom `base_url` at a shipped id whose upstream row is wrong. An escape hatch would
+      need a deliberate decision about which side errs: today the snapshot wins, which is right for money and
+      arguably wrong for capability.
+      *(medium · packages/llm/src/catalog/lookup.ts; `CR-51`)*
 - [ ] **The widened `onUnpriced` modality argument is unproven at the CLI host boundary.** The governor's own
       test proves `checkPreEgress` passes `[modality]` to an injected sink, and `effort-notice.test.ts` proves
       `unpricedModelNote` renders the right sentence from it — but the three hand-written arrow functions that

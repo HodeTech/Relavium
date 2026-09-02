@@ -142,30 +142,46 @@ function outputCombinationReason(
 }
 
 /**
- * The per-MODEL capability gate (`CR-51`) — the catalog's `requestCapabilities`, asked for the two parameters a
- * request DEPENDS on rather than merely prefers.
+ * Does this MODEL accept tool definitions (`CR-51`)? The catalog's `requestCapabilities.toolCall`, asked only
+ * when the request actually carries tools.
  *
- * **Why these two and not all four.** `temperature` and `structuredOutput` are knobs: a model that rejects them
- * is served correctly by WITHHOLDING the field, which is what the adapters do — a dropped preference, not a
- * changed answer. `toolCall` and `attachment` are not knobs. Withholding tools from a turn that needs them, or
- * dropping the image a question is about, produces a confidently wrong answer at full price; sending them
- * produces a paid 400. Neither is acceptable, so they belong on the SKIP path with the provider-wide flags —
- * the chain moves to a model that can serve the request, for free, before any egress.
+ * **Why `toolCall`/`attachment` gate where `temperature`/`structuredOutput` are merely withheld.** The latter
+ * two are knobs: a model that rejects them is served correctly by dropping the field — a lost preference, not
+ * a changed answer, which is what the adapters already do. These two are not knobs. Withholding tools from a
+ * turn that needs them, or dropping the image the question is about, buys a confidently wrong answer at full
+ * price; sending them buys a 400. So they gate.
  *
  * `modelAccepts` degrades to *accepted* for a model the catalog cannot describe (a custom `base_url`, a
  * brand-new id), so missing metadata never withholds a capability a model actually has.
  */
-function modelCapabilityReason(req: LlmRequest): string | null {
-  if (req.tools !== undefined && req.tools.length > 0 && !modelAccepts(req.model, 'toolCall')) {
-    return `model '${req.model}' does not accept tool definitions`;
-  }
+function toolCallReason(req: LlmRequest): string | null {
+  if (req.tools === undefined || req.tools.length === 0) return null;
+  return modelAccepts(req.model, 'toolCall')
+    ? null
+    : `model '${req.model}' does not accept tool definitions`;
+}
+
+/**
+ * Does this MODEL accept non-text input attachments (`CR-51`)? Asked only when the request actually carries
+ * one.
+ *
+ * **Both media-bearing positions are scanned**, not just the top-level arm: `tool_result.media` is the other
+ * one, and the sibling {@link mediaSupportReason} already walks it. Checking only `part.type === 'media'` left
+ * the two predicates disagreeing about the same request — the model gate admitting what the provider gate
+ * would refuse — which is a paid 400 on exactly the shape this exists to skip.
+ */
+function attachmentReason(req: LlmRequest): string | null {
   const carriesMedia = req.messages.some((message) =>
-    message.content.some((part) => part.type === 'media'),
+    message.content.some(
+      (part) =>
+        part.type === 'media' ||
+        (part.type === 'tool_result' && Array.isArray(part.media) && part.media.length > 0),
+    ),
   );
-  if (carriesMedia && !modelAccepts(req.model, 'attachment')) {
-    return `model '${req.model}' does not accept non-text input attachments`;
-  }
-  return null;
+  if (!carriesMedia) return null;
+  return modelAccepts(req.model, 'attachment')
+    ? null
+    : `model '${req.model}' does not accept non-text input attachments`;
 }
 
 /**
@@ -178,21 +194,32 @@ export function requestSupportReason(supports: CapabilityFlags, req: LlmRequest)
   for (const capability of requiredCapabilities(req)) {
     if (!supports[capability]) return `'${capability}' capability not supported`;
   }
-  const modelReason = modelCapabilityReason(req);
-  if (modelReason !== null) return modelReason;
+  const toolReason = toolCallReason(req);
+  if (toolReason !== null) return toolReason;
+  const attachment = attachmentReason(req);
+  if (attachment !== null) return attachment;
   return mediaSupportReason(supports, req);
 }
 
-/** Whether a provider's flags satisfy everything the request needs (the FallbackChain skip check). */
+/**
+ * Whether this provider AND this model can serve the request (the `FallbackChain` skip check).
+ *
+ * No longer a pure function of `CapabilityFlags`: since `CR-51` it also consults the catalog for the
+ * request's model id, so its verdict depends on module-global catalog state (the shipped snapshot plus any
+ * installed refresh) as well as its arguments.
+ */
 export function supportsRequest(supports: CapabilityFlags, req: LlmRequest): boolean {
   return requestSupportReason(supports, req) === null;
 }
 
 /**
- * Throw `UnsupportedCapabilityError` if the request needs a flat-flag capability the provider lacks.
- * MEDIA gating is deliberately NOT here — it is performed by `assertMediaCapabilities` at the adapter
- * entry, which runs the seam schema parse FIRST (so an unknown MIME / over-ceiling inline media stays a
- * `ZodError`, not a capability error). The pre-skip's media check lives in {@link supportsRequest}.
+ * Throw `UnsupportedCapabilityError` if the request needs a flat-flag capability the provider lacks, or tool
+ * definitions this MODEL rejects (`CR-51`).
+ *
+ * MEDIA gating is deliberately NOT here — neither the per-modality provider gate nor the per-model attachment
+ * gate. Both are performed by `assertMediaCapabilities` at the adapter entry, which runs the seam schema parse
+ * FIRST (so an unknown MIME / over-ceiling inline media stays a `ZodError`, not a capability error). The
+ * pre-skip's equivalents live in {@link supportsRequest}.
  */
 export function assertSupported(
   providerId: ProviderId,
@@ -204,17 +231,30 @@ export function assertSupported(
       throw new UnsupportedCapabilityError(providerId, capability);
     }
   }
-  // The per-MODEL half (`CR-51`). It throws here as well as skipping in the chain, for the reason the media
-  // gate does: a direct seam consumer, or a chain whose last entry is the incapable model, must get a typed
-  // refusal rather than a provider 400 — and the two paths read the SAME predicate, so a model the pre-skip
-  // passed can never be refused here (and vice versa).
-  const modelReason = modelCapabilityReason(req);
-  if (modelReason !== null) {
-    throw new UnsupportedCapabilityError(
-      providerId,
-      req.tools !== undefined && req.tools.length > 0 ? 'tools' : 'media',
-      modelReason,
-    );
+  // The per-MODEL TOOL half (`CR-51`) — a direct seam consumer must get a typed refusal rather than a provider
+  // 400, and it reads the same `toolCallReason` the chain pre-skip does, so the two can never disagree.
+  //
+  // The ATTACHMENT half is deliberately NOT here: it inspects message CONTENT, and the order below this
+  // function is load-bearing — `assertMediaCapabilities` runs the seam schema parse FIRST so an unknown MIME
+  // or an over-ceiling inline payload stays a `ZodError`. Scanning content here would preempt that and
+  // reclassify a schema fault as a capability refusal. It lives in `assertMediaCapabilities` instead, after
+  // the parse, which is also where the sibling per-modality gate already is.
+  const toolReason = toolCallReason(req);
+  if (toolReason !== null) {
+    throw new UnsupportedCapabilityError(providerId, 'tools', toolReason, req.model);
+  }
+}
+
+/**
+ * The per-MODEL ATTACHMENT gate, thrown AFTER the seam schema parse (`CR-51`).
+ *
+ * Exported for `assertMediaCapabilities` to call at the one place the parse has already run. Kept out of
+ * {@link assertSupported} so the documented `ZodError`-first order survives — see that function's comment.
+ */
+export function assertModelAcceptsAttachments(providerId: ProviderId, req: LlmRequest): void {
+  const reason = attachmentReason(req);
+  if (reason !== null) {
+    throw new UnsupportedCapabilityError(providerId, 'media', reason, req.model);
   }
 }
 

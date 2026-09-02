@@ -203,12 +203,20 @@ interface CapabilityFlags {
 > **`CapabilityFlags` is per-PROVIDER; a second, per-MODEL axis sits beside it (`CR-51`,
 > [ADR-0071](../../decisions/0071-models-dev-as-the-model-metadata-source.md) amendment).** The catalog's
 > `RequestCapabilities` records what one MODEL accepts, which varies inside a single provider — OpenAI does
-> tools, `gpt-3.5-turbo` does not. Two of its four fields gate the request rather than a preference, and are
-> therefore checked by the same `requestSupportReason` predicate the provider flags go through, so the
-> `FallbackChain` pre-skip and the adapter-entry refusal cannot disagree:
+> tools, `gpt-3.5-turbo` does not. Two of its four fields gate the request rather than a preference. Each is
+> ONE predicate, read by BOTH the `FallbackChain` pre-skip (through `requestSupportReason`) and the adapter
+> entry, so the two cannot disagree — pinned by a test that drives one shared input table through both seams:
 >
 > - **`toolCall`** — a request carrying `tools` on a model that rejects them.
 > - **`attachment`** — a request carrying a `media` input part on a model that rejects them.
+>
+> The **tool** gate additionally runs at LOAD time: a workflow node granting tools on a tool-incapable model
+> fails `validateWorkflowWithCatalog` before a run id exists. That is the "config-time validation"
+> [ADR-0071](../../decisions/0071-models-dev-as-the-model-metadata-source.md) §12 named when it deferred this
+> gate to "a louder signal … not a silent drop"; `attachment` has no load-time counterpart, because media
+> inputs are runtime values and nothing at load can see one. When no chain entry can serve the request, the
+> exhausted-chain error carries every skip reason and classifies as `bad_request`, so the refusal is
+> explainable rather than opaque.
 >
 > The other two (`temperature`, `structuredOutput`) are knobs the adapters simply **withhold** from the wire:
 > a dropped preference changes nothing about the answer. These two are not knobs — withholding tools from a

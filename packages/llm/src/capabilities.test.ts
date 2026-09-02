@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { assertMediaCapabilities } from './adapters/shared.js';
 import {
   assertStreamable,
   assertSupported,
@@ -107,23 +108,106 @@ describe('per-MODEL capability gating (CR-51)', () => {
     expect(supportsRequest(ALL, mediaReq('totally-unknown-model-2099'))).toBe(true);
   });
 
-  it('the adapter entry REFUSES what the pre-skip would skip — the two read one predicate', () => {
-    // Defense in depth for a direct seam consumer, and for a chain whose LAST entry is the incapable model:
-    // without this the request reaches the provider and buys a 400. The property that matters is that the two
-    // cannot disagree, which is why both call the same function.
-    expect(() =>
-      assertSupported('openai', ALL, { ...TOOL_REQ, model: TOOL_INCAPABLE }),
-    ).toThrowError(UnsupportedCapabilityError);
-    expect(() => assertSupported('openai', ALL, { ...TOOL_REQ, model: 'claude-opus-4-8' })).not.toThrow();
-    expect(() => assertSupported('deepseek', ALL, mediaReq(ATTACHMENT_INCAPABLE))).toThrowError(
-      UnsupportedCapabilityError,
-    );
+  it('scans BOTH media-bearing positions, not just the top-level part', () => {
+    // `tool_result.media` is the other position a media input can occupy, and the sibling provider-side
+    // predicate already walks it. Scanning only `part.type === 'media'` left the two disagreeing about the
+    // same request — the model gate admitting what the provider gate would refuse — which is a paid 400 on
+    // exactly the shape this gate exists to skip for free.
+    const inToolResult: LlmRequest = {
+      model: ATTACHMENT_INCAPABLE,
+      messages: [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool_result',
+              toolCallId: 'c1',
+              result: 'done',
+              media: [
+                {
+                  type: 'media',
+                  mimeType: 'image/png',
+                  source: { kind: 'handle', ref: `media://sha256-${'a'.repeat(64)}` },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    expect(supportsRequest(ALL, inToolResult)).toBe(false);
+    // …and an EMPTY media array is not an attachment, so it must not gate.
+    expect(
+      supportsRequest(ALL, {
+        ...inToolResult,
+        messages: [
+          {
+            role: 'tool',
+            content: [{ type: 'tool_result', toolCallId: 'c1', result: 'done', media: [] }],
+          },
+        ],
+      }),
+    ).toBe(true);
   });
 
-  it('names the model in the refusal, so the reason is actionable', () => {
-    expect(() => assertSupported('openai', ALL, { ...TOOL_REQ, model: TOOL_INCAPABLE })).toThrow(
-      new RegExp(TOOL_INCAPABLE),
-    );
+  it('the two seams agree on EVERY input — the property the whole design rests on', () => {
+    // The headline claim is that the pre-skip and the adapter entry "cannot disagree". Asserting each side
+    // separately does not pin that: a change to one alone leaves both suites green while the chain admits what
+    // the adapter refuses (admit-then-hard-fail), or skips what the adapter would have served. One shared
+    // table, both seams, so any divergence is a failure here rather than a surprise in production.
+    const cases: { readonly label: string; readonly req: LlmRequest }[] = [
+      { label: 'tools on an incapable model', req: { ...TOOL_REQ, model: TOOL_INCAPABLE } },
+      { label: 'tools on a capable model', req: { ...TOOL_REQ, model: 'claude-opus-4-8' } },
+      { label: 'empty tools on an incapable model', req: { ...TEXT_REQ, model: TOOL_INCAPABLE, tools: [] } },
+      { label: 'text on an incapable model', req: { ...TEXT_REQ, model: TOOL_INCAPABLE } },
+      { label: 'media on an incapable model', req: mediaReq(ATTACHMENT_INCAPABLE) },
+      { label: 'media on a capable model', req: mediaReq('claude-opus-4-8') },
+      { label: 'unknown model with tools', req: { ...TOOL_REQ, model: 'totally-unknown-model-2099' } },
+    ];
+    for (const { label, req } of cases) {
+      const skipped = !supportsRequest(ALL, req);
+      // The adapter entry is TWO calls, split so the media half runs after the seam schema parse — together
+      // they must reproduce the pre-skip's verdict exactly.
+      let refused = false;
+      try {
+        assertSupported('openai', ALL, req);
+        assertMediaCapabilities('openai', ALL, req);
+      } catch (err) {
+        refused = err instanceof UnsupportedCapabilityError;
+      }
+      expect(refused, label).toBe(skipped);
+    }
+  });
+
+  it('the refusal names the MODEL as a field, and does not blame the provider', () => {
+    // `provider 'openai' does not support 'tools'` would be false twice for `gpt-3.5-turbo`: OpenAI does
+    // support tools, and the remedy is to change the model. The id is a field as well as being in the
+    // message, per error-handling.md's structured-context rule.
+    try {
+      assertSupported('openai', ALL, { ...TOOL_REQ, model: TOOL_INCAPABLE });
+      expect.unreachable('the incapable model must be refused');
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnsupportedCapabilityError);
+      if (err instanceof UnsupportedCapabilityError) {
+        expect(err.modelId).toBe(TOOL_INCAPABLE);
+        expect(err.capability).toBe('tools');
+        expect(err.message).not.toMatch(/^provider 'openai' does not support/);
+      }
+    }
+  });
+
+  it('labels an ATTACHMENT refusal as media, even when the request also carries tools', () => {
+    // `o3-mini` accepts tools and rejects attachments. Choosing the label from `req.tools` named the one
+    // capability that was fine — and `capability` is a typed discriminant callers narrow on.
+    try {
+      assertMediaCapabilities('openai', ALL, { ...mediaReq('o3-mini'), tools: TOOL_REQ.tools });
+      expect.unreachable('the attachment-incapable model must be refused');
+    } catch (err) {
+      if (err instanceof UnsupportedCapabilityError) {
+        expect(err.capability).toBe('media');
+        expect(err.detail).toMatch(/attachments/);
+      }
+    }
   });
 });
 

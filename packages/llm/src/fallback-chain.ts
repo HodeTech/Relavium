@@ -435,11 +435,15 @@ export class FallbackChain {
    */
   async generate(req: LlmRequest): Promise<LlmResult> {
     const run = new ChainRun(req, this.#lastProviderAcrossCalls);
+    // Why every skip's reason is kept: when the whole plan is skipped there is no provider error to report,
+    // and the synthesized one is the only thing the user sees (`CR-51` — see `#exhaustedError`).
+    const skipped: string[] = [];
     try {
       for (const entry of this.#plan) {
         this.#throwIfAborted(req, entry.provider.id);
         const skip = this.#skipReason(entry, run.previewRequest(entry));
         if (skip !== undefined) {
+          skipped.push(skip);
           this.#emit(run.next(entry, { outcome: 'skipped', skipReason: skip }));
           continue;
         }
@@ -453,7 +457,7 @@ export class FallbackChain {
           return result;
         }
       }
-      throw new LlmProviderError(run.lastError ?? this.#exhaustedError());
+      throw new LlmProviderError(run.lastError ?? this.#exhaustedError(skipped));
     } finally {
       this.#lastProviderAcrossCalls = run.lastProvider; // fold the call's latch back for the next call
     }
@@ -505,6 +509,8 @@ export class FallbackChain {
    */
   async *stream(req: LlmRequest): AsyncIterable<StreamChunk> {
     const run = new ChainRun(req, this.#lastProviderAcrossCalls);
+    // See the `generate` twin: a wholly-skipped plan has no provider error, so the reasons ARE the report.
+    const skipped: string[] = [];
     try {
       for (const entry of this.#plan) {
         if (this.#aborted(req)) {
@@ -513,6 +519,7 @@ export class FallbackChain {
         }
         const skip = this.#skipReason(entry, run.previewRequest(entry), { streaming: true });
         if (skip !== undefined) {
+          skipped.push(skip);
           this.#emit(run.next(entry, { outcome: 'skipped', skipReason: skip }));
           continue;
         }
@@ -526,7 +533,7 @@ export class FallbackChain {
           return;
         }
       }
-      yield { type: 'error', error: run.lastError ?? this.#exhaustedError() };
+      yield { type: 'error', error: run.lastError ?? this.#exhaustedError(skipped) };
     } finally {
       this.#lastProviderAcrossCalls = run.lastProvider; // fold the call's latch back for the next call
     }
@@ -1047,12 +1054,32 @@ export class FallbackChain {
     return this.#aborted(req) ? this.#cancelledError(provider) : disown(error);
   }
 
-  #exhaustedError(): LlmError {
-    // No real provider error to surface (every entry was skipped): synthesize a fatal one.
+  /**
+   * The terminal error when every entry was SKIPPED — no provider error exists to surface, so one is
+   * synthesized from the skip reasons that were collected on the way past.
+   *
+   * **The reasons are carried, and the kind is `bad_request`, because this is the common case now** (`CR-51`).
+   * A node with no authored `fallback_chain` builds a ONE-entry plan, so a single capability mismatch — a tool
+   * grant on a model the catalog says rejects tools, an attached image on a model that rejects attachments —
+   * exhausts the chain immediately. Reporting that as `kind: 'unknown'` mapped it to the engine's `internal`
+   * code: the opaque-bug bucket, with the precise reason discarded and nothing for the user to act on. The
+   * skip is the right behaviour (it is free, where the old path bought a 400) but only if it can be explained,
+   * and the explanation was already computed one line away.
+   *
+   * Deduped, so a five-entry chain that fails the same way five times says it once.
+   *
+   * **`reasons` is non-empty by construction, so there is no opaque fallback branch.** Reaching here means
+   * `run.lastError` was never set, which means no entry was ATTEMPTED, which means every entry was skipped —
+   * and the constructor refuses an empty plan. A branch for the empty case would be unreachable code with an
+   * unwritable test, which is worse than the invariant stated here.
+   */
+  #exhaustedError(reasons: readonly string[]): LlmError {
     return makeLlmError({
       provider: this.#exhaustedProvider,
-      kind: 'unknown',
-      message: 'fallback chain exhausted: no provider could serve the request',
+      // The request cannot be served AS WRITTEN — an authoring/config fault, not an engine defect. It maps to
+      // the engine's `validation` code, which is what a user can actually act on.
+      kind: 'bad_request',
+      message: `fallback chain exhausted: no provider could serve the request (${[...new Set(reasons)].join('; ')})`,
     });
   }
 

@@ -1,4 +1,4 @@
-import { isOutputCombinationSupported, type CapabilityFlags } from '@relavium/llm';
+import { isOutputCombinationSupported, modelAccepts, type CapabilityFlags } from '@relavium/llm';
 import {
   MEDIA_BILLED_MODALITIES,
   type MediaBilledModality,
@@ -52,6 +52,54 @@ function generativeModalityIssue(
 }
 
 /**
+ * The AUTHORED tool grant a node would dispatch with — the agent's `tools`, narrowed by the node's own
+ * `tools:` when present (ADR-0029: a node narrows, never widens).
+ *
+ * Returned as a count because the load-check only needs "does this node use tools at all". Resolving the
+ * agent by `agent_ref` is enough for an INLINE agent, which is the shape a single YAML document can settle;
+ * a `$ref`'d agent the loader has not resolved simply yields no grant and defers, exactly as an unresolvable
+ * model does.
+ */
+function grantedToolCount(node: WorkflowNode, workflow: WorkflowDefinition): number {
+  if (node.type !== 'agent') return 0;
+  if (node.tools !== undefined) return node.tools.length;
+  // An agent entry is either INLINE or a `{ $ref }`. Only the inline shape can be settled from this one
+  // document, which is exactly the boundary `CR-64` draws for the same class of check; a `$ref` defers to the
+  // runtime gate rather than being guessed at.
+  const agent = workflow.workflow.agents?.find(
+    (candidate) => !('$ref' in candidate) && candidate.id === node.agent_ref,
+  );
+  return agent !== undefined && !('$ref' in agent) ? (agent.tools?.length ?? 0) : 0;
+}
+
+/**
+ * The per-model TOOL capability load-check (`CR-51`, resolving
+ * [ADR-0071](../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §12's deferral).
+ *
+ * §12 carried the `tool_call` catalog data but deferred GATING it to "a **louder** signal (config-time
+ * validation, or a gate-level notice), not a silent drop". This is the first of the two it named. A runtime
+ * pre-skip alone would have been the quietest possible signal — it emits no event, and on a single-entry plan
+ * it turns into a chain-exhausted failure partway through a run, after upstream nodes have already spent real
+ * money. Catching it at load means the author is told before a run id exists.
+ *
+ * Deliberately TOOL-only. There is no authored counterpart for `attachment`: media inputs are runtime values,
+ * so nothing at load time can know whether a turn will carry one. That half stays the runtime gate's, and the
+ * asymmetry is the honest one rather than a forgotten case.
+ */
+function toolCapabilityIssue(
+  node: WorkflowNode,
+  workflow: WorkflowDefinition,
+): WorkflowIssue | undefined {
+  if (node.type !== 'agent' || node.model === undefined) return undefined;
+  if (grantedToolCount(node, workflow) === 0) return undefined;
+  if (modelAccepts(node.model, 'toolCall')) return undefined;
+  return {
+    field: `node \`${node.id}\`.model`,
+    message: `model '${node.model}' does not accept tool definitions, but this node grants tools — pick a tool-capable model, or remove the grant`,
+  };
+}
+
+/**
  * Load-check one node against the catalog, returning a {@link WorkflowIssue} or `undefined` when it is fine. A
  * non-agent / model-unspecified node and an unresolvable model both DEFER (no error — see
  * {@link WorkflowModelCatalog}); a generative model delegates to {@link generativeModalityIssue}; otherwise the
@@ -60,10 +108,15 @@ function generativeModalityIssue(
 function nodeCatalogIssue(
   node: WorkflowNode,
   catalog: WorkflowModelCatalog,
+  workflow: WorkflowDefinition,
 ): WorkflowIssue | undefined {
   if (node.type !== 'agent' || node.model === undefined) {
     return undefined; // not an agent, or model-unspecified — nothing to load-check
   }
+  // Checked FIRST, and independently of the host catalog: `modelAccepts` reads the shipped snapshot directly,
+  // so this verdict is available even when the host cannot resolve the model's `CapabilityFlags`.
+  const toolIssue = toolCapabilityIssue(node, workflow);
+  if (toolIssue !== undefined) return toolIssue;
   const caps = catalog(node.model);
   if (caps === undefined) {
     return undefined; // unresolvable model — defer to the runtime FallbackChain pre-skip (never a silent drop)
@@ -99,7 +152,7 @@ export function validateWorkflowWithCatalog(
   catalog: WorkflowModelCatalog,
 ): void {
   const issues = workflow.workflow.nodes
-    .map((node) => nodeCatalogIssue(node, catalog))
+    .map((node) => nodeCatalogIssue(node, catalog, workflow))
     .filter((issue): issue is WorkflowIssue => issue !== undefined);
   if (issues.length > 0) {
     throw new WorkflowValidationError(issues);
