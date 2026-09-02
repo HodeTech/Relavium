@@ -1199,11 +1199,15 @@ describe('generativeUnits — authored media volume (ADR-0045 §5)', () => {
     expect(generativeUnits('video', agentNode())).toBe(DEFAULT_MEDIA_UNIT_ESTIMATE.video);
   });
 
-  it('audio/video: count × duration_seconds when BOTH are authored (N clips of D seconds)', () => {
-    expect(generativeUnits('video', agentNode({ duration_seconds: 10, count: 3 }))).toBe(30);
-    // count alone (no duration) multiplies the conservative duration default — never silently dropped.
+  it('audio/video: DURATION only — `count` is not billed, because no adapter sends it', () => {
+    // This test previously pinned `count × duration_seconds` and was the reason the over-charge survived:
+    // it asserted the ADR's formula rather than what the adapters do. Gemini's Veo hard-codes
+    // `numberOfVideos: 1` and never reads `req.count`, so `count: 3, duration_seconds: 10` produced ONE
+    // ten-second clip and billed thirty seconds — a 3× over-charge recorded as realized cost.
+    expect(generativeUnits('video', agentNode({ duration_seconds: 10, count: 3 }))).toBe(10);
+    // `count` alone likewise does not scale the conservative duration default.
     expect(generativeUnits('audio', agentNode({ count: 2 }))).toBe(
-      DEFAULT_MEDIA_UNIT_ESTIMATE.audio * 2,
+      DEFAULT_MEDIA_UNIT_ESTIMATE.audio,
     );
   });
 });

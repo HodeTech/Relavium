@@ -847,10 +847,9 @@ function singleBilledModality(
 
 /**
  * The authored generation volume for a modality: `count` (image) or `duration_seconds` (audio/video). For an
- * audio/video generator that takes BOTH (N clips of D seconds each), the volume is `count × duration_seconds`
- * (ADR-0045 §5 — "count × durationSeconds for a generator that takes both"); a `duration`-only node multiplies
- * by an implicit `count` of 1, so it is unchanged. Each missing field falls back to the conservative built-in
- * default ({@link DEFAULT_MEDIA_UNIT_ESTIMATE}).
+ * audio/video generator, the volume is the DURATION alone — see the comment in the body for why `count` is
+ * not multiplied in. Each missing field falls back to the conservative built-in default
+ * ({@link DEFAULT_MEDIA_UNIT_ESTIMATE}).
  *
  * NOTE: unlike the chat path's {@link buildMediaUnitsEstimate} (which reads `[defaults].media_cost_estimate`),
  * the generative path uses the AUTHOR-DECLARED volume (`count`/`duration_seconds`) directly — the realized fold
@@ -860,8 +859,16 @@ export function generativeUnits(modality: MediaBilledModality, node: AgentNode):
   if (modality === 'image') {
     return node.count ?? DEFAULT_MEDIA_UNIT_ESTIMATE.image;
   }
-  const duration = node.duration_seconds ?? DEFAULT_MEDIA_UNIT_ESTIMATE[modality];
-  return duration * (node.count ?? 1);
+  // **Duration ONLY — `count` is not multiplied in, because no adapter sends it for audio/video.** Gemini's
+  // Veo hard-codes `numberOfVideos: 1` and never reads `req.count`; the OpenAI TTS and Sora paths do not
+  // carry it either. So `count: 3, duration_seconds: 4` produced ONE four-second clip and billed twelve
+  // seconds — a 3× over-charge on a successful call, recorded as realized cost.
+  //
+  // ADR-0045 §5's "count × durationSeconds for a generator that takes both" is the right formula for a
+  // generator that takes both; none of ours does yet. When one does, the multiplication comes back HERE and
+  // in the adapter together — the two must move as a pair, which is exactly what they did not do before.
+  // That the author's `count` is silently ignored for audio/video is a separate, recorded gap.
+  return node.duration_seconds ?? DEFAULT_MEDIA_UNIT_ESTIMATE[modality];
 }
 
 /**

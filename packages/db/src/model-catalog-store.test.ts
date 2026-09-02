@@ -971,6 +971,41 @@ describe('createModelCatalogStore (2.5.G / ADR-0064 — live-discovery cache)', 
     expect(listing?.cachedInputCostPerMtokMicrocents).toBe(42);
   });
 
+  it('a refresh RECLAIMS a model whose user pricing was cleared — un-pricing must not delete it', () => {
+    // live → user pricing → clear → refresh left the row `source='user'` + inactive; the refresh skipped
+    // every non-live row, so the model vanished from every active-only reader FOREVER. Un-pricing a model
+    // deleted it from the catalog.
+    const read = (): ModelCatalogListing | undefined =>
+      store.listByProvider(providerId).find((m) => m.modelId === 'reclaim-me');
+    const live = [
+      {
+        modelId: 'reclaim-me',
+        displayName: 'Reclaim Me',
+        contextWindowTokens: 1000,
+        maxOutputTokens: 1000,
+      },
+    ];
+
+    store.replaceProviderModels(providerId, live, 1);
+    expect(read()).toBeDefined();
+
+    // The user prices it, then retires the price.
+    store.upsert({
+      providerId,
+      modelId: 'reclaim-me',
+      source: 'user',
+      inputCostPerMtokMicrocents: 1_000_000,
+      outputCostPerMtokMicrocents: 2_000_000,
+    });
+    expect(store.clearUserPricing('reclaim-me', providerId)).toBe(true);
+    expect(read()).toBeUndefined(); // deactivated, as `clear` intends
+
+    // The next refresh still lists it, so it must come BACK — the override is retired, not protecting.
+    const result = store.replaceProviderModels(providerId, live, 2);
+    expect(read()).toBeDefined();
+    expect(result.added + result.updated).toBeGreaterThan(0);
+  });
+
   it('clearUserPricing resets the MEDIA rates too — a cleared image price does not resurrect', () => {
     // The same defect the cache-rate test below covers, on the columns `W5` added and the reset missed.
     // A user who retires an override and later re-prices only TOKENS must not find their old image rate

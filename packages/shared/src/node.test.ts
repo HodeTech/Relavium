@@ -362,3 +362,27 @@ describe('NodeSchema', () => {
     ).toBe(true);
   });
 });
+
+describe('media-volume knobs are bounded (`CR-55` review)', () => {
+  const agent = (extra: Record<string, unknown>): unknown => ({
+    id: 'n',
+    type: 'agent',
+    agent_ref: 'a',
+    prompt_template: 'go',
+    ...extra,
+  });
+
+  it('rejects a non-finite duration and an overflowing count', () => {
+    // Both feed `units × rate`. Unbounded, the schema admitted these and the resulting `cost:updated` was
+    // rejected by the run-event schema AFTER the provider had been called and billed.
+    expect(
+      NodeSchema.safeParse(agent({ duration_seconds: Number.POSITIVE_INFINITY })).success,
+    ).toBe(false);
+    expect(NodeSchema.safeParse(agent({ count: 2 ** 53 })).success).toBe(false);
+  });
+
+  it('still accepts realistic volumes', () => {
+    expect(NodeSchema.safeParse(agent({ count: 4 })).success).toBe(true);
+    expect(NodeSchema.safeParse(agent({ duration_seconds: 12.5 })).success).toBe(true); // fractional by contract
+  });
+});

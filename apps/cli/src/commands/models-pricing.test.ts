@@ -215,11 +215,29 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
       source: 'user',
       inputCostPerMtokMicrocents: 300_000_000,
       outputCostPerMtokMicrocents: 900_000_000,
-      cachedInputCostPerMtokMicrocents: 0,
+      // `cachedInputCostPerMtokMicrocents` is OMITTED — `--cached` was not given, and the store PRESERVES
+      // the existing rate rather than writing a `0`. It used to be reported as `0`, which named a value the
+      // database does not hold; a caller confirming its own write was told a number nobody set.
       // The catalog has never heard of `acme-custom-1` — the case the user tier was invented for. Nothing is
       // overridden, so there is nothing to declare.
       overriddenCatalogPrice: null,
     });
+  });
+
+  it('--json OMITS overriddenCatalogPrice on a media-only re-price — it overrides no token price', () => {
+    // A media-only invocation replaces nothing in the catalog's token pricing, so declaring what it
+    // "overrides" claims a divergence that did not happen — the opposite of what the field is for.
+    const { code, out } = run(
+      // A model the CATALOG prices, so a media-only re-price is legal — and the field is still omitted,
+      // because this invocation overrode no token price.
+      { model: 'gpt-5.5', provider: 'openai', imageUsdPerCount: 0.04 },
+      true,
+    );
+    expect(code).toBe(EXIT_CODES.success);
+    const [rec] = parseNdjson(out);
+    expect(rec).not.toHaveProperty('overriddenCatalogPrice');
+    expect(rec).not.toHaveProperty('cachedInputCostPerMtokMicrocents');
+    expect(rec).toMatchObject({ mediaImageCostMicrocents: 4_000_000 });
   });
 
   it('--json DECLARES the catalog price an override replaces (ADR-0071 §5)', () => {

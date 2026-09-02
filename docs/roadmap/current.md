@@ -2,7 +2,7 @@
 
 > Status: Living
 >
-> Last updated: 2026-08-29
+> Last updated: 2026-09-02
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -91,7 +91,7 @@ flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
     LEDGER["#W15-1 — realized-cost ledger ✅<br/>ADR-0076 + ADR-0077"]
-    P265["Phase 2.6.5 — Core reliability<br/>48 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090 (38 of 48) · W6 next"]
+    P265["Phase 2.6.5 — Core reliability<br/>48 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 in PR #88 — media correctness, ADR-0089+0090 (38 of 48) · W6 next"]
     W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]

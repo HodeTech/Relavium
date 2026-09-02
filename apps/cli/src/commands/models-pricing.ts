@@ -142,6 +142,18 @@ export interface SetPricingArgs {
   readonly videoUsdPerSecond?: number;
 }
 
+/**
+ * POSIX single-quote a value inside a command this message tells the user to paste.
+ *
+ * `stripTerminalControls` makes a model id safe to PRINT; it says nothing about a shell. Today's snapshot
+ * ids are all safe, but they are not ours — a future catalog entry carrying `;` or a backtick would be
+ * pasted into a command this text vouched for. The sibling remedies in `effort-notice.ts` and
+ * `budget-governor.ts` already do this; this one was missed.
+ */
+function shellArg(value: string): string {
+  return `'${value.replaceAll("'", String.raw`'\''`)}'`;
+}
+
 /** `models pricing <model> --provider <p> --clear` — retire the override; the model falls back to the catalog. */
 export interface ClearPricingArgs {
   readonly clear: true;
@@ -261,7 +273,7 @@ export function modelsPricingCommand(
     if (!existingStated) {
       throw new CliError(
         'invalid_invocation',
-        `'${stripTerminalControls(args.model)}' has no token price — the catalog does not price it and you have not either, so a media rate alone would never be applied. Re-run with --input <usd-per-mtok> --output <usd-per-mtok> as well. Nothing written.`,
+        `'${stripTerminalControls(args.model)}' has no token price — the catalog does not price it and you have not either, so a media rate alone would never be applied. Re-run with --input USD_PER_MTOK --output USD_PER_MTOK as well. Nothing written.`,
       );
     }
   }
@@ -300,9 +312,14 @@ export function modelsPricingCommand(
         // columns were PRESERVED, not written. Emitting a `0` here would report a price nobody set.
         ...(inputCostPerMtokMicrocents === undefined ? {} : { inputCostPerMtokMicrocents }),
         ...(outputCostPerMtokMicrocents === undefined ? {} : { outputCostPerMtokMicrocents }),
-        // The `--json` field stays present as `0` when `--cached` was omitted (unchanged contract) even though the
-        // store now PRESERVES the existing cached rate rather than writing this `0` (see the upsert above).
-        cachedInputCostPerMtokMicrocents: cachedInputCostPerMtokMicrocents ?? 0,
+        // OMITTED when `--cached` was not given, exactly like the two token fields above. It used to stay
+        // present as `0` "unchanged contract" — but the store PRESERVES the existing cached rate rather
+        // than writing that `0`, so the field reported a value the database does not hold. A machine
+        // consumer confirming the write it just made was told a number nobody set, and the canonical CLI
+        // doc says an unspecified field is omitted.
+        ...(cachedInputCostPerMtokMicrocents === undefined
+          ? {}
+          : { cachedInputCostPerMtokMicrocents }),
         // The media rates this invocation wrote, in the canonical stored unit. Omitted when not stated — a
         // script automating the strict-cap remedy has to be able to confirm the write it just made, and the
         // human path already echoes them (ADR-0089 §4(c)).
@@ -312,16 +329,24 @@ export function modelsPricingCommand(
         // The catalog price this override REPLACES (ADR-0071 §5) — `null` when the catalog does not price the model
         // at all, which is the case the user tier was originally invented for. A machine consumer must be able to
         // see the divergence for the same reason a human must: the flip removed the guard that made it impossible.
-        overriddenCatalogPrice: (() => {
-          const shipped = catalogPricing(args.model);
-          return shipped === undefined
-            ? null
-            : {
-                inputCostPerMtokMicrocents: shipped.inputPerMtokMicrocents,
-                outputCostPerMtokMicrocents: shipped.outputPerMtokMicrocents,
-                cachedInputCostPerMtokMicrocents: shipped.cachedInputPerMtokMicrocents,
-              };
-        })(),
+        // …and OMITTED entirely when this invocation wrote no token or cache price at all. A media-only
+        // re-price replaces nothing in the catalog's token pricing, so reporting what it "overrides" claims
+        // a divergence that did not happen — the opposite of the transparency this field exists for.
+        ...(inputCostPerMtokMicrocents === undefined &&
+        cachedInputCostPerMtokMicrocents === undefined
+          ? {}
+          : {
+              overriddenCatalogPrice: ((): unknown => {
+                const shipped = catalogPricing(args.model);
+                return shipped === undefined
+                  ? null
+                  : {
+                      inputCostPerMtokMicrocents: shipped.inputPerMtokMicrocents,
+                      outputCostPerMtokMicrocents: shipped.outputPerMtokMicrocents,
+                      cachedInputCostPerMtokMicrocents: shipped.cachedInputPerMtokMicrocents,
+                    };
+              })(),
+            }),
       },
     ]);
     return EXIT_CODES.success;
@@ -360,7 +385,7 @@ export function modelsPricingCommand(
   const divergence =
     shipped === undefined || args.inputUsdPerMtok === undefined
       ? ''
-      : `\n  Overrides the catalog price for this model: input $${microcentsToUsd(shipped.inputPerMtokMicrocents)}/Mtok, output $${microcentsToUsd(shipped.outputPerMtokMicrocents)}/Mtok. Yours wins. Run \`relavium models pricing ${stripTerminalControls(args.model)} --clear\` to go back to the catalog's.`;
+      : `\n  Overrides the catalog price for this model: input $${microcentsToUsd(shipped.inputPerMtokMicrocents)}/Mtok, output $${microcentsToUsd(shipped.outputPerMtokMicrocents)}/Mtok. Yours wins. Run \`relavium models pricing ${shellArg(stripTerminalControls(args.model))} --clear\` to go back to the catalog's.`;
   // Strip any terminal-control byte from the (user-typed) model id before echo — parity with `renderModelList`'s
   // FIX 2. `ModelListingSchema` only requires min(1), so an id can carry a control byte; the JSON path is safe
   // because it goes through `stringifyJsonLine` — NOT because `JSON.stringify` escapes them, which it does not

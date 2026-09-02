@@ -282,16 +282,21 @@ export function buildModelsPricingArgs(input: CommandInput): ModelsPricingComman
   // very cap they were trying to satisfy. The store's upsert-omission rule preserves an absent column, so
   // omitting them here leaves the catalog's token pricing exactly where it was.
   const hasMedia = rawImage !== undefined || rawAudio !== undefined || rawVideo !== undefined;
-  if (rawInput === undefined && !hasMedia) {
+  // `--cached` alone is a legitimate partial re-price, for exactly the reason media-only is: the store's
+  // upsert PRESERVES a column the caller omits, so setting a cache rate leaves the token rates where they
+  // were. It was rejected here while the command core and the docs both treated it as legal — a contract
+  // that disagreed with itself, and one more flag a user had to restate to change an unrelated number.
+  const hasNonTokenPrice = hasMedia || rawCached !== undefined;
+  if (rawInput === undefined && !hasNonTokenPrice) {
     throw new CliError(
       'invalid_invocation',
-      'missing required option --input <usd-per-mtok> (or price a media modality with --image / --audio / --video).',
+      'missing required option --input USD_PER_MTOK (or price only --cached / --image / --audio / --video).',
     );
   }
-  if (rawOutput === undefined && !hasMedia) {
+  if (rawOutput === undefined && !hasNonTokenPrice) {
     throw new CliError(
       'invalid_invocation',
-      'missing required option --output <usd-per-mtok> (or price a media modality with --image / --audio / --video).',
+      'missing required option --output USD_PER_MTOK (or price only --cached / --image / --audio / --video).',
     );
   }
   // Stating ONE token rate without the other is still an error: they are a pair, and a half-stated pair would

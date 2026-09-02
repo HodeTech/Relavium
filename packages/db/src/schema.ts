@@ -138,7 +138,9 @@ export const modelCatalog = sqliteTable(
      */
     tokenRatesStated: boolFlag('token_rates_stated', false),
     // Per-modality media-OUTPUT rates (1.AF/D17, ADR-0044 §3) — integer µ¢ per billed unit (per image,
-    // per audio-second, per video-second). NULLABLE: a model with no metered media rate degrades to 0
+    // per audio-second, per video-second). NULLABLE, and null means UNPRICED, not free: since ADR-0089 §4 a
+    // missing rate is reported as an unpriced modality and REFUSED under a strict cost cap (it used to
+    // degrade to 0, which is the `CR-55` defect — a price the governor cannot tell from "nothing to charge")
     // (H4). The projection of `ModelPricing.mediaOutputRates`; no shipped model carries one yet.
     mediaImageCostMicrocents: integer('media_image_cost_microcents'),
     mediaAudioCostMicrocents: integer('media_audio_cost_microcents'),

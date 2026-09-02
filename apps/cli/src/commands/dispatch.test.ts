@@ -117,6 +117,15 @@ describe('build*Args (argv → typed core args)', () => {
       expect(args).not.toHaveProperty('videoUsdPerSecond');
     });
 
+    it('accepts a CACHED-ONLY invocation, like the media-only one', () => {
+      // Same rule, same reason: the store preserves an omitted column, so setting a cache rate leaves the
+      // token rates where they were. It was rejected here while the command core and the docs both treated
+      // it as legal — a contract disagreeing with itself, and one more flag a user had to restate to change
+      // an unrelated number.
+      const args = buildModelsPricingArgs(input(['m'], { provider: 'openai', cached: '0.1' }));
+      expect(args).toEqual({ model: 'm', provider: 'openai', cachedInputUsdPerMtok: 0.1 });
+    });
+
     it('accepts a MEDIA-ONLY invocation — the shape the refusal actually asks for', () => {
       // Requiring --input/--output here would force a user satisfying a media refusal to restate token rates
       // into a row that outranks the catalog for tokens too; `--input 0 --output 0` then bills every token on

@@ -42,7 +42,8 @@ export interface ModelCatalogRecord {
   /** The parsed `capabilities` JSON object (validated to be a JSON object here; the host validates it against
    *  the `@relavium/llm` `CapabilityFlagsSchema`). */
   readonly capabilities: Record<string, unknown>;
-  /** Per-modality media-output rates in integer µ¢; `null` ⇒ no metered rate → cost degrades to 0 (ADR-0044 §3 H4). */
+  /** Per-modality media-output rates in integer µ¢; `null` ⇒ no metered rate ⇒ the modality is UNPRICED —
+   *  counted, and refused under a strict cap (ADR-0089 §4). Not a price of zero; a stated `0` is that. */
   readonly mediaImageCostMicrocents: number | null;
   readonly mediaAudioCostMicrocents: number | null;
   readonly mediaVideoCostMicrocents: number | null;
@@ -76,8 +77,6 @@ export interface ModelCatalogUpsert {
   readonly cachedInputCostPerMtokMicrocents?: number;
   /** Did the USER state the cache rate (ADR-0071 §10)? Absent ⇒ preserve whatever the row already says. */
   readonly cachedInputStated?: boolean;
-  /** Did the USER state the token rates (ADR-0089 §4)? Absent ⇒ preserve. Rides with the two rates, or neither. */
-  readonly tokenRatesStated?: boolean;
   /** The provenance discriminant ([ADR-0064] §4). OMITTED ⇒ `'static'` (a hardcoded seed), so every existing
    *  media-routing caller is unchanged; the live refresh writes `'live'`; user pricing writes `'user'`. */
   readonly source?: ModelCatalogSource;
@@ -218,7 +217,7 @@ export interface ModelCatalogStore {
    * `source='live'` row of THIS provider whose model id is ABSENT from `rows` is SOFT-DEACTIVATED (`isActive=false`,
    * `deletedAt` untouched). `source='user'`/`source='static'` rows are NEVER touched (the ADR-0065 §1 "a refresh
    * never clobbers a user row" invariant + the media-routing seed's integrity), and nothing is ever hard-DELETED
-   * (`model_catalog.id` is an FK target from five tables).
+   * (`model_catalog.id` is an FK target from SIX tables — `session_costs` joined them at ADR-0070).
    *
    * Returns the {@link ReplaceProviderModelsResult} tallies (added/updated/deactivated), counted ATOMICALLY inside
    * the transaction — so a concurrent same-provider refresh can never miscount (an external before/after diff would
@@ -349,17 +348,17 @@ function fromRow(row: ModelCatalogRow): ModelCatalogRecord {
 }
 
 /**
- * The `token_rates_stated` half of an upsert: an explicit value wins; otherwise supplying BOTH rates counts
- * as stating them; otherwise the column is left alone.
+ * The `token_rates_stated` half of an upsert: supplying BOTH rates counts as stating them; otherwise the
+ * column is left alone (which is what lets a media-only re-price preserve rates stated earlier).
  *
- * A standalone function rather than a nested ternary in the middle of a 30-field object literal — the three
- * outcomes are a policy worth reading on its own, and the middle branch (both rates present) is the one a
- * reader has to get right (ADR-0089 §4).
+ * **The store DERIVES it and a caller cannot override it** — the guarantee `database-schema.md` states as
+ * "the store derives it, no writer can forget". An `ModelCatalogUpsert.tokenRatesStated` field used to sit
+ * beside the rates and win over this derivation, which made the guarantee false in two directions: setting
+ * it true with no rates marked the DB's `0`/`0` as a deliberate free price, and setting it false with real
+ * rates stored numbers every reader then discarded. No caller ever wrote it, so removing the field costs
+ * nothing and makes the invariant structural rather than documented (ADR-0089 §4).
  */
 function tokenRatesStatedPatch(input: ModelCatalogUpsert): { tokenRatesStated?: boolean } {
-  if (input.tokenRatesStated !== undefined) {
-    return { tokenRatesStated: input.tokenRatesStated };
-  }
   const bothRates =
     input.inputCostPerMtokMicrocents !== undefined &&
     input.outputCostPerMtokMicrocents !== undefined;
@@ -439,7 +438,14 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
           ),
         )
         .get();
-      if (existing !== undefined && existing.source !== 'live') {
+      // A RETIRED user override no longer protects anything, so a refresh may take the id back. Without
+      // this, `clearUserPricing` left the row `source='user'` + inactive, the refresh skipped it as
+      // non-live, and the model DISAPPEARED from every active-only reader permanently — a live model
+      // deleted from the catalog by the act of un-pricing it. Only an INACTIVE `user` row qualifies:
+      // `clearUserPricing` is the sole writer of that combination, and a `static` seed is never deactivated.
+      const retiredOverride =
+        existing !== undefined && existing.source === 'user' && !existing.isActive;
+      if (existing !== undefined && existing.source !== 'live' && !retiredOverride) {
         // A `source='user'` (user pricing, ADR-0065 §1) or `source='static'` (a media-routing seed —
         // media_surface/capabilities/rates) row already represents this model. A live refresh must NEVER clobber
         // it (that would drop user pricing or regress media routing), so it is left UNTOUCHED and, being non-`live`,
@@ -483,7 +489,7 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
     // Soft-deactivate the vanished live rows: every currently-active `source='live'` row of THIS provider whose
     // model id is absent from the new list. `isActive=false` with `deletedAt` untouched keeps the partial-unique
     // slot occupied so a reappearing model reuses the SAME row (reactivated above). NEVER a hard-DELETE (FK target
-    // from five tables); NEVER touches `source='user'`/`source='static'`.
+    // from SIX tables); NEVER touches `source='user'`/`source='static'` unless the override was retired.
     const incomingModelIds = rows.map((r) => r.modelId);
     const deactivateScope = and(
       eq(modelCatalog.providerId, providerId),

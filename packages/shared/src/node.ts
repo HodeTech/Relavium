@@ -88,6 +88,22 @@ export const TimeoutActionSchema = z.enum(['reject', 'approve']);
 export const MergeStrategySchema = z.enum(['concat', 'object_merge', 'first', 'custom']);
 
 /**
+ * The two media-volume knobs are bounded, unlike the generic `positiveInt`/`z.number().positive()` they used.
+ *
+ * Both feed COST arithmetic (`units × rate`) and a provider request. Unbounded, the schema admitted
+ * `duration_seconds: Infinity` and `count: 2**53` — verified directly: `.positive()` accepts `Infinity` and
+ * `.int().positive()` accepts `2**53`. A non-finite or overflowing figure then produces a `cost:updated`
+ * the run-event schema REJECTS, after the provider has already been called and billed: an authoring typo
+ * turning into a validation fault on a successful, paid generation.
+ *
+ * The ceilings are deliberately generous against real work — a hundred images in one call, an hour of
+ * audio/video — and decisive against the arithmetic. `.finite()` is the load-bearing half; the maxima are
+ * the admission-ceiling half, in the spirit of ADR-0086 (an authored value gets an absolute bound).
+ */
+const mediaCount = z.number().int().positive().max(100);
+const mediaDurationSeconds = z.number().positive().finite().max(3600);
+
+/**
  * An optional `output_schema` on `agent` / `transform` nodes — a JSON-Schema-subset object the
  * engine validates the node's output against (workflow-yaml-spec.md). Modeled as a permissive
  * object map here; the deep JSON-Schema-subset validation is an engine concern (1.L/1.P).
@@ -119,8 +135,8 @@ export const AgentNodeSchema = z
     // requested output volume, mapped to `MediaGenRequest.count`/`durationSeconds` at dispatch. `count` =
     // images per call (image generators); `duration_seconds` = target length (audio/video generators). Inline
     // on the agent node (no nested `agent_config` object); ignored by a `'chat'` model. node-types.md is SSOT.
-    count: positiveInt.optional(),
-    duration_seconds: z.number().positive().optional(),
+    count: mediaCount.optional(),
+    duration_seconds: mediaDurationSeconds.optional(),
     timeout_ms: positiveInt.optional(),
     retry: RetrySchema.optional(),
   })

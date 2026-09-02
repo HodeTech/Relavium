@@ -492,6 +492,20 @@ Severity is the review's verified rating. Check an item off in the PR that resol
       inline: `resolveForEgress` returning a provider-hosted ref (a Gemini `fileUri`, an OpenAI `file_id`)
       instead of base64, which ADR-0031 already reserves the sidecar for.
       *(medium · packages/llm/src/fallback-chain.ts, packages/db/src/media-store.ts; ADR-0031, ADR-0089 §1)*
+- [ ] **`count` is silently ignored for an audio/video generative node.** Gemini's Veo hard-codes
+      `numberOfVideos: 1` and the OpenAI TTS/Sora paths carry no count either, so an author writing
+      `count: 3, duration_seconds: 4` gets ONE four-second clip. The BILLING now matches that (duration
+      only — it used to charge `count × duration`, a 3× over-charge on a successful call), but the author's
+      declaration is still accepted and then disregarded. Either refuse `count` on an audio/video generative
+      node at validation, or carry it into the adapter request. Whichever: the accounting and the adapter
+      must move together, which is precisely what they did not do.
+      *(medium · packages/core/src/engine/agent-runner.ts, packages/llm/src/adapters/gemini.ts; ADR-0045 §5)*
+- [ ] **Token rates from the DB are not range-validated, only the media ones are.** `mediaRates` now refuses
+      a negative / non-finite / unsafe-integer value fail-closed, but `rowToUserPricing`'s
+      `input`/`output`/`cached` columns take the same unchecked path from the same user-writable file. A
+      negative token rate is the same cap bypass on the dominant cost axis. Left out of PR #88 only because
+      the media columns are what `W5` added; the fix is the same predicate.
+      *(medium · apps/cli/src/engine/model-catalog-view.ts; ADR-0089 §4, ADR-0050)*
 - [ ] **Three more pasted remedies still use `<angle-bracket>` placeholders.**
       `provider.ts:198` and `models.ts:140,303` tell the user to run
       `relavium provider set-key <name>`; `<` is a shell redirection, so the pasted command tries to read
