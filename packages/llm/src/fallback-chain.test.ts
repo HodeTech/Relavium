@@ -1010,7 +1010,7 @@ describe('FallbackChain — backoff and cooldown', () => {
         record: () => {
           throw new UnknownModelError('self-hosted-model', ['claude-opus-4-8']);
         },
-      } as unknown as CostTracker,
+      },
     });
     const chain = new FallbackChain([entry(provider, 'self-hosted-model')], options);
 
@@ -1036,7 +1036,7 @@ describe('FallbackChain — backoff and cooldown', () => {
           cumulativeCostMicrocents: 42,
           unpricedModalities: ['image'] as const,
         }),
-      } as unknown as CostTracker,
+      },
     });
     const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
 
@@ -1059,7 +1059,7 @@ describe('FallbackChain — backoff and cooldown', () => {
           costMicrocents: 42,
           cumulativeCostMicrocents: 42,
         }),
-      } as unknown as CostTracker,
+      },
     });
     const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
 
@@ -1077,7 +1077,7 @@ describe('FallbackChain — backoff and cooldown', () => {
         record: () => {
           throw new TypeError('cumulative overflowed');
         },
-      } as unknown as CostTracker,
+      },
     });
     const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
 
@@ -1419,7 +1419,7 @@ describe('FallbackChain.stream', () => {
         record: () => {
           throw thrown;
         },
-      } as unknown as CostTracker,
+      },
     });
     const chain = new FallbackChain(
       [entry(provider, 'claude-haiku-4-5'), entry(fallback, 'gpt-5.5')],
@@ -1652,7 +1652,7 @@ describe('FallbackChain.stream', () => {
         record: () => {
           throw new TypeError('cumulative overflowed');
         },
-      } as unknown as CostTracker,
+      },
     });
     const chain = new FallbackChain(
       [entry(provider, 'claude-opus-4-8'), entry(fallback, 'gpt-5.5')],

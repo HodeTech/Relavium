@@ -151,8 +151,12 @@ export interface FallbackChainOptions {
   /**
    * The per-node/session cost sink. `record(model, usage)` is called once per attempt that produced
    * usage, against **that attempt's** canonical model id, so cost stays accurate across a failover.
+   *
+   * Declared as the RECORD CONTRACT rather than the concrete `CostTracker` class, because that is all the
+   * chain consumes. A real tracker satisfies it unchanged; what it removes is the reason every test double
+   * needed an `as unknown as CostTracker` to stand in for a class it was never pretending to be.
    */
-  readonly costTracker?: CostTracker;
+  readonly costTracker?: Pick<CostTracker, 'record'>;
   /** Visibility hook fired once per attempt (succeeded / failed / skipped). */
   readonly onAttempt?: (record: AttemptRecord) => void;
   /**

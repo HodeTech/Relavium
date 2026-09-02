@@ -507,11 +507,11 @@ function registerModels(program: Command, ctx?: CommandContext): void {
     // `buildModelsPricingArgs`, which can express it; commander's required-flag check cannot.
     .option(
       '--input <usd-per-mtok>',
-      'input (prompt) price, USD per million tokens (required unless --clear)',
+      'input (prompt) price, USD per million tokens — required WITH --output when either is given; omit both to price only media',
     )
     .option(
       '--output <usd-per-mtok>',
-      'output (completion) price, USD per million tokens (required unless --clear)',
+      'output (completion) price, USD per million tokens — required WITH --input when either is given; omit both to price only media',
     )
     .option(
       '--cached <usd-per-mtok>',

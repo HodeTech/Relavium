@@ -272,7 +272,7 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
           mimeType: 'image/png',
           source: { kind: 'url', url: 'https://x.example/a.png' },
         },
-      ] as unknown as ContentPart[],
+      ] satisfies unknown[],
       store,
       { streamUrl },
     );
@@ -301,7 +301,7 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
             mimeType: 'image/png',
             source: { kind: 'url', url: 'https://x.example/a.png' },
           },
-        ] as unknown as ContentPart[],
+        ] satisfies unknown[],
         lazy,
         { streamUrl: () => asyncChunks([new Uint8Array([1]), new Uint8Array([2])]) },
       ),

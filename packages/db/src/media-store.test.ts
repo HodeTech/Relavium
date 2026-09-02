@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -74,28 +74,34 @@ describe('FilesystemMediaStore (1.AF, ADR-0042 — content-addressed CAS)', () =
   });
 
   it('does not hold the whole body — it writes as it consumes', async () => {
-    // The claim the whole change exists for, asserted the only honest way at this seam: the store must pull
-    // chunk N+1 only AFTER it has dealt with chunk N. A store that buffered would drain the source first.
+    // The claim the whole change exists for. It has to be measured on the STORE's side of the seam: an
+    // earlier version of this test counted a `written` variable the SOURCE incremented in its own `next()`,
+    // so it recorded how many chunks had been PRODUCED, not how many bytes had been WRITTEN — and a store
+    // that drained the whole iterator before writing a byte produces exactly the same sequence. It could
+    // not fail. What discriminates is the size of the store's own temp file at each pull.
+    const streamRoot = mkdtempSync(join(tmpdir(), 'relavium-media-lazy-'));
+    const tmpBytes = (): number => {
+      const tmp = readdirSync(streamRoot).find((name) => name.endsWith('.tmp'));
+      return tmp === undefined ? 0 : statSync(join(streamRoot, tmp)).size;
+    };
     const seen: number[] = [];
-    let written = 0;
     const observed: AsyncIterable<Uint8Array> = {
       [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
         let i = 0;
         return {
           next: (): Promise<IteratorResult<Uint8Array>> => {
-            seen.push(written); // how much had been written when this chunk was requested
+            seen.push(tmpBytes()); // bytes the STORE had durably written when this chunk was requested
             i += 1;
             if (i > 3) return Promise.resolve({ done: true, value: undefined });
-            written += 1;
             return Promise.resolve({ done: false, value: new Uint8Array([i]) });
           },
         };
       },
     };
-    const streamRoot = mkdtempSync(join(tmpdir(), 'relavium-media-lazy-'));
     try {
       await new FilesystemMediaStore(streamRoot).putStream(observed);
-      // Pull N happened when N-1 chunks had been produced — strictly interleaved, never drained up front.
+      // Pull N found N-1 bytes already on disk — the store wrote each chunk before asking for the next.
+      // A buffering store would have found 0 every time.
       expect(seen).toEqual([0, 1, 2, 3]);
     } finally {
       rmSync(streamRoot, { recursive: true, force: true });

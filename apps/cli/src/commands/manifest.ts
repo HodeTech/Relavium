@@ -339,16 +339,18 @@ const ENTRIES: readonly CommandManifestEntry[] = [
         description: 'the provider that serves the model (must be registered)',
       },
       {
-        // Not `required` at the manifest level, because `--clear` takes none of the three price flags. The command's
-        // arg builder enforces the real rule: exactly one of "set a price" or "--clear".
+        // Not `required` at the manifest level, because `--clear` takes none of the price flags and a
+        // media-only invocation takes neither token flag. The command's arg builder enforces the real rule.
         name: 'input',
         type: 'string',
-        description: 'input (prompt) price, USD per million tokens (required unless --clear)',
+        description:
+          'input (prompt) price, USD per million tokens — required WITH --output when either is given; omit both to price only media',
       },
       {
         name: 'output',
         type: 'string',
-        description: 'output (completion) price, USD per million tokens (required unless --clear)',
+        description:
+          'output (completion) price, USD per million tokens — required WITH --input when either is given; omit both to price only media',
       },
       {
         name: 'cached',

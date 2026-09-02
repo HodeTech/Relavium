@@ -182,7 +182,15 @@ describe('a streamed tool-call continuation token reaches the assembled part (CR
         calls.push(req);
         const chunks = scripts[call];
         call += 1;
-        return streamOf(chunks ?? []);
+        // Indexed with NO `?? []` fallback, matching `scriptedProvider` above and for the reason recorded
+        // there: a silent empty stream reads to the chain as a successful zero-usage attempt, so a test that
+        // overran its script passed for a reason it never stated. An overrun fails loudly here instead.
+        if (chunks === undefined) {
+          throw new Error(
+            `recordingProvider: unexpected stream call #${call} (only ${scripts.length} scripted)`,
+          );
+        }
+        return streamOf(chunks);
       },
     };
   }
