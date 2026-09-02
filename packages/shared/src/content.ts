@@ -557,6 +557,31 @@ const toolCallPartSchema = z.object({
   // engine's ToolDispatcher does NOT execute it and does not apply its allowlist to it — it only
   // records/forwards. Omitted (or false) means an engine-executed call. See ADR-0030 / ADR-0029.
   providerExecuted: z.boolean().optional(),
+  // An opaque provider CONTINUATION token for this call
+  // ([ADR-0090](../../../docs/decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md)) —
+  // Gemini's `thoughtSignature` on a `functionCall` part is the live case, and a thinking-plus-function
+  // continuation can 400 without it. EPHEMERAL, exactly like `reasoning.signature`: replayed only to the
+  // provider that issued it, stripped on a cross-provider failover, and structurally absent from
+  // {@link DurableContentPartSchema}'s tool_call arm — the persisted type has no field to put it in.
+  // The engine never interprets it.
+  signature: z.string().optional(),
+});
+
+/**
+ * The **durable** `tool_call` arm — identical but for the missing `signature`
+ * ([ADR-0090](../../../docs/decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md)).
+ *
+ * The same compiler-proof move as {@link durableReasoningPartSchema} one arm over, and for the same reason:
+ * a continuation token is a same-provider, same-turn value, so "it must never persist" should be a property
+ * the TYPE makes impossible rather than one a test defends. Parsing an in-flight part through the durable
+ * union drops the field; no durable position can express one.
+ */
+const durableToolCallPartSchema = z.object({
+  type: z.literal('tool_call'),
+  id: nonEmptyString,
+  name: nonEmptyString,
+  args: z.unknown(),
+  providerExecuted: z.boolean().optional(),
 });
 
 const toolResultPartSchema = z.object({
@@ -626,7 +651,7 @@ const durableReasoningPartSchema = z.object({
 export const DurableContentPartSchema = z
   .discriminatedUnion('type', [
     textPartSchema,
-    toolCallPartSchema,
+    durableToolCallPartSchema,
     toolResultPartSchema,
     durableReasoningPartSchema,
     durableMediaPartObjectSchema,

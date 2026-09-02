@@ -369,7 +369,7 @@ function codeForToolError(err: ToolDispatchError): { code: ErrorCode; retryable:
 /** Accumulator for one assistant turn's streamed parts (text + tool calls + reasoning), by delta id. */
 interface TurnAccumulator {
   text: string;
-  readonly toolArgs: Map<string, { name: string; json: string }>;
+  readonly toolArgs: Map<string, { name: string; json: string; signature?: string }>;
   readonly toolOrder: string[];
   readonly reasoning: Map<string, { text: string; signature?: string; redacted?: boolean }>;
   readonly reasoningOrder: string[];
@@ -406,7 +406,16 @@ function accumulatorToContent(acc: TurnAccumulator): ContentPart[] {
   for (const id of acc.toolOrder) {
     const call = acc.toolArgs.get(id);
     if (call === undefined) continue;
-    parts.push({ type: 'tool_call', id, name: call.name, args: parseToolArgs(call.json) });
+    parts.push({
+      type: 'tool_call',
+      id,
+      name: call.name,
+      args: parseToolArgs(call.json),
+      // The ephemeral continuation token the stream delivered on `tool_call_end` (ADR-0090). Carried onto
+      // the assembled part exactly as the reasoning loop above carries its own — without this step the
+      // streaming half of `CR-52` loses the token and the next turn's continuation can 400.
+      ...(call.signature === undefined ? {} : { signature: call.signature }),
+    });
   }
   return parts;
 }
@@ -608,7 +617,8 @@ function foldChunk(
   }
   foldToolCallChunk(chunk, acc);
   foldReasoningChunk(chunk, acc, params, getModel);
-  // tool_call_end / stop / error / media_* / tool_result are no-ops in both sub-folders.
+  // stop / error / media_* / tool_result are no-ops in both sub-folders; `tool_call_end` is not —
+  // it carries the continuation token (ADR-0090), folded above.
 }
 
 /** Accumulate a `tool_call_*` delta into the in-progress tool call (by id), preserving emission order. */
@@ -623,6 +633,14 @@ function foldToolCallChunk(chunk: StreamChunk, acc: TurnAccumulator): void {
   if (chunk.type === 'tool_call_delta') {
     const call = acc.toolArgs.get(chunk.id);
     if (call !== undefined) call.json += chunk.argsJsonDelta;
+    return;
+  }
+  if (chunk.type === 'tool_call_end' && chunk.signature !== undefined) {
+    // The terminating chunk carries the ephemeral continuation token (ADR-0090), exactly as `reasoning_end`
+    // carries its own. Recorded on the accumulator, never emitted as an event — the same rule the reasoning
+    // signature follows (ADR-0030): it is fed back only to the adapter that issued it.
+    const call = acc.toolArgs.get(chunk.id);
+    if (call !== undefined) call.signature = chunk.signature;
   }
 }
 

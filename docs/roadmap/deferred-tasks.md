@@ -632,7 +632,7 @@ so directly: these "should remain visible rather than disappear behind the green
   replay needs the canonical reasoning `ContentPart` to carry an opaque continuation payload; until then a
   `redacted` part is carried as-is and not replayed, and redacted-thinking continuations are out of 1.O scope.
   *(high · packages/llm/src/adapters/anthropic.ts:126-127, packages/shared/src/content.ts:447-450; ADR-0030 follow-up)*
-- [ ] **Gemini part-level `thoughtSignature` replay** — Gemini carries the continuity signature on **any** `Part`
+- [x] **Gemini part-level `thoughtSignature` replay (function-call half)** — ✅ closed 2026-09-02 by `CR-52`. — Gemini carries the continuity signature on **any** `Part`
   including a `functionCall`; the adapter drops it (`mapContent` reads only name/args) and the canonical
   `tool_call` part has no field for it, so Gemini 3 function-calling continuations cannot replay it (and can
   themselves 400). Needs a continuation-metadata carrier on the canonical `tool_call`/`reasoning` parts plus
@@ -642,7 +642,8 @@ so directly: these "should remain visible rather than disappear behind the green
   canonical `tool_call` part and on the streamed `tool_call_end`, with `DurableContentPartSchema` forking a
   signature-less arm so "never persists" is structural. ADR-0089 §3's sidecar was unbuildable — capture and
   replay straddle two adapter calls, and the adapter is stateless. This entry closes when `CR-52` lands; the
-  sibling **`redacted_thinking` opaque `data`** deferral is untouched and still open.
+  sibling **`redacted_thinking` opaque `data`** deferral is untouched and still open, as is the text/`inlineData`
+  half recorded immediately below.
 - [ ] **Gemini `thoughtSignature` on a TEXT or `inlineData` part** — a named deferral of
   [ADR-0090](../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md), which scopes itself to
   the FUNCTION-CALL signature (the half that can 400). Google attaches the token to any `Part`, including a

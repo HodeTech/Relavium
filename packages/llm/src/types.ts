@@ -388,7 +388,16 @@ export const StreamChunkSchema = z
     z.object({ type: z.literal('text_delta'), text: z.string() }),
     z.object({ type: z.literal('tool_call_start'), id: nonEmptyString, name: nonEmptyString }),
     z.object({ type: z.literal('tool_call_delta'), id: nonEmptyString, argsJsonDelta: z.string() }),
-    z.object({ type: z.literal('tool_call_end'), id: nonEmptyString }),
+    z.object({
+      type: z.literal('tool_call_end'),
+      id: nonEmptyString,
+      // The ephemeral provider continuation token for the COMPLETED call (ADR-0090) — the streamed twin of
+      // `ContentPart.tool_call.signature`, mirroring `reasoning_end.signature`. It rides the TERMINATING
+      // chunk because the token belongs to the finished call, not to a fragment of its arguments; the turn
+      // core's accumulator carries it onto the assembled `tool_call` part. Without it a streamed tool loop
+      // would silently lose the token and close `CR-52` only on the non-streaming half.
+      signature: z.string().optional(),
+    }),
     // Reasoning channel (ADR-0030) — mirrors the tool_call_* triad; `id` correlates the deltas to the
     // terminating reasoning_end, which carries the optional ephemeral provider signature.
     z.object({ type: z.literal('reasoning_start'), id: nonEmptyString }),

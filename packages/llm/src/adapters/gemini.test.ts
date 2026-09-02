@@ -332,6 +332,98 @@ describe('Gemini adapter', () => {
     expect(mapUsage({})).toEqual({ inputTokens: 0, outputTokens: 0 });
   });
 
+  describe('function-call continuation signature (CR-52, ADR-0090)', () => {
+    // Gemini attaches `thoughtSignature` to ANY part, `functionCall` included, and a thinking-plus-
+    // function-calling continuation can 400 without it replayed. The fold read it only for `thought: true`
+    // parts, so the one that matters was dropped. ADR-0089 §3 first decided a per-request sidecar; that was
+    // unbuildable (capture and replay straddle two adapter calls on a stateless adapter), so ADR-0090 puts
+    // the token on the part — the shape `reasoning.signature` has used since ADR-0030.
+    const signedCall: GeminiResponse = {
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                functionCall: { name: 'get_weather', args: { city: 'Paris' } },
+                thoughtSignature: 'fn-sig',
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    it('CAPTURES the signature off a functionCall part (non-streaming)', () => {
+      const parts = mapContent(signedCall, new GeminiToolCallIds());
+      expect(parts[0]).toMatchObject({ type: 'tool_call', name: 'get_weather', signature: 'fn-sig' });
+    });
+
+    it('omits the field when the part carries no signature', () => {
+      const unsigned: GeminiResponse = {
+        candidates: [
+          { content: { parts: [{ functionCall: { name: 'get_weather', args: {} } }] } },
+        ],
+      };
+      expect(mapContent(unsigned, new GeminiToolCallIds())[0]).not.toHaveProperty('signature');
+    });
+
+    it('CAPTURES it on the terminating tool_call_end (streaming)', async () => {
+      // The streamed half. Without a carrier here the non-streaming path would work and a streamed tool
+      // loop would silently lose the token — `CR-52` closed on one side only.
+      const adapter = createGeminiAdapter({ transport: fakeTransport(signedCall, [signedCall]) });
+      const chunks = [];
+      for await (const chunk of adapter.stream(REQ, 'k')) chunks.push(chunk);
+      const end = chunks.find((c) => c.type === 'tool_call_end');
+      expect(end).toMatchObject({ type: 'tool_call_end', signature: 'fn-sig' });
+    });
+
+    it('REPLAYS it onto the outgoing functionCall', async () => {
+      const transport = fakeTransport({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] });
+      const adapter = createGeminiAdapter({ transport });
+      await adapter.generate(
+        {
+          ...REQ,
+          messages: [
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'tool_call',
+                  id: 'c1',
+                  name: 'get_weather',
+                  args: { city: 'Paris' },
+                  signature: 'fn-sig',
+                },
+              ],
+            },
+          ],
+        },
+        'k',
+      );
+      const sent = JSON.stringify(transport.lastRequest);
+      expect(sent).toContain('thoughtSignature');
+      expect(sent).toContain('fn-sig');
+    });
+
+    it('sends NO thoughtSignature key when the part carries none', async () => {
+      // Guards the spread: emitting `thoughtSignature: undefined` would put a null-ish key on the wire.
+      const transport = fakeTransport({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] });
+      await createGeminiAdapter({ transport }).generate(
+        {
+          ...REQ,
+          messages: [
+            {
+              role: 'assistant',
+              content: [{ type: 'tool_call', id: 'c1', name: 'get_weather', args: {} }],
+            },
+          ],
+        },
+        'k',
+      );
+      expect(JSON.stringify(transport.lastRequest)).not.toContain('thoughtSignature');
+    });
+  });
+
   it('mapContent maps thought parts → reasoning, text, and a synthesized tool call', () => {
     const response: GeminiResponse = {
       candidates: [

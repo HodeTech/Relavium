@@ -2,6 +2,7 @@ import { LlmProviderError, makeLlmError } from '@relavium/llm';
 import type {
   CapabilityFlags,
   LlmProvider,
+  LlmRequest,
   LlmResult,
   ProviderId,
   StreamChunk,
@@ -160,6 +161,79 @@ function baseParams(
   capturedEvents.set(params, events);
   return params;
 }
+
+describe('a streamed tool-call continuation token reaches the assembled part (CR-52, ADR-0090)', () => {
+  /** A scripted stream provider that RECORDS each request — the continuation is the thing under test. */
+  function recordingProvider(
+    id: ProviderId,
+    scripts: StreamChunk[][],
+  ): LlmProvider & { readonly calls: LlmRequest[] } {
+    let call = 0;
+    const calls: LlmRequest[] = [];
+    return {
+      id,
+      supports: CAPS,
+      calls,
+      generate: () => {
+        throw new Error('generate not used in these tests');
+      },
+      stream: (req: LlmRequest): AsyncIterable<StreamChunk> => {
+        calls.push(req);
+        const chunks = scripts[call];
+        call += 1;
+        return streamOf(chunks ?? []);
+      },
+    };
+  }
+
+  it('carries tool_call_end.signature onto the tool_call ContentPart', async () => {
+    // The join between the adapter and the turn core. The adapter puts the token on the terminating chunk
+    // (mirroring `reasoning_end`); if the accumulator drops it, the next turn's request carries a signature-
+    // less call and the continuation can 400 — `CR-52` closed on the non-streaming half only.
+    const provider = recordingProvider('gemini', [
+      [
+        { type: 'tool_call_start', id: 't1', name: 'echo' },
+        { type: 'tool_call_delta', id: 't1', argsJsonDelta: '{"v":1}' },
+        { type: 'tool_call_end', id: 't1', signature: 'fn-sig' },
+        { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 1, outputTokens: 1 } },
+      ],
+      [
+        { type: 'text_delta', text: 'done' },
+        { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+      ],
+    ]);
+    await runAgentTurn(baseParams(provider));
+
+    // The SECOND request is the continuation — it must carry the token back.
+    const replayed = (provider.calls[1]?.messages ?? [])
+      .flatMap((m: LlmRequest['messages'][number]) => m.content)
+      .find((part) => part.type === 'tool_call');
+    expect(replayed).toMatchObject({ name: 'echo', signature: 'fn-sig' });
+  });
+
+  it('omits the field when the stream carried no signature', async () => {
+    // Without this, the test above would also pass if the accumulator stamped a signature unconditionally,
+    // which would put a meaningless key on every tool call and defeat the failover strip's `!== undefined`.
+    const provider = recordingProvider('anthropic', [
+      [
+        { type: 'tool_call_start', id: 't1', name: 'echo' },
+        { type: 'tool_call_delta', id: 't1', argsJsonDelta: '{"v":1}' },
+        { type: 'tool_call_end', id: 't1' },
+        { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 1, outputTokens: 1 } },
+      ],
+      [
+        { type: 'text_delta', text: 'done' },
+        { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+      ],
+    ]);
+    await runAgentTurn(baseParams(provider));
+
+    const replayed = (provider.calls[1]?.messages ?? [])
+      .flatMap((m: LlmRequest['messages'][number]) => m.content)
+      .find((part) => part.type === 'tool_call');
+    expect(replayed).not.toHaveProperty('signature');
+  });
+});
 
 describe('an unpriced MODALITY holds its reservation conservatively (ADR-0089 §4)', () => {
   // The OTHER half of the one-line `priced` fix, and the half nothing covered. `agent-turn` chooses between

@@ -530,6 +530,69 @@ describe('FallbackChain — ADR-0030 strip-on-failover', () => {
     expect(secondCallParts.some((p) => p.type === 'reasoning')).toBe(true); // not stripped
   });
 
+  it('strips a tool_call SIGNATURE on a cross-provider advance, keeping the call itself (ADR-0090)', async () => {
+    // The token is same-provider by construction: replaying Gemini's `thoughtSignature` to Anthropic is at
+    // best meaningless and at worst a 400. The reasoning latch already dropped whole `reasoning` parts for
+    // this reason; a `tool_call` must NOT be dropped the same way — the call and its result are the
+    // conversation the next provider still needs. Only the token goes.
+    const signedReq: LlmRequest = {
+      ...userReq,
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'tool_call', id: 'c1', name: 'get_weather', args: { city: 'Paris' }, signature: 'g' },
+          ],
+        },
+      ],
+    };
+    const primary = makeProvider({ id: 'gemini', generate: rejects('gemini', 'overloaded') });
+    const next = makeProvider({ id: 'anthropic', generate: resolves('ok') });
+    const { options } = makeOptions();
+    const chain = new FallbackChain(
+      [entry(primary, 'gemini-2.5-pro'), entry(next, 'claude-opus-4-8')],
+      options,
+    );
+
+    await chain.generate(signedReq);
+
+    const forwarded = next.calls[0]?.messages.flatMap((m) => m.content) ?? [];
+    const call = forwarded.find((p) => p.type === 'tool_call');
+    expect(call).toBeDefined(); // the CALL survives…
+    expect(call).not.toHaveProperty('signature'); // …its token does not
+  });
+
+  it('keeps the signature for a SAME-provider retry — stripping it there would be the other bug', async () => {
+    const signedReq: LlmRequest = {
+      ...userReq,
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'tool_call', id: 'c1', name: 'get_weather', args: {}, signature: 'g' },
+          ],
+        },
+      ],
+    };
+    let attempt = 0;
+    const flaky = makeProvider({
+      id: 'gemini',
+      generate: (): Promise<LlmResult> => {
+        attempt += 1;
+        return attempt === 1
+          ? Promise.reject(providerError('gemini', 'overloaded'))
+          : Promise.resolve(result('ok'));
+      },
+    });
+    const { options } = makeOptions();
+    const chain = new FallbackChain([entry(flaky, 'gemini-2.5-pro', 2)], options);
+
+    await chain.generate(signedReq);
+
+    const second = flaky.calls[1]?.messages.flatMap((m) => m.content) ?? [];
+    expect(second.find((p) => p.type === 'tool_call')).toMatchObject({ signature: 'g' });
+  });
+
   it('skips a MODEL the catalog says rejects tools, for free, even on a tool-capable provider (CR-51)', async () => {
     // The whole point of `CR-51`. The provider flags say OpenAI does tools — and it does; `gpt-3.5-turbo` does
     // not, which is a fact only the per-model catalog carries. Before this the chain admitted the entry, spent a

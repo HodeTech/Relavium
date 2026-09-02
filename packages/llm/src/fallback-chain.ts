@@ -232,11 +232,38 @@ type Verdict = 'fatal' | 'retryable' | 'auth-refreshed' | 'advance';
  * along with `text`/`redacted`; a message left with no content is dropped. Runs on a cross-provider
  * advance so a provider-signed reasoning block never crosses a provider boundary (ADR-0030).
  */
+/**
+ * Drop a `tool_call`'s ephemeral continuation token, keeping every other field (ADR-0090).
+ *
+ * Rebuilt field-by-field rather than destructured-and-spread: with `exactOptionalPropertyTypes` an explicit
+ * `undefined` is not the same as an ABSENT key, and both the durable parse and the Gemini replay test for
+ * absence — so the token has to be genuinely gone, not merely undefined.
+ */
+function stripToolCallSignature(part: Extract<ContentPart, { type: 'tool_call' }>): ContentPart {
+  return {
+    type: 'tool_call',
+    id: part.id,
+    name: part.name,
+    args: part.args,
+    ...(part.providerExecuted === undefined ? {} : { providerExecuted: part.providerExecuted }),
+  };
+}
+
 export function stripReasoningParts(req: LlmRequest): LlmRequest {
   const kept = req.messages
     .map((message) => ({
       ...message,
-      content: message.content.filter((part) => part.type !== 'reasoning'),
+      content: message.content
+        .filter((part) => part.type !== 'reasoning')
+        // A `tool_call`'s continuation token is the same kind of value as a reasoning signature — opaque,
+        // provider-issued, same-provider-only (ADR-0090) — so the same latch strips it on a cross-provider
+        // advance. The PART survives, unlike a reasoning part: the call and its result are the conversation
+        // the next provider still needs, and only the token is meaningless (or rejected) to it.
+        .map((part) =>
+          part.type === 'tool_call' && part.signature !== undefined
+            ? stripToolCallSignature(part)
+            : part,
+        ),
     }))
     .filter((message) => message.content.length > 0);
   // Dropping a reasoning-only message can leave two adjacent same-role messages, which strict
