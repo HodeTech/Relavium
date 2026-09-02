@@ -52,20 +52,36 @@ sections are untouched and remain authoritative.
    issued it. The name matches `reasoning.signature` deliberately — it is the same concept on a second part,
    and a reader who knows one now knows the other.
 
-2. **`DurableContentPartSchema` composes a `durableToolCallPartSchema` that has no such field.** The strip is
+2. **The streamed triad carries it on `tool_call_end`**, mirroring `reasoning_end.signature?` exactly. A
+   `ContentPart` field alone is not enough: a tool loop runs on `stream()` as readily as on `generate()`, and
+   the normalized `tool_call_start` / `tool_call_delta` / `tool_call_end` triad has no field a signature could
+   ride, so a streamed continuation would silently lose the token and close `CR-52` only half way. It goes on
+   the **terminating** chunk for the reason `reasoning_end` does: the token belongs to the completed call, not
+   to a fragment of its arguments. The turn core's tool-call accumulator carries it onto the `tool_call` part
+   it assembles.
+
+3. **`DurableContentPartSchema` composes a `durableToolCallPartSchema` that has no such field.** The strip is
    structural, not a refine and not a test: parsing an in-flight part through the durable union produces a part
    with the token gone, and no durable position can express one. This is the `durableReasoningPartSchema` move,
    applied to the arm beside it.
 
-3. **The same-provider rule is inherited, not re-invented.**
+4. **The same-provider rule is inherited, not re-invented.**
    [ADR-0039](0039-same-provider-reasoning-replay.md)'s strip-on-failover already governs replay: a token is
    replayed only to the provider that issued it, and a cross-provider advance strips it. Extending that latch
    to cover `tool_call.signature` alongside `reasoning.signature` is one predicate, not a second policy.
 
-4. **Gemini captures on the way in and replays on the way out.** The response fold reads `thoughtSignature` off
+5. **Gemini captures on the way in and replays on the way out.** The response fold reads `thoughtSignature` off
    a `functionCall` part (today it is read only for `thought: true` parts, which is the bug), and
    `toGeminiParts` puts it back on the outgoing `functionCall`. Both the streaming and non-streaming folds
    capture, because a tool loop can run on either.
+
+**Scope, stated rather than implied.** This decides the carrier for a signature that rides a **function-call**
+part, which is the `CR-52` defect and the one that can 400. Gemini attaches `thoughtSignature` to *any* part —
+including a plain `text` part and an `inlineData` part on the image models — and neither `text` nor `media` has
+a field for one, while the streaming fold flattens text and loses part order. Restoring those is a **named
+deferral**, not a silent omission: the failure there is degraded quality rather than a rejected request, and
+closing it needs a part-order-preserving fold that this decision does not attempt. Recorded in
+[deferred-tasks.md](../roadmap/deferred-tasks.md).
 
 *Considered:* **(a)** the ADR-0089 §3 sidecar — rejected: unbuildable, for the reasons in Context; a per-request
 scope cannot bridge two calls and a stateless adapter has no per-turn scope. **(b)** a provider-opaque
@@ -96,6 +112,6 @@ type split, and forbidden by [ADR-0011](0011-internal-llm-abstraction.md).
 - `toolCallPartSchema` stops being shared between the two unions, so a future field added to it must be
   consciously placed in one or both. That is the cost the reasoning fork already pays; the mitigation is that
   the durable arm's absence of a field is the whole mechanism, so it is not a subtlety a reader can miss.
-- A superseded section one day after its ADR was accepted. Recorded plainly rather than quietly rewritten
+- A superseded section on the same day its ADR was accepted. Recorded plainly rather than quietly rewritten
   (ADRs are append-only): ADR-0089 §3 stands in history with its reasoning, and this ADR says which half of
   that reasoning was wrong and why, so the next reader inherits the correction rather than the confidence.

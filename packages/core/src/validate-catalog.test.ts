@@ -30,10 +30,21 @@ function agentWorkflow(fields: string): WorkflowDefinition {
 }
 
 describe('per-model TOOL capability at load time (CR-51, ADR-0071 §12)', () => {
-  /** A workflow whose inline agent grants tools, on the given model. */
-  function toolGrantingWorkflow(model: string, agentTools = "['read_file']"): WorkflowDefinition {
+  /**
+   * A workflow whose inline agent grants tools, on the given model.
+   *
+   * The node deliberately carries NO `model:` override — that is the common authored shape, since
+   * `agent.model` is required and `node.model` is an optional override. An earlier version of this fixture
+   * wrote the model to BOTH, which hid the fact that the check keyed on `node.model` alone and was therefore
+   * silently inert for every ordinary workflow. The override case gets its own test below.
+   */
+  function toolGrantingWorkflow(
+    model: string,
+    agentTools = "['read_file']",
+    extra = '',
+  ): WorkflowDefinition {
     return parseWorkflow(
-      `schema_version: '1.0'\nworkflow:\n  id: wf\n  agents:\n    - { id: writer, model: ${model}, provider: openai, system_prompt: hi, tools: ${agentTools} }\n  nodes:\n    - { id: n, type: agent, agent_ref: writer, model: ${model} }\n  edges: []`,
+      `schema_version: '1.0'\nworkflow:\n  id: wf\n  agents:\n    - { id: writer, model: ${model}, provider: openai, system_prompt: hi, tools: ${agentTools}${extra} }\n  nodes:\n    - { id: n, type: agent, agent_ref: writer }\n  edges: []`,
     );
   }
   const noCatalog: WorkflowModelCatalog = () => undefined;
@@ -58,7 +69,7 @@ describe('per-model TOOL capability at load time (CR-51, ADR-0071 §12)', () => 
     } catch (err) {
       if (err instanceof WorkflowValidationError) {
         expect(err.issues[0]?.field).toBe('node `n`.model');
-        expect(err.issues[0]?.message).toMatch(/pick a tool-capable model, or remove the grant/);
+        expect(err.issues[0]?.message).toMatch(/pick a tool-capable model, add a tool-capable fallback_chain entry, or remove the grant/);
       }
     }
   });
@@ -75,6 +86,40 @@ describe('per-model TOOL capability at load time (CR-51, ADR-0071 §12)', () => 
     expect(() =>
       validateWorkflowWithCatalog(toolGrantingWorkflow('claude-opus-4-8'), noCatalog),
     ).not.toThrow();
+  });
+
+  it("uses the NODE's model when it overrides the agent's", () => {
+    // The override is the other half of `node.model ?? agent.model`: a tool-capable agent model must not
+    // excuse a tool-incapable node override, and vice versa.
+    const overridden = parseWorkflow(
+      `schema_version: '1.0'\nworkflow:\n  id: wf\n  agents:\n    - { id: writer, model: claude-opus-4-8, provider: openai, system_prompt: hi, tools: ['read_file'] }\n  nodes:\n    - { id: n, type: agent, agent_ref: writer, model: gpt-3.5-turbo }\n  edges: []`,
+    );
+    expect(() => validateWorkflowWithCatalog(overridden, noCatalog)).toThrow(
+      /does not accept tool definitions/,
+    );
+  });
+
+  it('ACCEPTS a tool-incapable primary when a fallback entry can serve the grant', () => {
+    // The runtime pre-skip exists precisely so an incapable primary advances to a capable alternate, and the
+    // seam doc promises that behaviour. Refusing this plan at load would reject a workflow the engine runs
+    // correctly — a louder signal is only an improvement if it is also a TRUE one.
+    const withFallback = toolGrantingWorkflow(
+      'gpt-3.5-turbo',
+      "['read_file']",
+      ', fallback_chain: [{ model: claude-opus-4-8, provider: anthropic, max_attempts: 1 }]',
+    );
+    expect(() => validateWorkflowWithCatalog(withFallback, noCatalog)).not.toThrow();
+  });
+
+  it('still refuses when NO entry in the plan can serve the grant', () => {
+    const allIncapable = toolGrantingWorkflow(
+      'gpt-3.5-turbo',
+      "['read_file']",
+      ', fallback_chain: [{ model: gemini-omni-flash-preview, provider: gemini, max_attempts: 1 }]',
+    );
+    expect(() => validateWorkflowWithCatalog(allIncapable, noCatalog)).toThrow(
+      /no model in this node's plan/,
+    );
   });
 
   it('DEFERS for a model the catalog cannot describe', () => {

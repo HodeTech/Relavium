@@ -636,12 +636,21 @@ so directly: these "should remain visible rather than disappear behind the green
   including a `functionCall`; the adapter drops it (`mapContent` reads only name/args) and the canonical
   `tool_call` part has no field for it, so Gemini 3 function-calling continuations cannot replay it (and can
   themselves 400). Needs a continuation-metadata carrier on the canonical `tool_call`/`reasoning` parts plus
-  adapter capture/replay. **Superseded by [ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §3
-  (2026-09-02) and scheduled as `CR-52` in `W5`** — with the carrier decided the OTHER way: **no** field is
-  added to the canonical parts. The signature is captured into a sidecar scoped to one **request/turn** and
-  replayed on the same-provider continuation, because Gemini synthesizes tool-call ids from a per-request
-  counter and any wider scope collides across requests. This entry closes when `CR-52` lands; the sibling
-  **`redacted_thinking` opaque `data`** deferral is untouched and still open.
+  adapter capture/replay. **Decided by [ADR-0090](../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md)
+  (2026-09-02, superseding [ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §3) and scheduled
+  as `CR-52` in `W5`** — the carrier is exactly what this entry predicted: an optional `signature` on the
+  canonical `tool_call` part and on the streamed `tool_call_end`, with `DurableContentPartSchema` forking a
+  signature-less arm so "never persists" is structural. ADR-0089 §3's sidecar was unbuildable — capture and
+  replay straddle two adapter calls, and the adapter is stateless. This entry closes when `CR-52` lands; the
+  sibling **`redacted_thinking` opaque `data`** deferral is untouched and still open.
+- [ ] **Gemini `thoughtSignature` on a TEXT or `inlineData` part** — a named deferral of
+  [ADR-0090](../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md), which scopes itself to
+  the FUNCTION-CALL signature (the half that can 400). Google attaches the token to any `Part`, including a
+  plain text part and an `inlineData` part on the image models, and neither `text` nor `media` has a field for
+  one — while the streaming fold concatenates text and loses part order, so even capturing it would have
+  nowhere to put it back. The failure here is degraded quality rather than a rejected request. Closing it
+  needs a part-order-preserving fold, which is a larger change than the carrier decision.
+  *(medium · packages/llm/src/adapters/gemini.ts, packages/shared/src/content.ts; ADR-0090)*
   *(high · packages/llm/src/adapters/gemini.ts:193-198, packages/shared/src/content.ts:419-441; ADR-0030 follow-up)*
 - [ ] **`output_schema` deep JSON-Schema conformance** — 1.O validates an `agent` node's `output_schema`
   node-side but **parse-as-JSON only** (the seam's `responseFormat` is a request hint; a

@@ -51,25 +51,47 @@ function generativeModalityIssue(
   };
 }
 
+/** The inline agent a node binds, or `undefined` for a `$ref`'d one this document cannot settle. */
+function inlineAgent(node: WorkflowNode, workflow: WorkflowDefinition) {
+  if (node.type !== 'agent') return undefined;
+  const agent = workflow.workflow.agents?.find(
+    (candidate) => !('$ref' in candidate) && candidate.id === node.agent_ref,
+  );
+  return agent !== undefined && !('$ref' in agent) ? agent : undefined;
+}
+
+/**
+ * Every model this node could actually dispatch on: the effective primary, then the agent's `fallback_chain`
+ * entries in order.
+ *
+ * **The primary is `node.model ?? agent.model`, not `node.model`.** `node.model` is an OPTIONAL override and
+ * `agent.model` is the required one, so the overwhelmingly common authored shape declares the model on the
+ * agent and nothing on the node. Keying the load-check on `node.model` alone made it silently inert for that
+ * shape — the check appeared to pass because it never ran.
+ *
+ * **The fallback entries are included because a chain that can serve the request IS a valid workflow.** The
+ * runtime pre-skip exists precisely so an incapable primary advances to a capable alternate; refusing such a
+ * plan at load would reject a workflow the engine would have run correctly, and would contradict the promise
+ * the seam doc makes about that skip.
+ */
+function candidateModels(node: WorkflowNode, workflow: WorkflowDefinition): readonly string[] {
+  if (node.type !== 'agent') return [];
+  const agent = inlineAgent(node, workflow);
+  const primary = node.model ?? agent?.model;
+  if (primary === undefined) return []; // a `$ref`'d agent with no node override — defer to runtime
+  return [primary, ...(agent?.fallback_chain?.map((fallback) => fallback.model) ?? [])];
+}
+
 /**
  * The AUTHORED tool grant a node would dispatch with — the agent's `tools`, narrowed by the node's own
  * `tools:` when present (ADR-0029: a node narrows, never widens).
  *
- * Returned as a count because the load-check only needs "does this node use tools at all". Resolving the
- * agent by `agent_ref` is enough for an INLINE agent, which is the shape a single YAML document can settle;
- * a `$ref`'d agent the loader has not resolved simply yields no grant and defers, exactly as an unresolvable
- * model does.
+ * Returned as a count because the load-check only needs "does this node use tools at all".
  */
 function grantedToolCount(node: WorkflowNode, workflow: WorkflowDefinition): number {
   if (node.type !== 'agent') return 0;
   if (node.tools !== undefined) return node.tools.length;
-  // An agent entry is either INLINE or a `{ $ref }`. Only the inline shape can be settled from this one
-  // document, which is exactly the boundary `CR-64` draws for the same class of check; a `$ref` defers to the
-  // runtime gate rather than being guessed at.
-  const agent = workflow.workflow.agents?.find(
-    (candidate) => !('$ref' in candidate) && candidate.id === node.agent_ref,
-  );
-  return agent !== undefined && !('$ref' in agent) ? (agent.tools?.length ?? 0) : 0;
+  return inlineAgent(node, workflow)?.tools?.length ?? 0;
 }
 
 /**
@@ -79,8 +101,11 @@ function grantedToolCount(node: WorkflowNode, workflow: WorkflowDefinition): num
  * §12 carried the `tool_call` catalog data but deferred GATING it to "a **louder** signal (config-time
  * validation, or a gate-level notice), not a silent drop". This is the first of the two it named. A runtime
  * pre-skip alone would have been the quietest possible signal — it emits no event, and on a single-entry plan
- * it turns into a chain-exhausted failure partway through a run, after upstream nodes have already spent real
- * money. Catching it at load means the author is told before a run id exists.
+ * it surfaces partway through a run, after upstream nodes have already spent real money.
+ *
+ * **It refuses only when NO candidate can serve the grant.** A tool-incapable primary with a tool-capable
+ * fallback is a working workflow — the pre-skip is what makes it work — so refusing it here would reject a
+ * plan the engine runs correctly.
  *
  * Deliberately TOOL-only. There is no authored counterpart for `attachment`: media inputs are runtime values,
  * so nothing at load time can know whether a turn will carry one. That half stays the runtime gate's, and the
@@ -90,12 +115,19 @@ function toolCapabilityIssue(
   node: WorkflowNode,
   workflow: WorkflowDefinition,
 ): WorkflowIssue | undefined {
-  if (node.type !== 'agent' || node.model === undefined) return undefined;
   if (grantedToolCount(node, workflow) === 0) return undefined;
-  if (modelAccepts(node.model, 'toolCall')) return undefined;
+  const candidates = candidateModels(node, workflow);
+  if (candidates.length === 0) return undefined; // unresolvable — defer to the runtime pre-skip
+  if (candidates.some((model) => modelAccepts(model, 'toolCall'))) return undefined;
+  // Two phrasings, because "model 'x' does not accept…" is wrong for a multi-entry plan (each entry was
+  // checked) and "no model in this node's plan…" is needlessly indirect when there is only one.
+  const subject =
+    candidates.length === 1
+      ? `model '${candidates[0]}' does not accept tool definitions`
+      : `no model in this node's plan (${candidates.join(', ')}) accepts tool definitions`;
   return {
     field: `node \`${node.id}\`.model`,
-    message: `model '${node.model}' does not accept tool definitions, but this node grants tools — pick a tool-capable model, or remove the grant`,
+    message: `${subject}, but this node grants tools — pick a tool-capable model, add a tool-capable fallback_chain entry, or remove the grant`,
   };
 }
 
@@ -110,13 +142,18 @@ function nodeCatalogIssue(
   catalog: WorkflowModelCatalog,
   workflow: WorkflowDefinition,
 ): WorkflowIssue | undefined {
-  if (node.type !== 'agent' || node.model === undefined) {
-    return undefined; // not an agent, or model-unspecified — nothing to load-check
+  if (node.type !== 'agent') {
+    return undefined; // not an agent — nothing to load-check
   }
-  // Checked FIRST, and independently of the host catalog: `modelAccepts` reads the shipped snapshot directly,
-  // so this verdict is available even when the host cannot resolve the model's `CapabilityFlags`.
+  // FIRST, and before the `node.model` guard below: the tool check resolves its own effective model
+  // (`node.model ?? agent.model`) because the common authored shape declares the model on the AGENT and
+  // leaves the node's override absent. It is also independent of the host catalog — `modelAccepts` reads the
+  // shipped snapshot directly — so the verdict is available even when the host cannot resolve capabilities.
   const toolIssue = toolCapabilityIssue(node, workflow);
   if (toolIssue !== undefined) return toolIssue;
+  if (node.model === undefined) {
+    return undefined; // the modality checks below need an explicit node model
+  }
   const caps = catalog(node.model);
   if (caps === undefined) {
     return undefined; // unresolvable model — defer to the runtime FallbackChain pre-skip (never a silent drop)

@@ -71,7 +71,7 @@ interface LlmMessage {
 type ContentPart =
   | { type: 'text'; text: string }
   | { type: 'reasoning'; text: string; signature?: string; redacted?: boolean }  // ADR-0030; signature is ephemeral — replayed SAME-provider (the Anthropic adapter lowers it back to a thinking block), stripped on a cross-provider failover (ADR-0039)
-  | { type: 'tool_call'; id: string; name: string; args: unknown; providerExecuted?: boolean }   // assistant -> wants tool
+  | { type: 'tool_call'; id: string; name: string; args: unknown; providerExecuted?: boolean; signature?: string }   // assistant -> wants tool; signature is an ephemeral provider continuation token (ADR-0090) — replayed SAME-provider, stripped on failover, structurally absent from the durable arm
   | { type: 'tool_result'; toolCallId: string; result: unknown; isError?: boolean; providerExecuted?: boolean;
       media?: DurableMediaPart[] }  // ADR-0031 #7 — typed handle-only attachments; raw media bytes in `result` are FORBIDDEN
   | { type: 'media'; mimeType: string; source: MediaSource; name?: string; transcript?: string };  // ADR-0031 — the in-flight media arm; modality = MIME prefix
@@ -101,9 +101,10 @@ type DurableMediaPart = {
   byteLength?: number;   // bounds a Range/byte-delivery request without trusting a raw file size
   durationMs?: number;   // audio/video only — render/desync metadata
 };
-// DurableContentPart mirrors ContentPart with the durable media arm and a SIGNATURE-LESS reasoning
-// arm ({ type: 'reasoning'; text; redacted? }) — the ADR-0030 "never persisted" guarantee made
-// structural. deInlineMedia (engine-owned, wired at 1.AF) is the typed flight→durable transform.
+// DurableContentPart mirrors ContentPart with the durable media arm and TWO signature-less arms — a
+// reasoning arm ({ type: 'reasoning'; text; redacted? }) and, since ADR-0090, a tool_call arm with no
+// `signature` — so the ADR-0030 "never persisted" guarantee is structural for both continuation tokens
+// rather than defended by a test. deInlineMedia (engine-owned, wired at 1.AF) is the flight→durable transform.
 
 interface ToolDef {
   name: string;
@@ -130,7 +131,7 @@ interface Usage {
   cacheWriteTokens?: number;
   reasoningTokens?: number;      // ADR-0030 — OBSERVABILITY only; a subset of outputTokens (≤), never billed separately
   mediaUnits?: MediaUnitsEntry[]; // ADR-0031 — a DISJOINT media axis (per-image / per-second), never folded into tokens
-  costMicrocents?: number;              // integer micro-cents (canonical unit defined below); computed by a pricing table keyed on canonical model id
+  costMicrocents?: number;              // integer micro-cents (canonical unit defined below); computed by the generated catalog snapshot keyed on canonical model id (ADR-0071)
 }
 
 // One media usage record (ADR-0031). `modality` is the deliberately complete media-BILLED closed
@@ -151,7 +152,7 @@ type StreamChunk =
   | { type: 'reasoning_end'; id: string; signature?: string; redacted?: boolean }  // signature/redacted both surfaced on the stream
   | { type: 'tool_call_start'; id: string; name: string }
   | { type: 'tool_call_delta'; id: string; argsJsonDelta: string }  // partial JSON; count/timing is provider-dependent — accumulate, parse at tool_call_end
-  | { type: 'tool_call_end'; id: string }
+  | { type: 'tool_call_end'; id: string; signature?: string }  // ADR-0090 — the ephemeral continuation token for the COMPLETED call, mirroring reasoning_end.signature; the accumulator carries it onto the assembled tool_call part
   | { type: 'media_start'; id: string; mimeType: string }            // ADR-0031 — media output channel (mirrors the triads); mimeType is bounded bare type/subtype (MediaMimeTypeSchema)
   | { type: 'media_delta'; id: string; progress?: number; partialRef?: string }  // progress is a 0..1 fraction; NO base64 ever; partialRef is a RESERVED preview HANDLE (A3)
   | { type: 'media_end'; id: string; media: DurableMediaPart }       // closes the media block — the finished media as a handle-only durable part
@@ -425,7 +426,11 @@ adapters):
   not interpret it; only the originating adapter feeds it back (a same-provider,
   same-turn obligation enforced by the 1.K `FallbackChain` strip-on-failover, which
   drops every `reasoning` part on a cross-provider advance — see the fallback section
-  below).
+  below). Since [ADR-0090](../../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md)
+  the same latch also strips `tool_call.signature` on that advance: it is the same kind of
+  token on a second part, so it is one predicate rather than a second policy. The `tool_call`
+  itself is NOT dropped — only its signature — because the call and its result are the
+  conversation the next provider still needs.
 - **`responseFormat`** on `LlmRequest` — `{ type: 'text' } | { type: 'json', schema, name?, strict? }`,
   one canonical JSON-Schema each adapter lowers to the provider's native
   structured-output mode (OpenAI `response_format`, Gemini `responseJsonSchema`,
@@ -466,12 +471,14 @@ managed mode) are recorded in the ADR — this section is the dry shape referenc
   `(provider, sha256)`, owned **per-`FallbackChain` run-instance**
   ([ADR-0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md) §4,
   which sharpened ADR-0031 §Guardrails' looser "process-scoped adapter sidecar" wording —
-  a process-wide map would leak refs across unrelated runs). A **second, distinct** sidecar
-  holds Gemini's function-call `thoughtSignature` for continuation replay; it is keyed by
-  tool call and scoped to **one request/turn**
-  ([ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §3, decided and
-  landing in `W5`). The two hold different entities under different keys and must not be
-  merged; both are ephemeral, never persisted, and dropped on failover.
+  a process-wide map would leak refs across unrelated runs). It works because the CHAIN owns
+  it and re-materializes **before** invoking the adapter, so its value never has to survive an
+  adapter boundary.
+  A continuation token has no such hook — capture and replay straddle two adapter calls — so
+  Gemini's function-call `thoughtSignature` rides the **part**, not a sidecar
+  ([ADR-0090](../../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md),
+  superseding ADR-0089 §3; decided and landing in `W5`): `tool_call.signature?` in flight,
+  `tool_call_end.signature?` on the stream, and structurally absent from the durable arm.
 - **The `media_start` / `media_delta` / `media_end` `StreamChunk` triad** (mirrors the
   `tool_call_*`/`reasoning_*` triads; `id` correlates). **No base64 ever rides the
   normalized stream**: `media_delta` carries `progress?` plus `partialRef?` — a
@@ -590,9 +597,9 @@ lands in `W5`**; until then the whole-buffer path is what ships.
 
 `listModels?(key, signal?): Promise<ModelListing[]>` is an **optional, capability-varying** method (the same
 pattern as `generateMedia?` / `contextLimit?`): a provider without a live list endpoint omits it and the host
-degrades to the static registry ([pricing.ts](../../../packages/llm/src/pricing.ts)) for that provider. It
+degrades to the generated catalog snapshot ([catalog/snapshot.ts](../../../packages/llm/src/catalog/snapshot.ts)) for that provider. It
 returns **live discovery** — which model ids a given `key` can actually reach (tier/allowlist-gated). The live
-tier decides **availability**; the static registry stays the **pricing** authority (ADR-0064 §6), so
+tier decides **availability**; the shipped catalog snapshot stays the **pricing** authority (ADR-0064 §6, ADR-0071 §5), so
 `ModelListing` deliberately carries **no price**. Each adapter maps its vendor `models.list()` row to
 `ModelListing` **inside `src/adapters/*`** — **no vendor SDK type crosses this seam** (ADR-0011).
 
@@ -604,7 +611,7 @@ interface ModelListing {
   displayName?: string;           // Anthropic/Gemini return one; OpenAI/DeepSeek do not
   contextWindowTokens?: number;   // Anthropic `max_input_tokens` / Gemini `inputTokenLimit`; positive-only (a 0/absent limit is "unknown" → OMITTED, never a stored 0)
   maxOutputTokens?: number;       // Anthropic `max_tokens` / Gemini `outputTokenLimit`; positive-only
-  deprecatedAt?: string;          // ISO-8601; the LIVE list leaves it UNDEFINED — the static registry supplies the deprecation half, unioned at merge time (ADR-0064 §7)
+  deprecatedAt?: string;          // ISO-8601; the LIVE list leaves it UNDEFINED — the Relavium-owned deprecation overlay supplies the deprecation half, unioned at merge time (ADR-0064 §7)
 }
 ```
 
@@ -732,7 +739,7 @@ Two streaming subtleties the adapters must handle:
   usage chunk; Anthropic puts usage in `message_delta`; Gemini in the final
   chunk.
 - **`costMicrocents` is ours, never the provider's** — it is computed by a Relavium
-  pricing table keyed on the **canonical model id**, not read from any provider
+  generated catalog snapshot keyed on the **canonical model id** (ADR-0071), not read from any provider
   response. This is the same `costMicrocents` that surfaces in the `cost:updated` run
   event (see [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md)).
 

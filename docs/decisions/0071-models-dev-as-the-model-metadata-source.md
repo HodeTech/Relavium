@@ -437,8 +437,11 @@ types — one file, not a refactor.
 >   the opaque `unknown` it used to. Nothing is silently dropped on either path. The `attachment` half is
 >   runtime-only by necessity — media inputs are runtime values, so no load-time check can see one — and that
 >   asymmetry is deliberate rather than forgotten. `temperature`/`structured_output` are unchanged: they stay
->   safe silent withholds, because a dropped preference does not change the answer while a dropped tool or a
->   dropped image does.
+>   safe silent withholds. The distinction is not that a dropped preference cannot affect the output —
+>   withholding `response_format` can make a model return prose where JSON was wanted — but that it does not
+>   remove a CHANNEL the turn depends on, and the node-side `output_schema` check turns the degraded case into
+>   a visible `validation` failure rather than a silent success. A dropped tool or a dropped image has no such
+>   backstop: the model simply answers without the capability, confidently and at full price.
 > - **The data populates via the sync, not by hand.** The snapshot is GENERATED (§3); these fields are parsed by
 >   the schema and land on the next `pnpm sync:models`. Until then the mechanism is inert-but-correct (absent ⇒
 >   accepted), and the shipped snapshot is **not hand-edited** — the generated-file discipline holds.
