@@ -8,6 +8,13 @@
 
 > **Amended 2026-07-07 (append-only, no reversal — surface-specific at-rest posture).** Rule (c)'s parenthetical below says user conversational content is "encrypted in `history.db`". That phrasing predates [ADR-0050](0050-cli-history-db-at-rest-posture.md) and is **surface-specific**: on the **CLI** surface `history.db` is **not** encrypted at rest — it is guarded by `0700`/`0600` owner-only permissions with API keys in the OS keychain only (no credentials at rest); only the **desktop** surface uses a SQLCipher-encrypted store. Read the phrase surface-specifically (mirrors the [ADR-0024](0024-agent-first-entry-point-agentsession.md) amendment note). This ADR's tool-policy decisions are unchanged.
 
+
+> **Amended 2026-09-02 by [ADR-0094](0094-a-tool-grant-is-checked-when-the-plan-is-built.md).** §(b)'s
+> "Enforced by the parser" was never true — nothing in `parser.ts`/`dag.ts`/`run-plan.ts` reads `tools`.
+> The narrowing is enforced when the PLAN IS BUILT (a `GraphIssue` in `buildRunPlan`), with the runtime
+> dispatch check retained as defence in depth. The security guarantee §(b) states — a node can never widen
+> a grant — held throughout; only the stated location was wrong.
+
 ## Context
 
 Four tool-policy ambiguities in the current specs are individually small and collectively a real

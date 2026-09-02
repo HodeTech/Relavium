@@ -286,11 +286,11 @@ to correct.
 | `CR-53` | made · ✅ INGEST closed 2026-09-02 (`MediaUrlStream` + `MediaStore.putStream?` + an idle-deadlined, cancellable body; a url with no streaming hook REFUSED). The adapter-side base64 and the `resolveForEgress` delivery half are recorded residuals | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §2 | no | media bytes |
 | `CR-54` | made · ✅ closed 2026-09-02 for the two paths that produce one — the node OUTPUT and the human-gate resume PAYLOAD are pinned at first resolution, bounded, and classified on failure. ADR-0043 §3's INGEST half (an `AgentSession` message, an MCP tool result) is a recorded residual | [ADR-0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md) §3 | no | media bytes |
 | `CR-55` | made · ✅ closed 2026-09-02 (missing rate ⇒ unpriced, on both cost paths; strict refuses; the rate path + CLI fields land with it) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §4 | yes | — |
-| `CR-60` | **open** — race semantics, or rename + correct the table | — | no | — |
-| `CR-61` | **open** — needs a JSON-Schema validator dependency | new (dependency ADR) | no | — |
-| `CR-62` | **open** — extract dependencies, or fail loudly | — | no | — |
+| `CR-60` | made 2026-09-02 — the DOC moves: `first` = first surviving by declaration order; `joinStrategy` renamed `requestedJoinStrategy`. Implementation open | [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md) | no | — |
+| `CR-61` | made 2026-09-02 — deep validation via an ALLOWLIST-STRICT mode on the in-house compiler, promoted to `@relavium/shared`. **No new dependency** — the phase text's premise was false. Implementation open | [ADR-0092](../../decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md) | no | — |
+| `CR-62` | made 2026-09-02 — narrow the scope to the transitive closure **and** refuse a literal non-ancestor read at parse via a conservative text scan (the engine cannot observe reads: marshaling is JSON-only). Implementation open | [ADR-0093](../../decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md) | no | — |
 | `CR-63` | made (verify the docs; no runtime change) | — | no | — |
-| `CR-64` | made (enforce at parse / `$ref` resolution) | — | no | — |
+| `CR-64` | made (enforce at parse / `$ref` resolution) | [ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md) | no | — |
 | `CR-70` | **open** — persist bounded tool pairs, or narrow the spec | — | no | — |
 | `CR-71` | with `CR-70` | with `CR-70`'s | no | — |
 | `CR-72` | **open** — implement, or reject at parse | — | no | — |

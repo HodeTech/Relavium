@@ -13,6 +13,14 @@
 
 - **Related**: [ADR-0006](0006-os-keychain-for-api-keys.md), [ADR-0011](0011-internal-llm-abstraction.md), [ADR-0018](0018-desktop-execution-and-rust-egress.md), [ADR-0019](0019-cli-node-keychain-library.md), [ADR-0024](0024-agent-first-entry-point-agentsession.md), [ADR-0025](0025-agent-surface-refines-desktop-scope.md), [ADR-0026](0026-session-export-to-workflow.md), [ADR-0028](0028-workflow-resource-governance.md), [ADR-0029](0029-tool-policy-hardening.md), [ADR-0030](0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md), [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md), [ADR-0037](0037-engine-tool-execution-boundary.md), [ADR-0039](0039-same-provider-reasoning-replay.md), [ADR-0040](0040-node-retry-budget-above-the-chain.md), [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md), [run-plan.md](../reference/shared-core/run-plan.md), [sse-event-schema.md](../reference/contracts/sse-event-schema.md), [error-handling.md](../standards/error-handling.md), [security-review.md](../standards/security-review.md), [shared-core-engine.md](../architecture/shared-core-engine.md)
 
+
+> **Amended 2026-09-02 by [ADR-0094](0094-a-tool-grant-is-checked-when-the-plan-is-built.md) and
+> [ADR-0092](0092-output-schema-is-validated-by-the-compiler-we-already-own.md).** Two clauses are corrected.
+> (1) "`tools:` narrows… (parser-enforced)" — enforcement is at PLAN BUILD, not the parser; the dispatch
+> check is the floor. (2) The node-side `output_schema` validation this ADR required "not silently
+> deferred" WAS silently deferred to parse-as-JSON; ADR-0092 lands it as deep validation via an
+> allowlist-strict JSON-Schema compiler promoted to `@relavium/shared`, with no new runtime dependency.
+
 ## Context
 
 Workstream **1.O** builds the `AgentRunner` — the per-node LLM execution that fills the `NodeExecutor` seam ([ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md)) for `agent` vertices: assemble the prompt, call `@relavium/llm` through the seam, re-emit the streaming `agent:*` events, run the tool-call loop through the `ToolRegistry` ([ADR-0037](0037-engine-tool-execution-boundary.md)), feed usage to a cost tracker, and map the outcome to one `NodeOutcome`. It is the **join** on the engine critical path — its three dependencies (1.K `FallbackChain`, 1.N run loop, 1.T `ToolRegistry`) are all merged.
