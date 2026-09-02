@@ -101,24 +101,41 @@ export class FilesystemMediaStore implements MediaStore {
     const tmp = join(this.#root, `stream.${randomUUID()}.tmp`);
     await mkdir(this.#root, { recursive: true });
     const file = await open(tmp, 'w');
+    let closed = false;
+    // ONE try covering the write AND the publish. An earlier version scoped it to the write loop only, so
+    // a failure at `mkdir`/`rename` — a full disk, a read-only shard, a permissions change — left a
+    // COMPLETE temp file behind. Nothing ever reclaims it: `listHandles` descends only into the two-hex
+    // shard directories, so the GC cannot see a file in the root, and a repeatable publish failure writes
+    // up to the download ceiling of unreclaimable garbage per attempt.
     try {
       for await (const chunk of chunks) {
         hash.update(chunk);
-        await file.write(chunk);
+        const { bytesWritten } = await file.write(chunk);
+        // `FileHandle.write` is ONE `write(2)` and may write short (classically at a disk-full boundary),
+        // while `hash.update` always digests the whole chunk. A short write would publish a file at a path
+        // whose sha256 it does not match — and `get()` verifies that digest on every read, so the handle
+        // would be permanently unreadable while the durable event insists it exists. `put` cannot do this
+        // because `writeFile` loops internally; this one has to check.
+        if (bytesWritten !== chunk.length) {
+          throw new Error(
+            `media putStream: short write (${bytesWritten} of ${chunk.length} bytes) — the content address would not match`,
+          );
+        }
       }
       await file.close();
+      closed = true;
+      const handle = `media://sha256-${hash.digest('hex')}`;
+      const path = this.#pathFor(digestOf(handle));
+      await mkdir(dirname(path), { recursive: true });
+      // Same atomic publish as `#write`, and the same content-addressed idempotence: racing an identical
+      // body produces the same final path, so a duplicate rename is harmless.
+      await rename(tmp, path);
+      return handle;
     } catch (err) {
-      await file.close().catch(() => undefined);
+      if (!closed) await file.close().catch(() => undefined);
       await rm(tmp, { force: true });
       throw err;
     }
-    const handle = `media://sha256-${hash.digest('hex')}`;
-    const path = this.#pathFor(digestOf(handle));
-    await mkdir(dirname(path), { recursive: true });
-    // Same atomic publish as `#write`, and the same content-addressed idempotence: racing an identical
-    // body produces the same final path, so a duplicate rename is harmless.
-    await rename(tmp, path);
-    return handle;
   }
 
   async #write(bytes: Uint8Array): Promise<string> {

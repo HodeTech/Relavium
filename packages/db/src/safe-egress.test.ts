@@ -7,6 +7,7 @@ import {
   connectValidated,
   nodeEgressDeps,
   readBounded,
+  streamBounded,
   SafeEgressError,
   withEgressTimeout,
   type EgressDeps,
@@ -402,6 +403,69 @@ describe('connectValidated — the one validated hop (URL policy + range-block +
         sig(),
       ),
     ).rejects.toMatchObject({ code: 'blocked_host' });
+  });
+});
+
+describe('streamBounded (ADR-0089 §2 — the streaming twin, tested directly)', () => {
+  /** An `AsyncIterable` over a chunk list. */
+  function chunks(list: readonly Uint8Array[]): AsyncIterable<Uint8Array> {
+    return {
+      [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+        let i = 0;
+        return {
+          next: (): Promise<IteratorResult<Uint8Array>> => {
+            const chunk = list[i];
+            i += 1;
+            return Promise.resolve(
+              chunk === undefined ? { done: true, value: undefined } : { done: false, value: chunk },
+            );
+          },
+        };
+      },
+    };
+  }
+
+  async function collect(stream: AsyncIterable<Uint8Array>): Promise<number> {
+    let total = 0;
+    for await (const chunk of stream) total += chunk.length;
+    return total;
+  }
+
+  it('yields a body EXACTLY at maxBytes and disposes — the boundary is `>`, not `>=`', async () => {
+    // The twin has this test (`readBounded`); the streaming one did not, and its only caller used 10-byte
+    // chunks against a 25-byte cap, so no chunk ever landed on the boundary. Mutating `>` to `>=` left that
+    // suite green — an off-by-one that would refuse every exactly-sized body.
+    let disposed = 0;
+    const total = await collect(
+      streamBounded(chunks([new Uint8Array(4), new Uint8Array(4)]), 8, () => {
+        disposed += 1;
+      }),
+    );
+    expect(total).toBe(8);
+    expect(disposed).toBe(1);
+  });
+
+  it('refuses one byte over, and disposes', async () => {
+    let disposed = 0;
+    await expect(
+      collect(
+        streamBounded(chunks([new Uint8Array(4), new Uint8Array(5)]), 8, () => {
+          disposed += 1;
+        }),
+      ),
+    ).rejects.toThrow(/maximum size/);
+    expect(disposed).toBe(1);
+  });
+
+  it('disposes exactly once even when the consumer stops early', async () => {
+    let disposed = 0;
+    const stream = streamBounded(chunks([new Uint8Array(1), new Uint8Array(1)]), 100, () => {
+      disposed += 1;
+    });
+    const iterator = stream[Symbol.asyncIterator]();
+    await iterator.next();
+    await iterator.return?.(undefined);
+    expect(disposed).toBe(1);
   });
 });
 

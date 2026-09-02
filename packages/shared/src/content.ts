@@ -1045,9 +1045,9 @@ export interface DeInlineMedia {
   (
     parts: readonly ContentPart[],
     store: MediaStore,
-    fetchUrl?: MediaUrlFetch,
+    egress?: MediaEgressHooks,
   ): Promise<DurableContentPart[]>;
-  (value: unknown, store: MediaStore, fetchUrl?: MediaUrlFetch): Promise<unknown>;
+  (value: unknown, store: MediaStore, egress?: MediaEgressHooks): Promise<unknown>;
 }
 
 /**

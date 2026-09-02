@@ -168,6 +168,105 @@ describe('streamMediaBytes (ADR-0089 §2 — the same policy, never fully buffer
     expect(stats.disposed).toBe(1);
   });
 
+  it('ABANDONS a stalled body — the connect deadline does not cover the read', async () => {
+    // `withEgressTimeout` clears its timer and removes its abort listener when the CONNECT resolves, so the
+    // body phase had neither a deadline nor a cancellation: a server that sent one byte and then went quiet
+    // held the transfer open forever. That is a slow-loris, and it regressed the liveness property `W2`
+    // established — on a path added to close a different memory hazard.
+    const { deps, stats } = fakeDeps({
+      resolve: { 'media.example': [PUBLIC_IP] },
+      hops: [{ status: 200 }],
+    });
+    const stalling: MediaEgressDeps = {
+      ...deps,
+      openConnection: () =>
+        Promise.resolve({
+          status: 200,
+          location: undefined,
+          body: {
+            [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+              let first = true;
+              return {
+                next: (): Promise<IteratorResult<Uint8Array>> => {
+                  if (first) {
+                    first = false;
+                    return Promise.resolve({ done: false, value: new Uint8Array([1]) });
+                  }
+                  return new Promise(() => undefined); // …and then nothing, forever
+                },
+              };
+            },
+          },
+          dispose: () => {
+            stats.disposed += 1;
+          },
+        }),
+    };
+    await expect(
+      drain(
+        streamMediaBytes(
+          'https://media.example/slow.mp4',
+          { maxBytes: 1_000, bodyIdleTimeoutMs: 20 },
+          stalling,
+        ),
+      ),
+    ).rejects.toThrow(/stalled/);
+    expect(stats.disposed).toBeGreaterThanOrEqual(1); // the SOCKET is destroyed, not just our wait abandoned
+  });
+
+  it('honours the caller AbortSignal mid-body, and normalizes the failure', async () => {
+    const controller = new AbortController();
+    const { deps, stats } = fakeDeps({
+      resolve: { 'media.example': [PUBLIC_IP] },
+      hops: [{ status: 200 }],
+    });
+    const endless: MediaEgressDeps = {
+      ...deps,
+      openConnection: () =>
+        Promise.resolve({
+          status: 200,
+          location: undefined,
+          body: {
+            [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+              return {
+                next: (): Promise<IteratorResult<Uint8Array>> => {
+                  controller.abort(); // abort arrives while the body is being read
+                  return Promise.resolve({ done: false, value: new Uint8Array([1]) });
+                },
+              };
+            },
+          },
+          dispose: () => {
+            stats.disposed += 1;
+          },
+        }),
+    };
+    await expect(
+      drain(
+        streamMediaBytes(
+          'https://media.example/a.mp4',
+          { maxBytes: 1_000_000, signal: controller.signal },
+          endless,
+        ),
+      ),
+    ).rejects.toThrow(/cancelled/);
+    expect(stats.disposed).toBeGreaterThanOrEqual(1);
+  });
+
+  it('normalizes a RAW socket throw mid-body to a typed MediaEgressError', async () => {
+    // The whole-buffer twin gets this from `withEgressTimeout`'s catch; the streamed body runs outside it,
+    // so an ECONNRESET or a raw AbortError would have escaped this module untyped — breaching the header's
+    // promise that its only thrown type is a `MediaEgressError` (and, with it, the secret-free rule).
+    const { deps } = fakeDeps({
+      resolve: { 'media.example': [PUBLIC_IP] },
+      hops: [{ status: 200, bodyThrows: true }],
+    });
+    const err = await drain(
+      streamMediaBytes('https://media.example/a.png', { maxBytes: 1000 }, deps),
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MediaEgressError);
+  });
+
   it('applies the SAME SSRF policy as its whole-buffer twin', async () => {
     // Same predicate, so a caller cannot pick the streaming form to dodge a check. Asserted rather than
     // assumed, because "identical policy" is what makes a second egress function safe to add at all.

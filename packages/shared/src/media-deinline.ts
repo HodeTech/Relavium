@@ -146,13 +146,25 @@ async function storeResolved(
     );
   }
   let byteLength = 0;
+  let drained = false;
   const counted = (async function* count(): AsyncIterable<Uint8Array> {
     for await (const chunk of resolved) {
       byteLength += chunk.length;
       yield chunk;
     }
+    drained = true;
   })();
   const handle = await putStream(counted, mimeType);
+  // A store that returned a handle without consuming the whole stream would publish a TRUNCATED object and
+  // report a short `byteLength` — and that number is what ADR-0044's `Range` gate is later validated
+  // against, so a short count is not cosmetic. The `putStream` contract does not spell full consumption
+  // out, so this checks rather than trusts: both shipped stores drain, and a third that does not fails
+  // loudly here instead of publishing a lie.
+  if (!drained) {
+    throw new Error(
+      'deInlineMedia: the MediaStore returned a handle without consuming the whole media stream',
+    );
+  }
   return { handle, byteLength };
 }
 

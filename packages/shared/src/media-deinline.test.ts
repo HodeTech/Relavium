@@ -279,6 +279,35 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
     expect(streamPuts).toHaveLength(1); // url → putStream
   });
 
+  it('REFUSES a store that returns a handle without draining the stream', async () => {
+    // `byteLength` is read after `putStream` resolves, and it is the number ADR-0044's `Range` gate is later
+    // validated against — so a store that published early would report a short count for a truncated object
+    // and the durable part would carry a lie. The `putStream` contract does not spell full consumption out,
+    // so this checks rather than trusts.
+    const { store } = makeStubStore();
+    const lazy: MediaStore = {
+      ...store,
+      putStream: async (chunks) => {
+        const iterator = chunks[Symbol.asyncIterator]();
+        await iterator.next(); // one chunk, then publish anyway
+        return `media://sha256-${'b'.repeat(64)}`;
+      },
+    };
+    await expect(
+      deInlineMedia(
+        [
+          {
+            type: 'media',
+            mimeType: 'image/png',
+            source: { kind: 'url', url: 'https://x.example/a.png' },
+          },
+        ] as unknown as ContentPart[],
+        lazy,
+        { streamUrl: () => asyncChunks([new Uint8Array([1]), new Uint8Array([2])]) },
+      ),
+    ).rejects.toThrow(/without consuming the whole media stream/);
+  });
+
   it('still hard-fails a mimeType-less url part EVEN WITH a fetch hook (nothing to content-address)', async () => {
     const { store, puts } = makeStubStore();
     let fetchCalls = 0;

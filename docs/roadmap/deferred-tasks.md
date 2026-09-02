@@ -409,6 +409,35 @@ Severity is the review's verified rating. Check an item off in the PR that resol
       `node:failed` / `run:failed` message text, which is broader than `W5`.
       *(low · packages/core/src/engine/budget-governor.ts; security-review.md)*
 
+## Phase 2.6.5 `W5` residuals — `CR-53` ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §2, 2026-09-02)
+
+> `CR-53` closed its INGEST half: a url media body now streams from the network into the store under a size
+> ceiling, an idle deadline and the run `AbortSignal`, and `put` is reserved for sub-ceiling bodies. Three
+> clauses of its own acceptance did not land. Named here rather than left inside a closed checkbox.
+
+- [ ] **The ADAPTER still returns whole base64 for generated media.** `packages/llm` is untouched by
+      `CR-53`: Imagen and OpenAI image output return `{ kind: 'base64', data }`, and only Veo's `url`
+      fallback arm streams. The defect text — "audio and video responses are read into a full buffer and
+      converted to base64" — describes the adapter path, so the common generative case still pays it.
+      Closing it needs a download-lease shape on the `generateMedia` seam.
+      *(medium · packages/llm/src/adapters/gemini.ts, openai.ts; ADR-0089 §2, `CR-53`)*
+- [ ] **DELIVERY is still whole-buffered.** `resolveForEgress` does `get(handle)` then base64-encodes the
+      whole object, and `readRange` slices a fully-read buffer — the third buffering site ADR-0089's own
+      Context names, and the only one on the path a provider re-upload takes. Ingest streams; delivery does
+      not, so "end to end" is true of one direction.
+      *(medium · packages/db/src/media-store.ts; ADR-0043 §2, ADR-0089 §2)*
+- [ ] **No test measures peak MEMORY.** The acceptance says "a large-media test asserts peak memory stays
+      bounded". What ships counts what the source produced and asserts it stops at the bound — honest, and a
+      real property, but it proves the transfer is cut off rather than that the resident set is bounded. The
+      mutation that would close it: a harness sampling RSS inside the body generator, in a separate process,
+      comparing the streamed path against `readBounded`.
+      *(low · packages/db/src/media-egress.test.ts; `CR-53` acceptance)*
+- [ ] **`readBounded`'s double buffer was documented, not collapsed.** ADR-0089 §2's third bullet says it is
+      collapsed; what shipped routes media around it instead and records what it costs. Bypassing is
+      arguably the better answer — but it is a different one from the Accepted text, and the text egress
+      path still pays ~2× peak. Either collapse it or amend §2.
+      *(low · packages/db/src/safe-egress.ts; ADR-0089 §2)*
+
 ## Phase 2.6.5 `W3` residuals (PR #86, merged 2026-08-30)
 
 The PR #86 review returned 18 findings; an independent verification round reproduced or refuted each. Seven

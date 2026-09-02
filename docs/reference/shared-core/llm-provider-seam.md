@@ -535,11 +535,13 @@ managed mode) are recorded in the ADR — this section is the dry shape referenc
   cancel→abort→terminal sweep; failed→`content_filter`), and the async adapters implement it — **OpenAI/Sora**
   (`videos.create` → an opaque `jobId`, `pollMediaJob` → `videos.retrieve`/`downloadContent` → base64, 1.AH A3)
   and **Gemini/Veo** (`models.generateVideos` → an operation, `pollMediaJob` → `operations.getVideosOperation`
-  → inline `videoBytes` base64 OR a re-hostable `url` source the engine de-inlines via `fetchMediaBytes`,
+  → inline `videoBytes` base64 OR a re-hostable `url` source the engine de-inlines by STREAMING it into the
+  store (`MediaUrlStream` + `MediaStore.putStream`, ADR-0089 §2 — never `fetchMediaBytes`, which whole-buffers),
   1.AH A4). The opaque jobId reversibly encodes the vendor id/op-name (`rlv-mediajob:1:<base64url(id)>`, the
   shared `encodeMediaJobId`/`decodeMediaJobId`) so a cold-process re-attach resolves it statelessly (ADR-0045
-  §7). The remaining work is **1.AH host-wiring**: the per-model `media_surface` lookup, the `MediaUrlFetch`
-  re-host hook (a Veo `url` result needs it end-to-end), and verified generative pricing rows.
+  §7). The remaining work is **1.AH host-wiring**: the per-model `media_surface` lookup and verified
+  generative pricing rows. The re-host hook itself LANDED in `W5`/`CR-53`: a `url` carrier takes
+  `MediaUrlStream`, and a `url` with no streaming hook wired is REFUSED rather than silently inlined.
 
   ```ts
   // Seam shape (A5; ADR-0045) — behavior WIRED at 1.AG (sync generateMedia Section C, async poll loop Section D).

@@ -273,3 +273,18 @@ product with no remedy, which is not a stricter cap, it is an outage.
 - `W5` grows: the rate projection and the `models pricing` fields are a CLI/DB surface addition inside a
   correctness wave. Accepted deliberately — the alternative is a refusal with no remedy, and the phase's own
   acceptance for `CR-55` already asks for the media rates to be carried through the overlay path.
+
+## Amendment — 2026-09-02 (implementation of §2)
+
+§2's third bullet says "`readBounded`'s double buffer is collapsed". **It was not.** What shipped adds
+`streamBounded` beside `readBounded` and routes media around the buffering one; `readBounded` keeps its ~2×
+peak, now documented at its definition, and the text egress path still pays it. Bypassing is arguably the
+better answer — collapsing `readBounded` would have changed a primitive every non-media egress caller depends
+on, inside a wave whose subject is media — but it is a different answer from the one recorded above, so it is
+recorded here rather than quietly assumed. The remaining half is a residual in
+[deferred-tasks.md](../roadmap/deferred-tasks.md), not a closed line.
+
+Two further clauses of `CR-53`'s acceptance are open and named there for the same reason: the **adapter** still
+returns whole base64 for generated media (`packages/llm` is untouched, so only the `url` carrier streams), and
+**delivery** (`resolveForEgress` / `readRange`) still materializes a whole object. §2's decision — carrier
+decides, and a `url` with no streaming hook is refused — landed in full; its reach is one direction, not both.

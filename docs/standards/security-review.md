@@ -167,8 +167,9 @@ A chat-only relaxation of any rule here is a security violation, not a feature.
 > config tweak.
 
 There are **four** outbound-URL paths (the fourth — the multimodal media `url` carrier — is now wired
-host-side via [ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)'s `fetchMediaBytes`;
-see the last bullet), and they share **one** vetted SSRF range-primitive — never a second hand-rolled parser.
+host-side via [ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)'s media egress —
+`streamMediaBytes` for a media body, `fetchMediaBytes` for the rest; see the last bullet), and they share
+**one** vetted SSRF range-primitive — never a second hand-rolled parser.
 The **shared** rule (what every path runs through the one primitive) is the **range block**: reject
 private/loopback/link-local/metadata ranges — `127.0.0.0/8`, `::1`, `10/8`, `172.16/12`, `192.168/16`,
 `100.64/10` (CGNAT), `169.254/16` incl. the cloud metadata IP `169.254.169.254` (and the IPv6 forms that embed
@@ -211,9 +212,14 @@ is therefore **narrowed to a local, opted-in endpoint** rather than left on a fl
   [ADR-0029](../decisions/0029-tool-policy-hardening.md) for the rationale.
 - **Media `url` carrier (multimodal — [ADR-0031](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) A7 / [ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)) — a fourth path, now wired host-side.**
   A media `url` source (a provider-returned output URL re-hosted to a handle, or a user-supplied input URL) is
-  fetched through the **host** `fetchMedia` port — `@relavium/db`'s **`fetchMediaBytes`**, the one vetted
-  SSRF primitive (DNS-resolve → validate-every-IP → connect-by-validated-IP → re-validate per redirect), never an
-  adapter and never a second parser. The CLI host wires it with **no local-endpoint policy at all** — the
+  fetched through the **host** media-egress port — `@relavium/db`'s **`streamMediaBytes`**, which writes the
+  body straight into the store under a size ceiling, an idle deadline and the run `AbortSignal`
+  ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §2), never an adapter and never a second
+  parser. It is not a second primitive: it shares `connectValidated` with its whole-buffer twin
+  `fetchMediaBytes` (DNS-resolve → validate-every-IP → connect-by-validated-IP → re-validate per redirect), so
+  there is still exactly one place that decides whether an address may be reached. **A media `url` with no
+  streaming hook wired is REFUSED**, not quietly whole-buffered — the fallback that would have re-opened the
+  unbounded read does not exist. The CLI host wires it with **no local-endpoint policy at all** — the
   default-deny posture, which [ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md) §4 expresses as an
   ABSENT `localEndpoint` rather than the old `allowPrivate: false` boolean, so there is no flag a later edit
   can flip to "private is fine, anywhere"; the engine owns the

@@ -645,15 +645,27 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
   });
 
   it('fails the run (no leak) when the media-egress port THROWS on a url output (D9 fetch failure)', async () => {
-    // The third D9 branch: a fetchMedia hook IS wired but rejects (an SSRF block / network error / size
-    // overrun). The rejection propagates through deInlineMedia to #emitDurable's catch → one run:failed; the
-    // url + the failure reason stay out of every delivered + persisted event (secret-free, I3).
+    // The third D9 branch: an egress hook IS wired but fails (an SSRF block / network error / size overrun).
+    // The failure propagates through deInlineMedia to #emitDurable's catch → one run:failed; the url + the
+    // reason stay out of every delivered + persisted event (secret-free, I3).
+    //
+    // The hook is `streamMedia`, not `fetchMedia`. Since ADR-0089 §2 the url path takes the STREAMING port,
+    // so a `fetchMedia`-only host is refused BEFORE any hook runs — this test would have passed with a
+    // RESOLVING hook, proving nothing about the branch its title names.
+    let streamCalls = 0;
     const { store: mediaStore, puts } = stubMediaStore();
     const runStore = new InMemoryRunStore();
     const host = createInMemoryHost({
       store: runStore,
       mediaStore,
-      fetchMedia: () => Promise.reject(new Error('blocked_host')),
+      streamMedia: () => {
+        streamCalls += 1;
+        return {
+          [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+            return { next: (): Promise<never> => Promise.reject(new Error('blocked_host')) };
+          },
+        };
+      },
     });
     const urlPart = {
       type: 'media' as const,
@@ -665,6 +677,7 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
         workflow: workflow(SEQUENTIAL),
       }),
     );
+    expect(streamCalls).toBe(1); // the hook really ran — the failure IS the branch, not a refusal upstream
     expect(terminalsIn(events)).toHaveLength(1);
     expect(terminalsIn(events)[0]?.type).toBe('run:failed');
     expect(puts).toHaveLength(0); // the fetch failed before any put
