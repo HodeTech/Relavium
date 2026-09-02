@@ -280,7 +280,7 @@ to correct.
 | `CR-40` | made (forward signal + deadline) · ✅ closed 2026-09-01 | [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1 | no | hostile MCP |
 | `CR-41` | made 2026-08-31 (full pinning on `http`/`sse`; a **remote `websocket` is refused at admission**; a redirect is refused, not followed; the local opt-in is ONE bound policy) | [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §2–§4 | no | hostile MCP |
 | `CR-42` | made 2026-08-31 — **256** tools/server · **8 KiB** description · **1 MiB** discovery/server · **4 KiB** schema string · **256 B** property name · **1 MiB** result text · **4 MiB** per `http`/`sse` message. Transport-level (pre-parse, memory) and application-level (post-parse, admission) are separate guarantees; a local transport has only the second, and its bound is the consent gate | [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §5–§6 | no | hostile MCP |
-| `CR-50` | made 2026-09-02 (complete it; handle-only tool + bytes on a marked synthesized `user` message over the media-input rail) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1 | yes | media bytes |
+| `CR-50` | made 2026-09-02 (complete it; handle-only tool + bytes on a marked synthesized `user` message over the media-input rail) · ✅ DELIVERY closed 2026-09-02; the host delegate + session-scope producer are recorded residuals | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1 | yes | media bytes |
 | `CR-51` | made (gate on model-level capability — `toolCall`/`attachment` join `requestSupportReason`, so the chain pre-skips for free and the adapter refuses; `temperature`/`structuredOutput` stay withheld knobs) · ✅ closed 2026-09-02 | — | no | — |
 | `CR-52` | made 2026-09-02 · ✅ closed 2026-09-02 (pull [ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md)'s deferral forward — an optional `signature` on the canonical `tool_call` part + `tool_call_end`, with a signature-less durable arm; the ADR-0089 §3 sidecar proved unbuildable) | [ADR-0090](../../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md), superseding [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §3 | no | — |
 | `CR-53` | made · ✅ INGEST closed 2026-09-02 (`MediaUrlStream` + `MediaStore.putStream?` + an idle-deadlined, cancellable body; a url with no streaming hook REFUSED). The adapter-side base64 and the `resolveForEgress` delivery half are recorded residuals | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §2 | no | media bytes |
@@ -1602,7 +1602,7 @@ four could not fail at all, each stopping at a seam one layer above the thing it
 
 ## W5 — Media correctness
 
-### CR-50 — `read_media` does not work end to end · High · **decided 2026-09-02 ([ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1)**
+### CR-50 — `read_media` does not work end to end · High · ✅ DELIVERY closed 2026-09-02 (host wiring recorded)
 The builtin returns a base64 media part, the registry places generic output into the tool result, and the LLM
 message schema explicitly forbids raw media bytes there. The canonical alternative looked like the handle-only
 `tool_result.media` attachment — but review found nothing can deliver it: the chain's egress re-materialization
@@ -1617,6 +1617,26 @@ it for. No seam shape changes.
 **Fix + acceptance.** An end-to-end test per provider proves a `read_media` call reaches the model as media.
 The synthesized message asserts its engine-authored preamble (it must never present as the user's own words),
 and a test pins that the tool exposes no range parameters.
+
+**What landed (2026-09-02).** All three acceptance clauses, plus the piece the ADR implies but does not
+name — the refusal. `read_media` takes a handle only (`.strict()`, so a range is REJECTED, not ignored),
+answers with a text descriptor, and hands the engine a handle-only attachment over a private-symbol envelope
+split at the dispatch boundary, so `output_mapping`, bounding, the spill and the durable event never see it.
+The turn loop appends a marked `user` message after the tool result. Per-provider proof lives in
+`packages/llm/src/read-media-delivery.test.ts` (Anthropic, OpenAI, Gemini — all three redden when the fixture
+is reverted to `tool_result.media`, which is the defect ADR-0089 §1 describes); the producing half is pinned
+in `agent-turn.test.ts` and break-verified against three separate mutations. Because the bytes ride the
+ordinary media-INPUT rail, a model with no image input **refuses the turn** rather than reading a descriptor
+for something it never got — `CR-51`'s gate doing the work, at no extra cost.
+
+**What did NOT land, and why it is a producer problem rather than an omission.** The defect text also names
+"production chat does not wire the media-read scope". It still does not, and wiring it now would be worse
+than leaving it: **nothing anywhere creates a `session`- or `workspace`-scope `media_references` row**, and
+`describe` deliberately excludes the `run`-scope rows (ADR-0044 §1 — a run-lifetime reference never grants
+read). A wired delegate would therefore answer every call `unknown media handle`. The CLI has no producer
+either: `read_file` fail-closes on a binary file, and `@`-mention injects text. So the honest state is
+**fail-closed by absence of the delegate**, and the missing piece is a producer plus a session-scope
+reference — recorded in [deferred-tasks.md](../deferred-tasks.md), not implied by a checked box.
 
 ### CR-51 — Model-level tool/attachment capability is not enforced · High · ✅ closed 2026-09-02
 The catalog carries `toolCall` and `attachment` metadata, but runtime gates on the provider-wide flags and the

@@ -409,6 +409,37 @@ Severity is the review's verified rating. Check an item off in the PR that resol
       `node:failed` / `run:failed` message text, which is broader than `W5`.
       *(low · packages/core/src/engine/budget-governor.ts; security-review.md)*
 
+## Phase 2.6.5 `W5` residuals — `CR-50` ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §1, 2026-09-02)
+
+> `CR-50` closed its DELIVERY half: a `read_media` call now reaches the model as media on all three
+> providers, over a marked engine-synthesized `user` message. What remains is a **producer**, not a wire.
+
+- [ ] **Nothing creates a `session`/`workspace` media reference, so `read_media` can authorize nothing.**
+      `MediaReferencePort` records only `run`-scope rows, and `describe` deliberately excludes those
+      (ADR-0044 §1 — a run-lifetime reference never grants read). Wiring the host delegate today would give
+      the model a tool that answers `unknown media handle` to every call, which is worse than the current
+      fail-closed absence. Closing it needs a place where a handle ENTERS a session or workspace and a
+      reference is recorded there — the natural home is an `AgentSession` de-inline choke point, which the
+      session does not have at all today (the workflow engine's is in `engine.ts`).
+      *(medium · packages/core/src/engine/agent-session.ts, packages/db/src/media-reference-store.ts;
+      ADR-0042 §3-4, ADR-0044 §1, `CR-50`)*
+- [ ] **The CLI chat has no media producer either.** `read_file` fail-closes on a binary/media file (the
+      durable-handle arm is unwired in `apps/cli/src/engine/tool-host/fs.ts`) and `@`-mention injects text,
+      so even with the two items above a chat session would have no handle to read. These three close
+      together or not at all.
+      *(medium · apps/cli/src/engine/tool-host/fs.ts, apps/cli/src/chat/session-host.ts; `CR-50`)*
+- [ ] **`MediaReadAccess.readRange` now has no engine caller.** `CR-50` removed the tool's byte delivery, so
+      the delegate's `readRange` arm and `validateByteRange` are exercised only by their own unit tests until
+      the 1.AH desktop `read_media(ref)` display command lands. Retained deliberately (ADR-0089 §1 names that
+      command as the caller) and re-homed in [testing.md](../standards/testing.md) as an OPEN acceptance
+      criterion — recorded here so "wired but dead" is a known state rather than a discovery.
+      *(low · packages/core/src/tools/types.ts; ADR-0089 §1)*
+- [ ] **A signature Gemini attaches to a `text` or `inlineData` part is still dropped.**
+      [ADR-0090](../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md)'s named deferral:
+      neither `text` nor `media` has a field for a continuation token, and the streaming fold flattens text
+      and loses part order. The failure there is degraded quality, not a rejected request.
+      *(low · packages/llm/src/adapters/gemini.ts; ADR-0090 Scope)*
+
 ## Phase 2.6.5 `W5` residuals — `CR-53` ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §2, 2026-09-02)
 
 > `CR-53` closed its INGEST half: a url media body now streams from the network into the store under a size

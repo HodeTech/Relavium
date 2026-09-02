@@ -94,6 +94,7 @@ const echoRegistry: ToolRegistry = {
     const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'TOOL-OK' };
     return Promise.resolve({
       output: 'TOOL-OK',
+      mediaAttachments: [],
       toolResult: markUntrusted(result),
       truncated: false,
       events: {
@@ -281,6 +282,7 @@ describe('AgentSession — the effect correlation advances with the turn (ADR-00
         };
         return {
           output: 'TOOL-OK',
+          mediaAttachments: [],
           toolResult: markUntrusted(result),
           truncated: false,
           events: {

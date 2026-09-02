@@ -8,16 +8,11 @@
  * until the shared SSRF primitive lands (1.AE) — i.e. their host capability is simply not wired yet.
  */
 
-import {
-  type EffectTier,
-  MEDIA_HANDLE_PATTERN,
-  type MediaPart,
-  scopeSetIncludes,
-  validateByteRange,
-} from '@relavium/shared';
+import { type EffectTier, MEDIA_HANDLE_PATTERN, scopeSetIncludes } from '@relavium/shared';
 import { z } from 'zod';
 
 import { ToolArgsInvalidError, ToolPolicyError, ToolUnavailableError } from './errors.js';
+import { attachMedia, type WithMediaAttachment } from './media-attachment.js';
 import {
   type EgressCapability,
   type FsCapability,
@@ -506,31 +501,34 @@ const notifyTool = defineBuiltin({
 const readMediaTool = defineBuiltin({
   id: 'read_media',
   description:
-    'Read a produced/received media handle (optionally a byte range) and return it inline for the model.',
+    'Read a produced/received media handle. Returns a short descriptor; the media itself is attached to the conversation for you to look at.',
   args: z
     .object({
       // Structural validation at the engine-pure policy layer: a malformed handle is rejected at parse
       // (a clear invalid_args on `handle`) rather than only at the host describe() (unknown_handle).
       handle: z.string().regex(MEDIA_HANDLE_PATTERN, 'must be a media://sha256-<64hex> handle'),
-      start: z.number().int().nonnegative().optional(),
-      end: z.number().int().nonnegative().optional(),
     })
+    // NO `start`/`end` (`CR-50`, ADR-0089 §1). A byte range had nowhere to go: the delivery rail is a
+    // top-level media part, which is whole-handle by construction, and a range would have to be written
+    // back as a NEW content-addressed handle — a store write plus a GC reference, to serve a caller that
+    // cannot use bytes 100–200 of a PNG. `.strict()` makes the removal enforced rather than advertised:
+    // a model that sends `start` now gets a typed `invalid_args` instead of a silently ignored argument.
     .strict(),
   llmVisibleParams: {
     type: 'object',
-    properties: {
-      handle: { type: 'string' },
-      start: { type: 'integer', minimum: 0 },
-      end: { type: 'integer', minimum: 0 },
-    },
+    properties: { handle: { type: 'string' } },
     required: ['handle'],
     additionalProperties: false,
   },
   policy: MEDIA_POLICY,
-  // Engine-pure byte-delivery gate (ADR-0044 §1): scope-set authz → Range validation → host readRange.
-  // The MediaStore + media_references access is the injected `ctx.mediaRead` delegate (NOT a ToolHost arm);
-  // the host returns an in-flight base64 source, so this dispatch never touches raw bytes.
-  dispatch: async (args, _host, ctx): Promise<MediaPart> => {
+  // Engine-pure authorization gate (ADR-0044 §1): scope-set membership, then a metadata lookup. The
+  // MediaStore + media_references access is the injected `ctx.mediaRead` delegate (NOT a ToolHost arm).
+  //
+  // The result is a short TEXT descriptor and the bytes ride an ATTACHMENT (ADR-0089 §1): a handle-only
+  // media part the turn loop delivers on a synthesized `user` message, where the chain's egress
+  // re-materialization resolves it and every adapter already knows how to lower it. This dispatch never
+  // touches raw bytes at all — it does not read them, so there is nothing for the I3 boundary to redact.
+  dispatch: async (args, _host, ctx): Promise<WithMediaAttachment<string>> => {
     const access = ctx.mediaRead;
     const requesting = ctx.requestingScope;
     if (access === undefined || requesting === undefined) {
@@ -540,7 +538,7 @@ const readMediaTool = defineBuiltin({
     if (info === undefined) {
       throw new ToolArgsInvalidError('read_media', ['handle'], 'read_media: unknown media handle');
     }
-    // Authz FIRST (before any byte read): scope-set membership, never owner-equality / sha256-knowledge.
+    // Authz FIRST (before anything is delivered): scope-set membership, never owner-equality / sha256-knowledge.
     if (!scopeSetIncludes(info.allowedScopes, requesting)) {
       throw new ToolPolicyError(
         'read_media',
@@ -548,31 +546,10 @@ const readMediaTool = defineBuiltin({
         'read_media: the requesting scope may not read this media handle',
       );
     }
-    // A zero-byte handle has no valid inclusive range; a whole-handle read returns the HANDLE source (the
-    // schema-valid representation of empty content — `{ kind:'base64', data:'' }` would violate the
-    // base64 `nonEmptyString` contract and break deInlineMedia's empty-decode) rather than tripping the
-    // fail-closed check on the default `end = byteLength - 1 = -1` (1.AF off-by-one). An EXPLICIT range on
-    // a 0-byte handle still falls through to validateByteRange and is correctly rejected.
-    if (info.byteLength === 0 && args.start === undefined && args.end === undefined) {
-      return {
-        type: 'media',
-        mimeType: info.mimeType,
-        source: { kind: 'handle', ref: args.handle },
-      };
-    }
-    // Whole-handle when no range is given; else validate the inclusive [start,end] against the durable
-    // byteLength (the engine-pure policy — fail-closed on a bad/out-of-bounds range before the host read).
-    const range = { start: args.start ?? 0, end: args.end ?? info.byteLength - 1 };
-    const checked = validateByteRange(range, info.byteLength);
-    if (!checked.ok) {
-      throw new ToolArgsInvalidError(
-        'read_media',
-        ['start', 'end'],
-        `read_media: ${checked.reason}`,
-      );
-    }
-    const source = await access.readRange(args.handle, checked.range, ctx.signal);
-    return { type: 'media', mimeType: info.mimeType, source };
+    return attachMedia(
+      `${info.mimeType}, ${info.byteLength} bytes, ${args.handle} — attached below.`,
+      [{ type: 'media', mimeType: info.mimeType, source: { kind: 'handle', ref: args.handle } }],
+    );
   },
 });
 

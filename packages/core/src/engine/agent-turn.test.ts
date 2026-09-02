@@ -1,13 +1,14 @@
 import { LlmProviderError, makeLlmError } from '@relavium/llm';
 import type {
   CapabilityFlags,
+  LlmMessage,
   LlmProvider,
   LlmRequest,
   LlmResult,
   ProviderId,
   StreamChunk,
 } from '@relavium/llm';
-import type { ContentPart } from '@relavium/shared';
+import type { ContentPart, DurableMediaPart } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { ADMISSION_CEILINGS } from '../limits.js';
@@ -251,7 +252,7 @@ describe('an unpriced MODALITY holds its reservation conservatively (ADR-0089 §
         { type: 'text_delta', text: 'ok' },
         {
           type: 'stop',
-        stopReason: 'stop',
+          stopReason: 'stop',
           // The real shape: a token-based provider reports audio as a raw token COUNT, which no per-second
           // rate can price — so the model prices for tokens and not for this.
           usage: {
@@ -327,6 +328,7 @@ function stubRegistry(handler?: (call: ToolCallPart) => ToolDispatchOutcome): To
       const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'OK' };
       return Promise.resolve({
         output: 'OK',
+        mediaAttachments: [],
         toolResult: markUntrusted(result),
         truncated: false,
         events: {
@@ -451,6 +453,7 @@ describe('runAgentTurn — CR-30: the producer awaits between chunks (ADR-0036)'
         return {
           output: 'OK',
           truncated: false,
+          mediaAttachments: [],
           toolResult: markUntrusted({
             type: 'tool_result' as const,
             toolCallId: call.id,
@@ -755,6 +758,7 @@ describe('runAgentTurn — tool loop', () => {
       const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'OK' };
       return {
         output: 'OK',
+        mediaAttachments: [],
         toolResult: markUntrusted(result),
         truncated: false,
         events: {
@@ -788,6 +792,7 @@ describe('runAgentTurn — tool loop', () => {
       const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'OK' };
       return {
         output: 'OK',
+        mediaAttachments: [],
         toolResult: markUntrusted(result),
         truncated: false,
         events: {
@@ -830,6 +835,7 @@ describe('runAgentTurn — tool loop', () => {
         const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'OK' };
         return {
           output: 'OK',
+          mediaAttachments: [],
           toolResult: markUntrusted(result),
           truncated: false,
           events: {
@@ -986,6 +992,7 @@ describe('runAgentTurn — tool loop', () => {
       const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'OK' };
       return {
         output: 'OK',
+        mediaAttachments: [],
         toolResult: markUntrusted(result),
         truncated: false,
         events: {
@@ -1047,6 +1054,7 @@ describe('runAgentTurn — tool loop', () => {
       const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'OK' };
       return {
         output: 'OK',
+        mediaAttachments: [],
         toolResult: markUntrusted(result),
         truncated: false,
         events: {
@@ -1172,6 +1180,7 @@ describe('runAgentTurn — tool loop', () => {
       const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'OK' };
       return {
         output: 'OK',
+        mediaAttachments: [],
         toolResult: markUntrusted(result),
         truncated: false,
         events: {
@@ -1711,5 +1720,165 @@ describe('codeForLlmError — the `protocol` mapping (ADR-0082 §9)', () => {
     expect(foldRetryable(timeout)).toBe(true); // neither scope committed
     expect(foldRetryable({ ...timeout, contentCommitted: true })).toBe(false); // this stream
     expect(foldRetryable(timeout, true)).toBe(false); // an earlier round of this turn
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------ *
+ * `CR-50` / ADR-0089 §1 — a media-answering tool's bytes ride a synthesized `user` message.
+ * ------------------------------------------------------------------------------------------------ */
+
+describe('media attachments are delivered on a synthesized user message (`CR-50`)', () => {
+  const HANDLE = `media://sha256-${'a'.repeat(64)}`;
+  const ATTACHMENT: DurableMediaPart = {
+    type: 'media',
+    mimeType: 'image/png',
+    source: { kind: 'handle', ref: HANDLE },
+  };
+
+  /** Caps that accept an image INPUT — what a model must declare to receive the attachment at all. */
+  const IMAGE_INPUT_CAPS: CapabilityFlags = {
+    ...CAPS,
+    media: {
+      input: { image: true, audio: false, video: false, document: false },
+      outputCombinations: [['text']],
+      surface: 'chat',
+    },
+  };
+
+  /** A scripted provider that also records the messages it was handed on each call. */
+  function capturingProvider(
+    scripts: StreamChunk[][],
+    supports: CapabilityFlags = IMAGE_INPUT_CAPS,
+  ): {
+    provider: LlmProvider;
+    sent: LlmMessage[][];
+  } {
+    const sent: LlmMessage[][] = [];
+    const inner = scriptedProvider('anthropic', scripts);
+    return {
+      sent,
+      provider: {
+        ...inner,
+        supports,
+        stream: (req, key) => {
+          sent.push([...req.messages]);
+          return inner.stream(req, key);
+        },
+      },
+    };
+  }
+
+  /** A registry whose one tool answers with a text descriptor plus a handle-only media attachment. */
+  function mediaRegistry(): ToolRegistry {
+    return stubRegistry((call) => ({
+      output: `image/png, 5 bytes, ${HANDLE} — attached below.`,
+      mediaAttachments: [ATTACHMENT],
+      truncated: false,
+      toolResult: markUntrusted({
+        type: 'tool_result' as const,
+        toolCallId: call.id,
+        result: `image/png, 5 bytes, ${HANDLE} — attached below.`,
+      }),
+      events: {
+        call: { toolId: 'read_media', toolInput: {} },
+        result: {
+          toolId: 'read_media',
+          success: true,
+          outputSummary: 'image/png, 5 bytes',
+          durationMs: 1,
+        },
+      },
+    }));
+  }
+
+  const toolTurn: StreamChunk[] = [
+    { type: 'tool_call_start', id: 'c1', name: 'read_media' },
+    { type: 'tool_call_end', id: 'c1' },
+    STOP('tool_use'),
+  ];
+
+  it('appends the media on a `user` message AFTER the tool result, in that order', async () => {
+    const { provider, sent } = capturingProvider([
+      toolTurn,
+      [{ type: 'text_delta', text: 'a cat' }, STOP()],
+    ]);
+    await runAgentTurn(baseParams(provider, { registry: mediaRegistry() }));
+
+    // The SECOND request is the continuation — it carries what the first turn produced.
+    const continuation = sent[1] ?? [];
+    const toolAt = continuation.findIndex((m) => m.role === 'tool');
+    expect(toolAt).toBeGreaterThanOrEqual(0);
+    const after = continuation[toolAt + 1];
+    // Order matters: the model reads the descriptor, then sees what it names. Reversed, the media would
+    // arrive before the result that explains it.
+    expect(after?.role).toBe('user');
+    expect(after?.content).toContainEqual(ATTACHMENT);
+  });
+
+  it('the media is a TOP-LEVEL part, not `tool_result.media` — the position nothing lowers', async () => {
+    const { provider, sent } = capturingProvider([
+      toolTurn,
+      [{ type: 'text_delta', text: 'a cat' }, STOP()],
+    ]);
+    await runAgentTurn(baseParams(provider, { registry: mediaRegistry() }));
+
+    const continuation = sent[1] ?? [];
+    const toolMessage = continuation.find((m) => m.role === 'tool');
+    const toolPart = toolMessage?.content[0];
+    // The pre-`CR-50` design put the bytes here, where the chain's re-materialization never descends and
+    // OpenAI's tool lowering filters them away. If this ever becomes non-empty again, the per-provider
+    // proof in `packages/llm/src/read-media-delivery.test.ts` is the one that shows what it costs.
+    expect(toolPart?.type === 'tool_result' ? toolPart.media : undefined).toBeUndefined();
+    const userMessages = continuation.filter((m) => m.role === 'user');
+    expect(userMessages.some((m) => m.content.some((p) => p.type === 'media'))).toBe(true);
+  });
+
+  it('carries an engine-authored preamble that never presents as the user (the `CR-13` trust rule)', async () => {
+    const { provider, sent } = capturingProvider([
+      toolTurn,
+      [{ type: 'text_delta', text: 'a cat' }, STOP()],
+    ]);
+    await runAgentTurn(baseParams(provider, { registry: mediaRegistry() }));
+
+    const continuation = sent[1] ?? [];
+    const synthesized = continuation.filter((m) => m.role === 'user').at(-1);
+    const first = synthesized?.content[0];
+    const text = first?.type === 'text' ? first.text : '';
+    // Three separate claims, because each is a different way the message could mislead: it must be
+    // attributed to Relavium, it must name the tool it answers, and it must say plainly it is not the user.
+    expect(text).toContain('[Relavium]');
+    expect(text).toContain('read_media');
+    expect(text).toContain('it is not from the user');
+    // And the preamble carries nothing model-controlled — the tool NAME is the only interpolation, so a
+    // tool result cannot smuggle text into a position that reads as authored.
+    expect(text).not.toContain(HANDLE);
+  });
+
+  it('a model that cannot take an image REFUSES the turn — the media is never silently dropped', async () => {
+    // The synthesized message is an ordinary media input, so it meets `CR-51`'s attachment gate like any
+    // other. That is the point of routing the bytes this way: a model with no image input fails loudly
+    // rather than receiving a descriptor that names an image it was never sent.
+    const { provider } = capturingProvider(
+      [toolTurn, [{ type: 'text_delta', text: 'a cat' }, STOP()]],
+      CAPS,
+    );
+    await expect(runAgentTurn(baseParams(provider, { registry: mediaRegistry() }))).rejects.toThrow(
+      /input modality 'image'/,
+    );
+  });
+
+  it('synthesizes NOTHING for an ordinary tool — no empty message in the transcript', async () => {
+    const { provider, sent } = capturingProvider([
+      toolTurn,
+      [{ type: 'text_delta', text: 'done' }, STOP()],
+    ]);
+    // `stubRegistry`'s default outcome has `mediaAttachments: []`.
+    await runAgentTurn(baseParams(provider, { registry: stubRegistry() }));
+
+    const continuation = sent[1] ?? [];
+    const toolAt = continuation.findIndex((m) => m.role === 'tool');
+    // The message after the tool result is whatever the loop would normally send — never an empty
+    // `user` turn. An extra blank message costs tokens on every tool call in every session.
+    expect(continuation[toolAt + 1]).toBeUndefined();
   });
 });

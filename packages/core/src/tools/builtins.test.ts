@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { BUILTIN_TOOLS, BUILTIN_TOOL_IDS } from './builtins.js';
 import { ToolArgsInvalidError, ToolPolicyError, ToolUnavailableError } from './errors.js';
+import { takeMediaAttachment } from './media-attachment.js';
 import type { MediaReadAccess, ToolDef, ToolDispatchContext, ToolHost } from './types.js';
 import { unwiredEffectJournal } from '@relavium/shared';
 
@@ -326,7 +327,7 @@ describe('built-in git tool hardening', () => {
   });
 });
 
-describe('read_media (1.AF/D12 — scope-set authz + Range gate)', () => {
+describe('read_media (1.AF/D12 + `CR-50` — scope-set authz, whole handle, delivered as an attachment)', () => {
   const HANDLE = `media://sha256-${'a'.repeat(64)}`;
   const SESSION: Scope = { kind: 'session', id: 's1' };
 
@@ -334,36 +335,66 @@ describe('read_media (1.AF/D12 — scope-set authz + Range gate)', () => {
     return {
       describe: () =>
         Promise.resolve({ mimeType: 'image/png', byteLength, allowedScopes: allowed }),
-      readRange: (_handle, range) =>
-        Promise.resolve({ kind: 'base64', data: `B${range.start}-${range.end}` }),
+      readRange: () => Promise.reject(new Error('read_media must not deliver bytes itself')),
     };
   }
   function mediaCtx(requestingScope: Scope, mediaRead: MediaReadAccess): ToolDispatchContext {
     return { ...ctx, requestingScope, mediaRead };
   }
 
-  it('returns the media inline (whole-handle default) when the scope is in allowedScopes', async () => {
+  it('answers with a text descriptor and attaches the handle as media (ADR-0089 §1)', async () => {
     const t = tool('read_media');
     const out = await t.dispatch(
       t.parseArgs({ handle: HANDLE }),
       {},
       mediaCtx(SESSION, access([SESSION], 5)),
     );
-    expect(out).toEqual({
-      type: 'media',
-      mimeType: 'image/png',
-      source: { kind: 'base64', data: 'B0-4' },
-    });
+    const { value, media } = takeMediaAttachment(out);
+    // The model-facing RESULT is text — mime, size, handle. No bytes, so nothing for the I3 boundary
+    // (`outputSummary` / the spill / the durable event) to redact after the fact.
+    expect(value).toBe(`image/png, 5 bytes, ${HANDLE} — attached below.`);
+    expect(media).toEqual([
+      { type: 'media', mimeType: 'image/png', source: { kind: 'handle', ref: HANDLE } },
+    ]);
   });
 
-  it('honors an explicit inclusive byte range', async () => {
+  it('never delivers bytes itself — the attachment is a HANDLE, and `readRange` is never called', async () => {
     const t = tool('read_media');
-    const out = await t.dispatch(
-      t.parseArgs({ handle: HANDLE, start: 1, end: 3 }),
-      {},
-      mediaCtx(SESSION, access([SESSION], 10)),
+    let read = false;
+    const spy: MediaReadAccess = {
+      describe: () =>
+        Promise.resolve({ mimeType: 'image/png', byteLength: 5, allowedScopes: [SESSION] }),
+      readRange: () => {
+        read = true;
+        return Promise.resolve({ kind: 'base64', data: 'x' });
+      },
+    };
+    const { media } = takeMediaAttachment(
+      await t.dispatch(t.parseArgs({ handle: HANDLE }), {}, mediaCtx(SESSION, spy)),
     );
-    expect(out).toMatchObject({ source: { kind: 'base64', data: 'B1-3' } });
+    // The chain's egress re-materialization resolves the handle per attempt (ADR-0043 §1) — the tool does
+    // not, which is what keeps a failover/resume re-resolving from the canonical handle.
+    expect(media[0]?.source).toEqual({ kind: 'handle', ref: HANDLE });
+    expect(read).toBe(false);
+  });
+
+  it('exposes NO range parameters — `start`/`end` are rejected, not silently ignored (`CR-50`)', () => {
+    const t = tool('read_media');
+    // The arg schema is `.strict()`, so a model that sends a range gets a typed parse failure. Pinned
+    // because "we removed the parameters" is otherwise indistinguishable from "we ignore them", and the
+    // second would let a model believe it read bytes 0–99 when it received the whole object.
+    expect(() => t.parseArgs({ handle: HANDLE, start: 0, end: 3 })).toThrow();
+    expect(() => t.parseArgs({ handle: HANDLE, start: 0 })).toThrow();
+    // And the LLM-visible projection advertises only `handle` — a model cannot ask for what it will be
+    // refused for asking. (The two are separate objects; a removal from one is not a removal from both.)
+    // `toEqual`, not `toMatchObject`: an EXTRA advertised property must fail this, and toMatchObject
+    // would let `start` back into the projection without a word.
+    expect(t.llmVisibleParams).toEqual({
+      type: 'object',
+      properties: { handle: { type: 'string' } },
+      required: ['handle'],
+      additionalProperties: false,
+    });
   });
 
   it('denies (media_scope_denied) when the scope is NOT in allowedScopes', async () => {
@@ -378,7 +409,7 @@ describe('read_media (1.AF/D12 — scope-set authz + Range gate)', () => {
     expect(err).toBeInstanceOf(ToolPolicyError);
     if (err instanceof ToolPolicyError) {
       expect(err.reason).toBe('media_scope_denied'); // narrow, never an unsafe `as` cast
-      // A media SCOPE denial is refused before any byte read, so it is RECOVERABLE (Step 14) — pinned at the
+      // A media SCOPE denial is refused before any delivery, so it is RECOVERABLE (Step 14) — pinned at the
       // source (the constructor ternary), not only via the agent-turn integration test.
       expect(err.recoverable).toBe(true);
     }
@@ -396,43 +427,22 @@ describe('read_media (1.AF/D12 — scope-set authz + Range gate)', () => {
     expect(err).toBeInstanceOf(ToolArgsInvalidError);
   });
 
-  it('rejects an out-of-bounds range BEFORE any host read (fail-closed)', async () => {
-    const t = tool('read_media');
-    let read = false;
-    const spy: MediaReadAccess = {
-      describe: () =>
-        Promise.resolve({ mimeType: 'image/png', byteLength: 5, allowedScopes: [SESSION] }),
-      readRange: () => {
-        read = true;
-        return Promise.resolve({ kind: 'base64', data: 'x' });
-      },
-    };
-    const err = await rejection(() =>
-      t.dispatch(t.parseArgs({ handle: HANDLE, start: 0, end: 99 }), {}, mediaCtx(SESSION, spy)),
-    );
-    expect(err).toBeInstanceOf(ToolArgsInvalidError);
-    expect(read).toBe(false);
-  });
-
   it('is unavailable when the host wires no media-read delegate', async () => {
     const t = tool('read_media');
     const err = await rejection(() => t.dispatch(t.parseArgs({ handle: HANDLE }), {}, ctx));
     expect(err).toBeInstanceOf(ToolUnavailableError);
   });
 
-  it('forwards ctx.signal to describe() and readRange() (D13 cancellation threading)', async () => {
+  it('forwards ctx.signal to describe() (cancellation threading)', async () => {
     const t = tool('read_media');
     const signal = new AbortController().signal;
-    const seen: { describe?: unknown; readRange?: unknown } = {};
+    const seen: { describe?: unknown } = {};
     const capturing: MediaReadAccess = {
       describe: (_handle, s) => {
         seen.describe = s;
         return Promise.resolve({ mimeType: 'image/png', byteLength: 5, allowedScopes: [SESSION] });
       },
-      readRange: (_handle, range, s) => {
-        seen.readRange = s;
-        return Promise.resolve({ kind: 'base64', data: `B${range.start}-${range.end}` });
-      },
+      readRange: () => Promise.reject(new Error('must not read')),
     };
     await t.dispatch(
       t.parseArgs({ handle: HANDLE }),
@@ -440,74 +450,43 @@ describe('read_media (1.AF/D12 — scope-set authz + Range gate)', () => {
       { ...mediaCtx(SESSION, capturing), signal },
     );
     expect(seen.describe).toBe(signal);
-    expect(seen.readRange).toBe(signal);
 
     // Absent-signal branch — the optional, non-breaking forward: a ctx with no signal hands the delegate
     // `undefined` (the path most likely to silently regress if the optional param were dropped).
     seen.describe = 'unset';
-    seen.readRange = 'unset';
     // `mediaCtx` carries no `signal` (the base ctx sets none), so this is the absent-signal context — omit the
     // key rather than assign `signal: undefined` (which `exactOptionalPropertyTypes` rejects for `signal?`).
     await t.dispatch(t.parseArgs({ handle: HANDLE }), {}, mediaCtx(SESSION, capturing));
     expect(seen.describe).toBeUndefined();
-    expect(seen.readRange).toBeUndefined();
   });
 
-  it('returns a HANDLE source (schema-valid, not empty base64) for a whole-handle read of a zero-byte handle', async () => {
+  it('attaches a zero-byte handle like any other — the empty-base64 hazard is gone with the byte path', async () => {
     const t = tool('read_media');
-    let read = false;
-    const empty: MediaReadAccess = {
-      describe: () =>
-        Promise.resolve({ mimeType: 'image/png', byteLength: 0, allowedScopes: [SESSION] }),
-      readRange: () => {
-        read = true;
-        return Promise.resolve({ kind: 'base64', data: 'x' });
-      },
-    };
-    const out = await t.dispatch(t.parseArgs({ handle: HANDLE }), {}, mediaCtx(SESSION, empty));
-    // A handle source (not `{ kind:'base64', data:'' }`, which violates the base64 nonEmptyString contract).
-    expect(out).toEqual({
-      type: 'media',
-      mimeType: 'image/png',
-      source: { kind: 'handle', ref: HANDLE },
-    });
-    expect(read).toBe(false); // the empty whole-handle read short-circuits before any host read
-  });
-
-  it('still rejects an EXPLICIT range on a zero-byte handle (out of bounds, fail-closed)', async () => {
-    const t = tool('read_media');
-    const empty: MediaReadAccess = {
-      describe: () =>
-        Promise.resolve({ mimeType: 'image/png', byteLength: 0, allowedScopes: [SESSION] }),
-      readRange: () => Promise.reject(new Error('must not read')),
-    };
-    const err = await rejection(() =>
-      t.dispatch(t.parseArgs({ handle: HANDLE, start: 0, end: 0 }), {}, mediaCtx(SESSION, empty)),
+    const { value, media } = takeMediaAttachment(
+      await t.dispatch(
+        t.parseArgs({ handle: HANDLE }),
+        {},
+        mediaCtx(SESSION, access([SESSION], 0)),
+      ),
     );
-    expect(err).toBeInstanceOf(ToolArgsInvalidError);
+    // Pre-`CR-50` this needed a special case: a whole-handle read of 0 bytes would have produced
+    // `{ kind:'base64', data:'' }`, which the schema's nonEmptyString contract forbids. Delivering a
+    // handle removes the branch rather than guarding it.
+    expect(value).toBe(`image/png, 0 bytes, ${HANDLE} — attached below.`);
+    expect(media[0]?.source).toEqual({ kind: 'handle', ref: HANDLE });
   });
 
-  it('denies (media_scope_denied) a zero-byte handle when the scope is NOT granted — authz BEFORE the 0-byte short-circuit', async () => {
+  it('denies (media_scope_denied) a zero-byte handle when the scope is NOT granted — authz FIRST', async () => {
     const t = tool('read_media');
-    let read = false;
-    const empty: MediaReadAccess = {
-      describe: () =>
-        Promise.resolve({
-          mimeType: 'image/png',
-          byteLength: 0,
-          allowedScopes: [{ kind: 'session', id: 'other' }],
-        }),
-      readRange: () => {
-        read = true;
-        return Promise.resolve({ kind: 'base64', data: 'x' });
-      },
-    };
     const err = await rejection(() =>
-      t.dispatch(t.parseArgs({ handle: HANDLE }), {}, mediaCtx(SESSION, empty)),
+      t.dispatch(
+        t.parseArgs({ handle: HANDLE }),
+        {},
+        mediaCtx(SESSION, access([{ kind: 'session', id: 'other' }], 0)),
+      ),
     );
     expect(err).toBeInstanceOf(ToolPolicyError);
-    expect(err).toMatchObject({ reason: 'media_scope_denied' }); // not the empty-content short-circuit
-    expect(read).toBe(false);
+    expect(err).toMatchObject({ reason: 'media_scope_denied' });
   });
 
   it('rejects a syntactically malformed handle at parse time (engine-pure structural check)', () => {
