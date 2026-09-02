@@ -280,12 +280,12 @@ to correct.
 | `CR-40` | made (forward signal + deadline) · ✅ closed 2026-09-01 | [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1 | no | hostile MCP |
 | `CR-41` | made 2026-08-31 (full pinning on `http`/`sse`; a **remote `websocket` is refused at admission**; a redirect is refused, not followed; the local opt-in is ONE bound policy) | [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §2–§4 | no | hostile MCP |
 | `CR-42` | made 2026-08-31 — **256** tools/server · **8 KiB** description · **1 MiB** discovery/server · **4 KiB** schema string · **256 B** property name · **1 MiB** result text · **4 MiB** per `http`/`sse` message. Transport-level (pre-parse, memory) and application-level (post-parse, admission) are separate guarantees; a local transport has only the second, and its bound is the consent gate | [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §5–§6 | no | hostile MCP |
-| `CR-50` | **open** — complete the handle path, or remove the tool | — | yes | media bytes |
+| `CR-50` | made 2026-09-02 (complete it; handle-only tool + bytes on a marked synthesized `user` message over the media-input rail) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1 | yes | media bytes |
 | `CR-51` | made (gate on model-level capability) | — | no | — |
-| `CR-52` | made (pull [ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md)'s deferral forward) | ADR-0039 follow-up | no | — |
-| `CR-53` | made (bounded stream to the store) | — | no | media bytes |
+| `CR-52` | made (pull [ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md)'s deferral forward — a **per-request** sidecar, NOT a seam field) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §3 | no | — |
+| `CR-53` | made (bounded stream to the store — end-to-end: streaming fetch + `MediaStore.putStream?`, `put` narrowed to sub-ceiling) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §2 | no | media bytes |
 | `CR-54` | made (content-hashed handle at first resolution) | — | no | media bytes |
-| `CR-55` | made (missing rate ⇒ unpriced) | — | yes | — |
+| `CR-55` | made (missing rate ⇒ unpriced, on both cost paths; strict refuses; the rate path + CLI fields land with it) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §4 | yes | — |
 | `CR-60` | **open** — race semantics, or rename + correct the table | — | no | — |
 | `CR-61` | **open** — needs a JSON-Schema validator dependency | new (dependency ADR) | no | — |
 | `CR-62` | **open** — extract dependencies, or fail loudly | — | no | — |
@@ -1602,15 +1602,21 @@ four could not fail at all, each stopping at a seam one layer above the thing it
 
 ## W5 — Media correctness
 
-### CR-50 — `read_media` does not work end to end · High · **decision open**
+### CR-50 — `read_media` does not work end to end · High · **decided 2026-09-02 ([ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1)**
 The builtin returns a base64 media part, the registry places generic output into the tool result, and the LLM
-message schema explicitly forbids raw media bytes there. The canonical alternative is a handle-only attachment,
-but all three adapters deliberately drop that field, and production chat does not wire the media-read scope.
-There is no registry → turn → chain → adapter path.
-**Open decision.** Complete the handle path through the adapters, or remove the tool from the catalog until it
-works. Either is acceptable; shipping an advertised tool that cannot work is not.
-**Fix + acceptance.** An end-to-end test proves the chosen answer. If removal is chosen, a test asserts the tool
-is absent from the catalog the model sees.
+message schema explicitly forbids raw media bytes there. The canonical alternative looked like the handle-only
+`tool_result.media` attachment — but review found nothing can deliver it: the chain's egress re-materialization
+walks only top-level `media` parts and never descends into `tool_result.media`, OpenAI's `role:'tool'` lowering
+filters the message to `tool_result` parts (so anything else there is dropped), and ADR-0043 §1 forbids the
+adapter resolving a handle itself. Production chat also does not wire the media-read scope.
+**Decision (maintainer, 2026-09-02).** **Complete** the path, delivering the bytes over the *media-input* rail
+that already works on all three providers: `read_media` takes a **handle only** (no `start`/`end`), its tool
+result is a short text descriptor, and the media rides as a top-level `media` part on a **marked,
+engine-synthesized `user` message**. `tool_result.media` is left to the provider-executed case ADR-0031 #7 built
+it for. No seam shape changes.
+**Fix + acceptance.** An end-to-end test per provider proves a `read_media` call reaches the model as media.
+The synthesized message asserts its engine-authored preamble (it must never present as the user's own words),
+and a test pins that the tool exposes no range parameters.
 
 ### CR-51 — Model-level tool/attachment capability is not enforced · High
 The catalog carries `toolCall` and `attachment` metadata, but runtime gates on the provider-wide flags and the
@@ -1642,8 +1648,15 @@ Where a media rate is absent the estimator can fall to zero, the generated catal
 rate, and the DB's media-rate columns are not carried into the listing/overlay path. The governor can then treat
 a missing rate as *priced at zero* rather than *unpriced*, admitting paid image/audio/video generation under a
 strict cap and reporting `cost:updated = 0`.
-**Fix + acceptance.** Missing media rate ⇒ unpriced, never zero. Under a strict cap an unpriced media generation
-is refused. Carry the media rates through the overlay path. Break-verify by restoring the zero fallback.
+**Fix + acceptance** (refined 2026-09-02 by [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §4).
+Missing media rate ⇒ unpriced, never zero — on **both** producing paths, including the `generateMedia` path,
+which emits `cost:updated` directly and is not a `FallbackChain` attempt. Under the authored opt-in
+`strict_cost_cap` an unpriced media generation is refused, reusing the existing `BudgetExceededError` on the
+existing pre-egress path (ADR-0044 §3's "no new event or error class" holds; its "degrades to allow" remains the
+**non-strict default**). The rate path lands with it — DB media-rate columns projected into
+`ModelPricing.mediaOutputRates`, user > live > snapshot precedence, missing distinguished from a stated `0`, and
+`relavium models pricing` gaining the three media fields — because a refusal whose remedy nobody can perform is
+an outage, not a cap. Break-verify by restoring the zero fallback.
 
 ---
 

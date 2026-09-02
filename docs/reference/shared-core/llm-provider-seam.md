@@ -437,8 +437,16 @@ managed mode) are recorded in the ADR — this section is the dry shape referenc
   additionally drops the reasoning `signature` **structurally** (parsing a signed part
   through it strips the field — the ADR-0030 never-persisted rule made type-level). An
   ephemeral provider-hosted ref (Gemini `fileUri`, OpenAI `file_id`/`audio.id`) is
-  **structurally absent from every part** — it lives only in a process-scoped adapter
-  sidecar keyed by `(provider, sha256)` (ADR-0031 §Guardrails).
+  **structurally absent from every part** — it lives only in a sidecar keyed by
+  `(provider, sha256)`, owned **per-`FallbackChain` run-instance**
+  ([ADR-0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md) §4,
+  which sharpened ADR-0031 §Guardrails' looser "process-scoped adapter sidecar" wording —
+  a process-wide map would leak refs across unrelated runs). A **second, distinct** sidecar
+  holds Gemini's function-call `thoughtSignature` for continuation replay; it is keyed by
+  tool call and scoped to **one request/turn**
+  ([ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §3, decided and
+  landing in `W5`). The two hold different entities under different keys and must not be
+  merged; both are ephemeral, never persisted, and dropped on failover.
 - **The `media_start` / `media_delta` / `media_end` `StreamChunk` triad** (mirrors the
   `tool_call_*`/`reasoning_*` triads; `id` correlates). **No base64 ever rides the
   normalized stream**: `media_delta` carries `progress?` plus `partialRef?` — a
@@ -542,10 +550,16 @@ the **`persistableMediaRefine` backstop** (a tripwire — the primary guarantee 
 split plus the engine's active `deInlineMedia` pass at the one emit choke point, wired at
 1.AF). Result content is deliberately **not** ceiling-bounded: a generated image
 legitimately exceeds the inline ceiling in flight and is de-inlined at the seam return.
-The platform-free **`MediaStore`** contract (`put`/`get`/`resolveForEgress` — bytes as
-`Uint8Array`, named only by the handle string) and the **`DeInlineMedia`** transform
-signature are landed as reserved shape; implementations and the choke-point wiring are
-1.AF.
+The platform-free **`MediaStore`** contract — `put` / `get` / `resolveForEgress` /
+`readRange`, bytes as `Uint8Array`, named only by the handle string — and the
+**`DeInlineMedia`** transform are **implemented**: `@relavium/db` ships the filesystem CAS
+and an in-memory reference, and the choke-point wiring landed at 1.AF.
+[ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §2 **decides** a
+fifth method, optional **`putStream?(bytes: AsyncIterable<Uint8Array>, mimeType)`**, plus a
+streaming sibling to `MediaUrlFetch`, so a media body is never materialized whole between
+the network and the store; `put` narrows to bodies already under `INLINE_MEDIA_CEILING`
+rather than acting as a general fallback. **That pair is decided, not yet implemented — it
+lands in `W5`**; until then the whole-buffer path is what ships.
 
 ### Model discovery — the `listModels?` capability ([ADR-0064](../../decisions/0064-live-model-catalog.md))
 

@@ -574,7 +574,13 @@ so directly: these "should remain visible rather than disappear behind the green
   including a `functionCall`; the adapter drops it (`mapContent` reads only name/args) and the canonical
   `tool_call` part has no field for it, so Gemini 3 function-calling continuations cannot replay it (and can
   themselves 400). Needs a continuation-metadata carrier on the canonical `tool_call`/`reasoning` parts plus
-  adapter capture/replay. *(high · packages/llm/src/adapters/gemini.ts:193-198, packages/shared/src/content.ts:419-441; ADR-0030 follow-up)*
+  adapter capture/replay. **Superseded by [ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §3
+  (2026-09-02) and scheduled as `CR-52` in `W5`** — with the carrier decided the OTHER way: **no** field is
+  added to the canonical parts. The signature is captured into a sidecar scoped to one **request/turn** and
+  replayed on the same-provider continuation, because Gemini synthesizes tool-call ids from a per-request
+  counter and any wider scope collides across requests. This entry closes when `CR-52` lands; the sibling
+  **`redacted_thinking` opaque `data`** deferral is untouched and still open.
+  *(high · packages/llm/src/adapters/gemini.ts:193-198, packages/shared/src/content.ts:419-441; ADR-0030 follow-up)*
 - [ ] **`output_schema` deep JSON-Schema conformance** — 1.O validates an `agent` node's `output_schema`
   node-side but **parse-as-JSON only** (the seam's `responseFormat` is a request hint; a
   schema-violating-but-valid JSON output, e.g. `{"wrong":true}` for a `{ n: number }` schema, currently
