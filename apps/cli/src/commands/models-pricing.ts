@@ -206,12 +206,12 @@ function pricingJsonRecord(
     ...(mediaImageCostMicrocents === undefined ? {} : { mediaImageCostMicrocents }),
     ...(mediaAudioCostMicrocents === undefined ? {} : { mediaAudioCostMicrocents }),
     ...(mediaVideoCostMicrocents === undefined ? {} : { mediaVideoCostMicrocents }),
-    // The catalog price this override REPLACES (ADR-0071 §5) — `null` when the catalog does not price the model
-    // at all, which is the case the user tier was originally invented for. A machine consumer must be able to
-    // see the divergence for the same reason a human must: the flip removed the guard that made it impossible.
-    // …and OMITTED entirely when this invocation wrote no token or cache price at all. A media-only
-    // re-price replaces nothing in the catalog's token pricing, so reporting what it "overrides" claims
-    // a divergence that did not happen — the opposite of the transparency this field exists for.
+    // The catalog price this override REPLACES (ADR-0071 §5). A machine consumer must be able to see the
+    // divergence for the same reason a human must: the flip removed the guard that made mispricing a
+    // shipped model impossible. Three states, and each says something different — `null` when the catalog
+    // does not price the model at all (the case the user tier was invented for), the shipped numbers when
+    // it does, and ABSENT when this invocation wrote no token or cache price, because a media-only
+    // re-price replaces nothing and claiming otherwise is the opposite of the transparency this is for.
     ...(inputCostPerMtokMicrocents === undefined && cachedInputCostPerMtokMicrocents === undefined
       ? {}
       : {
