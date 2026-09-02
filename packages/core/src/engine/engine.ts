@@ -1270,6 +1270,17 @@ class RunExecution {
       // hand a resumed run the whole 4 MiB again on top of what it just restored. It is the same defect
       // `nodeDispatches` has its own seed for, one bound over.
       this.#workflowStateBytes += measureNodeOutput(id, node.output).bytes;
+      // **`CR-54`'s re-host ceiling is seeded too, and for the identical reason.** Starting it at zero made
+      // the bound "per process instance" rather than per run: a run that pinned its full allowance, parked
+      // at a gate and resumed in another process was handed the whole allowance again, so the network / CAS
+      // / disk backstop it exists to be was defeated by any checkpoint. A restored output's media parts are
+      // durable handles — already re-hosted — so they are counted from the durable form.
+      //
+      // `collectDurableMediaHandles` dedupes by handle, so N nodes that produced the SAME bytes seed 1. That
+      // under-counts the historical fetches and over-counts nothing: the seed measures the distinct objects
+      // the run is holding, which is the resource the ceiling is protecting, and erring permissive here
+      // beats refusing a resumed run work it already paid for.
+      this.#pinnedMediaParts += collectDurableMediaHandles(node.output).length;
     }
     for (const gate of cp.pendingGates) {
       this.#pendingGates.set(gate.gateId, {
@@ -3024,14 +3035,37 @@ class RunExecution {
   ): Promise<void> {
     this.#clearMediaJob(vertex.id);
     this.#emitMediaJobCost(vertex.id, job); // the lone realized cost:updated (ADR-0045 §5)
-    // The pure-media node output ({ text:'', media }) matches the SYNC generative shape exactly (so a downstream
-    // {{ outputs.x.text }} resolves to '' regardless of sync-vs-LRO) and de-inlines to a media:// handle at
-    // #emitDurable (the I3 boundary); `media` is the seam MediaPart (base64 or a re-hostable url).
+    // The pure-media node output ({ text:'', media }) matches the SYNC generative shape exactly, so a
+    // downstream {{ outputs.x.text }} resolves to '' regardless of sync-vs-LRO.
+    //
+    // **PINNED HERE, because this path does not pass through `#dispatch`** (`CR-54`). The synchronous route
+    // pins at the dispatch boundary and `#settleCompleted` relies on that — it writes `outcome.output`
+    // into the live scope verbatim. An async job re-enters at `#onOutcome` from the poll loop, so without
+    // this the raw `{ kind: 'url' }` Veo returns went into the run scope while only the durable event copy
+    // became a handle: the url was fetched twice, a downstream node read the pointer, and the node and
+    // output events carried different content addresses — under a `run:completed`. That is `CR-54`'s exact
+    // defect on the one path its own comments call the live producer.
+    let pinned: unknown;
+    try {
+      pinned = await this.#pinMediaValue({ text: '', media: [media] }, vertex.id);
+    } catch (error) {
+      // The provider already billed (the cost went out above), so the node fails rather than the run
+      // silently keeping an unpinned handle. Classified like any other pin failure.
+      await this.#onOutcome(
+        vertex,
+        {
+          kind: 'failed',
+          error: NodeMediaPinError.from(error, vertex.id, this.#abort.signal.aborted).failure,
+        },
+        job.submittedAtMs,
+      );
+      return;
+    }
     await this.#onOutcome(
       vertex,
       {
         kind: 'completed',
-        output: { text: '', media: [media] },
+        output: pinned,
         tokensUsed: { input: 0, output: 0, model: job.model },
       },
       // The job's submit time (not `now`) — so `node:completed.durationMs` is the full async wall-clock

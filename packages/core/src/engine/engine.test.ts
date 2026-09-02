@@ -1,3 +1,4 @@
+import type { MediaJobStatus } from '@relavium/llm';
 import { describe, expect, it } from 'vitest';
 
 import { collectDurableMediaHandles } from '@relavium/shared';
@@ -34,13 +35,23 @@ type Handler = (ctx: NodeExecContext) => NodeOutcome | Promise<NodeOutcome>;
 
 /** A configurable {@link NodeExecutor}; an unconfigured vertex completes with its id as the output. */
 class StubExecutor implements NodeExecutor {
-  constructor(private readonly handlers: Readonly<Record<string, Handler>> = {}) {}
+  constructor(
+    private readonly handlers: Readonly<Record<string, Handler>> = {},
+    /** Optional async media-job poll — supplied only by the LRO tests (1.AG / ADR-0045). */
+    private readonly poll?: (job: MediaJobSubmission) => Promise<MediaJobStatus>,
+  ) {}
   execute(ctx: NodeExecContext): Promise<NodeOutcome> {
     const handler = this.handlers[ctx.vertex.id];
     if (handler !== undefined) {
       return Promise.resolve(handler(ctx));
     }
     return Promise.resolve({ kind: 'completed', output: ctx.vertex.id });
+  }
+  pollMediaJob(job: MediaJobSubmission): Promise<MediaJobStatus> {
+    if (this.poll === undefined) {
+      return Promise.reject(new Error('StubExecutor: no pollMediaJob wired for this test'));
+    }
+    return this.poll(job);
   }
 }
 
@@ -53,10 +64,12 @@ function engineWith(
    * caller silently override the second argument with no compiler error.
    */
   deps?: Partial<Omit<WorkflowEngineDeps, 'host' | 'executor'>>,
+  /** The async media-job poll, for the LRO path (`#settleMediaJobDone`). */
+  poll?: (job: MediaJobSubmission) => Promise<MediaJobStatus>,
 ): WorkflowEngine {
   return new WorkflowEngine({
     host: host ?? createInMemoryHost(),
-    executor: new StubExecutor(handlers),
+    executor: new StubExecutor(handlers, poll),
     ...deps,
   });
 }
@@ -823,6 +836,51 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
       const failed = events.find((e) => e.type === 'node:failed');
       expect(failed?.type === 'node:failed' && failed.error.retryable).toBe(false);
       expect(failed?.type === 'node:failed' && failed.error.message).toContain('not retried');
+    });
+
+    it('pins an ASYNC media-job result too — the LRO path does not pass through the dispatch pin', async () => {
+      // **The path `CR-54`'s own comments call the live producer, and the one the first fix missed.** A
+      // synchronous node is pinned at the dispatch boundary and `#settleCompleted` writes `outcome.output`
+      // into the live scope verbatim on that assumption. An async job re-enters at `#onOutcome` from the
+      // poll loop, so a raw `{ kind: 'url' }` from Veo went into the scope while only the durable event
+      // copy became a handle: the url was fetched TWICE, a downstream node read the pointer, and the node
+      // and output events carried different content addresses — under a `run:completed`.
+      const { store: mediaStore } = stubMediaStore();
+      const runStore = new InMemoryRunStore();
+      const { host, fetches } = driftingHost(mediaStore, runStore);
+      let seenDownstream: unknown;
+      const engine = engineWith(
+        {
+          work: () => mediaJobOutcome({ modality: 'video', units: 4 }),
+          done: (ctx) => {
+            seenDownstream = ctx.runOutputs.get('work');
+            return { kind: 'completed', output: 'ok' };
+          },
+        },
+        host,
+        undefined,
+        () => Promise.resolve({ state: 'done', media: urlPart }),
+      );
+      const handle = engine.start({ workflow: workflow(SEQUENTIAL), inputs: {} });
+      const events: RunEvent[] = [];
+      const consume = (async (): Promise<void> => {
+        for await (const event of handle.events) events.push(event);
+      })();
+      // The park arms a poll timer; fire it so the job reaches `done`.
+      for (let i = 0; i < 300 && host.armedCount() === 0; i += 1) await Promise.resolve();
+      host.fireTimers();
+      await consume;
+
+      expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+      expect(fetches).toHaveLength(1); // ONE fetch — not one for the scope and another for the event
+      const completed = events.find((e) => e.type === 'node:completed' && e.nodeId === 'work');
+      const recorded = handleRefIn(
+        completed?.type === 'node:completed' ? completed.output : undefined,
+      );
+      // The scope and the durable record name the SAME object. A drifting host gives a different handle
+      // per fetch, so a second fetch cannot satisfy this.
+      expect(handleRefIn(seenDownstream)).toBe(recorded);
+      expect(JSON.stringify(completed)).not.toContain('media.example');
     });
 
     it('leaves a media-free output untouched — the fast path costs a scan, not a store call', async () => {
@@ -2220,6 +2278,106 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     }
     return { runId: handle.runId, gateId, lastSeq };
   }
+
+  it('SEEDS the media re-host ceiling from the checkpoint — the bound is per RUN, not per process', async () => {
+    // Without the seed the counter restarted at zero on every resume, so a run that pinned its full
+    // allowance, parked at a gate and resumed in another process was handed the whole allowance again.
+    // The network / CAS / disk backstop was therefore "per process instance", and any checkpoint defeated
+    // it. Driven at the ceiling so the assertion is the refusal itself, not an internal counter.
+    const store = new InMemoryRunStore();
+    const { store: mediaStore } = stubMediaStore();
+    let fetched = 0;
+    const mediaHost = (): ExecutionHost =>
+      createInMemoryHost({
+        store,
+        mediaStore,
+        streamMedia: () => {
+          fetched += 1;
+          const byte = fetched % 251;
+          return {
+            [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+              let done = false;
+              return {
+                next: (): Promise<IteratorResult<Uint8Array>> => {
+                  if (done) return Promise.resolve({ done: true, value: undefined });
+                  done = true;
+                  return Promise.resolve({ done: false, value: new Uint8Array([byte]) });
+                },
+              };
+            },
+          };
+        },
+      });
+    const seedUrlPart = {
+      type: 'media' as const,
+      mimeType: 'image/png',
+      source: { kind: 'url' as const, url: 'https://media.example/one.png' },
+    };
+    // The run ceiling (256) is 8× the per-NODE ceiling (32), so reaching it takes a chain of fillers —
+    // one node cannot, by construction.
+    const fillers =
+      ADMISSION_CEILINGS.mediaPartsPerRun / ADMISSION_CEILINGS.mediaPartsPerNodeOutput;
+    const fillIds = Array.from({ length: fillers }, (_, i) => `fill${i}`);
+    const chain = ['start', ...fillIds, 'g', 'after', 'out'];
+    const MEDIA_GATE = `  id: media-gate
+  nodes:
+    - { id: start, type: input }
+${fillIds.map((id) => `    - { id: ${id}, type: transform, transform: 'f' }`).join('\n')}
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: after, type: transform, transform: 'a' }
+    - { id: out, type: output }
+  edges:
+${chain
+  .slice(0, -1)
+  .map((from, i) => `    - { from: ${from}, to: ${chain[i + 1] ?? ''} }`)
+  .join('\n')}`;
+    // Each filler pins exactly one node's worth; together they spend the whole run allowance.
+    const perNode = (tag: string): unknown =>
+      Array.from({ length: ADMISSION_CEILINGS.mediaPartsPerNodeOutput }, (_, i) => ({
+        ...seedUrlPart,
+        source: { kind: 'url' as const, url: `https://media.example/${tag}-${i}.png` },
+      }));
+    const fillHandlers = Object.fromEntries(
+      fillIds.map((id) => [id, () => ({ kind: 'completed' as const, output: perNode(id) })]),
+    );
+    const engineA = engineWith(
+      {
+        ...fillHandlers,
+        g: (): NodeOutcome => ({
+          kind: 'paused',
+          gate: { gateType: 'approval', message: 'approve?' },
+        }),
+      },
+      mediaHost(),
+    );
+    const handleA = engineA.start({ workflow: workflow(MEDIA_GATE) });
+    let gateId = '';
+    for await (const event of handleA.events) {
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+    expect(gateId).not.toBe('');
+
+    // A fresh engine resumes; its first media-producing node must be refused — the allowance is spent.
+    const engineB = engineWith(
+      { after: () => ({ kind: 'completed', output: { one: seedUrlPart } }) },
+      mediaHost(),
+    );
+    const eventsB = await drain(
+      await engineB.resumeFromCheckpoint({
+        runId: handleA.runId,
+        workflow: workflow(MEDIA_GATE),
+        gateId,
+        decision: { decision: 'approved', decidedBy: 'tester' },
+      }),
+    );
+    const failed = eventsB.find((e) => e.type === 'node:failed');
+    expect(failed?.type === 'node:failed' && failed.error.message).toContain(
+      'over the run limit of',
+    );
+  });
 
   it('rehydrates a gate-parked run in a fresh engine over the same store and drives it to completion', async () => {
     const store = new InMemoryRunStore();

@@ -445,3 +445,32 @@ describe('CostTracker.record — usage bounds at the money call site (#198)', ()
     expect(tracker.cumulativeCostMicrocents).toBeGreaterThan(0);
   });
 });
+
+describe('mediaCost — a hostile rate cannot buy cap headroom (`CR-55` review)', () => {
+  const units = [
+    { modality: 'image' as const, unit: 'count' as const, units: 5, direction: 'output' as const },
+  ];
+
+  it('treats a NEGATIVE rate as unpriced, never as a discount', () => {
+    // A `history.db` row is user-writable (file permissions only, ADR-0050) and the column carries no CHECK.
+    // Unguarded, `-100 × 5` produced a cost of -500 that a strict cap read as headroom — the bypass `CR-55`
+    // exists to close, arriving through its own remedy.
+    const out = mediaCost({ ...PRICED_MEDIA, mediaOutputRates: { image: -100 } }, units);
+    expect(out.microcents).toBe(0);
+    expect(out.unpricedModalities).toEqual(['image']); // UNPRICED, so a strict cap refuses
+  });
+
+  it('treats a non-finite rate as unpriced too', () => {
+    for (const rate of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      const out = mediaCost({ ...PRICED_MEDIA, mediaOutputRates: { image: rate } }, units);
+      expect(out.microcents).toBe(0);
+      expect(out.unpricedModalities).toEqual(['image']);
+    }
+  });
+
+  it('still prices a stated ZERO — free is a price, and distinct from unpriced', () => {
+    const out = mediaCost({ ...PRICED_MEDIA, mediaOutputRates: { image: 0 } }, units);
+    expect(out.microcents).toBe(0);
+    expect(out.unpricedModalities).toEqual([]); // the distinction ADR-0089 §4 turns on
+  });
+});

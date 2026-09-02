@@ -243,7 +243,13 @@ export function mediaCost(
       continue; // nothing to charge, so nothing to price — an absent rate here is not a gap
     }
     const rate = pricing.mediaOutputRates?.[entry.modality];
-    if (rate === undefined || !unitMatchesBilledModality(entry.modality, entry.unit)) {
+    // The rate is validated where it is READ (the host's catalog projection), but this is the seam every
+    // pricing source flows through — a custom overlay, a future provider sync — so the arithmetic guards
+    // itself too. A negative or non-finite rate is treated as MISSING, never as a discount: a negative
+    // addend would give a strict cap headroom it has not got, and the whole point of `CR-55` is that the
+    // governor can tell "not priced" from "priced at nothing".
+    const usable = rate !== undefined && Number.isFinite(rate) && rate >= 0;
+    if (!usable || !unitMatchesBilledModality(entry.modality, entry.unit)) {
       // A missing rate, or a unit that does not match the model's billed one (a token-`count` audio figure
       // against a per-second rate). BOTH are the same fact for the cap: real units were produced and this
       // total does not contain their charge. Naming them is the whole of `CR-55` — the old `continue` here

@@ -213,7 +213,18 @@ function mediaRates(
   const rates: Partial<Record<MediaBilledModality, number>> = {};
   for (const [modality, userRate] of stated) {
     const resolved = userRate ?? base?.mediaOutputRates?.[modality];
-    if (resolved !== undefined) rates[modality] = resolved;
+    // **Validated at the read boundary, and a bad value is UNPRICED rather than zero.** The column is a
+    // plain SQLite `integer` with no CHECK, and `history.db` is user-writable (guarded by file permissions
+    // only — ADR-0050). A negative rate reached `mediaCost` unchecked and produced a NEGATIVE cost, which
+    // hands a strict cap fake headroom — the exact bypass `CR-55` exists to close, arriving through the
+    // remedy rather than the defect. A non-finite or unsafe-integer value corrupts the arithmetic instead.
+    //
+    // Dropping the key (rather than coercing to 0) is what makes it fail CLOSED: an absent rate is
+    // "unpriced" to `mediaCost`, so a strict cap REFUSES the call. A 0 would be a stated free price, which
+    // is the very conflation ADR-0089 §4 removed.
+    if (resolved !== undefined && Number.isSafeInteger(resolved) && resolved >= 0) {
+      rates[modality] = resolved;
+    }
   }
   return Object.keys(rates).length === 0 ? undefined : rates;
 }
