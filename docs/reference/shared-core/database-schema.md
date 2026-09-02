@@ -745,8 +745,10 @@ CREATE INDEX        idx_session_costs_session       ON session_costs (session_id
 > `session_messages` in the run [`messages`](#messages) shape family without forcing a session to decompose its parts.
 > The per-message **cost/token counters are gone** — `input_tokens`, `output_tokens` and `cost_microcents` were
 > dropped in migration 0009 (see the note above); durable money attribution lives in [`session_costs`](#session_costs),
-> which is the only table that can express a turn whose tool loop billed two models. The reasoning `signature` and inline media
-> bytes are **structurally impossible** in `content_parts` — `DurableContentPart` has no `signature` field
+> which is the only table that can express a turn whose tool loop billed two models. A provider continuation `signature` — on a `reasoning` part
+> or, since [ADR-0090](../../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md), on a
+> `tool_call` part — and inline media bytes are **structurally impossible** in `content_parts`:
+> `DurableContentPart` forks a signature-less arm for BOTH, so the persisted type has no field for either
 > and only handle-only media ([ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)/[ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)),
 > enforced at the mapper's parse boundary on both write and read.
 

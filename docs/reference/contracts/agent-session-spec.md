@@ -123,7 +123,7 @@ interface SessionMessage {
   sessionId: string;
   sequenceNumber: number;                 // monotonic per session
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: DurableContentPart[];          // the PERSISTED content union (ADR-0031): handle-only media, signature-less reasoning
+  content: DurableContentPart[];          // the PERSISTED content union (ADR-0031): handle-only media, signature-less reasoning AND `tool_call`
   modelId?: string;                       // canonical model id for an assistant turn (fallback-aware; mirrors session_messages.model_id)
   compaction?: { droppedThroughSequence: number };  // ADR-0062: present ONLY on a role:'system' compaction/trim boundary marker — the durable seq through which older messages are superseded (mirrors session_messages.compaction_dropped_through_sequence)
   timestamp: string;                      // ISO 8601
@@ -134,7 +134,7 @@ interface SessionMessage {
 > content union, not the in-flight `ContentPart`: `DurableContentPart` (owned by
 > `@relavium/shared`, see [llm-provider-seam.md](../shared-core/llm-provider-seam.md)
 > §"Seam-shape amendments (ADR-0031)") makes media handle-only and drops the reasoning
-> `signature` structurally — the engine's `deInlineMedia` pass is the in-flight→durable
+> `signature` structurally — on a `reasoning` part and, since ADR-0090, on a `tool_call` part. The engine's `deInlineMedia` pass is the in-flight→durable
 > transform. Binding on the session-persistence implementation (1.X).
 
 `SessionMessage` is **mapped to the seam's `LlmMessage` at call time, never copied** — when the
@@ -142,7 +142,7 @@ session calls a provider, the `AgentRunner` projects the persisted messages into
 shape owned by [llm-provider-seam.md](../shared-core/llm-provider-seam.md). **No vendor SDK type
 crosses the seam** ([ADR-0011](../../decisions/0011-internal-llm-abstraction.md)): both unions are
 Relavium-owned types from `@relavium/shared`, but they are **distinct by design** —
-`DurableContentPart` is the persisted form (handle-only media, signature-less reasoning), while
+`DurableContentPart` is the persisted form (handle-only media, signature-less reasoning AND `tool_call`), while
 `ContentPart` is the in-flight form `LlmMessage` carries. The projection bridges the two existing
 types (resolving durable handles for egress); it never invents a new shape.
 
@@ -229,7 +229,8 @@ reproducible and round-trips):
 - **Determinism + exclusions** — the YAML emitter (1.Z, `serializeWorkflow`; 1.L is parse-only) sorts map
   keys alphabetically and preserves array order, so `parse → serialize` is byte-stable. No `secret` value can
   appear (secrets never enter a message — [ADR-0029](../../decisions/0029-tool-policy-hardening.md)) and no
-  reasoning `signature` can appear (the transcript is `DurableContentPart`, which structurally omits it —
+  provider continuation `signature` — on a `reasoning` OR a `tool_call` part (ADR-0090) — can appear (the
+  transcript is `DurableContentPart`, which structurally omits both —
   [ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)).
 
 ## Validation and persistence

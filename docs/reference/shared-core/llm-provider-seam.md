@@ -807,9 +807,13 @@ followed by each authored `fallback_chain` entry:
 - **No failover after the first streamed content chunk:** once `stream` has
   forwarded content, a mid-stream error surfaces to the node-retry layer (1.S)
   rather than re-issuing on the next provider.
-- **Strip-on-failover (ADR-0030):** crossing to a *different* provider drops
-  every `reasoning` part (and its ephemeral `signature`) from the request before
-  re-issuing — a signature is never replayed across a provider boundary.
+- **Strip-on-failover (ADR-0030, extended by [ADR-0090](../../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md)):**
+  crossing to a *different* provider drops every `reasoning` part (and its
+  ephemeral `signature`) from the request before re-issuing. A `tool_call`'s
+  `signature` strips on the finer **(provider, model)** boundary — a token is the
+  MODEL's, and a `tool_call` part is unconditionally replayed where a `reasoning`
+  part is optional — but the **call itself survives**: it is the conversation the
+  next model still needs, so only the token goes.
 - Surface **per-attempt usage** to the injected `CostTracker` (against that
   attempt's model) so cost stays accurate across a failover, and report each
   attempt (succeeded / failed / skipped) via an `onAttempt` observer so the

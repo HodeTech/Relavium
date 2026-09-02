@@ -562,6 +562,38 @@ describe('FallbackChain — ADR-0030 strip-on-failover', () => {
     expect(call).not.toHaveProperty('signature'); // …its token does not
   });
 
+  it('strips it on a same-PROVIDER, cross-MODEL advance — the token is the MODEL\'s, not the provider\'s', async () => {
+    // `[gemini/gemini-2.5-pro → gemini/gemini-2.5-flash]` is an authorable chain, and a `tool_call` part is
+    // UNCONDITIONALLY replayed (it is the conversation) where a `reasoning` part is optional. Gemini
+    // validates thought signatures, so replaying the first model's token to the second is a 400 — the
+    // failover killing the turn it exists to save. Provider-only granularity would let it through.
+    const signedReq: LlmRequest = {
+      ...userReq,
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'tool_call', id: 'c1', name: 'get_weather', args: {}, signature: 'g3' },
+          ],
+        },
+      ],
+    };
+    const first = makeProvider({ id: 'gemini', generate: rejects('gemini', 'overloaded') });
+    const second = makeProvider({ id: 'gemini', generate: resolves('ok') });
+    const { options } = makeOptions();
+    const chain = new FallbackChain(
+      [entry(first, 'gemini-2.5-pro'), entry(second, 'gemini-2.5-flash')],
+      options,
+    );
+
+    await chain.generate(signedReq);
+
+    const forwarded = second.calls[0]?.messages.flatMap((m) => m.content) ?? [];
+    const call = forwarded.find((p) => p.type === 'tool_call');
+    expect(call).toBeDefined(); // the CALL survives…
+    expect(call).not.toHaveProperty('signature'); // …the other model's token does not
+  });
+
   it('keeps the signature for a SAME-provider retry — stripping it there would be the other bug', async () => {
     const signedReq: LlmRequest = {
       ...userReq,

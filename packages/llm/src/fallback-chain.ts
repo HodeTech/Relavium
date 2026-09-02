@@ -233,6 +233,29 @@ type Verdict = 'fatal' | 'retryable' | 'auth-refreshed' | 'advance';
  * advance so a provider-signed reasoning block never crosses a provider boundary (ADR-0030).
  */
 /**
+ * Drop every `tool_call` continuation token from a request, keeping the calls themselves (ADR-0090).
+ *
+ * Separate from {@link stripReasoningParts} because the two answer different questions. A reasoning part is
+ * DROPPED WHOLE on a provider boundary — its text is the provider's, and the next one has no use for it. A
+ * `tool_call` must SURVIVE: the call and its result are the conversation the next model still needs, and
+ * only the opaque token is meaningless (or, on Gemini, rejected) to it. Non-mutating, like its sibling; a
+ * message never empties, so no adjacent-role merge is needed.
+ */
+export function stripToolCallSignatures(req: LlmRequest): LlmRequest {
+  return {
+    ...req,
+    messages: req.messages.map((message) => ({
+      ...message,
+      content: message.content.map((part) =>
+        part.type === 'tool_call' && part.signature !== undefined
+          ? stripToolCallSignature(part)
+          : part,
+      ),
+    })),
+  };
+}
+
+/**
  * Drop a `tool_call`'s ephemeral continuation token, keeping every other field (ADR-0090).
  *
  * Rebuilt field-by-field rather than destructured-and-spread: with `exactOptionalPropertyTypes` an explicit
@@ -253,17 +276,7 @@ export function stripReasoningParts(req: LlmRequest): LlmRequest {
   const kept = req.messages
     .map((message) => ({
       ...message,
-      content: message.content
-        .filter((part) => part.type !== 'reasoning')
-        // A `tool_call`'s continuation token is the same kind of value as a reasoning signature — opaque,
-        // provider-issued, same-provider-only (ADR-0090) — so the same latch strips it on a cross-provider
-        // advance. The PART survives, unlike a reasoning part: the call and its result are the conversation
-        // the next provider still needs, and only the token is meaningless (or rejected) to it.
-        .map((part) =>
-          part.type === 'tool_call' && part.signature !== undefined
-            ? stripToolCallSignature(part)
-            : part,
-        ),
+      content: message.content.filter((part) => part.type !== 'reasoning'),
     }))
     .filter((message) => message.content.length > 0);
   // Dropping a reasoning-only message can leave two adjacent same-role messages, which strict
@@ -411,7 +424,7 @@ export class FallbackChain {
   // instance is **single-flight by contract** — one node execution's *sequential* tool loop; concurrent
   // generate/stream on the same instance would race this latch, so concurrent agent vertices each get
   // their own chain (the AgentRunner builds one per node execution — ADR-0038).
-  #lastProviderAcrossCalls: ProviderId | undefined;
+  #lastProviderAcrossCalls: string | undefined;
   /** Providers whose one-shot auth refresh has already been spent on this instance. */
   readonly #authRefreshed = new Set<ProviderId>();
   /** A provider id to attribute an all-skipped synthetic error to (the last plan entry's). */
@@ -486,7 +499,7 @@ export class FallbackChain {
       }
       throw new LlmProviderError(run.lastError ?? this.#exhaustedError(skipped));
     } finally {
-      this.#lastProviderAcrossCalls = run.lastProvider; // fold the call's latch back for the next call
+      this.#lastProviderAcrossCalls = run.lastIssuer; // fold the call's latch back for the next call
     }
   }
 
@@ -562,7 +575,7 @@ export class FallbackChain {
       }
       yield { type: 'error', error: run.lastError ?? this.#exhaustedError(skipped) };
     } finally {
-      this.#lastProviderAcrossCalls = run.lastProvider; // fold the call's latch back for the next call
+      this.#lastProviderAcrossCalls = run.lastIssuer; // fold the call's latch back for the next call
     }
   }
 
@@ -1262,19 +1275,28 @@ interface StreamAttemptState {
 class ChainRun {
   #req: LlmRequest;
   #lastProvider: ProviderId | undefined;
+  /** `provider\0model` of the last ATTEMPTED entry — the strip latch's real key (ADR-0090, `CR-52`). */
+  #lastIssuer: string | undefined;
   #attemptNumber = 0;
   lastError: LlmError | undefined;
 
   /**
-   * Seed `#lastProvider` from the chain instance's cross-call latch ([ADR-0039](../../../docs/decisions/0039-same-provider-reasoning-replay.md)):
+   * Seed the strip latch from the chain instance's cross-call one ([ADR-0039](../../../docs/decisions/0039-same-provider-reasoning-replay.md)):
    * a tool loop is a sequence of separate `generate`/`stream` calls, so the strip latch must survive
    * across them. With the seed, the first attempted entry strips this call's incoming reasoning when
    * the previous call settled on a *different* provider — closing the multi-turn cross-provider replay
    * hole a fresh-per-call latch left open.
    */
-  constructor(req: LlmRequest, seedLastProvider?: ProviderId) {
+  constructor(req: LlmRequest, seedLastIssuer?: string) {
     this.#req = req;
-    this.#lastProvider = seedLastProvider;
+    this.#lastIssuer = seedLastIssuer;
+    // Derived so `lastProvider` keeps its meaning for any consumer that only cares about the provider half.
+    this.#lastProvider = seedLastIssuer?.split('\u0000')[0] as ProviderId | undefined;
+  }
+
+  /** The `provider\0model` of the last attempted entry — folded back as the next call's seed. */
+  get lastIssuer(): string | undefined {
+    return this.#lastIssuer;
   }
 
   /** The provider of the last attempted (non-skipped) entry — the chain folds it back as the next seed. */
@@ -1300,10 +1322,30 @@ class ChainRun {
    */
   beginEntry(entry: FallbackPlanEntry): LlmRequest {
     const providerId = entry.provider.id;
+    const issuer = `${providerId}\u0000${entry.model}`;
+    // TWO latches, at deliberately different granularities.
+    //
+    // REASONING strips on a PROVIDER boundary — ADR-0039's accepted rule, unchanged. Narrowing it to the
+    // model would be a real behaviour change to an Accepted decision and belongs in its own ADR, not here.
+    //
+    // A `tool_call` SIGNATURE strips on a (provider, MODEL) boundary (`CR-52`, ADR-0090). The stricter rule
+    // is warranted because the risk profile differs: a `reasoning` part is optional in a response, while a
+    // `tool_call` part is UNCONDITIONALLY replayed — it is the conversation — so a token issued by
+    // `gemini-3-pro` rides onto an authorable `gemini-2.5-flash` rescue attempt with no boundary to catch it.
+    // Gemini validates thought signatures, so that is a `400 INVALID_ARGUMENT`: the failover killing the turn
+    // it exists to save, which is the shape `withEntryModel` was written to prevent one field over.
+    //
+    // Conservative in the other direction too: returning to an entry after a foreign hop strips a token that
+    // entry itself issued, so a continuation is LOST rather than rejected. That is the pre-`CR-52` behaviour
+    // — never worse — and closing it needs per-part issuer provenance the seam does not carry. Recorded.
     if (this.#lastProvider !== undefined && this.#lastProvider !== providerId) {
       this.#req = stripReasoningParts(this.#req);
     }
+    if (this.#lastIssuer !== undefined && this.#lastIssuer !== issuer) {
+      this.#req = stripToolCallSignatures(this.#req);
+    }
     this.#lastProvider = providerId;
+    this.#lastIssuer = issuer;
     return withEntryModel(this.#req, entry.model);
   }
 

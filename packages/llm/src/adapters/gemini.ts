@@ -546,8 +546,18 @@ function toGeminiParts(
       parts.push({ functionResponse: { name, response: toResponseObject(part.result) } });
     } else if (part.type === 'media') {
       parts.push(toGeminiMediaPart(part));
+    } else if (part.type === 'reasoning' && part.signature !== undefined && part.text.length > 0) {
+      // A SIGNED reasoning part is replayed as a thought part carrying its token (`CR-52`, the second half
+      // of ADR-0039's Gemini deferral). Gemini captures `thoughtSignature` on a thought part and expects it
+      // back on the continuation; dropping every reasoning part meant the token was captured and then
+      // discarded one function away, so a thinking-plus-tool continuation could 400 for the same reason the
+      // function-call half did. Anthropic already lowers its thinking blocks; this is the Gemini twin.
+      //
+      // Only a SIGNED part, and only one with text. An unsigned one carries no continuity obligation, so
+      // replaying it would add tokens for nothing — and the ephemerality rule still holds either way,
+      // because the chain's strip latch has already removed any reasoning that crossed a provider boundary.
+      parts.push({ text: part.text, thought: true, thoughtSignature: part.signature });
     }
-    // reasoning parts are ephemeral (ADR-0030) — dropped here, never replayed to the provider.
   }
   return parts;
 }
