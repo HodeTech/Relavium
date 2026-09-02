@@ -12,6 +12,9 @@ import type { Budget, MediaBilledModality } from '@relavium/shared';
 import type { RunEventDraft } from './event-bus.js';
 import type { GateRequest } from './node-executor.js';
 
+/** The POSIX way to carry a literal `'` through single quotes: close, escape, reopen. */
+const ESCAPED_SINGLE_QUOTE = String.raw`'\''`;
+
 /**
  * POSIX single-quote a value about to appear INSIDE a command this message tells the user to run.
  *
@@ -23,7 +26,10 @@ import type { GateRequest } from './node-executor.js';
 function shellArg(value: string): string {
   // `String.raw` so the POSIX escape reads as the four characters it IS — `'\''` — rather than as a
   // backslash-escaped string a reader has to decode before they can tell whether it is right.
-  return `'${value.replaceAll("'", String.raw`'\''`)}'`;
+  // The escape is hoisted OUT of the template: a `String.raw` nested inside another template literal is
+  // three layers of quoting in one expression, and this one is security-relevant enough to read at a glance.
+  const escaped = value.replaceAll("'", ESCAPED_SINGLE_QUOTE);
+  return `'${escaped}'`;
 }
 
 /**
@@ -46,8 +52,17 @@ function byName(a: string, b: string): number {
  */
 export const DEFAULT_MAX_TOKENS_ESTIMATE = 4096;
 
-/** Why a strict budget check refused the prospective call. */
-export type BudgetExceededReason = 'projected_over_cap' | 'unpriced_model';
+/**
+ * Why a strict budget check refused the prospective call.
+ *
+ * `unpriced_model` and `unpriced_modality` are deliberately distinct, because the REMEDIES are: the first
+ * means the model has no price at all and needs `--input`/`--output`; the second means the model is priced
+ * for tokens and only a media rate is missing, which needs `--image`/`--audio`/`--video` and must NOT send
+ * the user to restate token rates (doing so writes a user row that outranks the catalog for tokens too —
+ * the exact trap ADR-0089 §4(c) exists to avoid). Both used to report `unpriced_model`, so a caller
+ * narrowing on `.reason` could not tell them apart even though the messages already did.
+ */
+export type BudgetExceededReason = 'projected_over_cap' | 'unpriced_model' | 'unpriced_modality';
 
 /**
  * Thrown when a priced pre-egress projection exceeds a configured `on_exceed: fail` cap, or when strict-cost mode
@@ -525,6 +540,9 @@ export class BudgetGovernor {
             // `--video` — naming the bare command trains a user to give up and disable the cap instead, which
             // is the failure ADR-0089 §4(c) exists to prevent.
             `model '${model}' has no ${named} rate, so the ${this.#budget.max_cost_microcents}-micro-cent cap cannot be enforced on this generation (strict_cost_cap is on). Add one with \`relavium models pricing ${shellArg(model)} --provider PROVIDER_ID ${flags}\`, or turn strict_cost_cap off.`,
+            // EXPLICIT: the constructor's default would derive `unpriced_model` from the absent projection,
+            // which is false here — the model is priced, one modality is not.
+            'unpriced_modality',
           ),
         },
       };
@@ -552,6 +570,21 @@ export class BudgetGovernor {
 
     const thresholdPct = clampPct(Math.round((projected / this.#budget.max_cost_microcents) * 100));
 
+    // The three `on_exceed` arms are a pure projection of (verdict inputs → result), so they live in their
+    // own method: `#evaluate`'s complexity is the ADMISSION reasoning above, and a reader tracing a cap
+    // decision should not have to step over three result literals to see it.
+    return {
+      ...this.#overCapVerdict(projected, thresholdPct),
+      ...gap,
+      estimateMicrocents: estimate,
+    };
+  }
+
+  /**
+   * The `on_exceed` fork, once the projection is known to be over the cap. Pure: no state is read beyond
+   * the configured budget and the running totals, and no arm awaits.
+   */
+  #overCapVerdict(projected: number, thresholdPct: number): { readonly result: BudgetCheckResult } {
     switch (this.#budget.on_exceed) {
       case 'warn':
         return {
@@ -561,8 +594,6 @@ export class BudgetGovernor {
             limitMicrocents: this.#budget.max_cost_microcents,
             thresholdPct,
           },
-          estimateMicrocents: estimate,
-          ...gap,
         };
       case 'fail':
         return {
@@ -574,7 +605,6 @@ export class BudgetGovernor {
               projected,
             ),
           },
-          ...gap,
         };
       case 'pause_for_approval':
         return {
@@ -586,7 +616,6 @@ export class BudgetGovernor {
               thresholdPct,
             ),
           },
-          ...gap,
         };
     }
   }

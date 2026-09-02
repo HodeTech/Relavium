@@ -1133,7 +1133,7 @@ export class FallbackChain {
     // ANY cooldown makes it retryable, not only an all-cooldown set: a mixed plan of [cooled-down, incapable]
     // still has an entry that will come back, so a retry has a real chance. The reverse default would be the
     // damaging one — a permanent failure for a temporary condition.
-    const cooledDown = reasons.some((reason) => reason === COOLDOWN_SKIP_REASON);
+    const cooledDown = reasons.includes(COOLDOWN_SKIP_REASON);
     return makeLlmError({
       provider: this.#exhaustedProvider,
       kind: cooledDown ? 'rate_limit' : 'bad_request',

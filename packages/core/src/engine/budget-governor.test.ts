@@ -160,6 +160,28 @@ describe('BudgetGovernor', () => {
       ).rejects.toThrow(/--audio USD_PER_SECOND/);
     });
 
+    it('reports `unpriced_modality`, distinct from `unpriced_model` — the remedies differ', async () => {
+      // A caller narrowing on `.reason` has to tell "no price at all" (needs --input/--output) from
+      // "priced for tokens, missing a media rate" (needs --image/--audio/--video). Both used to say
+      // `unpriced_model`, and sending a user to restate token rates writes a row that outranks the catalog
+      // for tokens too — the trap ADR-0089 §4(c) exists to avoid.
+      const { governor } = makeGovernor({
+        budget: { max_cost_microcents: 1_000_000, on_exceed: 'warn', strict_cost_cap: true },
+      });
+      const modality = await governor
+        .checkPreEgress('claude-haiku-4-5', 0, [{ modality: 'image', units: 1 }])
+        .then(() => undefined)
+        .catch((e: unknown) => (e instanceof BudgetExceededError ? e.reason : undefined));
+      expect(modality).toBe('unpriced_modality');
+
+      // …and a wholly unpriced MODEL still reports the other one.
+      const model = await governor
+        .checkPreEgress('evil-unknown-model', 10)
+        .then(() => undefined)
+        .catch((e: unknown) => (e instanceof BudgetExceededError ? e.reason : undefined));
+      expect(model).toBe('unpriced_model');
+    });
+
     it('uses BARE-WORD placeholders — an angle bracket would redirect when pasted', async () => {
       // `<` and `>` are shell redirections. `--provider <p> --image <usd-per-image>` pasted into a shell
       // reads stdin from a file named `p` and CREATES a file named `--image` in the user's cwd. A remedy

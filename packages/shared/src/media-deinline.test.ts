@@ -461,14 +461,21 @@ describe('countUnpinnedMedia (`CR-54` — the pre-flight count for the re-host c
     // was added to refuse a hostile payload has returned anything. `deInlineMedia` refuses such a buffer in
     // O(1); this must not do more work than that to reach the same conclusion.
     //
-    // **Sized against a measurement, not a guess.** With the short-circuit this input walks in ~0 ms; with
-    // it removed the same input takes ~290 ms (measured: 2 MB → 31 ms, 20 MB → 286 ms, 50 MB → 546 ms). A
-    // first version of this test used 2 MB and a 250 ms bound and passed happily against the mutation — a
-    // timing assertion with no margin is not an assertion. If this ever goes red, the answer is to check
-    // the short-circuit, NOT to loosen the bound.
+    // **Sized against a measurement, not a guess, and the margin is TWO-SIDED.** Measured on this machine:
+    // with the short-circuit the walk is ~1 ms (it visits four nodes); without it, 2 MB → 31 ms,
+    // 20 MB → 286 ms, 50 MB → 546 ms. A first version used 2 MB and a 250 ms bound and passed happily
+    // against the mutation — a timing assertion with no margin is not an assertion.
+    //
+    // The bound sits between the two by orders of magnitude in both directions: ~200× the guarded path, and
+    // comfortably under the unguarded one even on a runner several times slower than this one. The
+    // ALLOCATION is deliberately outside the timed region, so a slow `new Uint8Array` cannot spend the
+    // budget. If this ever goes red, check the short-circuit — a bound with this much room on both sides
+    // does not fail for being tight. (The sibling de-flake in `packages/mcp/src/deadlines.test.ts` is the
+    // house rule for wall-clock assertions: prefer a logical observable. There is none here — the property
+    // IS "does not do work proportional to the buffer" — so the margin has to carry it.)
     const big = new Uint8Array(20_000_000);
     const started = Date.now();
     expect(countUnpinnedMedia({ blob: big, part: urlPart })).toBe(1);
-    expect(Date.now() - started).toBeLessThan(120);
+    expect(Date.now() - started).toBeLessThan(200);
   });
 });

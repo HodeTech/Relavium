@@ -228,6 +228,22 @@ function parseUsdPerMtok(raw: string, flag: string): number {
   return value;
 }
 
+/**
+ * `--clear` retires the WHOLE override row, so accepting a price alongside it would silently discard half
+ * the invocation. Every price flag is refused, media included — extracted from
+ * {@link buildModelsPricingArgs}, whose branch count is what Sonar flags.
+ */
+function assertClearTakesNoPrice(input: CommandInput): void {
+  for (const flag of ['input', 'output', 'cached', 'image', 'audio', 'video'] as const) {
+    if (optString(input.options[flag]) !== undefined) {
+      throw new CliError(
+        'invalid_invocation',
+        `--clear removes the price; it takes no --${flag}. Nothing written.`,
+      );
+    }
+  }
+}
+
 /** Parse one USD-per-billed-unit option string → a finite number ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md)
  *  §4). Shape only, like its per-Mtok sibling; the command core owns the non-negative + ceiling rules. It is a
  *  separate function purely so the error sentence names the right DENOMINATOR — a user told "USD per million
@@ -255,16 +271,7 @@ export function buildModelsPricingArgs(input: CommandInput): ModelsPricingComman
   // by mistake was stuck with their own number for good. It takes no price flags, and rejects them rather than
   // quietly ignoring half an invocation.
   if (input.options['clear'] === true) {
-    // The media flags join the refusal list for the same reason the token ones are on it: `--clear` retires the
-    // WHOLE override row, so accepting a price alongside it would silently discard half the invocation.
-    for (const flag of ['input', 'output', 'cached', 'image', 'audio', 'video'] as const) {
-      if (optString(input.options[flag]) !== undefined) {
-        throw new CliError(
-          'invalid_invocation',
-          `--clear removes the price; it takes no --${flag}. Nothing written.`,
-        );
-      }
-    }
+    assertClearTakesNoPrice(input);
     return { model: reqPositional(input, 0, 'model'), provider, clear: true };
   }
   const rawInput = optString(input.options['input']);

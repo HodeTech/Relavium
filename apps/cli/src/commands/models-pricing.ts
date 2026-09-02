@@ -142,6 +142,9 @@ export interface SetPricingArgs {
   readonly videoUsdPerSecond?: number;
 }
 
+/** The POSIX way to carry a literal `'` through single quotes: close, escape, reopen. */
+const ESCAPED_SINGLE_QUOTE = String.raw`'\''`;
+
 /**
  * POSIX single-quote a value inside a command this message tells the user to paste.
  *
@@ -151,7 +154,79 @@ export interface SetPricingArgs {
  * `budget-governor.ts` already do this; this one was missed.
  */
 function shellArg(value: string): string {
-  return `'${value.replaceAll("'", String.raw`'\''`)}'`;
+  // The escape is hoisted OUT of the template: a `String.raw` nested inside another template literal is
+  // three layers of quoting in one expression, and this one is security-relevant enough to read at a glance.
+  const escaped = value.replaceAll("'", ESCAPED_SINGLE_QUOTE);
+  return `'${escaped}'`;
+}
+
+/**
+ * The `--json` record for a completed write — the stored micro-cents, echoed back.
+ *
+ * Lifted out of {@link modelsPricingCommand}: the omission rules (a field the invocation did not write is
+ * ABSENT, not `0`) are a contract worth reading on its own, and inlining them pushed that function's
+ * cognitive complexity from 37 to 42.
+ */
+function pricingJsonRecord(
+  args: ModelsPricingCommandArgs,
+  written: {
+    readonly inputCostPerMtokMicrocents: number | undefined;
+    readonly outputCostPerMtokMicrocents: number | undefined;
+    readonly cachedInputCostPerMtokMicrocents: number | undefined;
+    readonly mediaImageCostMicrocents: number | undefined;
+    readonly mediaAudioCostMicrocents: number | undefined;
+    readonly mediaVideoCostMicrocents: number | undefined;
+  },
+): Record<string, unknown> {
+  const {
+    inputCostPerMtokMicrocents,
+    outputCostPerMtokMicrocents,
+    cachedInputCostPerMtokMicrocents,
+    mediaImageCostMicrocents,
+    mediaAudioCostMicrocents,
+    mediaVideoCostMicrocents,
+  } = written;
+  return {
+    model: args.model,
+    provider: args.provider,
+    source: 'user',
+    // Absent on a media-only invocation, which is exactly what a machine consumer needs to know: the token
+    // columns were PRESERVED, not written. Emitting a `0` here would report a price nobody set.
+    ...(inputCostPerMtokMicrocents === undefined ? {} : { inputCostPerMtokMicrocents }),
+    ...(outputCostPerMtokMicrocents === undefined ? {} : { outputCostPerMtokMicrocents }),
+    // OMITTED when `--cached` was not given, exactly like the two token fields above. It used to stay
+    // present as `0` "unchanged contract" — but the store PRESERVES the existing cached rate rather
+    // than writing that `0`, so the field reported a value the database does not hold. A machine
+    // consumer confirming the write it just made was told a number nobody set, and the canonical CLI
+    // doc says an unspecified field is omitted.
+    ...(cachedInputCostPerMtokMicrocents === undefined ? {} : { cachedInputCostPerMtokMicrocents }),
+    // The media rates this invocation wrote, in the canonical stored unit. Omitted when not stated — a
+    // script automating the strict-cap remedy has to be able to confirm the write it just made, and the
+    // human path already echoes them (ADR-0089 §4(c)).
+    ...(mediaImageCostMicrocents === undefined ? {} : { mediaImageCostMicrocents }),
+    ...(mediaAudioCostMicrocents === undefined ? {} : { mediaAudioCostMicrocents }),
+    ...(mediaVideoCostMicrocents === undefined ? {} : { mediaVideoCostMicrocents }),
+    // The catalog price this override REPLACES (ADR-0071 §5) — `null` when the catalog does not price the model
+    // at all, which is the case the user tier was originally invented for. A machine consumer must be able to
+    // see the divergence for the same reason a human must: the flip removed the guard that made it impossible.
+    // …and OMITTED entirely when this invocation wrote no token or cache price at all. A media-only
+    // re-price replaces nothing in the catalog's token pricing, so reporting what it "overrides" claims
+    // a divergence that did not happen — the opposite of the transparency this field exists for.
+    ...(inputCostPerMtokMicrocents === undefined && cachedInputCostPerMtokMicrocents === undefined
+      ? {}
+      : {
+          overriddenCatalogPrice: ((): unknown => {
+            const shipped = catalogPricing(args.model);
+            return shipped === undefined
+              ? null
+              : {
+                  inputCostPerMtokMicrocents: shipped.inputPerMtokMicrocents,
+                  outputCostPerMtokMicrocents: shipped.outputPerMtokMicrocents,
+                  cachedInputCostPerMtokMicrocents: shipped.cachedInputPerMtokMicrocents,
+                };
+          })(),
+        }),
+  };
 }
 
 /** `models pricing <model> --provider <p> --clear` — retire the override; the model falls back to the catalog. */
@@ -304,50 +379,14 @@ export function modelsPricingCommand(
   if (deps.global.json) {
     // Key-free record; prices echoed back as the stored integer micro-cents (the canonical unit).
     writeRecordLines(deps.io, [
-      {
-        model: args.model,
-        provider: args.provider,
-        source: 'user',
-        // Absent on a media-only invocation, which is exactly what a machine consumer needs to know: the token
-        // columns were PRESERVED, not written. Emitting a `0` here would report a price nobody set.
-        ...(inputCostPerMtokMicrocents === undefined ? {} : { inputCostPerMtokMicrocents }),
-        ...(outputCostPerMtokMicrocents === undefined ? {} : { outputCostPerMtokMicrocents }),
-        // OMITTED when `--cached` was not given, exactly like the two token fields above. It used to stay
-        // present as `0` "unchanged contract" — but the store PRESERVES the existing cached rate rather
-        // than writing that `0`, so the field reported a value the database does not hold. A machine
-        // consumer confirming the write it just made was told a number nobody set, and the canonical CLI
-        // doc says an unspecified field is omitted.
-        ...(cachedInputCostPerMtokMicrocents === undefined
-          ? {}
-          : { cachedInputCostPerMtokMicrocents }),
-        // The media rates this invocation wrote, in the canonical stored unit. Omitted when not stated — a
-        // script automating the strict-cap remedy has to be able to confirm the write it just made, and the
-        // human path already echoes them (ADR-0089 §4(c)).
-        ...(mediaImageCostMicrocents === undefined ? {} : { mediaImageCostMicrocents }),
-        ...(mediaAudioCostMicrocents === undefined ? {} : { mediaAudioCostMicrocents }),
-        ...(mediaVideoCostMicrocents === undefined ? {} : { mediaVideoCostMicrocents }),
-        // The catalog price this override REPLACES (ADR-0071 §5) — `null` when the catalog does not price the model
-        // at all, which is the case the user tier was originally invented for. A machine consumer must be able to
-        // see the divergence for the same reason a human must: the flip removed the guard that made it impossible.
-        // …and OMITTED entirely when this invocation wrote no token or cache price at all. A media-only
-        // re-price replaces nothing in the catalog's token pricing, so reporting what it "overrides" claims
-        // a divergence that did not happen — the opposite of the transparency this field exists for.
-        ...(inputCostPerMtokMicrocents === undefined &&
-        cachedInputCostPerMtokMicrocents === undefined
-          ? {}
-          : {
-              overriddenCatalogPrice: ((): unknown => {
-                const shipped = catalogPricing(args.model);
-                return shipped === undefined
-                  ? null
-                  : {
-                      inputCostPerMtokMicrocents: shipped.inputPerMtokMicrocents,
-                      outputCostPerMtokMicrocents: shipped.outputPerMtokMicrocents,
-                      cachedInputCostPerMtokMicrocents: shipped.cachedInputPerMtokMicrocents,
-                    };
-              })(),
-            }),
-      },
+      pricingJsonRecord(args, {
+        inputCostPerMtokMicrocents,
+        outputCostPerMtokMicrocents,
+        cachedInputCostPerMtokMicrocents,
+        mediaImageCostMicrocents,
+        mediaAudioCostMicrocents,
+        mediaVideoCostMicrocents,
+      }),
     ]);
     return EXIT_CODES.success;
   }

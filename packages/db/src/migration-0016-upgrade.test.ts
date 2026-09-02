@@ -38,7 +38,7 @@ function migrationsUpTo(upTo: number, into: string): string {
     entries: JournalEntry[];
   };
   const kept = journal.entries.filter((e) => e.idx <= upTo);
-  expect(kept.length).toBe(upTo + 1); // the folder really does have every earlier migration
+  expect(kept).toHaveLength(upTo + 1); // the folder really does have every earlier migration
   for (const entry of kept) {
     copyFileSync(join(DRIZZLE_DIR, `${entry.tag}.sql`), join(dir, `${entry.tag}.sql`));
   }

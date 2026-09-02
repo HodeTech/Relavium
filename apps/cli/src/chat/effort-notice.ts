@@ -43,6 +43,9 @@ function byName(a: string, b: string): number {
  * (`build-engine.ts`) and the session host both need it too, and neither should be reaching into `render/tui/`.
  */
 
+/** The POSIX way to carry a literal `'` through single quotes: close, escape, reopen. */
+const ESCAPED_SINGLE_QUOTE = String.raw`'\''`;
+
 /**
  * POSIX single-quote a value that is about to appear INSIDE a command we are telling the user to run.
  *
@@ -59,7 +62,10 @@ function byName(a: string, b: string): number {
 function shellArg(value: string): string {
   // `String.raw` so the POSIX escape reads as the four characters it IS — `'\''` — rather than as a
   // backslash-escaped string a reader has to decode before they can tell whether it is right.
-  return `'${value.replaceAll("'", String.raw`'\''`)}'`;
+  // The escape is hoisted OUT of the template: a `String.raw` nested inside another template literal is
+  // three layers of quoting in one expression, and this one is security-relevant enough to read at a glance.
+  const escaped = value.replaceAll("'", ESCAPED_SINGLE_QUOTE);
+  return `'${escaped}'`;
 }
 
 /** The model id, safe to write to a terminal — it comes from an authored YAML and is only `nonEmptyString` there. */
