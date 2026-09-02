@@ -573,10 +573,15 @@ export class BudgetGovernor {
     // The three `on_exceed` arms are a pure projection of (verdict inputs → result), so they live in their
     // own method: `#evaluate`'s complexity is the ADMISSION reasoning above, and a reader tracing a cap
     // decision should not have to step over three result literals to see it.
+    const verdict = this.#overCapVerdict(projected, thresholdPct);
     return {
-      ...this.#overCapVerdict(projected, thresholdPct),
+      ...verdict,
       ...gap,
-      estimateMicrocents: estimate,
+      // ONLY on `warn`, which is the one over-cap arm that still ADMITS the call and therefore reserves
+      // against this number. `fail`/`pause` throw before any consumer reads it — so attaching it there was
+      // inert, but it would have made the field's own contract ("present only for a priced, bounded call")
+      // false, and a later consumer reserving budget for a refused call is exactly what that wording guards.
+      ...(verdict.result.kind === 'warn' ? { estimateMicrocents: estimate } : {}),
     };
   }
 
