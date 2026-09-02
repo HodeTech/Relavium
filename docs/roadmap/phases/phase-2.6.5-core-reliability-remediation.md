@@ -1807,10 +1807,14 @@ someone later "simplifies" the runtime check as redundant.
 resolution for an external one — the point at which the agent registry has been read. The runtime check stays
 as the last line of defence (a host can construct a node executor directly), but it stops being the first.
 
-**Acceptance.** A workflow whose node lists a tool its inline agent lacks fails `relavium validate` with a
-typed error naming the node, the tool and the agent — before any run id exists. The same for a `$ref`'d agent
-once resolved. ADR-0038's parenthetical is corrected in the same change, or the enforcement moves to match it;
-the two must agree.
+**Acceptance** (restated 2026-09-03 — the original named `relavium validate`, which does not exist, and
+demanded the tool id, which [ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md)
+§3 forbids echoing). A workflow whose node lists a tool its INLINE agent lacks is refused by
+`relavium run` **before a run id exists**, with a typed `invalid_invocation` (exit 2) naming the node, the
+agent and the POSITION of the offending entry — never the authored tool value, which carries no charset or
+length bound and would ride an event and a log. The `$ref` half is inert until a surface populates
+`planOptions.agents` (none does); recorded as a residual rather than claimed. ADR-0029 §(b), ADR-0038 and
+`security-review.md` are corrected in the same change, the security standard first.
 
 ---
 

@@ -755,6 +755,29 @@ describe('buildRunPlan — agent_ref resolution', () => {
       expect(err.issues[0]?.field).toBe('node `n`.tools[0]');
     });
 
+    it('CAPS the issues one node can emit, and reports the true count', () => {
+      // `node.tools` has no length ceiling, so one node could amplify an authored array into an unbounded
+      // ISSUE array — measured before the cap: 200,000 issues and ~55 MB of strings, synchronously, inside
+      // `buildRunPlan`. That is the shape ADR-0086 exists to stop, introduced at the layer that enforces it.
+      const many = Array.from({ length: 60 }, (_, i) => `q${i}`).join(', ');
+      const err = expectGraphError(
+        doc(`  id: many
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+      tools: [read_file]
+  nodes:
+    - { id: n, type: agent, agent_ref: a, prompt_template: 'go', tools: [${many}] }
+  edges: []`),
+      );
+      // Ten positions plus one summary line — never one per offending entry.
+      expect(err.issues).toHaveLength(11);
+      expect(err.issues.at(-1)?.message).toContain('50 further entries');
+      expect(err.issues.at(-1)?.message).toContain('10 of 60 shown');
+    });
+
     it('SKIPS an agent whose grant depends on an unconnected MCP server, unless the host says it is final', () => {
       // An agent declaring `mcp_servers` has a grant that is not knowable from the document: its tools
       // arrive at connect. Refusing here would reject a workflow that is about to be valid — so the check

@@ -458,12 +458,23 @@ Severity is the review's verified rating. Check an item off in the PR that resol
       external `$ref`'d agent: there is nothing to resolve against. Closing it means a host reading and
       validating `.agent.yaml` files and passing the registry — a surface feature, not a check.
       *(medium · apps/cli/src/commands/run.ts, packages/core/src/dag.ts; ADR-0094 §5)*
-- [ ] **A host that does not assert `toolGrantsFinal` gets no plan-build check for an MCP-declaring agent.**
-      By design — an agent whose `mcp_servers` are unconnected has a grant that is not knowable from the
-      document, and refusing there would reject a workflow about to be valid. `relavium run` asserts it (it
-      connects and augments first). Any future host must do the same or accept `resolveGrant` as its only
-      line. The risk is that a new surface forgets, silently.
-      *(low · packages/core/src/dag.ts; ADR-0094 §2)*
+- [ ] **`relavium gate` does not assert `toolGrantsFinal`, and it is the host that most safely could.**
+      Not hypothetical, as an earlier wording of this item implied: `gate.ts` calls `resumeFromCheckpoint`
+      with no `planOptions`, so on resume an MCP-declaring agent is skipped. The irony is that the gate path
+      rebuilds from the snapshot `relavium run` froze AFTER augmenting, so the grant there is final BY
+      CONSTRUCTION — `run` has to reason about call ordering to claim the same thing. Either pass the flag at
+      the gate resume, or resolve it together with the resume question below.
+      *(low · apps/cli/src/commands/gate.ts; ADR-0094 §2)*
+- [ ] **A paused run can be stranded by a check it passed before.** `resumeFromCheckpoint` rebuilds the plan
+      from the FROZEN snapshot, so a run that paused at a gate — with a widening node downstream that was
+      never dispatched, and which may have been about to run fine — now fails at resume, permanently: the
+      author cannot fix it, because the resume reads the snapshot rather than the file on disk.
+      `agent-session.ts` records the opposite instinct for a session ("a RESUME does not re-admit… admission
+      governs what is ADMITTED", citing ADR-0083 for the run half), but `buildRunPlan` already applies
+      ADR-0086's ceilings on resume the same way — so this is an engine-wide question about whether a resume
+      re-admits at all, not one `CR-64` may settle alone. The dispatch-time `resolveGrant` floor is
+      unaffected either way.
+      *(medium · packages/core/src/engine/engine.ts, dag.ts; ADR-0094, ADR-0083, ADR-0086)*
 
 ## Phase 2.6.5 `W5` residuals — `CR-50` ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §1, 2026-09-02)
 

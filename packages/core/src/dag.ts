@@ -226,6 +226,8 @@ function validateAndWireEdges(
   issues: GraphIssue[],
   grantsFinal: boolean,
 ): void {
+  /** One granted-set per resolved agent, for the whole pass — see `collectToolGrantIssues`. */
+  const grantedByAgent = new Map<Agent, ReadonlySet<string>>();
   // 3a. Structural edges + handle validation.
   spec.edges.forEach((edge, i) => validateStructuralEdge(edge, i, nodesById, addEdge, issues));
 
@@ -244,6 +246,7 @@ function validateAndWireEdges(
         addEdge,
         issues,
         grantsFinal,
+        grantedByAgent,
       );
     }
     wireOwnDataEdges(node, addEdge);
@@ -435,31 +438,65 @@ function wireConditionNode(
  * escape, or secret-shaped text, and a `GraphIssue` is surfaced and logged. This file already keeps that
  * rule for an invalid edge handle (`edge #n`); a widened grant is reported the same way.
  */
+/**
+ * At most this many widening positions are reported per node; the rest are counted.
+ *
+ * `node.tools` carries no length ceiling, so one node can name hundreds of thousands of ungranted tools —
+ * measured: a 400 KB workflow produced 200,000 issues and ~55 MB of strings, synchronously, inside
+ * `buildRunPlan`. Amplifying an unbounded authored array into an unbounded issue array is the shape
+ * [ADR-0086](../../../docs/decisions/0086-absolute-admission-ceilings-on-authored-values.md) exists to stop,
+ * and the same summarize-and-count answer is already used for held nodes and skipped runs elsewhere.
+ */
+const MAX_REPORTED_WIDENINGS = 10;
+
 function collectToolGrantIssues(
   node: AgentNode,
   agent: Agent,
   grantsFinal: boolean,
   issues: GraphIssue[],
+  grantedByAgent: Map<Agent, ReadonlySet<string>>,
 ): void {
   const narrowed = node.tools;
   if (narrowed === undefined || narrowed.length === 0) {
-    return; // no narrowing declared ⇒ the agent's grant stands, nothing to widen
+    // Nothing to report: an empty list can contain no widening entry. (At DISPATCH an empty `tools:` narrows
+    // the grant to NOTHING — `resolveGrant` returns `nodeTools` — so this early return is about what can be
+    // FOUND here, not about what the grant becomes.)
+    return;
   }
   // An agent whose grant depends on an MCP server it has not connected is not knowable from the document.
   // Skip rather than guess — refusing here would reject a workflow that is about to be valid.
   if ((agent.mcp_servers ?? []).length > 0 && !grantsFinal) {
     return;
   }
-  const granted = new Set(agent.tools ?? []);
+  // MEMOIZED per agent, not per node. Built inline, this rebuilt the granted Set on every agent node:
+  // measured at the admission ceilings (499 nodes, a 130k-tool grant, a file well under `MAX_SOURCE_CHARS`)
+  // it cost 2165 ms of synchronous CPU inside `engine.start()`, against 1 ms for the same graph with a small
+  // grant. The plan is built on the load path of every surface, so that is a stall before a run id exists.
+  let granted = grantedByAgent.get(agent);
+  if (granted === undefined) {
+    granted = new Set(agent.tools ?? []);
+    grantedByAgent.set(agent, granted);
+  }
+  let reported = 0;
+  let widened = 0;
   narrowed.forEach((tool, index) => {
-    if (!granted.has(tool)) {
-      issues.push({
-        kind: 'tool_grant_widened',
-        field: `node \`${node.id}\`.tools[${index}]`,
-        message: `this node's \`tools\` names a tool that agent \`${node.agent_ref}\` was not granted — a node may only narrow the grant, never widen it`,
-      });
-    }
+    if (granted.has(tool)) return;
+    widened += 1;
+    if (reported >= MAX_REPORTED_WIDENINGS) return;
+    reported += 1;
+    issues.push({
+      kind: 'tool_grant_widened',
+      field: `node \`${node.id}\`.tools[${index}]`,
+      message: `this node's \`tools\` names a tool that agent \`${node.agent_ref}\` was not granted — a node may only narrow the grant, never widen it`,
+    });
   });
+  if (widened > reported) {
+    issues.push({
+      kind: 'tool_grant_widened',
+      field: `node \`${node.id}\`.tools`,
+      message: `and ${widened - reported} further entries name tools that agent \`${node.agent_ref}\` was not granted (${reported} of ${widened} shown)`,
+    });
+  }
 }
 
 /** Validate an `agent` node's `agent_ref` and wire data edges from the resolved agent's system prompt. */
@@ -471,6 +508,7 @@ function validateAgentNode(
   addEdge: AddEdge,
   issues: GraphIssue[],
   grantsFinal: boolean,
+  grantedByAgent: Map<Agent, ReadonlySet<string>>,
 ): void {
   if (registrySupplied && !agentsById.has(node.agent_ref)) {
     issues.push({
@@ -483,7 +521,7 @@ function validateAgentNode(
   const agent = agentsById.get(node.agent_ref);
   if (agent !== undefined) {
     wireDataEdges(agent.system_prompt, node.id, nodesById, addEdge);
-    collectToolGrantIssues(node, agent, grantsFinal, issues);
+    collectToolGrantIssues(node, agent, grantsFinal, issues, grantedByAgent);
   }
 }
 

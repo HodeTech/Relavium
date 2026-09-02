@@ -107,3 +107,32 @@ documents — rejected: it is honest, but it keeps the cost (money spent before 
   already made this trade for edge handles.
 - Two ADRs and one standard carry corrections for a claim that was never true. Recorded as amendments so the
   original reasoning stays legible, per the append-only rule.
+
+## Amendment — 2026-09-03 (three corrections after implementation and two review rounds)
+
+**1. Consequences/Positive ¶1 contradicted Decision §3 and is wrong.** It promised "an error naming the
+node, **the tool** and the agent". §3 forbids exactly that, the Negative section says so again ("Locating the
+offence positionally… rather than naming the tool"), and the code follows §3. Read ¶1 as: *naming the node,
+the agent, and the POSITION of the offending entry — never the tool value.* The stale sentence survived a
+draft correction; it is amended rather than rewritten, per the append-only rule, because a maintainer reading
+¶1 as the acceptance could re-add the tool id and undo the security half of the change.
+
+**2. `CR-64`'s acceptance text in the phase doc was never restated, though §6 claims it was.** It still named
+`relavium validate` (a command that does not exist) and demanded the tool id. Restated with this amendment.
+
+**3. The refusal also moved six PRE-EXISTING graph faults from exit 1 to exit 2.** Implementing this needed
+an arm in the CLI's `toUserFacing` for `WorkflowParseError`, because a `WorkflowGraphError` reached the user
+as "An unexpected internal error occurred." with exit 1 — for a file that could never run. The arm is on the
+base class, so `cycle`, `unknown_edge_target`, `invalid_handle`, `mismatched_branch_target`, `dangling_ref`
+and `ceiling_exceeded` now surface as `invalid_invocation` / exit 2 with their real message, on `run`,
+`gate`, `chat` and `agent run`. That is a machine-contract change (ADR-0049's `--json` envelope keys on
+`code`) on faults this ADR was not about, and it is a strict improvement — recorded here because it was not
+in the original Decision.
+
+**Known consequence, not resolved here: a PAUSED run can be stranded.** `resumeFromCheckpoint` rebuilds the
+plan from the frozen snapshot, so a run that paused at a gate — with a widening node downstream that was
+never dispatched — now fails at resume and cannot be edited into health, because the resume reads the
+snapshot rather than the file. `agent-session.ts` records the opposite instinct for a session ("a RESUME does
+not re-admit… admission governs what is ADMITTED"), but `buildRunPlan` already applies ADR-0086's ceilings on
+resume the same way, so this is an engine-wide question rather than one this ADR may settle alone. Recorded
+in [deferred-tasks.md](../roadmap/deferred-tasks.md); the dispatch-time `resolveGrant` floor is unaffected.

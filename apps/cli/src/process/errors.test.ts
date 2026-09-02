@@ -1,4 +1,10 @@
-import { EngineStateError, WorkflowGraphError, WorkflowSyntaxError } from '@relavium/core';
+import {
+  EngineStateError,
+  WorkflowGraphError,
+  WorkflowSecretLeakError,
+  WorkflowSyntaxError,
+  WorkflowValidationError,
+} from '@relavium/core';
 import { CorruptRunEventError, UnreadableRunEventLogError } from '@relavium/db';
 import { describe, expect, it } from 'vitest';
 
@@ -148,12 +154,28 @@ describe('a graph fault is an AUTHORING fault, not an internal one (CR-64 review
     expect(out.message).not.toContain('unexpected internal');
   });
 
-  it('…and so does a SYNTAX error, which shares the family — one arm covers all four kinds', () => {
+  it('…and so does a SYNTAX error, which shares the family', () => {
     // The base constructor is protected, so this asserts through a concrete sibling. That is the point of
     // matching on the base: a cycle, a ceiling, a widened grant and a malformed file all land here.
     const out = toUserFacing(new WorkflowSyntaxError('could not parse'));
     expect(out.code).toBe('invalid_invocation');
     expect(out.exitCode).toBe(EXIT_CODES.invalidInvocation);
+  });
+
+  it('…and a VALIDATION error and a SECRET-LEAK error — all four subclasses, since the arm keys on the base', () => {
+    // The arm matches an ABSTRACT base class, so a fifth subclass added later auto-promotes to the user with
+    // no test reddening. `WorkflowSecretLeakError` is the one that matters: its message is assembled from
+    // authored identifiers, and it is the reason "echo-safe by contract" needed pinning rather than trusting.
+    expect(
+      toUserFacing(new WorkflowValidationError([{ field: 'x', message: 'bad' }])).exitCode,
+    ).toBe(EXIT_CODES.invalidInvocation);
+    const leak = toUserFacing(
+      new WorkflowSecretLeakError([
+        { location: 'agent `w`.system_prompt', secret: 'inputs.api_key' },
+      ]),
+    );
+    expect(leak.exitCode).toBe(EXIT_CODES.invalidInvocation);
+    expect(leak.message).toContain('inputs.api_key'); // the tainted SYMBOL, never a resolved value
   });
 
   it('a genuinely unknown error is still internal/exit 1', () => {

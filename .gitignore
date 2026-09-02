@@ -74,5 +74,10 @@ docs/analysis/private/
 # scratch by construction — a review agent working in this tree wrote three of them and a blanket
 # `git add -A` committed them into a fold commit, where they ran as part of the suite. Named, so the
 # next one cannot ride in the same way; a probe worth keeping gets a real name and a real home.
-zz-*.test.ts
+# Broad on purpose: the first version of this guard required a dash (`zz-*`) and matched NEITHER of the
+# two files it was written for after a concurrent agent renamed them (`zzreviewtmp1.test.ts`), nor the
+# probes written minutes later (`zzz-verify-tmp.test.ts`). A prefix rule with no separator is the only
+# shape that survives an agent picking its own name.
+zz*.test.ts
 *.repro.test.ts
+*-repro.test.ts
