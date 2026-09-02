@@ -281,11 +281,11 @@ to correct.
 | `CR-41` | made 2026-08-31 (full pinning on `http`/`sse`; a **remote `websocket` is refused at admission**; a redirect is refused, not followed; the local opt-in is ONE bound policy) | [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §2–§4 | no | hostile MCP |
 | `CR-42` | made 2026-08-31 — **256** tools/server · **8 KiB** description · **1 MiB** discovery/server · **4 KiB** schema string · **256 B** property name · **1 MiB** result text · **4 MiB** per `http`/`sse` message. Transport-level (pre-parse, memory) and application-level (post-parse, admission) are separate guarantees; a local transport has only the second, and its bound is the consent gate | [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §5–§6 | no | hostile MCP |
 | `CR-50` | made 2026-09-02 (complete it; handle-only tool + bytes on a marked synthesized `user` message over the media-input rail) · ✅ DELIVERY closed 2026-09-02; the host delegate + session-scope producer are recorded residuals | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1 | yes | media bytes |
-| `CR-51` | made (gate on model-level capability — `toolCall`/`attachment` join `requestSupportReason`, so the chain pre-skips for free and the adapter refuses; `temperature`/`structuredOutput` stay withheld knobs) · ✅ closed 2026-09-02 | — | no | — |
+| `CR-51` | made · ✅ closed 2026-09-02 (gate on model-level capability — `toolCall`/`attachment` join `requestSupportReason`, so the chain pre-skips for free and the adapter refuses; `temperature`/`structuredOutput` stay withheld knobs) · ✅ closed 2026-09-02 | — | no | — |
 | `CR-52` | made 2026-09-02 · ✅ closed 2026-09-02 (pull [ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md)'s deferral forward — an optional `signature` on the canonical `tool_call` part + `tool_call_end`, with a signature-less durable arm; the ADR-0089 §3 sidecar proved unbuildable) | [ADR-0090](../../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md), superseding [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §3 | no | — |
 | `CR-53` | made · ✅ INGEST closed 2026-09-02 (`MediaUrlStream` + `MediaStore.putStream?` + an idle-deadlined, cancellable body; a url with no streaming hook REFUSED). The adapter-side base64 and the `resolveForEgress` delivery half are recorded residuals | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §2 | no | media bytes |
 | `CR-54` | made · ✅ closed 2026-09-02 for the two paths that produce one — the node OUTPUT and the human-gate resume PAYLOAD are pinned at first resolution, bounded, and classified on failure. ADR-0043 §3's INGEST half (an `AgentSession` message, an MCP tool result) is a recorded residual | [ADR-0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md) §3 | no | media bytes |
-| `CR-55` | made (missing rate ⇒ unpriced, on both cost paths; strict refuses; the rate path + CLI fields land with it) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §4 | yes | — |
+| `CR-55` | made · ✅ closed 2026-09-02 (missing rate ⇒ unpriced, on both cost paths; strict refuses; the rate path + CLI fields land with it) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §4 | yes | — |
 | `CR-60` | **open** — race semantics, or rename + correct the table | — | no | — |
 | `CR-61` | **open** — needs a JSON-Schema validator dependency | new (dependency ADR) | no | — |
 | `CR-62` | **open** — extract dependencies, or fail loudly | — | no | — |
@@ -1602,6 +1602,25 @@ four could not fail at all, each stopping at a seam one layer above the thing it
 
 ## W5 — Media correctness
 
+> **Status: all six items closed, 2026-09-02.** Two of the six closed one half of a two-part obligation and
+> say so in their own heading — `CR-50` (delivery; the host delegate awaits a producer that does not exist
+> yet) and `CR-53` (ingest; the adapter and delivery halves are recorded residuals). Nothing here is marked
+> closed on a claim wider than the code: every residual is written out in
+> [deferred-tasks.md](../deferred-tasks.md) rather than left inside a checked box.
+>
+> The wave's security sitting — media bytes, covering `CR-50`, `CR-53` and `CR-54` (phase clause 7) — is
+> recorded in [security-review.md](../../standards/security-review.md#sitting-media-bytes--cr-50-cr-53-cr-54-2026-09-02)
+> with nine controls, each naming the adversarial test that exercises it. It produced two findings of its
+> own, both fixed in the wave: the streaming egress had no redirect-bypass test, and the security standard
+> claimed a feature flag was off that had been on since 1.AE.
+>
+> **What the review rounds cost and bought.** Every item took an Opus round and a Sonnet round. They found
+> four defects that would have shipped: the media pin ran in a place that fetched a `save_to` url twice and
+> corrupted a timed-out node's terminal; `read_media`'s message was appended per tool call, which every
+> provider rejects for a parallel response; the tool accepted handles the delivery rail cannot carry; and
+> the registry-level split was defended by no test at all. Two of my own tests passed under their own
+> mutation and had to be rewritten to measure the property they named.
+
 ### CR-50 — `read_media` does not work end to end · High · ✅ DELIVERY closed 2026-09-02 (host wiring recorded)
 The builtin returns a base64 media part, the registry places generic output into the tool result, and the LLM
 message schema explicitly forbids raw media bytes there. The canonical alternative looked like the handle-only
@@ -1708,7 +1727,7 @@ which of refused / transient / cancelled happened, instead of an anonymous `inte
 re-hosted at ingest", covers surfaces this does not reach (an `AgentSession` message, an MCP tool result).
 See [deferred-tasks.md](../deferred-tasks.md).
 
-### CR-55 — Missing media rates can bypass a strict cost cap · Blocker for the strict-cap claim
+### CR-55 — Missing media rates can bypass a strict cost cap · Blocker for the strict-cap claim · ✅ closed 2026-09-02
 Where a media rate is absent the estimator can fall to zero, the generated catalog projection produces no media
 rate, and the DB's media-rate columns are not carried into the listing/overlay path. The governor can then treat
 a missing rate as *priced at zero* rather than *unpriced*, admitting paid image/audio/video generation under a
