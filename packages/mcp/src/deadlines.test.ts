@@ -245,10 +245,16 @@ describe('raceDeadline', () => {
     // of the test below it. A pre-aborted signal cannot be used here either: the pre-abort refusal returns
     // before the operation runs. It needs one that goes live→aborted around the operation, which is the
     // `silentlyCancelled` shape above.
-    const startedAt = Date.now();
+    // Driven by the OPERATION, not by the wall clock. The first version made `aborted` true 5 ms after the
+    // test began and had the operation sleep 15 ms — which flaked on a loaded runner: if more than 5 ms
+    // passed before `raceDeadline` reached its pre-call check, the signal read aborted BEFORE the operation
+    // started, so the pre-abort refusal returned "call was cancelled" and the mid-call scenario never ran.
+    // (Observed on CI: the same commit passed in one run and failed in another.) Flipping the signal from
+    // inside the operation reproduces the intended interleaving exactly, on any machine, at any load.
+    let inTheCall = false;
     const cancelsDuringTheCall: AbortSignalLike = {
       get aborted() {
-        return Date.now() - startedAt >= 5;
+        return inTheCall;
       },
       addEventListener: () => undefined,
       removeEventListener: () => undefined,
@@ -259,7 +265,8 @@ describe('raceDeadline', () => {
         'call',
         openWindow(1_000),
         async () => {
-          await new Promise((resolve) => setTimeout(resolve, 15)); // the cancel lands in here
+          inTheCall = true; // the cancel lands HERE — after the pre-call check, before the throw
+          await Promise.resolve();
           throw new Error('server said no');
         },
         cancelsDuringTheCall,
