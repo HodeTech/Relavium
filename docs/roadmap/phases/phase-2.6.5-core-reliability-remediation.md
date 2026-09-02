@@ -283,7 +283,7 @@ to correct.
 | `CR-50` | made 2026-09-02 (complete it; handle-only tool + bytes on a marked synthesized `user` message over the media-input rail) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1 | yes | media bytes |
 | `CR-51` | made (gate on model-level capability — `toolCall`/`attachment` join `requestSupportReason`, so the chain pre-skips for free and the adapter refuses; `temperature`/`structuredOutput` stay withheld knobs) · ✅ closed 2026-09-02 | — | no | — |
 | `CR-52` | made 2026-09-02 · ✅ closed 2026-09-02 (pull [ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md)'s deferral forward — an optional `signature` on the canonical `tool_call` part + `tool_call_end`, with a signature-less durable arm; the ADR-0089 §3 sidecar proved unbuildable) | [ADR-0090](../../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md), superseding [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §3 | no | — |
-| `CR-53` | made (bounded stream to the store — end-to-end: streaming fetch + `MediaStore.putStream?`, `put` narrowed to sub-ceiling) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §2 | no | media bytes |
+| `CR-53` | made · ✅ closed 2026-09-02 (bounded stream to the store — end-to-end: `MediaUrlStream` + `MediaStore.putStream?`, `put` narrowed to sub-ceiling, a url with no streaming hook REFUSED) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §2 | no | media bytes |
 | `CR-54` | made (content-hashed handle at first resolution) | — | no | media bytes |
 | `CR-55` | made (missing rate ⇒ unpriced, on both cost paths; strict refuses; the rate path + CLI fields land with it) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §4 | yes | — |
 | `CR-60` | **open** — race semantics, or rename + correct the table | — | no | — |
@@ -1631,7 +1631,7 @@ deliberately deferred it and recorded it in [deferred-tasks.md](../deferred-task
 deferral forward; the item closes by landing the work **and** checking off the deferred-tasks entry, so the two
 records do not disagree.
 
-### CR-53 — Large media travels fully buffered and base64-encoded · High
+### CR-53 — Large media travels fully buffered and base64-encoded · High · ✅ closed 2026-09-02
 Audio and video responses are read into a full buffer and converted to base64; raw buffer, typed view, base64
 string and the store's decoded copy can all exist at once.
 **Fix + acceptance.** A bounded stream or download lease from the adapter; the host writes straight to the media

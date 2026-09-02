@@ -264,6 +264,18 @@ export interface ExecutionHost {
    */
   readonly fetchMedia?: HostMediaFetch;
   /**
+   * The STREAMING media-egress mechanism
+   * ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §2) — the same
+   * SSRF-validated, size-bounded connect as {@link fetchMedia}, yielded instead of buffered.
+   *
+   * This is the one the `url` re-host path uses, because a url is the UNBOUNDED carrier: its size is
+   * unknown until it is fetched, so materializing it whole is exactly what ADR-0043 §2 forbids. A host
+   * without it does not fall back to `fetchMedia` — `deInlineMedia` refuses the url loudly, since an
+   * optional guarantee with a buffering fallback is not a guarantee. The Node reference is
+   * `@relavium/db`'s `streamMediaBytes`.
+   */
+  readonly streamMedia?: HostMediaStream;
+  /**
    * The host media-reference lifecycle port (1.AF/D12c + D11,
    * [ADR-0042](../../../../docs/decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)
    * §3-4): the engine records a produced handle's run reference at the de-inline choke point and reclaims
@@ -302,6 +314,13 @@ export interface ExecutionHost {
 }
 
 /** The host media-egress port: a public-HTTPS `url` → its bytes, under an engine-supplied size bound. */
+/** The streaming media-egress port: a public-HTTPS `url` → its bytes, chunk by chunk, under a size bound. */
+export type HostMediaStream = (
+  url: string,
+  maxBytes: number,
+  signal: AbortSignalLike,
+) => AsyncIterable<Uint8Array>;
+
 export type HostMediaFetch = (
   url: string,
   maxBytes: number,
@@ -865,6 +884,7 @@ export function createInMemoryHost(options?: {
   mediaStore?: MediaStore;
   /** Inject a media-egress fetch so a `url` media source is re-hosted (1.AF/D9); omit to hard-fail urls. */
   fetchMedia?: HostMediaFetch;
+  streamMedia?: HostMediaStream;
   /** Inject a media-reference lifecycle port so produced handles are recorded + reclaimed (1.AF/D12c+D11). */
   mediaReferences?: MediaReferencePort;
   /** Inject a media-write port so an `output` node's `save_to` writes its produced media (1.AF/D16). */
@@ -898,6 +918,7 @@ export function createInMemoryHost(options?: {
     setTimer: timers.setTimer,
     ...(options?.mediaStore ? { mediaStore: options.mediaStore } : {}),
     ...(options?.fetchMedia ? { fetchMedia: options.fetchMedia } : {}),
+    ...(options?.streamMedia ? { streamMedia: options.streamMedia } : {}),
     ...(options?.mediaReferences ? { mediaReferences: options.mediaReferences } : {}),
     ...(options?.mediaWrite ? { mediaWrite: options.mediaWrite } : {}),
     terminalOutbox: options?.terminalOutbox ?? createInMemoryTerminalOutbox(),

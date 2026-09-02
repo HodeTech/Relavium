@@ -43,7 +43,7 @@ import {
   type LlmProviderId,
   type MaskedSecret,
   type MediaBilledModality,
-  type MediaUrlFetch,
+  type MediaEgressHooks,
   type NodeSkippedReason,
   RUN_LEASE_HEARTBEAT_MS,
   RUN_LEASE_TTL_MS,
@@ -3816,7 +3816,7 @@ class RunExecution {
     if (store !== undefined) {
       // Pass the host media-egress hook (D9) so a `url` media source is re-hosted to a handle; undefined
       // when the host has no egress mechanism, in which case a `url` hard-fails inside deInlineMedia (I3).
-      return (await deInlineMedia(draft, store, this.#mediaUrlFetch())) as RunEventDraft;
+      return (await deInlineMedia(draft, store, this.#mediaEgress())) as RunEventDraft;
     }
     // No store: a draft carrying inline bytes OR an un-re-hosted url media part cannot be made
     // durable-safe — throw (the broadened #emitDurable catch + the #onOutcome/#begin backstops map it to
@@ -3832,18 +3832,31 @@ class RunExecution {
   }
 
   /**
-   * Build the `deInlineMedia` url-rehost hook (1.AF/D9) from the host media-egress port, bound to this
-   * run's size-bound **policy** ({@link DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES}) and abort signal — so the host
-   * mechanism receives the engine-supplied bound. `undefined` when the host has no egress mechanism, in
-   * which case a `url` media source hard-fails inside `deInlineMedia` (an un-re-hosted url may never
-   * persist, I3).
+   * Build the `deInlineMedia` url-rehost hooks (1.AF/D9, ADR-0089 §2) from the host media-egress ports,
+   * bound to this run's size-bound **policy** ({@link DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES}) and abort signal —
+   * so the host mechanism receives the engine-supplied bound. Either hook may be absent; with no STREAMING
+   * one a `url` media source hard-fails inside `deInlineMedia` (an un-re-hosted url may never persist, I3,
+   * and the url path must never be whole-buffered).
    */
-  #mediaUrlFetch(): MediaUrlFetch | undefined {
+  #mediaEgress(): MediaEgressHooks {
     const fetchMedia = this.#host.fetchMedia;
-    if (fetchMedia === undefined) {
-      return undefined;
-    }
-    return (url) => fetchMedia(url, DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES, this.#abort.signal);
+    const streamMedia = this.#host.streamMedia;
+    return {
+      // The url path takes the STREAMING hook (ADR-0089 §2); the whole-buffer one is carried for a
+      // sub-ceiling caller and is deliberately NOT a fallback for it.
+      ...(streamMedia === undefined
+        ? {}
+        : {
+            streamUrl: (url: string) =>
+              streamMedia(url, DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES, this.#abort.signal),
+          }),
+      ...(fetchMedia === undefined
+        ? {}
+        : {
+            fetchUrl: (url: string) =>
+              fetchMedia(url, DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES, this.#abort.signal),
+          }),
+    };
   }
 
   /**
@@ -3942,7 +3955,7 @@ class RunExecution {
       // here, once at the node:completed emit — since the host fetch is not memoized across the two
       // de-inline passes; the put still dedupes the bytes. A url media part on an output node is rare; the
       // alternative — threading one de-inlined result into both paths — is deferred (deferred-tasks.md).)
-      const durable = await deInlineMedia(output, store, this.#mediaUrlFetch());
+      const durable = await deInlineMedia(output, store, this.#mediaEgress());
       const handles = collectDurableMediaHandles(durable);
       if (handles.length !== 1) {
         return {

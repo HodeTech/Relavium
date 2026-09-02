@@ -5,6 +5,7 @@ import {
   isRedirectStatus,
   nodeEgressDeps,
   readBounded,
+  streamBounded,
   SafeEgressError,
   withEgressTimeout,
   type EgressDeps,
@@ -120,4 +121,66 @@ export async function fetchMediaBytes(
       }
     },
   );
+}
+
+/**
+ * The STREAMING form of {@link fetchMediaBytes}
+ * ([ADR-0089](../../../docs/decisions/0089-media-correctness-four-boundaries.md) §2) — identical policy,
+ * yielded instead of buffered.
+ *
+ * Same SSRF-validated connect, same per-hop redirect re-validation, same `200`-only rule, same size ceiling
+ * and same `MediaEgressError` normalization; the only difference is that the ceiling is enforced against the
+ * stream as the consumer pulls it, so a body that would have exceeded it is aborted part-way rather than
+ * downloaded whole and then rejected. This is the function the media path uses; the whole-buffer twin stays
+ * for a caller that already knows its body is sub-ceiling.
+ *
+ * It is an async GENERATOR rather than a `Promise<AsyncIterable>` so the connect happens on first pull: a
+ * consumer that never iterates never opens a socket, and the timeout window starts when the body is wanted.
+ */
+export async function* streamMediaBytes(
+  url: string,
+  options: FetchMediaBytesOptions,
+  deps: EgressDeps = nodeEgressDeps,
+): AsyncIterable<Uint8Array> {
+  const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
+  const localEndpoint = options.localEndpoint;
+  // `withEgressTimeout` wraps a promise, not a stream, so it is used to establish the CONNECTION (including
+  // every redirect hop) and the body is then streamed outside it. The run `AbortSignal` still bounds the
+  // read: it is threaded into the connect, and aborting it destroys the socket the body is coming from.
+  const connected = await withEgressTimeout(
+    options.signal,
+    options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    async (signal) => {
+      let target = url;
+      for (let redirects = 0; ; redirects += 1) {
+        if (redirects > maxRedirects) {
+          throw new SafeEgressError(
+            'too_many_redirects',
+            'media egress exceeded the redirect limit',
+          );
+        }
+        const response = await connectValidated(
+          target,
+          { method: 'GET', ...(localEndpoint === undefined ? {} : { localEndpoint }) },
+          deps,
+          signal,
+        );
+        if (isRedirectStatus(response.status)) {
+          response.dispose(); // never read a redirect body
+          const location = response.location;
+          if (location === undefined || location.length === 0) {
+            throw new SafeEgressError('bad_status', 'media egress redirect had no Location');
+          }
+          target = new URL(location, target).toString();
+          continue;
+        }
+        if (response.status !== 200) {
+          response.dispose();
+          throw new SafeEgressError('bad_status', 'media egress received a non-200 status');
+        }
+        return response;
+      }
+    },
+  );
+  yield* streamBounded(connected.body, options.maxBytes, connected.dispose);
 }

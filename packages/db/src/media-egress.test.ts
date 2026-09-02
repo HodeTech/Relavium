@@ -6,6 +6,7 @@ import {
   fetchMediaBytes,
   MediaEgressError,
   nodeMediaEgressDeps,
+  streamMediaBytes,
   type HopRequest,
   type MediaEgressDeps,
 } from './media-egress.js';
@@ -81,6 +82,120 @@ function fakeDeps(config: {
   };
   return { deps, calls, stats };
 }
+
+/** A body whose chunks are pulled lazily, counting how many the SOURCE actually produced. */
+function countingBody(chunks: readonly Uint8Array[], stats: { produced: number }): AsyncIterable<Uint8Array> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+      let i = 0;
+      return {
+        next: (): Promise<IteratorResult<Uint8Array>> => {
+          const chunk = chunks[i];
+          i += 1;
+          if (chunk === undefined) return Promise.resolve({ done: true, value: undefined });
+          stats.produced += 1;
+          return Promise.resolve({ done: false, value: chunk });
+        },
+      };
+    },
+  };
+}
+
+describe('streamMediaBytes (ADR-0089 §2 — the same policy, never fully buffered)', () => {
+  /** Drain a stream, returning the bytes and the number of chunks the consumer actually saw. */
+  async function drain(
+    stream: AsyncIterable<Uint8Array>,
+  ): Promise<{ bytes: Uint8Array; chunks: number }> {
+    const parts: Uint8Array[] = [];
+    for await (const chunk of stream) parts.push(chunk);
+    const total = parts.reduce((n, c) => n + c.length, 0);
+    const bytes = new Uint8Array(total);
+    let at = 0;
+    for (const part of parts) {
+      bytes.set(part, at);
+      at += part.length;
+    }
+    return { bytes, chunks: parts.length };
+  }
+
+  it('yields the body chunk by chunk rather than as one buffer', async () => {
+    const { deps } = fakeDeps({
+      resolve: { 'media.example': [PUBLIC_IP] },
+      hops: [{ status: 200, body: [new Uint8Array([1, 2]), new Uint8Array([3])] }],
+    });
+    const { bytes, chunks } = await drain(
+      streamMediaBytes('https://media.example/a.png', { maxBytes: 1000 }, deps),
+    );
+    expect(bytes).toEqual(new Uint8Array([1, 2, 3]));
+    expect(chunks).toBe(2); // the consumer saw the wire's framing, not a concatenation
+  });
+
+  it('ABORTS mid-flight when the ceiling is crossed — it does not download the rest first', async () => {
+    // The difference the whole change is about. `fetchMediaBytes` also refuses an over-size body, but only
+    // after consuming it; a large video must be cut off AT the bound, not measured after arrival. Asserted
+    // by counting what the SOURCE produced, which is the only honest proxy for peak memory here.
+    const stats = { produced: 0 };
+    const chunks = Array.from({ length: 100 }, () => new Uint8Array(10));
+    const { deps } = fakeDeps({ resolve: { 'media.example': [PUBLIC_IP] }, hops: [{ status: 200 }] });
+    const withCountingBody: MediaEgressDeps = {
+      ...deps,
+      openConnection: () =>
+        Promise.resolve({
+          status: 200,
+          location: undefined,
+          body: countingBody(chunks, stats),
+          dispose: () => undefined,
+        }),
+    };
+    await expect(
+      drain(streamMediaBytes('https://media.example/big.mp4', { maxBytes: 25 }, withCountingBody)),
+    ).rejects.toThrow(/maximum size/);
+    expect(stats.produced).toBeLessThanOrEqual(3); // 3 × 10 crosses 25 — and it stops there
+    expect(stats.produced).toBeLessThan(chunks.length); // …nowhere near draining the source
+  });
+
+  it('DISPOSES the socket when the consumer stops early', async () => {
+    // A `break` mid-iteration must still close the connection, or an abandoned stream leaks it. The
+    // generator's `finally` is what guarantees this — an ordinary `for await` return runs it.
+    const { deps, stats } = fakeDeps({
+      resolve: { 'media.example': [PUBLIC_IP] },
+      hops: [{ status: 200, body: [new Uint8Array([1]), new Uint8Array([2])] }],
+    });
+    const stream = streamMediaBytes('https://media.example/a.png', { maxBytes: 1000 }, deps);
+    const iterator = stream[Symbol.asyncIterator]();
+    await iterator.next(); // pull one chunk…
+    await iterator.return?.(undefined); // …then stop, as a `break` in a `for await` would
+    expect(stats.disposed).toBe(1);
+  });
+
+  it('applies the SAME SSRF policy as its whole-buffer twin', async () => {
+    // Same predicate, so a caller cannot pick the streaming form to dodge a check. Asserted rather than
+    // assumed, because "identical policy" is what makes a second egress function safe to add at all.
+    const { deps } = fakeDeps({
+      resolve: { 'media.example': [PUBLIC_IP] },
+      hops: [{ status: 200, body: [new Uint8Array([1])] }],
+    });
+    for (const url of [
+      'http://media.example/a.png',
+      'https://user:pass@media.example/a.png',
+      'https://127.0.0.1/a.png',
+    ]) {
+      await expect(drain(streamMediaBytes(url, { maxBytes: 1000 }, deps))).rejects.toThrow();
+    }
+  });
+
+  it('opens no connection until the consumer pulls', async () => {
+    // An async generator defers its body, so building a stream and abandoning it must make no request —
+    // otherwise a speculatively-constructed hook would leak connections.
+    const { deps, calls } = fakeDeps({
+      resolve: { 'media.example': [PUBLIC_IP] },
+      hops: [{ status: 200, body: [new Uint8Array([1])] }],
+    });
+    streamMediaBytes('https://media.example/a.png', { maxBytes: 1000 }, deps);
+    await Promise.resolve();
+    expect(calls).toHaveLength(0);
+  });
+});
 
 describe('fetchMediaBytes (1.AF/D9, ADR-0043 — SSRF-validated, size-bounded media egress)', () => {
   it('fetches bytes over a 200, pinning the connection to the validated resolved IP', async () => {

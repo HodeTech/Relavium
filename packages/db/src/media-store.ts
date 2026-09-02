@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Dirent } from 'node:fs';
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 
 import {
@@ -81,6 +81,44 @@ export class FilesystemMediaStore implements MediaStore {
   // row when the store is invoked; no code populates that table at P1+P2.
   put(bytes: Uint8Array): Promise<string> {
     return this.#write(bytes);
+  }
+
+  /**
+   * Content-address a STREAMED body without holding it whole
+   * ([ADR-0089](../../../docs/decisions/0089-media-correctness-four-boundaries.md) §2).
+   *
+   * The same atomic-publish discipline as {@link put} — a unique temp file, then a rename onto the
+   * content-addressed path — but the digest is computed INCREMENTALLY as chunks are appended, so the body
+   * never exists whole in memory. That is the whole point: `put` needs the bytes up front to hash them, and
+   * needing them up front is what makes "never fully buffered" impossible.
+   *
+   * The handle is not known until the last chunk, so the temp file is written first and renamed once the
+   * digest is final. A failed or aborted stream removes the temp file and publishes NOTHING — there is no
+   * half-object and no handle anyone could resolve, which is the partial-write cleanup ADR-0089 §2 requires.
+   */
+  async putStream(chunks: AsyncIterable<Uint8Array>): Promise<string> {
+    const hash = createHash('sha256');
+    const tmp = join(this.#root, `stream.${randomUUID()}.tmp`);
+    await mkdir(this.#root, { recursive: true });
+    const file = await open(tmp, 'w');
+    try {
+      for await (const chunk of chunks) {
+        hash.update(chunk);
+        await file.write(chunk);
+      }
+      await file.close();
+    } catch (err) {
+      await file.close().catch(() => undefined);
+      await rm(tmp, { force: true });
+      throw err;
+    }
+    const handle = `media://sha256-${hash.digest('hex')}`;
+    const path = this.#pathFor(digestOf(handle));
+    await mkdir(dirname(path), { recursive: true });
+    // Same atomic publish as `#write`, and the same content-addressed idempotence: racing an identical
+    // body produces the same final path, so a duplicate rename is harmless.
+    await rename(tmp, path);
+    return handle;
   }
 
   async #write(bytes: Uint8Array): Promise<string> {
@@ -223,6 +261,29 @@ export class InMemoryMediaStore implements MediaStore {
     // caller's array must never corrupt the content-addressed blob this handle names.
     this.#blobs.set(handle, bytes.slice());
     return Promise.resolve(handle);
+  }
+
+  /**
+   * The streaming write (ADR-0089 §2). An in-MEMORY store necessarily ends up holding the whole body — that
+   * is what it is — so this exists for CONTRACT parity, not for a memory saving: an engine that refuses the
+   * url path without a `putStream` would otherwise be untestable against the reference store, and a test
+   * host would be forced to pretend. Nothing about the real guarantee rests on this implementation; the
+   * filesystem one is where it is kept.
+   */
+  async putStream(chunks: AsyncIterable<Uint8Array>): Promise<string> {
+    const collected: Uint8Array[] = [];
+    let total = 0;
+    for await (const chunk of chunks) {
+      collected.push(chunk);
+      total += chunk.length;
+    }
+    const bytes = new Uint8Array(total);
+    let at = 0;
+    for (const chunk of collected) {
+      bytes.set(chunk, at);
+      at += chunk.length;
+    }
+    return this.put(bytes);
   }
 
   get(handle: string): Promise<Uint8Array> {

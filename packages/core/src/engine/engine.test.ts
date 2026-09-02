@@ -224,6 +224,25 @@ function stubMediaStore(): { store: MediaStore; puts: { handle: string; bytes: U
         ? Promise.reject(new Error('no bytes'))
         : Promise.resolve(found.bytes);
     },
+    // The streaming write (ADR-0089 §2). A stub must concatenate to produce a digest; a real store writes as
+    // it consumes. The concatenation is confined here, so it cannot mask a regression in the engine.
+    putStream: async (chunks) => {
+      const collected: Uint8Array[] = [];
+      let total = 0;
+      for await (const chunk of chunks) {
+        collected.push(chunk);
+        total += chunk.length;
+      }
+      const bytes = new Uint8Array(total);
+      let at = 0;
+      for (const chunk of collected) {
+        bytes.set(chunk, at);
+        at += chunk.length;
+      }
+      const handle = `media://sha256-${digest(bytes)}`;
+      puts.push({ handle, bytes });
+      return handle;
+    },
     resolveForEgress: () => Promise.reject(new Error('unused by this test')),
     readRange: () => Promise.reject(new Error('unused by this test')),
   };
@@ -453,9 +472,27 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
     const host = createInMemoryHost({
       store: runStore,
       mediaStore,
-      fetchMedia: (url) => {
+      // The url path takes the STREAMING port now (ADR-0089 §2) — a url is the unbounded carrier, so it must
+      // never be whole-buffered. Two chunks, so the engine's counting wrapper is crossed at a boundary.
+      streamMedia: (url) => {
         fetched.push(url);
-        return Promise.resolve(FETCH_BYTES);
+        return {
+          [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+            const parts = [FETCH_BYTES.slice(0, 1), FETCH_BYTES.slice(1)];
+            let i = 0;
+            return {
+              next: (): Promise<IteratorResult<Uint8Array>> => {
+                const chunk = parts[i];
+                i += 1;
+                return Promise.resolve(
+                  chunk === undefined
+                    ? { done: true, value: undefined }
+                    : { done: false, value: chunk },
+                );
+              },
+            };
+          },
+        };
       },
     });
     const urlPart = {

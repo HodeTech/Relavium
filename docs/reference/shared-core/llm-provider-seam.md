@@ -586,12 +586,17 @@ The platform-free **`MediaStore`** contract — `put` / `get` / `resolveForEgres
 `readRange`, bytes as `Uint8Array`, named only by the handle string — and the
 **`DeInlineMedia`** transform are **implemented**: `@relavium/db` ships the filesystem CAS
 and an in-memory reference, and the choke-point wiring landed at 1.AF.
-[ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §2 **decides** a
-fifth method, optional **`putStream?(bytes: AsyncIterable<Uint8Array>, mimeType)`**, plus a
-streaming sibling to `MediaUrlFetch`, so a media body is never materialized whole between
-the network and the store; `put` narrows to bodies already under `INLINE_MEDIA_CEILING`
-rather than acting as a general fallback. **That pair is decided, not yet implemented — it
-lands in `W5`**; until then the whole-buffer path is what ships.
+[ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §2 adds a fifth
+method, optional **`putStream?(bytes: AsyncIterable<Uint8Array>, mimeType)`**, plus
+**`MediaUrlStream`** — the streaming sibling of `MediaUrlFetch` — so a media body is never
+materialized whole between the network and the store. The two are not interchangeable and
+the **carrier decides**: a decoded `base64` body is already whole and already bounded by
+`INLINE_MEDIA_CEILING`, so it takes `put`; a `url` is the UNBOUNDED carrier (its size is
+unknown until fetched) so it takes the streaming pair, and a host offering only the
+whole-buffer form has its `url` sources **refused** rather than quietly buffered — an
+optional guarantee with a buffering fallback is not a guarantee. The bound is enforced as
+the stream is consumed, so an over-size body is aborted mid-flight instead of downloaded
+and then rejected.
 
 ### Model discovery — the `listModels?` capability ([ADR-0064](../../decisions/0064-live-model-catalog.md))
 

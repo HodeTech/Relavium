@@ -394,6 +394,11 @@ export async function readBounded(
   } finally {
     dispose(); // abort the socket (harmless if the body already ended)
   }
+  // ONE allocation of the final size, filled from the chunk list — which is then unreachable. The chunk
+  // list and the concatenated copy briefly coexist, so peak is ~2× the body; that is inherent to returning
+  // a single `Uint8Array` and is why the media path takes {@link streamBounded} instead of this
+  // ([ADR-0089](../../../docs/decisions/0089-media-correctness-four-boundaries.md) §2). This function stays
+  // for the TEXT egress path, whose bodies are bounded far below the media ceiling.
   const out = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
@@ -401,6 +406,36 @@ export async function readBounded(
     offset += chunk.length;
   }
   return out;
+}
+
+/**
+ * The STREAMING twin of {@link readBounded}: yields each chunk as it arrives and never retains one
+ * ([ADR-0089](../../../docs/decisions/0089-media-correctness-four-boundaries.md) §2, fulfilling
+ * [ADR-0043](../../../docs/decisions/0043-media-egress-failover-rematerialization-ssrf.md) §2's
+ * "never fully buffered in process").
+ *
+ * The bound is applied AS the body is consumed, so an over-size response is aborted mid-flight rather than
+ * completed and then rejected — which is the difference between refusing a 5 GB video and downloading it
+ * first. `dispose` runs in a `finally`, so a consumer that stops early (a `break`, a throw downstream, an
+ * abort) still closes the socket rather than leaking it.
+ */
+export async function* streamBounded(
+  body: AsyncIterable<Uint8Array>,
+  maxBytes: number,
+  dispose: () => void,
+): AsyncIterable<Uint8Array> {
+  let total = 0;
+  try {
+    for await (const chunk of body) {
+      total += chunk.length;
+      if (total > maxBytes) {
+        throw new SafeEgressError('too_large', 'egress response exceeded the maximum size');
+      }
+      yield chunk;
+    }
+  } finally {
+    dispose();
+  }
 }
 
 /**

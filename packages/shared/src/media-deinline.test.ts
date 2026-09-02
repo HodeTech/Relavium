@@ -9,11 +9,38 @@ import {
 import { deInlineMedia } from './media-deinline.js';
 
 /** A content-addressed in-memory `MediaStore` stub (pure, no crypto): same bytes ⇒ same 64-hex handle. */
+/**
+ * An `AsyncIterable` over a fixed chunk list — the stub form of a streamed body.
+ *
+ * Written with an explicit `Symbol.asyncIterator` rather than an `async function*` because a stub over a
+ * fixed array genuinely has nothing to await, and `require-await` is right to flag one that pretends
+ * otherwise. This shape is honest about being synchronous underneath while satisfying the contract.
+ */
+function asyncChunks(chunks: readonly Uint8Array[]): AsyncIterable<Uint8Array> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+      let i = 0;
+      return {
+        next: (): Promise<IteratorResult<Uint8Array>> => {
+          const chunk = chunks[i];
+          i += 1;
+          return Promise.resolve(
+            chunk === undefined ? { done: true, value: undefined } : { done: false, value: chunk },
+          );
+        },
+      };
+    },
+  };
+}
+
 function makeStubStore(): {
   store: MediaStore;
   puts: { handle: string; mimeType: string; bytes: Uint8Array }[];
+  /** Handles written through `putStream` — so a test can prove WHICH method a carrier took. */
+  streamPuts: string[];
 } {
   const puts: { handle: string; mimeType: string; bytes: Uint8Array }[] = [];
+  const streamPuts: string[] = [];
   const fakeDigest = (bytes: Uint8Array): string => {
     let hex = '';
     for (let seed = 0; seed < 8; seed += 1) {
@@ -35,11 +62,32 @@ function makeStubStore(): {
         ? Promise.reject(new Error(`no bytes for ${handle}`))
         : Promise.resolve(found.bytes);
     },
+    // The streaming write (ADR-0089 §2). It CONCATENATES here only because a stub must produce a digest;
+    // a real store writes as it consumes. The concatenation is deliberately confined to the fake, so a
+    // regression that routed a url through `put` would still be visible in `puts` vs `streamPuts`.
+    putStream: async (chunks, mimeType) => {
+      const collected: Uint8Array[] = [];
+      let total = 0;
+      for await (const chunk of chunks) {
+        collected.push(chunk);
+        total += chunk.length;
+      }
+      const bytes = new Uint8Array(total);
+      let at = 0;
+      for (const chunk of collected) {
+        bytes.set(chunk, at);
+        at += chunk.length;
+      }
+      const handle = `media://sha256-${fakeDigest(bytes)}`;
+      puts.push({ handle, mimeType, bytes });
+      streamPuts.push(handle);
+      return handle;
+    },
     resolveForEgress: () =>
       Promise.reject(new Error('resolveForEgress is not exercised by deInlineMedia')),
     readRange: () => Promise.reject(new Error('readRange is not exercised by deInlineMedia')),
   };
-  return { store, puts };
+  return { store, puts, streamPuts };
 }
 
 const base64MediaPart: ContentPart = {
@@ -158,9 +206,11 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
     const { store, puts } = makeStubStore();
     const fetched: string[] = [];
     const FETCH_BYTES = new Uint8Array([1, 2, 3, 4]);
-    const fetchUrl = (url: string): Promise<Uint8Array> => {
+    // A url takes the STREAMING hook now (ADR-0089 §2) — it is the unbounded carrier, so it must never be
+    // whole-buffered. Yielded in two chunks so the counting wrapper is exercised across boundaries.
+    const streamUrl = (url: string): AsyncIterable<Uint8Array> => {
       fetched.push(url);
-      return Promise.resolve(FETCH_BYTES);
+      return asyncChunks([FETCH_BYTES.slice(0, 2), FETCH_BYTES.slice(2)]);
     };
     const urlPart: unknown = [
       {
@@ -169,31 +219,78 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
         source: { kind: 'url', url: 'https://x.example/a.png' },
       },
     ];
-    const out = (await deInlineMedia(urlPart, store, fetchUrl)) as {
+    const out = (await deInlineMedia(urlPart, store, { streamUrl })) as {
       source: unknown;
       byteLength: number;
     }[];
     expect(fetched).toEqual(['https://x.example/a.png']); // the host hook was called with the url
     const put0 = puts[0];
     expect(put0).toBeDefined();
-    expect(put0?.bytes).toEqual(FETCH_BYTES); // the fetched bytes were content-addressed
+    expect(put0?.bytes).toEqual(FETCH_BYTES); // the streamed bytes were content-addressed, in order
     expect(out[0]?.source).toEqual({ kind: 'handle', ref: put0?.handle });
     expect(out[0]?.byteLength).toBe(4);
     expect(JSON.stringify(out)).not.toContain('x.example'); // the url is gone — re-hosted to a handle (I3)
   });
 
-  it('still hard-fails a mimeType-less url part EVEN WITH a fetch hook (nothing to content-address)', async () => {
+  it('REFUSES a url when no streaming hook is wired — it does not fall back to the whole-buffer one', async () => {
+    // ADR-0089 §2's load-bearing sentence: an optional guarantee with a buffering fallback is not a
+    // guarantee. A url is the UNBOUNDED carrier (unlike base64, which the schema caps at
+    // INLINE_MEDIA_CEILING), so a host offering only `fetchUrl` must be refused rather than quietly routed
+    // through it — which is exactly how "never fully buffered" would have stayed unmet while looking fixed.
     const { store, puts } = makeStubStore();
     let fetchCalls = 0;
     const fetchUrl = (): Promise<Uint8Array> => {
       fetchCalls += 1;
       return Promise.resolve(new Uint8Array([1]));
     };
+    const urlPart: unknown = [
+      {
+        type: 'media',
+        mimeType: 'image/png',
+        source: { kind: 'url', url: 'https://x.example/a.png' },
+      },
+    ];
+    await expect(deInlineMedia(urlPart, store, { fetchUrl })).rejects.toThrow(
+      /no streaming media-egress hook/,
+    );
+    expect(fetchCalls).toBe(0); // the whole-buffer hook is never reached
+    expect(puts).toHaveLength(0);
+  });
+
+  it('takes putStream for a url and put for base64 — the carrier decides the method', async () => {
+    // The two are not interchangeable. `put` stays correct for a decoded base64 body (already whole, already
+    // bounded); routing a url through it is the defect. Asserted by WHICH method each carrier reached.
+    const { store, streamPuts } = makeStubStore();
+    const streamUrl = (): AsyncIterable<Uint8Array> => asyncChunks([new Uint8Array([9])]);
+    await deInlineMedia([base64MediaPart], store, { streamUrl });
+    expect(streamPuts).toHaveLength(0); // base64 → put
+
+    await deInlineMedia(
+      [
+        {
+          type: 'media',
+          mimeType: 'image/png',
+          source: { kind: 'url', url: 'https://x.example/a.png' },
+        },
+      ] as unknown as ContentPart[],
+      store,
+      { streamUrl },
+    );
+    expect(streamPuts).toHaveLength(1); // url → putStream
+  });
+
+  it('still hard-fails a mimeType-less url part EVEN WITH a fetch hook (nothing to content-address)', async () => {
+    const { store, puts } = makeStubStore();
+    let fetchCalls = 0;
+    const streamUrl = (): AsyncIterable<Uint8Array> => {
+      fetchCalls += 1;
+      return asyncChunks([new Uint8Array([1])]);
+    };
     const bare: unknown = {
       type: 'media',
       source: { kind: 'url', url: 'https://x.example/a.png' },
     };
-    await expect(deInlineMedia(bare, store, fetchUrl)).rejects.toThrow(/no mimeType/);
+    await expect(deInlineMedia(bare, store, { streamUrl })).rejects.toThrow(/no mimeType/);
     expect(puts).toHaveLength(0); // fail-closed before the hook — no fetch, no put
     expect(fetchCalls).toBe(0); // the hook is never invoked — it fails closed BEFORE any fetch
   });
