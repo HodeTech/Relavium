@@ -8,7 +8,13 @@
  * until the shared SSRF primitive lands (1.AE) — i.e. their host capability is simply not wired yet.
  */
 
-import { type EffectTier, MEDIA_HANDLE_PATTERN, scopeSetIncludes } from '@relavium/shared';
+import {
+  type EffectTier,
+  INLINE_MEDIA_CEILING,
+  MEDIA_HANDLE_PATTERN,
+  mediaModalityOf,
+  scopeSetIncludes,
+} from '@relavium/shared';
 import { z } from 'zod';
 
 import { ToolArgsInvalidError, ToolPolicyError, ToolUnavailableError } from './errors.js';
@@ -544,6 +550,40 @@ const readMediaTool = defineBuiltin({
         'read_media',
         'media_scope_denied',
         'read_media: the requesting scope may not read this media handle',
+      );
+    }
+    // **Refuse what the delivery rail cannot carry, HERE, where the model can still correct.** The bytes
+    // reach the model as an in-flight `base64` part, and `INLINE_MEDIA_CEILING` refuses video and PDF at any
+    // size and image/audio over 256 KiB — enforced by the seam's own schema at the adapter. Without this
+    // check the tool authorized the handle, described it ("4192304 bytes — attached below"), and the model
+    // then read a descriptor for something the NEXT request died trying to send: a `ZodError` after the
+    // tool had already run, on every plan entry, telling the caller to "pass a handle instead" — which is
+    // exactly what the engine passed. A screenshot, a photo, a generated image or any PDF is over the line.
+    //
+    // A typed `invalid_args` instead, so the model gets a correctable refusal naming the limit and can pick
+    // a different handle or stop asking. The real fix is a delivery path that does not inline — a
+    // provider-ref upload through `resolveForEgress` — which ADR-0089 §2's amendment already records as open.
+    const modality = mediaModalityOf(info.mimeType);
+    if (modality === undefined) {
+      throw new ToolArgsInvalidError(
+        'read_media',
+        ['handle'],
+        `read_media: ${info.mimeType} is not a media type the model can be shown`,
+      );
+    }
+    const ceiling = INLINE_MEDIA_CEILING[modality];
+    if (ceiling === 0) {
+      throw new ToolArgsInvalidError(
+        'read_media',
+        ['handle'],
+        `read_media: ${modality} media cannot be delivered inline to a model — describe it or extract frames instead`,
+      );
+    }
+    if (info.byteLength > ceiling) {
+      throw new ToolArgsInvalidError(
+        'read_media',
+        ['handle'],
+        `read_media: this ${modality} is ${info.byteLength} bytes, over the ${ceiling}-byte inline limit — a smaller or downscaled handle can be delivered`,
       );
     }
     return attachMedia(

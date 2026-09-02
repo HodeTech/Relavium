@@ -1,3 +1,4 @@
+import { INLINE_MEDIA_CEILING } from '@relavium/shared';
 import type { Scope } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -395,6 +396,51 @@ describe('read_media (1.AF/D12 + `CR-50` — scope-set authz, whole handle, deli
       required: ['handle'],
       additionalProperties: false,
     });
+  });
+
+  it('REFUSES a handle the delivery rail cannot carry — over the inline ceiling, correctably', async () => {
+    // The bytes reach the model as an in-flight base64 part, and the seam's own schema refuses an image
+    // over 256 KiB. Without this check the tool authorized the handle and described it, and the NEXT
+    // request died on a `ZodError` — after the tool had run, on every plan entry, telling the caller to
+    // "pass a handle instead", which is exactly what the engine had passed.
+    const t = tool('read_media');
+    const err = await rejection(() =>
+      t.dispatch(
+        t.parseArgs({ handle: HANDLE }),
+        {},
+        mediaCtx(SESSION, access([SESSION], INLINE_MEDIA_CEILING.image + 1)),
+      ),
+    );
+    expect(err).toBeInstanceOf(ToolArgsInvalidError); // correctable — the model can pick another handle
+    expect(err instanceof Error ? err.message : '').toContain('over the'); // narrowed, never an `as`
+  });
+
+  it('REFUSES video and PDF outright — they are never inline, at any size', async () => {
+    const t = tool('read_media');
+    for (const mimeType of ['video/mp4', 'application/pdf']) {
+      const typed: MediaReadAccess = {
+        describe: () => Promise.resolve({ mimeType, byteLength: 10, allowedScopes: [SESSION] }),
+        readRange: () => Promise.reject(new Error('must not read')),
+      };
+      const err = await rejection(() =>
+        t.dispatch(t.parseArgs({ handle: HANDLE }), {}, mediaCtx(SESSION, typed)),
+      );
+      // `INLINE_MEDIA_CEILING` is 0 for both — the worst amplification surfaces, handle-only by design.
+      expect(err).toBeInstanceOf(ToolArgsInvalidError);
+      expect(err instanceof Error ? err.message : '').toContain('cannot be delivered inline');
+    }
+  });
+
+  it('accepts a handle exactly AT the ceiling — the boundary is inclusive', async () => {
+    const t = tool('read_media');
+    const { media } = takeMediaAttachment(
+      await t.dispatch(
+        t.parseArgs({ handle: HANDLE }),
+        {},
+        mediaCtx(SESSION, access([SESSION], INLINE_MEDIA_CEILING.image)),
+      ),
+    );
+    expect(media).toHaveLength(1); // `>` not `>=` — a handle at the limit is deliverable
   });
 
   it('denies (media_scope_denied) when the scope is NOT in allowedScopes', async () => {

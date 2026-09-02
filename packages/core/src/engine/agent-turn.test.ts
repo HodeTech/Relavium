@@ -1867,6 +1867,63 @@ describe('media attachments are delivered on a synthesized user message (`CR-50`
     );
   });
 
+  it('PARALLEL tool calls keep their results contiguous — one media message, after all of them', async () => {
+    // **The shape every provider rejects.** Appending inside the dispatch loop produced
+    // `tool, user, tool, user`: OpenAI requires the tool messages answering an assistant `tool_calls` turn
+    // to follow it contiguously and 400s naming the unanswered `tool_call_id`; Gemini requires the
+    // `functionResponse` count to match the `functionCall` count; Anthropic's `mergeAdjacentSameRole`
+    // folds them into one block array with an image BETWEEN two `tool_result` blocks, which is what that
+    // function exists to prevent. The model emits parallel calls whenever they are advertised, so this is
+    // the ordinary "look at both screenshots" case — and it failed AFTER both tools had run.
+    const twoCalls: StreamChunk[] = [
+      { type: 'tool_call_start', id: 'c1', name: 'read_media' },
+      { type: 'tool_call_end', id: 'c1' },
+      { type: 'tool_call_start', id: 'c2', name: 'read_media' },
+      { type: 'tool_call_end', id: 'c2' },
+      STOP('tool_use'),
+    ];
+    const { provider, sent } = capturingProvider([
+      twoCalls,
+      [{ type: 'text_delta', text: 'two cats' }, STOP()],
+    ]);
+    await runAgentTurn(baseParams(provider, { registry: mediaRegistry() }));
+
+    const continuation = sent[1] ?? [];
+    const roles = continuation.map((m) => m.role);
+    // Both tool results adjacent, then exactly ONE user message carrying both attachments.
+    const firstTool = roles.indexOf('tool');
+    expect(roles[firstTool + 1]).toBe('tool');
+    expect(roles[firstTool + 2]).toBe('user');
+    expect(roles.slice(firstTool + 3)).toEqual([]);
+    const synthesized = continuation.at(-1);
+    expect(synthesized?.content.filter((p) => p.type === 'media')).toHaveLength(2);
+  });
+
+  it('refuses a response whose tool calls produce more attachments than it will deliver', async () => {
+    // The only backstop used to be `MEDIA_MESSAGE_CAPS` at the adapter, POST-resolution: a `ZodError`
+    // about the seam's limit, after every tool had already run. Refused here instead, with our message.
+    const over = ADMISSION_CEILINGS.mediaAttachmentsPerResponse + 1;
+    const many = Array.from({ length: over }, () => ATTACHMENT);
+    const { provider } = capturingProvider([toolTurn, [{ type: 'text_delta', text: 'x' }, STOP()]]);
+    const registry = stubRegistry((call) => ({
+      output: 'descriptor',
+      mediaAttachments: many,
+      truncated: false,
+      toolResult: markUntrusted({
+        type: 'tool_result' as const,
+        toolCallId: call.id,
+        result: 'descriptor',
+      }),
+      events: {
+        call: { toolId: 'read_media', toolInput: {} },
+        result: { toolId: 'read_media', success: true, outputSummary: 'd', durationMs: 1 },
+      },
+    }));
+    await expect(runAgentTurn(baseParams(provider, { registry }))).rejects.toMatchObject({
+      code: 'turn_limit',
+    });
+  });
+
   it('synthesizes NOTHING for an ordinary tool — no empty message in the transcript', async () => {
     const { provider, sent } = capturingProvider([
       toolTurn,

@@ -495,6 +495,21 @@ async function dispatch(
     try {
       if (replayed === NOT_REPLAYED) {
         const dispatched = takeMediaAttachment(await def.dispatch(args, host, ctx));
+        // **A journaled effect and a media attachment have no correct resume semantics, so the combination
+        // is refused rather than commented against.** The journal round-trips JSON, which cannot carry the
+        // envelope's symbol, so a replayed dispatch would restore the descriptor and deliver NO media — the
+        // model reading "attached below" for something it never received, silently, with no error and no
+        // event. `read_media` declares no tier today, but every discovered MCP tool is unconditionally tier
+        // 3, so the next tool that answers with media is one `effect:` away from this. Loud here beats
+        // silent on a resume nobody is watching.
+        if (tier !== undefined && dispatched.media.length > 0) {
+          throw new ToolExecutionError(
+            def.id,
+            `tool \`${def.id}\` returned a media attachment on a journaled dispatch — a replay cannot re-deliver it`,
+            undefined,
+            { recoverable: false, retryable: false },
+          );
+        }
         output = dispatched.value;
         mediaAttachments = dispatched.media;
       } else {

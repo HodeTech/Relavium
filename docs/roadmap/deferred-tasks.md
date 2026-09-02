@@ -456,6 +456,26 @@ Severity is the review's verified rating. Check an item off in the PR that resol
       command as the caller) and re-homed in [testing.md](../standards/testing.md) as an OPEN acceptance
       criterion — recorded here so "wired but dead" is a known state rather than a discovery.
       *(low · packages/core/src/tools/types.ts; ADR-0089 §1)*
+- [ ] **The synthesized media message has no reader but the model.** It lives in the turn's context window
+      and nowhere else: `AgentSession` re-appends only the user text and the final assistant text, so it
+      never reaches `history.db` or an export, and no event is emitted for it. The provenance preamble's
+      stated audience — "anyone reading a transcript or an exported workflow" — does not exist, and no
+      surface can show the user that an image was placed in the conversation on their behalf. Closing it is
+      a surface change (an event, or persistence), which ADR-0089 §1 did not decide. Its Negative is
+      amended in place with the correction.
+      *(low · packages/core/src/engine/agent-session.ts; ADR-0089 §1)*
+- [ ] **`read_media` is advertised to models that cannot receive an image.** The tool is offered on grant
+      alone, so a model with no image input can call it, get a descriptor, and then have the whole turn die
+      when the continuation is pre-skipped by every plan entry — a chain-exhausted failure for choosing a
+      tool the engine offered. `CR-51` built the per-model capability metadata that would let the advertise
+      filter drop it; wiring that (or turning the refusal into a correctable `isError`) is the fix.
+      *(medium · packages/core/src/engine/agent-session.ts, packages/core/src/tools/registry.ts; `CR-50`, `CR-51`)*
+- [ ] **Media over the inline ceiling cannot be delivered to a model at all.** `read_media` now refuses a
+      video, a PDF, or an image over 256 KiB with a correctable error naming the limit — honest, but it
+      means a screenshot or a photo often cannot be shown. The real fix is a delivery path that does not
+      inline: `resolveForEgress` returning a provider-hosted ref (a Gemini `fileUri`, an OpenAI `file_id`)
+      instead of base64, which ADR-0031 already reserves the sidecar for.
+      *(medium · packages/llm/src/fallback-chain.ts, packages/db/src/media-store.ts; ADR-0031, ADR-0089 §1)*
 - [ ] **A signature Gemini attaches to a `text` or `inlineData` part is still dropped.**
       [ADR-0090](../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md)'s named deferral:
       neither `text` nor `media` has a field for a continuation token, and the streaming fold flattens text

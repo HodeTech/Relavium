@@ -78,6 +78,21 @@ export const ADMISSION_CEILINGS = {
    */
   mediaPartsPerNodeOutput: 32,
   /**
+   * Media attachments ONE model response may cause to be delivered (`CR-50`) — the sum across every tool
+   * call in the response, not per call. Its subject is a response, like
+   * {@link ADMISSION_CEILINGS.toolCallsPerResponse}, so it cannot live at admission.
+   *
+   * Without it the only backstop was `MEDIA_MESSAGE_CAPS.maxPartsPerMessage`, enforced POST-resolution at
+   * the adapter — so a 17-attachment response was a `ZodError` that killed the turn after every tool had
+   * run, rather than a refusal the model could correct. And the bytes are re-resolved from the store on
+   * every attempt and every provider call of the turn, which is real spend the pre-egress governor cannot
+   * see (it receives only model/provider/maxTokens).
+   *
+   * Deliberately below `maxPartsPerMessage` (16) so the engine refuses before the seam does, and the error
+   * the model sees is ours.
+   */
+  mediaAttachmentsPerResponse: 12,
+  /**
    * Settled runs a `WorkflowEngine` keeps addressable in memory (`CR-33`). Not an admission ceiling like
    * its siblings — nothing is rejected — but it lives here because it is the same kind of promise: a number
    * a host can read rather than a growth nobody bounded.

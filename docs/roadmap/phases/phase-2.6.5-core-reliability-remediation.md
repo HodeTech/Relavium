@@ -1629,6 +1629,17 @@ in `agent-turn.test.ts` and break-verified against three separate mutations. Bec
 ordinary media-INPUT rail, a model with no image input **refuses the turn** rather than reading a descriptor
 for something it never got — `CR-51`'s gate doing the work, at no extra cost.
 
+**What the review round added (2026-09-02).** A systematic read found one blocker and two highs, all real
+and all fixed here. The synthesized message was appended INSIDE the dispatch loop, so a response with two
+tool calls produced `tool, user, tool, user` — which OpenAI 400s (tool messages must follow their
+`tool_calls` turn contiguously), Gemini rejects (function-response count must match function-call count),
+and Anthropic merges into one block array with an image between two `tool_result` blocks. It is now one
+message for the whole response. `read_media` also accepted handles the rail cannot carry — video and PDF are
+never inline and an image over 256 KiB is refused by the seam's schema — so the tool authorized and
+described a handle whose delivery then killed the turn; it now refuses correctably, naming the limit. And a
+journaled tool returning an attachment is refused outright, because the journal round-trips JSON and a
+replay would restore the descriptor while delivering no media, silently.
+
 **What did NOT land, and why it is a producer problem rather than an omission.** The defect text also names
 "production chat does not wire the media-read scope". It still does not, and wiring it now would be worse
 than leaving it: **nothing anywhere creates a `session`- or `workspace`-scope `media_references` row**, and

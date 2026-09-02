@@ -22,6 +22,8 @@
 
 import type { DurableMediaPart } from '@relavium/shared';
 
+import { ToolArgsInvalidError } from './errors.js';
+
 const MEDIA_ATTACHMENT: unique symbol = Symbol('relavium.mediaAttachment');
 
 /** A dispatch result paired with handle-only media the engine must deliver on a synthesized message. */
@@ -43,14 +45,27 @@ export function attachMedia<T>(
   media: readonly DurableMediaPart[],
 ): WithMediaAttachment<T> {
   if (media.length === 0) {
-    throw new Error('attachMedia: media must be non-empty — use the bare value when there is none');
+    // A TYPED dispatch error, not a bare `Error`. A bare throw here was caught by the registry's
+    // classification ladder and re-wrapped as a `recoverable` tool failure — inviting the model to retry an
+    // engine invariant violation, which no retry can fix (error-handling.md).
+    throw new ToolArgsInvalidError(
+      'read_media',
+      [],
+      'attachMedia: media must be non-empty — use the bare value when there is none',
+    );
   }
   return { [MEDIA_ATTACHMENT]: true, value, media };
 }
 
 /**
  * Split an envelope into its result and its media; a value that is not an envelope passes through with no
- * media. Total and allocation-free on the dominant path (every other builtin returns a bare value).
+ * media. Total, and cheap on the dominant path (a shape test and one small object — the earlier claim of
+ * "allocation-free" was simply wrong: both branches allocate a result object).
+ *
+ * **Top level only.** An envelope nested inside an array or an object property is NOT split — it would ride
+ * on into `output_mapping`, bounding, the spill and the durable event, where `JSON.stringify` drops the
+ * symbol and leaks `{ value, media: [...] }` into the tool result while delivering nothing. No producer
+ * does this, and the shape is engine-internal, but the constraint is stated rather than assumed.
  */
 export function takeMediaAttachment(result: unknown): {
   readonly value: unknown;

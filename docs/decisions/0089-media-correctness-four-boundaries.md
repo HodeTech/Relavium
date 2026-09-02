@@ -256,6 +256,16 @@ product with no remedy, which is not a stricter cap, it is an outage.
   marked as such, but it is still a message the user did not write appearing in their history, and it will
   show up in exports and in the context window — mitigated by the fixed preamble that names its origin, and by
   the descriptor-only tool result keeping the duplication to one copy of the bytes.
+  **(Amended 2026-09-02, on implementation: the second half of that sentence is wrong.)** The message lives in
+  the context window for the duration of the turn and NOWHERE else. `AgentSession` re-appends only the user
+  text and the final assistant text, so every intra-turn tool round — this message included — is discarded;
+  it never reaches `history.db` and never appears in an export. That is a smaller privacy footprint than
+  recorded, and a **larger** provenance gap: the preamble's stated audience was "anyone reading a transcript
+  or an exported workflow", and that reader does not exist. Its only reader is the model. No event is emitted
+  for the message either, so no surface can show the user that an image was placed in the conversation on
+  their behalf. Recorded as an open consequence rather than repaired here: making it visible is a surface
+  change (an event, or persistence), which this ADR did not decide.
+  See [deferred-tasks.md](../roadmap/deferred-tasks.md).
 - Two ways to write bytes into a `MediaStore` (`put` and `putStream?`) until a later change unifies them —
   mitigated by `put` being explicitly scoped to sub-ceiling bodies rather than left as a general fallback, so
   the two are not interchangeable and no caller has to choose.

@@ -78,7 +78,11 @@ function readMediaExchange(): LlmMessage[] {
 }
 
 /** Run `messages` through the chain (so the handle is resolved exactly as production resolves it). */
-async function sendThroughChain(provider: LlmProvider, model: string): Promise<void> {
+async function sendThroughChain(
+  provider: LlmProvider,
+  model: string,
+  messages: LlmMessage[] = readMediaExchange(),
+): Promise<void> {
   const chain = new FallbackChain([{ provider, model, maxAttempts: 1 }], {
     keyFor: () => Promise.resolve('test-key'),
     sleep: () => Promise.resolve(),
@@ -87,14 +91,18 @@ async function sendThroughChain(provider: LlmProvider, model: string): Promise<v
       return Promise.resolve({ kind: 'base64', data: PNG_BASE64 });
     },
   });
-  await chain.generate({
-    model,
-    messages: readMediaExchange(),
-    tools: [],
-  });
+  await chain.generate({ model, messages, tools: [] });
 }
 
-/** Deep-search a lowered provider payload for the base64 image, wherever that provider puts it. */
+/**
+ * Deep-search a lowered provider payload for the base64 image, wherever that provider puts it.
+ *
+ * Deliberately position-agnostic, because the three providers put it in three different places. It is
+ * therefore only half an assertion: it proves the image was LOWERED, not that it sits where it belongs.
+ * The position is pinned on the producing side (`agent-turn.test.ts` asserts the tool results stay
+ * contiguous and exactly one `user` message follows) and by `toolResultsContiguous` below, which is the
+ * property a provider actually rejects.
+ */
 function containsImage(payload: unknown): boolean {
   if (typeof payload === 'string') return payload.includes(PNG_BASE64);
   if (Array.isArray(payload)) return payload.some(containsImage);
@@ -104,7 +112,74 @@ function containsImage(payload: unknown): boolean {
   return false;
 }
 
+/**
+ * The message pair for a response with TWO `read_media` calls — the shape a review found broke every
+ * provider when the synthesized message was appended inside the dispatch loop.
+ */
+function parallelReadMediaExchange(): LlmMessage[] {
+  return [
+    { role: 'user', content: [{ type: 'text', text: 'look at both' }] },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'tool_call', id: 'c1', name: 'read_media', args: { handle: HANDLE } },
+        { type: 'tool_call', id: 'c2', name: 'read_media', args: { handle: HANDLE } },
+      ],
+    },
+    {
+      role: 'tool',
+      content: [
+        { type: 'tool_result', toolCallId: 'c1', result: 'image/png, 5 bytes — attached below.' },
+      ],
+    },
+    {
+      role: 'tool',
+      content: [
+        { type: 'tool_result', toolCallId: 'c2', result: 'image/png, 5 bytes — attached below.' },
+      ],
+    },
+    {
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: '[Relavium] 2 media attachments returned by the `read_media` tool calls, delivered below.',
+        },
+        { type: 'media', mimeType: 'image/png', source: { kind: 'handle', ref: HANDLE } },
+        { type: 'media', mimeType: 'image/png', source: { kind: 'handle', ref: HANDLE } },
+      ],
+    },
+  ];
+}
+
+/**
+ * Every `tool` message answering an assistant `tool_calls` turn is contiguous — no other role between them.
+ *
+ * This is the property the providers actually enforce, and the one `containsImage` cannot see: OpenAI 400s
+ * naming the unanswered `tool_call_id`, Gemini requires the `functionResponse` count to match the
+ * `functionCall` count, and Anthropic merges adjacent user turns so an image ends up BETWEEN two
+ * `tool_result` blocks. Asserted on the canonical list, because a broken list breaks all three.
+ */
+function toolResultsContiguous(messages: readonly LlmMessage[]): boolean {
+  const roles = messages.map((m) => m.role);
+  const first = roles.indexOf('tool');
+  if (first === -1) return true;
+  const last = roles.lastIndexOf('tool');
+  return roles.slice(first, last + 1).every((role) => role === 'tool');
+}
+
 describe('read_media delivery reaches the model as media (`CR-50`, ADR-0089 §1)', () => {
+  it('PARALLEL calls keep their tool results contiguous — the shape all three providers require', () => {
+    expect(toolResultsContiguous(parallelReadMediaExchange())).toBe(true);
+    // …and the interleaved shape the loop used to produce does NOT satisfy it, so this discriminates.
+    const interleaved: LlmMessage[] = [
+      { role: 'tool', content: [{ type: 'tool_result', toolCallId: 'c1', result: 'a' }] },
+      { role: 'user', content: [{ type: 'text', text: 'attachment' }] },
+      { role: 'tool', content: [{ type: 'tool_result', toolCallId: 'c2', result: 'b' }] },
+    ];
+    expect(toolResultsContiguous(interleaved)).toBe(false);
+  });
+
   it('Anthropic: the resolved image lands on the wire', async () => {
     let sent: unknown;
     const adapter = createAnthropicAdapter({
@@ -128,6 +203,10 @@ describe('read_media delivery reaches the model as media (`CR-50`, ADR-0089 §1)
       maxRetries: 0,
     });
     await sendThroughChain(adapter, 'claude-opus-4-8');
+    expect(containsImage(sent)).toBe(true);
+
+    // …and the PARALLEL shape lowers too, with both images present.
+    await sendThroughChain(adapter, 'claude-opus-4-8', parallelReadMediaExchange());
     expect(containsImage(sent)).toBe(true);
   });
 
