@@ -368,6 +368,23 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
     expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'validation' } });
   });
 
+  it('an agent with NO `tools:` grants nothing — the DISPATCH floor agrees with plan build', async () => {
+    // The two checks must not disagree: one refusing what the other allows is the worst outcome. This is
+    // the runtime half of the same edge, and it was equally uncovered — a mutation making an absent grant
+    // mean "no restriction" left the whole core suite green while turning this deny into a completed run.
+    const exec = createAgentNodeExecutor(deps(provider([STOP])));
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ tools: ['read_file'] }),
+        resolvedAgent: AGENT, // no `tools:` at all
+      }),
+    );
+    const outcome = await exec.execute(ctx);
+    expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'validation' } });
+    expect(outcome.kind === 'failed' ? outcome.error.message : '').toContain('tools[0]');
+  });
+
   it('…and its message is POSITIONAL — a hostile tool id never reaches the event (ADR-0094)', async () => {
     // `node.tools` is only `nonEmptyString`: no charset, no length bound. This message rides a
     // `node:failed` event and a log line, so echoing the authored value would put an unbounded — possibly

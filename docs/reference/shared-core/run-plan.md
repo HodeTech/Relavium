@@ -73,7 +73,7 @@ The order is computed by **Kahn's algorithm** with an **authored-order tie-break
 
 ## What the builder validates
 
-The builder owns the structural checks the pure parser defers (it has the full node graph; the parser sees one file). Each fault becomes a field-named, secret-free `GraphIssue` (`kind`: `cycle` | `unknown_edge_target` | `invalid_handle` | `mismatched_branch_target` | `dangling_ref` | `ceiling_exceeded`), collected and thrown together as a **`WorkflowGraphError`** (code `invalid_graph`) — a sibling of `WorkflowValidationError`, so an unrunnable graph is rejected before a run starts:
+The builder owns the structural checks the pure parser defers (it has the full node graph; the parser sees one file). Each fault becomes a field-named, secret-free `GraphIssue` (`kind`: `cycle` | `unknown_edge_target` | `invalid_handle` | `mismatched_branch_target` | `dangling_ref` | `ceiling_exceeded` | `tool_grant_widened`), collected and thrown together as a **`WorkflowGraphError`** (code `invalid_graph`) — a sibling of `WorkflowValidationError`, so an unrunnable graph is rejected before a run starts:
 
 - **Cycle** — the dependency graph has a directed cycle; the message names it (`a → b → c → a`).
 - **Unknown edge target** — an `edges[]` endpoint, a `condition` `branches[].target_node` / `default`, or a `parallel_of` member names a node that does not exist.
@@ -87,6 +87,7 @@ The builder owns the structural checks the pure parser defers (it has the full n
   author wrote an edge: `edges[]` **and** each `parallel_of` member (which the builder materialises as a
   fan-out edge). A `condition`'s branches are routing alternatives and do not count toward fan-out.
 - **Dangling ref** — an `agent_ref` resolves to no agent. Only checked when a **resolved-agent registry** is supplied (`agent_ref` resolution against the workspace registry is a host concern — the pure builder never reads files); otherwise resolution is deferred. When resolution was deferred and an `agent` vertex reaches dispatch with **no** `resolvedAgent`, the `AgentRunner` (1.O) fails the node with `code: 'validation'` naming the unresolved `agent_ref` — never a crash ([agent-runner.md](agent-runner.md)).
+- **Tool grant widened** — a node's `tools:` names a tool its resolved agent was not granted ([ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md); a node may only NARROW). The locator is **positional** — ``node `n`.tools[2]`` — and the authored tool value is never echoed, because `node.tools` carries no charset or length bound and a `GraphIssue` reaches an event and a log. An agent whose grant depends on **unconnected MCP servers** is skipped unless the host sets `BuildRunPlanOptions.toolGrantsFinal` (a grant that is not knowable from the document must not be refused against); `relavium run` sets it, having connected and augmented first. An agent with **no `tools:` at all** has granted nothing, so any node `tools:` widens it. The runtime `resolveGrant` check remains the floor for a host that builds no plan.
 
 Separately, a resolved `$ref`/registry agent's `system_prompt` is re-run through the secret-taint gate (a `$ref` agent's prompt lives in another file the pure parser never reads): a secret reaching it throws **`WorkflowSecretLeakError`** (ADR-0029(c)), exactly as for an inline agent.
 

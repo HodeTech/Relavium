@@ -27,7 +27,7 @@ import { scriptedResolver, textTurn, toolUseTurn } from '../chat/test-support.js
 import { buildEngine, type BuildEngineOptions } from '../engine/build-engine.js';
 import { createProviderResolver } from '../engine/providers.js';
 import type { GatePrompter } from '../gate/prompter.js';
-import { isCliError } from '../process/errors.js';
+import { isCliError, toUserFacing } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -1116,6 +1116,110 @@ describe('runCommand', () => {
     );
     expect(engineBuilt).toBe(true); // the present key did NOT false-fail the pre-flight
     expect(code).toBe(EXIT_CODES.success);
+  });
+
+  /** The plan never builds in the two CR-64 tests below, so this executor is never reached. */
+  const neverRuns: NodeExecutor = {
+    execute: (): Promise<NodeOutcome> => Promise.resolve({ kind: 'completed', output: null }),
+  };
+
+  it('refuses a WIDENING node at load — exit 2, and the message names the node positionally (CR-64)', async () => {
+    // The item's actual acceptance, on the only command that has it. Two things had to be true and neither
+    // was: the check must reach `relavium run` (nothing in the CLI observed the new plan-build refusal —
+    // deleting the `toolGrantsFinal` line left the whole suite green), and a graph fault must surface as an
+    // AUTHORING error. Before the `toUserFacing` arm it printed "An unexpected internal error occurred."
+    // with exit 1 — strictly worse than the mid-run failure it replaced, which at least named the node.
+    const path = writeWorkflow(
+      'widen.relavium.yaml',
+      `schema_version: '1.0'
+workflow:
+  id: cli-run-widen
+  agents:
+    - id: scanner
+      model: claude-sonnet-4-6
+      provider: anthropic
+      system_prompt: inspect
+      tools: [read_file]
+  nodes:
+    - { id: start, type: input }
+    - { id: a, type: agent, agent_ref: scanner, prompt_template: 'go', tools: [read_file, run_command] }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: a }
+    - { from: a, to: out }
+`,
+    );
+    const { io } = captureIo();
+    let caught: unknown;
+    try {
+      await runCommand(
+        { workflow: path, input: [], allowMcpStdio: [] },
+        {
+          io,
+          global: globalOptions(),
+          providers: scriptedResolver([textTurn('never reached')]),
+          // The plan never builds, so the executor is never reached — but one must be supplied.
+          buildEngine: () =>
+            Promise.resolve(
+              new WorkflowEngine({ host: createInMemoryHost(), executor: neverRuns }),
+            ),
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    const surfaced = toUserFacing(caught);
+    expect(surfaced.exitCode).toBe(EXIT_CODES.invalidInvocation); // an authored fault, not a failed run
+    expect(surfaced.code).toBe('invalid_invocation');
+    expect(surfaced.message).toContain('`a`.tools[1]'); // the node and the POSITION
+    expect(surfaced.message).not.toContain('run_command'); // never the authored value
+  });
+
+  it('checks an MCP-declaring agent too, because run CONNECTS before it builds the plan (toolGrantsFinal)', async () => {
+    // The `toolGrantsFinal: true` in run.ts is only load-bearing HERE. An MCP-free agent is checked with or
+    // without it, so the widening test above stays green when the line is deleted — which is exactly how a
+    // review found the flag unobserved by the whole suite. An agent declaring `mcp_servers` is skipped at
+    // plan build UNLESS the host asserts it connected and augmented first, which `relavium run` does.
+    const path = writeWorkflow(
+      'widen-mcp.relavium.yaml',
+      MCP_WF.replace(
+        "{ id: a, type: agent, agent_ref: scanner, prompt_template: 'go' }",
+        "{ id: a, type: agent, agent_ref: scanner, prompt_template: 'go', tools: [read_file, never_granted] }",
+      ),
+    );
+    const { io } = captureIo();
+    const conn: McpConnection = {
+      listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
+      callTool: () => Promise.resolve({ content: [], isError: false }),
+      close: () => Promise.resolve(),
+    };
+    let caught: unknown;
+    try {
+      await runCommand(
+        { workflow: path, input: [], allowMcpStdio: [] },
+        {
+          io,
+          global: globalOptions(),
+          providers: scriptedResolver([textTurn('never reached')]),
+          buildEngine: () =>
+            Promise.resolve(
+              new WorkflowEngine({ host: createInMemoryHost(), executor: neverRuns }),
+            ),
+          consentGate: PASS_CONSENT,
+          startMcpClient: () =>
+            realStartMcpClient([
+              { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
+            ]),
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    // `never_granted` is in neither the authored grant nor the server's discovered tools, so the augmented
+    // grant is final AND still lacks it — refused at load rather than partway through the run.
+    const surfaced = toUserFacing(caught);
+    expect(surfaced.exitCode).toBe(EXIT_CODES.invalidInvocation);
+    expect(surfaced.message).toContain('`a`.tools[1]');
   });
 
   it('a workflow agent declaring an inline stdio MCP server round-trips a tool call via run (2.R acceptance)', async () => {

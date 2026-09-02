@@ -1,4 +1,4 @@
-import { EngineStateError, isTransientEngineStateError } from '@relavium/core';
+import { EngineStateError, isTransientEngineStateError, WorkflowParseError } from '@relavium/core';
 import { isCorruptRunEventError, isUnreadableRunEventLogError } from '@relavium/db';
 
 import { EXIT_CODES, type ExitCode } from './exit-codes.js';
@@ -119,6 +119,23 @@ export function toUserFacing(value: unknown): UserFacingError {
     // inputs"), and for an admission refusal it carries the echo-safe half of each issue — so it is
     // promoted as-is rather than re-flattened from `value.issues` here.
     return { code, message: value.message, exitCode: EXIT_CODE_BY_ERROR[code] };
+  }
+  if (value instanceof WorkflowParseError) {
+    // An AUTHORING fault — a parse error, or a graph fault from `buildRunPlan` (`WorkflowGraphError`
+    // extends this): a cycle, an unknown edge target, an admission ceiling, a widened tool grant. Every one
+    // of them fell through to the generic `internal` arm below, so `relavium run` answered a malformed
+    // workflow with "An unexpected internal error occurred." and exit 1 — the code `commands.md` reserves
+    // for "the workflow ran and failed", not for a file that could never run.
+    //
+    // Promoted as-is, on the same reasoning the `EngineStateError` arm above records: a `GraphIssue`'s
+    // message is echo-safe by its own contract (`errors.ts` — "never an authored value"), and
+    // `parseOrRefuse` already maps this exact family to `invalid_invocation` when the fault happens to
+    // surface from `parseWorkflow` instead. The two paths now agree.
+    return {
+      code: 'invalid_invocation',
+      message: value.message,
+      exitCode: EXIT_CODE_BY_ERROR['invalid_invocation'],
+    };
   }
   return {
     code: 'internal',

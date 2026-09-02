@@ -733,6 +733,28 @@ describe('buildRunPlan — agent_ref resolution', () => {
       ).toBe(true);
     });
 
+    it('an agent with NO `tools:` has granted NOTHING — any node `tools` widens it', () => {
+      // The security-relevant edge, and it had zero coverage: every fixture in the repo that pairs a node
+      // `tools:` with an agent gives that agent an explicit grant, so a mutation treating an ABSENT grant
+      // as "no restriction" passed the entire suite, typecheck and lint — while converting a deny into a
+      // real ALLOW at dispatch (`grantedToolIds` is derived from `resolveGrant` and is the only gate).
+      // agent-runner.md states the contract: "`node.tools` must be a subset of `agent.tools`" — and only
+      // the empty set is a subset of an absent grant.
+      const err = expectGraphError(
+        doc(`  id: nogrant
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: n, type: agent, agent_ref: a, prompt_template: 'go', tools: [read_file] }
+  edges: []`),
+      );
+      expect(err.issues[0]?.kind).toBe('tool_grant_widened');
+      expect(err.issues[0]?.field).toBe('node `n`.tools[0]');
+    });
+
     it('SKIPS an agent whose grant depends on an unconnected MCP server, unless the host says it is final', () => {
       // An agent declaring `mcp_servers` has a grant that is not knowable from the document: its tools
       // arrive at connect. Refusing here would reject a workflow that is about to be valid — so the check

@@ -1,4 +1,4 @@
-import { EngineStateError } from '@relavium/core';
+import { EngineStateError, WorkflowGraphError, WorkflowSyntaxError } from '@relavium/core';
 import { CorruptRunEventError, UnreadableRunEventLogError } from '@relavium/db';
 import { describe, expect, it } from 'vitest';
 
@@ -128,5 +128,37 @@ describe('toUserFacing', () => {
     expect(userFacing.code).toBe('internal');
     expect(userFacing.exitCode).toBe(EXIT_CODES.workflowFailed);
     expect(userFacing.message).not.toContain('secret');
+  });
+});
+
+describe('a graph fault is an AUTHORING fault, not an internal one (CR-64 review, ADR-0094)', () => {
+  it('maps WorkflowGraphError to invalid_invocation/exit 2 and keeps its message', () => {
+    // Before this arm, EVERY `WorkflowGraphError` — a cycle, an unknown edge target, an admission ceiling,
+    // and (newly) a widened tool grant — fell through to `internal` / exit 1: the code `commands.md`
+    // reserves for "the workflow ran and failed", answering a file that could never run. `CR-64` routed a
+    // common, easy-to-make authoring mistake into that dead arm, which made the diagnostic strictly WORSE
+    // than the mid-run failure it replaced: the user lost the node id entirely.
+    const err = new WorkflowGraphError([
+      { kind: 'tool_grant_widened', field: 'node `n`.tools[1]', message: 'widened' },
+    ]);
+    const out = toUserFacing(err);
+    expect(out.code).toBe('invalid_invocation');
+    expect(out.exitCode).toBe(EXIT_CODES.invalidInvocation);
+    expect(out.message).toContain('node `n`.tools[1]'); // the locator survives to the user
+    expect(out.message).not.toContain('unexpected internal');
+  });
+
+  it('…and so does a SYNTAX error, which shares the family — one arm covers all four kinds', () => {
+    // The base constructor is protected, so this asserts through a concrete sibling. That is the point of
+    // matching on the base: a cycle, a ceiling, a widened grant and a malformed file all land here.
+    const out = toUserFacing(new WorkflowSyntaxError('could not parse'));
+    expect(out.code).toBe('invalid_invocation');
+    expect(out.exitCode).toBe(EXIT_CODES.invalidInvocation);
+  });
+
+  it('a genuinely unknown error is still internal/exit 1', () => {
+    const out = toUserFacing(new Error('boom'));
+    expect(out.code).toBe('internal');
+    expect(out.exitCode).toBe(EXIT_CODES.workflowFailed);
   });
 });
