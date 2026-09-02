@@ -492,6 +492,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
       inline: `resolveForEgress` returning a provider-hosted ref (a Gemini `fileUri`, an OpenAI `file_id`)
       instead of base64, which ADR-0031 already reserves the sidecar for.
       *(medium · packages/llm/src/fallback-chain.ts, packages/db/src/media-store.ts; ADR-0031, ADR-0089 §1)*
+- [ ] **Three more pasted remedies still use `<angle-bracket>` placeholders.**
+      `provider.ts:198` and `models.ts:140,303` tell the user to run
+      `relavium provider set-key <name>`; `<` is a shell redirection, so the pasted command tries to read
+      stdin from a file named `name` and fails. Strictly less bad than the `W5` case fixed in
+      `budget-governor.ts` / `effort-notice.ts` — those carried a `>` too, which CREATES a file named
+      `--image` in the user's cwd — but the same defect. Left out of PR #88 only because those files are
+      untouched by the wave; the fix is the same bare-word substitution.
+      *(low · apps/cli/src/commands/provider.ts, models.ts)*
 - [ ] **Three functions this wave touched sit over the 15 cognitive-complexity threshold.**
       `models-pricing.ts` (37), `budget-governor.ts:checkPreEgress` (16) and `dispatch.ts`
       `buildModelsPricingArgs` (17). SonarCloud reports them as issues, not gate failures, and they are
