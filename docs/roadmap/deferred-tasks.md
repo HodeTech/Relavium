@@ -420,6 +420,22 @@ Severity is the review's verified rating. Check an item off in the PR that resol
       url, and a second attempt may resolve to different bytes. `MEDIA_URL_SOURCE_ENABLED` is `true`, so
       this is a live path, not a hypothetical. The workflow half is closed; the session half is not.
       *(medium · packages/core/src/engine/agent-session.ts; ADR-0043 §3, `CR-54`)*
+- [ ] **A pinned object is orphaned when the dispatch fails after the pin.** The pin runs at the dispatch
+      boundary, so a node that then fails — a `save_to` template that will not resolve, a bounding breach —
+      has already written bytes into the CAS. `#recordProducedMedia`, the only thing that registers a handle
+      for the D11 terminal sweep, runs on the **durable event draft**, and a failed node emits `node:failed`
+      with no output — so the object is never recorded and never reclaimed by any mechanism. Small and real.
+      Closing it means recording a reference for a pinned-but-never-emitted object, or sweeping the CAS
+      against `listObjectHandles` for row-less blobs past their age floor (the media GC already has that
+      shape). A test comment asserted the opposite until a review checked it.
+      *(low · packages/core/src/engine/engine.ts, apps/cli/src/engine/media-gc.ts; ADR-0042 §4, `CR-54`)*
+- [ ] **A transient re-host failure fails the node rather than retrying the re-host.** A media pin that
+      fails on a network blip is classified non-retryable ON PURPOSE — `retryable: true` means "re-dispatch
+      the node" in this engine, and the node's own work already succeeded, so retrying would make a second
+      paid generative call to fix a CDN hiccup downstream of it. The right answer is a bounded retry around
+      the RE-HOST alone, which never re-invokes the executor. Until then a blip on a large video fails a
+      node whose model call was fine.
+      *(medium · packages/core/src/engine/engine.ts, media-pin-error.ts; ADR-0040, `CR-54`)*
 - [ ] **`MediaStore.put` / `putStream` take no `AbortSignal`.** The fetch half of a pin honours the run
       signal; the STORE half cannot be interrupted by a cancel, a run timeout or a node deadline. Moving
       the pin to the dispatch boundary means an uncancellable write no longer corrupts a node's terminal —

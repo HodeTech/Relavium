@@ -353,11 +353,7 @@ export class BudgetGovernor {
   /** The one durable warning currently being written. Concurrent admissions await this exact promise. */
   #warningInFlight: Promise<void> | undefined;
   readonly #onUnpriced:
-    | ((
-        model: string,
-        capMicrocents: number,
-        modalities?: readonly MediaBilledModality[],
-      ) => void)
+    | ((model: string, capMicrocents: number, modalities?: readonly MediaBilledModality[]) => void)
     | undefined;
   /** `${model}\0${modality}` keys already announced — see {@link BudgetGovernor.#noticeUnpricedModalities}. */
   readonly #unpricedModalityNotified = new Set<string>();

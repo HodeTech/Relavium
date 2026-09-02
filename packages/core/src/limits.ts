@@ -93,6 +93,18 @@ export const ADMISSION_CEILINGS = {
    */
   mediaAttachmentsPerResponse: 12,
   /**
+   * Media parts one RUN will re-host — the backstop for the multiplication
+   * {@link ADMISSION_CEILINGS.mediaPartsPerNodeOutput} permits, exactly as `nodeDispatchesPerRun` backstops
+   * retry × chain length (ADR-0086 §4).
+   *
+   * The per-node ceiling alone bounds nothing at the run scale: a `parallel_of` at the 50-wide `fanOut`
+   * ceiling, each branch producing 32 parts, admits ~1,600 re-host fetches in ONE graph layer — the shape
+   * ADR-0086 names as its whole reason for existing, applied to a ceiling that did not yet apply it to
+   * itself. Generous against real work (a run producing a few dozen media outputs is already unusual) and
+   * decisive against the multiplication.
+   */
+  mediaPartsPerRun: 256,
+  /**
    * Settled runs a `WorkflowEngine` keeps addressable in memory (`CR-33`). Not an admission ceiling like
    * its siblings — nothing is rejected — but it lives here because it is the same kind of promise: a number
    * a host can read rather than a growth nobody bounded.

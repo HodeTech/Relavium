@@ -76,10 +76,22 @@ export class NodeMediaPinError extends Error {
       return new NodeMediaPinError(`${where}: the media url was refused (${egress})`, 'validation');
     }
     if (egress !== undefined && TRANSIENT_EGRESS_CODES.has(egress)) {
+      // **Transient in kind, and still NOT node-retryable.** `retryable: true` means one specific thing in
+      // this engine — re-dispatch the whole node — and the node's own work already SUCCEEDED: the executor
+      // returned, the model was called, the tokens were billed. Only the re-host that runs after it failed.
+      // A review reproduced the cost of getting this wrong: an agent node with `retry` and a `MediaStore`
+      // that fails once emitted `node:retrying` and called `execute()` a SECOND time, making a second paid,
+      // non-deterministic generative call because of a CDN blip in a step downstream of it. That is exactly
+      // the duplicate paid work ADR-0074/0077/0080 exist to prevent.
+      //
+      // The code stays `provider_unavailable` because it describes what happened truthfully; `retryable` is
+      // the axis that decides re-dispatch, and `#shouldRetry` checks it before it looks at the code, so an
+      // authored `retry_on` cannot override this either. A bounded retry around the RE-HOST alone — which
+      // would not re-invoke the executor — is the right answer and is recorded as a follow-up.
       return new NodeMediaPinError(
-        `${where}: the media url could not be fetched (${egress})`,
+        `${where}: the media url could not be fetched (${egress}) — the node's own work succeeded, so it is not retried`,
         'provider_unavailable',
-        true,
+        false,
       );
     }
     return new NodeMediaPinError(`${where} (internal)`, 'internal');

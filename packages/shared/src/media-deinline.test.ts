@@ -6,7 +6,7 @@ import {
   type ContentPart,
   type MediaStore,
 } from './content.js';
-import { deInlineMedia } from './media-deinline.js';
+import { countUnpinnedMedia, deInlineMedia } from './media-deinline.js';
 
 /** A content-addressed in-memory `MediaStore` stub (pure, no crypto): same bytes ⇒ same 64-hex handle. */
 /**
@@ -408,5 +408,67 @@ describe('deInlineMedia (1.AF, ADR-0042 §2 — flight→durable transform)', ()
     const { store, puts } = makeStubStore();
     await deInlineMedia([base64MediaPart, base64MediaPart], store);
     expect(puts).toHaveLength(1); // the same reference is rewritten once, not per occurrence
+  });
+});
+
+describe('countUnpinnedMedia (`CR-54` — the pre-flight count for the re-host ceiling)', () => {
+  const urlPart = {
+    type: 'media',
+    mimeType: 'image/png',
+    source: { kind: 'url', url: 'https://media.example/a.png' },
+  };
+  const handlePart = {
+    type: 'media',
+    mimeType: 'image/png',
+    source: { kind: 'handle', ref: `media://sha256-${'a'.repeat(64)}` },
+  };
+
+  /** A fresh part each time — see the identity test below for why that matters. */
+  const url = (n: number): unknown => ({
+    type: 'media',
+    mimeType: 'image/png',
+    source: { kind: 'url', url: `https://media.example/${n}.png` },
+  });
+
+  it('counts every carrier that needs a store write, and no part already at rest', () => {
+    expect(countUnpinnedMedia({ a: url(1), b: [url(2), handlePart], c: 'text' })).toBe(2);
+    expect(countUnpinnedMedia(handlePart)).toBe(0);
+    expect(countUnpinnedMedia('plain text')).toBe(0);
+  });
+
+  it('counts one SHARED reference once — the rewrite writes it once too', () => {
+    // The walk dedupes by object identity, and so does `deInlineMedia`'s rewrite cache: two references to
+    // the same part produce ONE store write. The count therefore describes the work, not the occurrences —
+    // which is what makes it a usable pre-flight bound rather than an over-estimate.
+    expect(countUnpinnedMedia({ a: urlPart, b: [urlPart, urlPart] })).toBe(1);
+  });
+
+  it('walks Map keys and values and Set members, like the rewrite it precedes', () => {
+    expect(countUnpinnedMedia(new Map([[url(1), url(2)]]))).toBe(2);
+    expect(countUnpinnedMedia(new Set([url(3)]))).toBe(1);
+  });
+
+  it('is cycle-safe', () => {
+    const cyclic: Record<string, unknown> = { part: urlPart };
+    cyclic['self'] = cyclic;
+    expect(countUnpinnedMedia(cyclic)).toBe(1);
+  });
+
+  it('REFUSES to walk a raw binary buffer byte by byte', () => {
+    // `isRecord` is true for a `Uint8Array` — it is an object and not an Array — and `Object.values` on one
+    // yields ONE ENTRY PER BYTE. Without the short-circuit, a buffer anywhere in a node output allocates an
+    // array as long as the buffer and pushes every byte onto the walk stack, before the ceiling check that
+    // was added to refuse a hostile payload has returned anything. `deInlineMedia` refuses such a buffer in
+    // O(1); this must not do more work than that to reach the same conclusion.
+    //
+    // **Sized against a measurement, not a guess.** With the short-circuit this input walks in ~0 ms; with
+    // it removed the same input takes ~290 ms (measured: 2 MB → 31 ms, 20 MB → 286 ms, 50 MB → 546 ms). A
+    // first version of this test used 2 MB and a 250 ms bound and passed happily against the mutation — a
+    // timing assertion with no margin is not an assertion. If this ever goes red, the answer is to check
+    // the short-circuit, NOT to loosen the bound.
+    const big = new Uint8Array(20_000_000);
+    const started = Date.now();
+    expect(countUnpinnedMedia({ blob: big, part: urlPart })).toBe(1);
+    expect(Date.now() - started).toBeLessThan(120);
   });
 });

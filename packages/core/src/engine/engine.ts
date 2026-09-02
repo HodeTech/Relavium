@@ -443,6 +443,9 @@ class RunExecution {
   #noNewDispatch = false;
   /** ADR-0085 §5's fence: the dispatch id currently authoritative for each vertex. */
   readonly #activeDispatchByVertex = new Map<string, number>();
+  /** Media parts this run has re-hosted — the run-scope half of `CR-54`'s ceiling (ADR-0086 §4). */
+  #pinnedMediaParts = 0;
+
   /** The dispatch id a vertex's in-flight work was started under — the value `#isLive` is checked against. */
   readonly #dispatchIdForVertex = new Map<string, number>();
   /**
@@ -781,6 +784,15 @@ class RunExecution {
         'validation',
       );
     }
+    // The RUN-level backstop. The per-node ceiling bounds one output; a 50-wide `fan_out` at 32 parts each
+    // is ~1,600 fetches in one graph layer, which is the multiplication ADR-0086 §4 exists to catch.
+    if (this.#pinnedMediaParts + unpinned > ADMISSION_CEILINGS.mediaPartsPerRun) {
+      throw new NodeMediaPinError(
+        `this run has re-hosted ${this.#pinnedMediaParts} media parts and node \`${nodeId}\` adds ${unpinned}, over the run limit of ${ADMISSION_CEILINGS.mediaPartsPerRun}`,
+        'validation',
+      );
+    }
+    this.#pinnedMediaParts += unpinned;
     try {
       return await deInlineMedia(value, store, this.#mediaEgress());
     } catch (error) {

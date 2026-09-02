@@ -87,8 +87,15 @@ function isInflightMediaPart(node: Record<string, unknown>): boolean {
  * (`ADMISSION_CEILINGS.mediaPartsPerNodeOutput`), so a bound can be REFUSED before the first fetch rather
  * than discovered as egress that already happened.
  *
- * Walks the same shapes {@link deInlineMedia} rewrites — arrays, plain objects, `Map` keys and values,
- * `Set` values — and is cycle-safe over the same graph, so the two can never disagree about what counts.
+ * Walks the same container shapes {@link deInlineMedia} rewrites — arrays, plain objects, `Map` keys and
+ * values, `Set` values — and is cycle-safe over the same graph, with the same O(1) refusal of a raw binary
+ * buffer.
+ *
+ * **It is a COUNT, not a validation, and the two deliberately disagree in one direction.** `deInlineMedia`
+ * additionally hard-fails on a base64 `data:` URI string, a loose `{ kind: 'base64' }` record and an
+ * unknown source kind; this walk skips strings outright and has no analogue for those. That is safe because
+ * every one of them still throws when the pin runs — the count can only ever be an UNDER-estimate of the
+ * work, never a licence for work that would not otherwise happen.
  */
 export function countUnpinnedMedia(value: unknown): number {
   let count = 0;
@@ -100,6 +107,15 @@ export function countUnpinnedMedia(value: unknown): number {
       continue;
     }
     seen.add(node);
+    // A raw binary buffer is REFUSED by `deInlineMedia` in O(1), so counting it is pointless — and walking
+    // it is worse than pointless: `isRecord` is true for a `Uint8Array` (it is an object and not an Array),
+    // and `Object.values` on one yields **one entry per byte**. A multi-megabyte buffer anywhere in a node
+    // output would push millions of stack entries before the ceiling check returned, turning the guard
+    // added to refuse a hostile payload into the thing that payload attacks. Same short-circuit, same
+    // position, as `deInlineMedia`'s own walk.
+    if (isBinaryBuffer(node)) {
+      continue;
+    }
     if (isRecord(node) && isInflightMediaPart(node)) {
       const source = node['source'];
       // A part already at rest needs no write, so it does not spend the budget — the ceiling bounds WORK,

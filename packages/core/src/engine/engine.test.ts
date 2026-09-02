@@ -761,6 +761,70 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
       ).not.toContain('a');
     });
 
+    it("a transient re-host failure does NOT re-run the node — the node's own work already succeeded", async () => {
+      // The pin moved into `#dispatch`'s try, which put its failure inside the window `#dispatchLoop`'s
+      // retry decision governs. Classified `retryable: true`, a CDN blip in the RE-HOST therefore
+      // re-dispatched the whole node: a fresh `node:started`, a second call to the executor, a second paid
+      // and non-deterministic generative call — to redo work that had nothing wrong with it. Reproduced by
+      // a review on exactly the shape the pin exists for (an agent node with `retry` and a media output).
+      const RETRY_WF = `  id: retry-media
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: start, type: input }
+    - { id: work, type: agent, agent_ref: ag, prompt_template: 'go', retry: { max: 3, backoff: linear, backoff_ms: 1 } }
+    - { id: done, type: output }
+  edges:
+    - { from: start, to: work }
+    - { from: work, to: done }`;
+      const { store: mediaStore } = stubMediaStore();
+      let fetches = 0;
+      const host = createInMemoryHost({
+        store: new InMemoryRunStore(),
+        mediaStore,
+        // Fails once, then would succeed — so a node that DOES retry goes green, and only counting
+        // executor calls tells the two apart. A url carrier streams, so this is the CDN blip's real shape.
+        streamMedia: () => {
+          fetches += 1;
+          if (fetches === 1) {
+            throw Object.assign(new Error('socket hang up'), { code: 'network' });
+          }
+          return {
+            [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+              let done = false;
+              return {
+                next: (): Promise<IteratorResult<Uint8Array>> => {
+                  if (done) return Promise.resolve({ done: true, value: undefined });
+                  done = true;
+                  return Promise.resolve({ done: false, value: new Uint8Array([9]) });
+                },
+              };
+            },
+          };
+        },
+      });
+      let executions = 0;
+      const events = await drain(
+        engineWith(
+          {
+            work: () => {
+              executions += 1;
+              return { kind: 'completed', output: { clip: urlPart } };
+            },
+          },
+          host,
+        ).start({ workflow: workflow(RETRY_WF), inputs: {} }),
+      );
+      expect(executions).toBe(1); // the model was called ONCE, and is not called again for a re-host blip
+      expect(events.some((e) => e.type === 'node:retrying')).toBe(false);
+      const failed = events.find((e) => e.type === 'node:failed');
+      expect(failed?.type === 'node:failed' && failed.error.retryable).toBe(false);
+      expect(failed?.type === 'node:failed' && failed.error.message).toContain('not retried');
+    });
+
     it('leaves a media-free output untouched — the fast path costs a scan, not a store call', async () => {
       const { store: mediaStore, puts } = stubMediaStore();
       const runStore = new InMemoryRunStore();
@@ -1139,10 +1203,17 @@ describe('WorkflowEngine — output-node save_to (1.AF/D16, ADR-0044 §2)', () =
     expect(writes).toHaveLength(0); // the path never resolved → never written
     // The bytes ARE stored, and that changed with `CR-54`. The pin is a dispatch-boundary concern now —
     // it runs before `save_to` resolves its template — because that is the only place one pin can serve
-    // both the file on disk and the durable record without fetching a drifting url twice. The cost is an
-    // unreferenced CAS object when the template then fails, which the grace-window GC reclaims exactly as
-    // it does for any failed media-producing run. Asserted rather than relaxed to `toBeDefined()`, so a
-    // future change that stores it TWICE is still a failure here.
+    // both the file on disk and the durable record without fetching a drifting url twice.
+    //
+    // **The cost is an orphaned CAS object, and it is NOT swept.** An earlier version of this comment said
+    // the grace-window GC reclaims it "exactly as it does for any failed media-producing run". A review
+    // showed that is false for this path: `#recordProducedMedia` — the only thing that registers a handle
+    // for the terminal sweep — runs on the DURABLE EVENT draft, and a node that fails at `#applySaveTo`
+    // emits `node:failed` with no output, so this object is never recorded and never reclaimed. A small,
+    // real leak, recorded in deferred-tasks.md rather than asserted away.
+    //
+    // Asserted as exactly 1 rather than relaxed to `toBeDefined()`, so a future change that stores it
+    // TWICE is still a failure here.
     expect(puts).toHaveLength(1);
   });
 
