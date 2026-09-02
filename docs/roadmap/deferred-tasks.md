@@ -409,6 +409,28 @@ Severity is the review's verified rating. Check an item off in the PR that resol
       `node:failed` / `run:failed` message text, which is broader than `W5`.
       *(low · packages/core/src/engine/budget-governor.ts; security-review.md)*
 
+## Phase 2.6.5 `W5` residuals — `CR-54` ([ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md) §3, 2026-09-02)
+
+> `CR-54` pinned the two paths that produce a url at first resolution — the node output and the human-gate
+> resume payload. ADR-0043 §3 has a second clause these do not reach.
+
+- [ ] **"An input URL re-hosted at INGEST" is still open for the surfaces that can carry one.** A `url`
+      media part arriving on an `AgentSession` user message, or inside an MCP `tool_result` folded into a
+      transcript, is not pinned — it can reach `#materializeMedia` and be handed to an adapter as a live
+      url, and a second attempt may resolve to different bytes. `MEDIA_URL_SOURCE_ENABLED` is `true`, so
+      this is a live path, not a hypothetical. The workflow half is closed; the session half is not.
+      *(medium · packages/core/src/engine/agent-session.ts; ADR-0043 §3, `CR-54`)*
+- [ ] **`MediaStore.put` / `putStream` take no `AbortSignal`.** The fetch half of a pin honours the run
+      signal; the STORE half cannot be interrupted by a cancel, a run timeout or a node deadline. Moving
+      the pin to the dispatch boundary means an uncancellable write no longer corrupts a node's terminal —
+      it now only delays one — but a very large write still holds a cancelling run open for its duration.
+      *(low · packages/shared/src/content.ts, packages/db/src/media-store.ts; ADR-0042, ADR-0085)*
+- [ ] **A post-terminal `node:completed` can still reach a live `subscribe()` observer.** Reproduced by a
+      review and confirmed PRE-EXISTING (it occurs with `CR-54` fully reverted, because the emit's own
+      de-inline `await` had the same window). Never persisted — `#authorizeWrite` refuses a `lost`/`done`
+      run — so this is a delivery artefact, not a durability breach.
+      *(low · packages/core/src/engine/engine.ts; ADR-0036, ADR-0085)*
+
 ## Phase 2.6.5 `W5` residuals — `CR-50` ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §1, 2026-09-02)
 
 > `CR-50` closed its DELIVERY half: a `read_media` call now reaches the model as media on all three

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { collectDurableMediaHandles } from '@relavium/shared';
 import type { MediaReferencePort, MediaStore, MediaWritePort, RunEvent } from '@relavium/shared';
 
 import { ADMISSION_CEILINGS, DEFAULT_MAX_PARALLEL } from '../limits.js';
@@ -501,17 +502,42 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
       source: { kind: 'url' as const, url: 'https://media.example/drifts.png' },
     };
 
-    it('fetches the url ONCE and puts the SAME handle in the scope and the durable event', async () => {
+    /** The single `media://sha256-…` ref inside `value`; throws if there is not exactly one. */
+    function handleRefIn(value: unknown): string {
+      const refs = collectDurableMediaHandles(value).map((meta) => meta.handle);
+      // A hard failure, not a `?? ''`: a helper that quietly returns nothing turns every assertion built
+      // on it into a comparison of two empty strings, which passes.
+      if (refs.length !== 1) {
+        throw new Error(`expected exactly one media handle, found ${refs.length}`);
+      }
+      const [ref] = refs;
+      if (ref === undefined) throw new Error('unreachable'); // length === 1
+      return ref;
+    }
+
+    it('the scope and the durable record carry the SAME handle — one fetch, one answer', async () => {
       // Before this, the event was de-inlined on a COPY while `state.output` kept the raw url: the durable
       // record said "handle" and the running run said "url". A downstream node got the url, a RESUME rebuilt
       // the scope from the event and got the handle, and the two could resolve to different bytes — with
       // `CR-17`'s digest hashing the pointer either way. Gemini's video generation is the live producer.
+      //
+      // The assertion is the AGREEMENT of the two, not the fetch count. A review measured the first version
+      // of this test against a FULL revert of the fix and found it green: with no pin at all the emit still
+      // fetched exactly once, so counting fetches proved nothing about the defect. What a revert cannot
+      // satisfy is the scope and the record naming the same handle.
       const { store: mediaStore } = stubMediaStore();
       const runStore = new InMemoryRunStore();
       const { host, fetches } = driftingHost(mediaStore, runStore);
+      let seenDownstream: unknown;
       const events = await drain(
         engineWith(
-          { work: () => ({ kind: 'completed', output: { clip: urlPart } }) },
+          {
+            work: () => ({ kind: 'completed', output: { clip: urlPart } }),
+            done: (ctx) => {
+              seenDownstream = ctx.runOutputs.get('work');
+              return { kind: 'completed', output: 'ok' };
+            },
+          },
           host,
         ).start({ workflow: workflow(SEQUENTIAL), inputs: {} }),
       );
@@ -522,6 +548,96 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
       const serialized = JSON.stringify(completed);
       expect(serialized).not.toContain('media.example'); // no url survives into the durable record
       expect(serialized).toContain('media://sha256-');
+      // The two must name the SAME object. The drifting host returns different bytes per fetch, so a
+      // second fetch yields a different handle — this is the assertion a revert cannot pass.
+      const scopeRef = handleRefIn(seenDownstream);
+      expect(scopeRef).toMatch(/^media:\/\/sha256-/);
+      expect(serialized).toContain(scopeRef);
+    });
+
+    it('a `save_to` output writes the SAME bytes the durable record names — not a second fetch', async () => {
+      // The pin used to run in `#settleCompleted`, AFTER `save_to` had already de-inlined the raw outcome
+      // on its own. So a drifting url was fetched twice: the file on the user's disk came from fetch #1,
+      // the handle in the run history from fetch #2, they were different objects, and the run reported
+      // `run:completed` over both — `CR-54`'s own defect, on the one path with a user-visible deliverable.
+      const { store: mediaStore } = stubMediaStore();
+      const { write, writes } = stubMediaWrite();
+      const runStore = new InMemoryRunStore();
+      const { host, fetches } = driftingHost(mediaStore, runStore);
+      const events = await drain(
+        engineWith(
+          { out: () => ({ kind: 'completed', output: { image: urlPart } }) },
+          { ...host, mediaWrite: write },
+        ).start({ workflow: workflow(SAVE_TO_WF) }),
+      );
+      expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+      expect(fetches).toHaveLength(1); // ONE fetch serves both the write and the record
+      const completed = events.find((e) => e.type === 'node:completed' && e.nodeId === 'out');
+      const recorded = handleRefIn(
+        completed?.type === 'node:completed' ? completed.output : undefined,
+      );
+      // The bytes on disk are the bytes the recorded handle resolves to. With two fetches these differ.
+      expect(writes).toHaveLength(1);
+      expect([...(writes[0]?.bytes ?? [])]).toEqual([...(await mediaStore.get(recorded))]);
+    });
+
+    it('REFUSES a node output with more media parts than it will re-host, before fetching any', async () => {
+      // A url media part serialises to well under a hundred bytes, and the size bound measures the pointer,
+      // so a legal node output can carry thousands — each its own multi-megabyte download that no admission
+      // reserved and no `cost:updated` reported. The producer need not be a provider: an authored
+      // `transform` can fabricate one, and so can an MCP tool result. A bound discovered as egress is not a
+      // bound, so the refusal comes first.
+      const { store: mediaStore } = stubMediaStore();
+      const runStore = new InMemoryRunStore();
+      const { host, fetches } = driftingHost(mediaStore, runStore);
+      const many = Array.from(
+        { length: ADMISSION_CEILINGS.mediaPartsPerNodeOutput + 1 },
+        (_, i) => ({
+          ...urlPart,
+          source: { kind: 'url' as const, url: `https://media.example/${i}.png` },
+        }),
+      );
+      const events = await drain(
+        engineWith({ work: () => ({ kind: 'completed', output: many }) }, host).start({
+          workflow: workflow(SEQUENTIAL),
+          inputs: {},
+        }),
+      );
+      expect(terminalsIn(events)[0]?.type).toBe('run:failed');
+      const failed = events.find((e) => e.type === 'node:failed');
+      expect(failed?.type === 'node:failed' && failed.error.code).toBe('validation');
+      expect(failed?.type === 'node:failed' && failed.error.message).toContain('over its limit of');
+      expect(fetches).toEqual([]); // refused BEFORE the first byte left the machine
+    });
+
+    it('a failed pin fails the NODE with an actionable reason, not an anonymous engine fault', async () => {
+      // The pin's failures used to escape into `#onOutcome`'s bare catch and become `the engine failed
+      // while settling a node` with NO `node:failed` at all — a provider CDN hiccup reported as an engine
+      // defect. The distinctions exist one layer down; they are carried up rather than flattened. The URL
+      // itself never enters the message: it can embed a signed query token (I3).
+      const { store: mediaStore } = stubMediaStore();
+      const runStore = new InMemoryRunStore();
+      const host = createInMemoryHost({
+        store: runStore,
+        mediaStore,
+        streamMedia: () => {
+          throw Object.assign(new Error('egress response exceeded the maximum size'), {
+            code: 'too_large',
+          });
+        },
+      });
+      const events = await drain(
+        engineWith({ work: () => ({ kind: 'completed', output: { clip: urlPart } }) }, host).start({
+          workflow: workflow(SEQUENTIAL),
+          inputs: {},
+        }),
+      );
+      const failed = events.find((e) => e.type === 'node:failed');
+      expect(failed?.type === 'node:failed' && failed.nodeId).toBe('work'); // the node gets its terminal
+      expect(failed?.type === 'node:failed' && failed.error.code).toBe('validation');
+      const message = failed?.type === 'node:failed' ? failed.error.message : '';
+      expect(message).toContain('too_large'); // WHICH of the three went wrong
+      expect(message).not.toContain('media.example'); // …without the url
     });
 
     it('hands the DOWNSTREAM node the handle, never the url', async () => {
@@ -544,6 +660,105 @@ describe('WorkflowEngine — media de-inline at the emit choke point (1.AF, ADR-
         ).start({ workflow: workflow(SEQUENTIAL), inputs: {} }),
       );
       expect(seenDownstream).toMatchObject({ clip: { source: { kind: 'handle' } } });
+    });
+
+    it('a node whose deadline trips DURING the pin still gets exactly one terminal (ADR-0085 §5)', async () => {
+      // **Where the pin runs decides whether this holds.** The first version pinned inside
+      // `#settleCompleted`, ahead of `state.status = 'completed'` — so for the whole length of a network
+      // fetch plus a store write the vertex still read `running`, and both the node-deadline guard and
+      // `#onOutcome`'s re-entrancy fence predicate on exactly that status. A deadline landing in that
+      // window produced `node:failed` AND `node:completed` for one node: the run history then said the
+      // node timed out and that it completed with an output, and `run:failed.partialOutputs` carried the
+      // timed-out node's value.
+      //
+      // Pinning at the dispatch boundary is what fixes it structurally rather than by a second guard: the
+      // await now happens BEFORE `#onOutcome`, so the existing fence sees a settled status and refuses the
+      // late outcome — the same path any other slow node already took.
+      const TWO_MEDIA = `  id: two-media
+  agents:
+    - id: ag
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: start, type: input }
+    - { id: a, type: agent, agent_ref: ag, prompt_template: 'go', timeout_ms: 3000 }
+    - { id: b, type: transform, transform: 'b' }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: a }
+    - { from: start, to: b }
+    - { from: a, to: out }
+    - { from: b, to: out }`;
+      const { store: inner } = stubMediaStore();
+      let releaseFetch: (() => void) | undefined;
+      let releaseB: ((o: NodeOutcome) => void) | undefined;
+      // Suspend inside the STORE WRITE, not the fetch: `MediaStore.put`/`putStream` take no `AbortSignal`,
+      // so this half of the pin is structurally uncancellable — a cancel, a run timeout and a node deadline
+      // all pass through it. It is the longest window the pin can hold, so it is the one to test.
+      const mediaStore: MediaStore = {
+        ...inner,
+        put: (bytes, mimeType) =>
+          new Promise((resolve) => {
+            releaseFetch = (): void => {
+              resolve(inner.put(bytes, mimeType));
+            };
+          }),
+      };
+      const host = createInMemoryHost({ store: new InMemoryRunStore(), mediaStore });
+      const engine = engineWith(
+        {
+          a: () => ({
+            kind: 'completed',
+            output: {
+              clip: {
+                type: 'media',
+                mimeType: 'image/png',
+                source: { kind: 'base64', data: 'aW1n' },
+              },
+            },
+          }),
+          b: () =>
+            new Promise<NodeOutcome>((resolve) => {
+              releaseB = resolve;
+            }),
+        },
+        host,
+      );
+      const handle = engine.start({ workflow: workflow(TWO_MEDIA) });
+      const events: RunEvent[] = [];
+      const consume = (async (): Promise<void> => {
+        for await (const event of handle.events) events.push(event);
+      })();
+      for (let i = 0; i < 300 && releaseFetch === undefined; i += 1) await Promise.resolve();
+      expect(releaseFetch).toBeDefined(); // `a` is suspended mid-pin
+
+      // `a`'s bound trips while its pin is in flight; `b` keeps the run live, which is the whole point.
+      host.fireDeadlines();
+      for (let i = 0; i < 300 && !events.some((e) => e.type === 'node:failed'); i += 1) {
+        await Promise.resolve();
+      }
+      releaseFetch?.();
+      for (let i = 0; i < 300; i += 1) await Promise.resolve();
+      releaseB?.({ kind: 'completed', output: 'b' });
+      await consume;
+
+      const aTerminals = events.filter(
+        (e) =>
+          (e.type === 'node:completed' || e.type === 'node:failed' || e.type === 'node:skipped') &&
+          e.nodeId === 'a',
+      );
+      expect(aTerminals).toHaveLength(1);
+      expect(aTerminals[0]?.type).toBe('node:failed');
+      // **The assertion that actually discriminates.** A later fence refuses the second DURABLE terminal,
+      // so counting `node:*` events alone stays green even with the pin back inside the settle — measured,
+      // and the reason this test says what it says. What is not refused is the in-memory status write: the
+      // resumed settle stamps the vertex `completed`, and `run:failed.partialOutputs` (`#collectOutputs`)
+      // then reports an output for the node the engine has already told the user timed out.
+      const runFailed = events.find((e) => e.type === 'run:failed');
+      expect(
+        runFailed?.type === 'run:failed' ? Object.keys(runFailed.partialOutputs ?? {}) : [],
+      ).not.toContain('a');
     });
 
     it('leaves a media-free output untouched — the fast path costs a scan, not a store call', async () => {
@@ -922,7 +1137,13 @@ describe('WorkflowEngine — output-node save_to (1.AF/D16, ADR-0044 §2)', () =
       expect(failed.error.message).not.toContain('inputs');
     }
     expect(writes).toHaveLength(0); // the path never resolved → never written
-    expect(puts).toHaveLength(0); // and never de-inlined/stored
+    // The bytes ARE stored, and that changed with `CR-54`. The pin is a dispatch-boundary concern now —
+    // it runs before `save_to` resolves its template — because that is the only place one pin can serve
+    // both the file on disk and the durable record without fetching a drifting url twice. The cost is an
+    // unreferenced CAS object when the template then fails, which the grace-window GC reclaims exactly as
+    // it does for any failed media-producing run. Asserted rather than relaxed to `toBeDefined()`, so a
+    // future change that stores it TWICE is still a failure here.
+    expect(puts).toHaveLength(1);
   });
 
   it('fails the run when save_to is declared but the host wired no media-write port', async () => {

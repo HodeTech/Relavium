@@ -62,6 +62,22 @@ export const ADMISSION_CEILINGS = {
   /** `node:started` events in one run — the runtime backstop for the multiplication the others permit. */
   nodeDispatchesPerRun: 500,
   /**
+   * Media parts in ONE node output that the engine will re-host (`CR-54`). Like
+   * {@link ADMISSION_CEILINGS.toolCallsPerResponse}, its subject is a RESPONSE rather than an authored
+   * file, so it cannot live at admission — a provider, an authored `transform`, or an MCP tool result
+   * chooses this width, not the author.
+   *
+   * It exists because the size bound cannot see it: `SIZE_BOUNDS.nodeOutputBytes` measures the POINTER, and
+   * a url media part serialises to well under a hundred bytes, so a legal node output can carry thousands
+   * of them — each becoming its own multi-megabyte download into the CAS that no admission reserved and no
+   * `cost:updated` reported. Refused before the first fetch, because a bound discovered as egress is not a
+   * bound.
+   *
+   * 32 is deliberately generous against real output (a generative node returns one part, a fan-in of media
+   * nodes a handful) and still cheap in the worst case.
+   */
+  mediaPartsPerNodeOutput: 32,
+  /**
    * Settled runs a `WorkflowEngine` keeps addressable in memory (`CR-33`). Not an admission ceiling like
    * its siblings — nothing is rejected — but it lives here because it is the same kind of promise: a number
    * a host can read rather than a growth nobody bounded.

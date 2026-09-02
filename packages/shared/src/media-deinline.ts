@@ -81,6 +81,46 @@ function isInflightMediaPart(node: Record<string, unknown>): boolean {
   );
 }
 
+/**
+ * How many in-flight media parts in `value` would need a store write to pin — every carrier except one
+ * already at rest (`{ kind: 'handle' }`). The engine's pre-flight count for `CR-54`'s re-host ceiling
+ * (`ADMISSION_CEILINGS.mediaPartsPerNodeOutput`), so a bound can be REFUSED before the first fetch rather
+ * than discovered as egress that already happened.
+ *
+ * Walks the same shapes {@link deInlineMedia} rewrites — arrays, plain objects, `Map` keys and values,
+ * `Set` values — and is cycle-safe over the same graph, so the two can never disagree about what counts.
+ */
+export function countUnpinnedMedia(value: unknown): number {
+  let count = 0;
+  const seen = new Set<object>();
+  const stack: unknown[] = [value];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (typeof node !== 'object' || node === null || seen.has(node)) {
+      continue;
+    }
+    seen.add(node);
+    if (isRecord(node) && isInflightMediaPart(node)) {
+      const source = node['source'];
+      // A part already at rest needs no write, so it does not spend the budget — the ceiling bounds WORK,
+      // not the shape of the value.
+      if (isRecord(source) && source['kind'] !== 'handle') {
+        count += 1;
+      }
+    }
+    if (Array.isArray(node)) {
+      for (const item of node) stack.push(item);
+    } else if (node instanceof Map) {
+      for (const [key, item] of node) stack.push(key, item);
+    } else if (node instanceof Set) {
+      for (const item of node) stack.push(item);
+    } else if (isRecord(node)) {
+      for (const item of Object.values(node)) stack.push(item);
+    }
+  }
+  return count;
+}
+
 async function rewriteMediaPart(
   node: Record<string, unknown>,
   store: MediaStore,

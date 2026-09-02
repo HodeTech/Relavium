@@ -223,9 +223,15 @@ is therefore **narrowed to a local, opted-in endpoint** rather than left on a fl
   default-deny posture, which [ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md) §4 expresses as an
   ABSENT `localEndpoint` rather than the old `allowPrivate: false` boolean, so there is no flag a later edit
   can flip to "private is fine, anywhere"; the engine owns the
-  `maxBytes` size bound + the run `AbortSignal`. The shared primitive **has landed** (ADR-0043, tested); a
-  user-supplied `url` INPUT *source* (a `url` media part crossing the seam) stays **feature-flag-OFF**
-  (`MEDIA_URL_SOURCE_ENABLED`) until the BYOK local-endpoint opt-in lands behind a fresh ADR.
+  `maxBytes` size bound + the run `AbortSignal`. The shared primitive **has landed** (ADR-0043, tested), and
+  so has the local-endpoint opt-in — as ADR-0088 §4's ABSENT `localEndpoint`, cited in this same bullet
+  above. `MEDIA_URL_SOURCE_ENABLED` is therefore **`true`** (flipped at 1.AE per ADR-0043 §3): a `url` media
+  part crosses the seam today. It is admitted and then **re-hosted**, not trusted — the engine pins it to a
+  content-addressed handle at the dispatch boundary before anything reads it (`CR-54`), so the bytes are
+  fetched exactly once, through the one vetted primitive, and no later reader re-fetches a pointer whose
+  answer may have changed. *(This clause previously claimed the flag was off. It had not been off since
+  1.AE — a control asserted in a document with nothing behind it, which is the pattern the media-bytes
+  sitting exists to catch.)*
 - **The check and the connect must see the same address (no TOCTOU).** The primitive resolves the
   hostname, validates **every** resolved IP against the range-block, and then **pins the connection
   to a validated IP** (connect-by-validated-IP / a lookup-pinned HTTP agent). Validating one

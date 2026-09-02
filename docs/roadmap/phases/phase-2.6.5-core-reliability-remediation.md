@@ -284,7 +284,7 @@ to correct.
 | `CR-51` | made (gate on model-level capability — `toolCall`/`attachment` join `requestSupportReason`, so the chain pre-skips for free and the adapter refuses; `temperature`/`structuredOutput` stay withheld knobs) · ✅ closed 2026-09-02 | — | no | — |
 | `CR-52` | made 2026-09-02 · ✅ closed 2026-09-02 (pull [ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md)'s deferral forward — an optional `signature` on the canonical `tool_call` part + `tool_call_end`, with a signature-less durable arm; the ADR-0089 §3 sidecar proved unbuildable) | [ADR-0090](../../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md), superseding [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §3 | no | — |
 | `CR-53` | made · ✅ INGEST closed 2026-09-02 (`MediaUrlStream` + `MediaStore.putStream?` + an idle-deadlined, cancellable body; a url with no streaming hook REFUSED). The adapter-side base64 and the `resolveForEgress` delivery half are recorded residuals | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §2 | no | media bytes |
-| `CR-54` | made · ✅ closed 2026-09-02 (content-hashed handle at first resolution — the node OUTPUT is pinned into the run scope, not only into the event copy) | [ADR-0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md) §3 | no | media bytes |
+| `CR-54` | made · ✅ closed 2026-09-02 for the two paths that produce one — the node OUTPUT and the human-gate resume PAYLOAD are pinned at first resolution, bounded, and classified on failure. ADR-0043 §3's INGEST half (an `AgentSession` message, an MCP tool result) is a recorded residual | [ADR-0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md) §3 | no | media bytes |
 | `CR-55` | made (missing rate ⇒ unpriced, on both cost paths; strict refuses; the rate path + CLI fields land with it) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §4 | yes | — |
 | `CR-60` | **open** — race semantics, or rename + correct the table | — | no | — |
 | `CR-61` | **open** — needs a JSON-Schema validator dependency | new (dependency ADR) | no | — |
@@ -1667,11 +1667,35 @@ bound, which proves the transfer is cut off, not the resident set. The DELIVERY 
 [deferred-tasks.md](../deferred-tasks.md); the mutation that would close (c) is a harness that samples RSS
 inside the body generator across two processes.
 
-### CR-54 — URL media can produce different bytes on resume · High · ✅ closed 2026-09-02
+### CR-54 — URL media can produce different bytes on resume · High · ✅ node-output + gate-payload halves closed 2026-09-02
 Remote URL media is resolved again on resume, and the same URL can return different content, a different
 redirect or a different DNS answer. The run appears to have the same inputs while the model sees different bytes.
-**Fix + acceptance.** Convert to a content-hashed handle at first resolution; resume must not re-fetch. Pairs
-with `CR-17`: the input digest is only meaningful if a URL input's bytes are pinned.
+**Fix + acceptance.** Convert to a content-hashed handle at first resolution; resume must not re-fetch.
+
+**Correction to the pairing note (2026-09-02).** This section used to say *"Pairs with `CR-17`: the input
+digest is only meaningful if a URL input's bytes are pinned."* That is false, and implementation is what
+established it: an authored workflow input is `string | number | boolean | file_path | code_diff | secret`,
+so **a url media part cannot arrive as an input at all**. The real pairing is with the NODE OUTPUT — the
+digest over `run.outputs[...]` is what the pin makes meaningful. Kept as a correction rather than a silent
+edit, because the wrong version is what sent the first implementation attempt at the wrong half.
+
+**What landed (2026-09-02).** The pin runs at the **dispatch boundary**, immediately after the executor
+returns and before anything reads the outcome, so one fetch serves `save_to`, the run scope, the durable
+event, every later reader and a resume. Two systematic reviews found the first placement (inside
+`#settleCompleted`) broke two invariants, both reproduced and both fixed here: a `save_to` output fetched a
+drifting url **twice** — the file on the user's disk and the handle in the run history were different
+objects, over a `run:completed` — and the pin's `await` sat between the size checks and the status write, so
+a node deadline firing mid-pin stamped the vertex `completed` after it had already failed, putting a
+timed-out node's output into `run:failed.partialOutputs`. The **human-gate resume payload** is pinned too:
+it is a first resolution like any node output and took the one route into `#states` that
+`#settleCompleted` does not cover. The re-host is **bounded** (`ADMISSION_CEILINGS.mediaPartsPerNodeOutput`)
+and refused before the first fetch — a legal node output can carry thousands of url parts inside the size
+bound, since that bound measures the pointer — and a pin failure is now a classified `node:failed` naming
+which of refused / transient / cancelled happened, instead of an anonymous `internal` with no node terminal.
+
+**Not closed by this, and recorded rather than implied:** ADR-0043 §3's *other* clause, "an input URL
+re-hosted at ingest", covers surfaces this does not reach (an `AgentSession` message, an MCP tool result).
+See [deferred-tasks.md](../deferred-tasks.md).
 
 ### CR-55 — Missing media rates can bypass a strict cost cap · Blocker for the strict-cap claim
 Where a media rate is absent the estimator can fall to zero, the generated catalog projection produces no media
