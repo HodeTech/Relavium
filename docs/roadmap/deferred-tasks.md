@@ -492,6 +492,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
       inline: `resolveForEgress` returning a provider-hosted ref (a Gemini `fileUri`, an OpenAI `file_id`)
       instead of base64, which ADR-0031 already reserves the sidecar for.
       *(medium · packages/llm/src/fallback-chain.ts, packages/db/src/media-store.ts; ADR-0031, ADR-0089 §1)*
+- [ ] **Three functions this wave touched sit over the 15 cognitive-complexity threshold.**
+      `models-pricing.ts` (37), `budget-governor.ts:checkPreEgress` (16) and `dispatch.ts`
+      `buildModelsPricingArgs` (17). SonarCloud reports them as issues, not gate failures, and they are
+      branch-heavy for real reasons (each price flag has its own unit, its own validation and its own
+      remedy sentence). Two others from the same wave were decomposed when the fix also removed a
+      duplication — `dispatchToolCalls` and `countUnpinnedMedia` — which is the bar the rest should meet:
+      refactor when it buys something beyond the number.
+      *(low · apps/cli/src/commands/models-pricing.ts, dispatch.ts, packages/core/src/engine/budget-governor.ts)*
 - [ ] **A signature Gemini attaches to a `text` or `inlineData` part is still dropped.**
       [ADR-0090](../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md)'s named deferral:
       neither `text` nor `media` has a field for a continuation token, and the streaming fold flattens text

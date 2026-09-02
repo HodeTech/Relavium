@@ -417,7 +417,9 @@ describe('streamBounded (ADR-0089 §2 — the streaming twin, tested directly)',
             const chunk = list[i];
             i += 1;
             return Promise.resolve(
-              chunk === undefined ? { done: true, value: undefined } : { done: false, value: chunk },
+              chunk === undefined
+                ? { done: true, value: undefined }
+                : { done: false, value: chunk },
             );
           },
         };

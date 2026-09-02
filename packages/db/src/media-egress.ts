@@ -288,4 +288,3 @@ async function* streamWithLiveness(
     void iterator.return?.(undefined).catch(() => undefined);
   }
 }
-

@@ -781,6 +781,74 @@ function synthesizedMediaMessage(pending: readonly PendingAttachment[]): LlmMess
 }
 
 /**
+ * The failure half of one tool dispatch: announce the attempted call with a REDACTED input, then either
+ * return the model-correctable `isError` result or throw a classified {@link AgentTurnError}.
+ *
+ * Extracted from `dispatchToolCalls`'s loop, whose `catch` carried this whole ladder inline. Behaviour is
+ * unchanged — the `continue` became a return, and the throw is still a throw.
+ */
+function toolFailureMessage(
+  err: unknown,
+  call: ToolCallPart,
+  params: AgentTurnParams,
+  model: string,
+  attemptNumber: number,
+): LlmMessage {
+  // No registry outcome ⇒ no sanitized payload (resolve / grant / policy / args rejected before dispatch).
+  // Announce the attempted call with a REDACTED (empty) input — never the raw model args — then classify.
+  params.emit({
+    type: 'agent:tool_call',
+    nodeId: params.nodeId,
+    model,
+    toolId: call.name,
+    toolInput: {},
+    attemptNumber,
+  });
+  if (err instanceof ToolDispatchError && isRecoverableToolError(err, params.limits)) {
+    params.emit({
+      type: 'agent:tool_result',
+      nodeId: params.nodeId,
+      toolId: call.name,
+      success: false,
+      outputSummary: err.message,
+      attemptNumber,
+    });
+    return {
+      role: 'tool',
+      content: [{ type: 'tool_result', toolCallId: call.id, result: err.message, isError: true }],
+    };
+  }
+  const { code, retryable } =
+    err instanceof ToolDispatchError
+      ? codeForToolError(err)
+      : { code: 'internal' as const, retryable: false };
+  throw new AgentTurnError(
+    code,
+    err instanceof Error ? err.message : 'tool dispatch failed',
+    retryable,
+  );
+}
+
+/**
+ * Refuse a response whose tool calls together produced more media than one message may deliver (`CR-50`).
+ *
+ * Fatal, and deliberately not `correctable`: every tool in the response has already run, so feeding an
+ * `isError` back would invite the model to re-run them. Refused here rather than at the adapter, where the
+ * same excess arrives as a `ZodError` on `MEDIA_MESSAGE_CAPS` — the seam's message, about the seam's limit,
+ * after the work is done.
+ */
+function assertAttachmentBudget(pending: readonly PendingAttachment[]): void {
+  const count = pending.reduce((n, e) => n + unwrapUntrusted(e.media).length, 0);
+  if (count > ADMISSION_CEILINGS.mediaAttachmentsPerResponse) {
+    throw new AgentTurnError(
+      'turn_limit',
+      `the response's tool calls produced ${count} media attachments, over the limit of ${ADMISSION_CEILINGS.mediaAttachmentsPerResponse}`,
+      false,
+    );
+  }
+}
+
+/**
  * Dispatch each tool call of a tool-use turn through the registry, emitting `agent:tool_call` /
  * `agent:tool_result` and returning the `role:'tool'` result messages. A model-correctable throw
  * (`unknown_tool` / `invalid_args`) is converted to an `isError` tool result fed back for the model
@@ -854,57 +922,14 @@ async function dispatchToolCalls(
         attemptNumber,
       });
     } catch (err) {
-      // No registry outcome ⇒ no sanitized payload (resolve / grant / policy / args rejected before
-      // dispatch). Announce the attempted call with a REDACTED (empty) input — never the raw model
-      // args — then classify.
-      params.emit({
-        type: 'agent:tool_call',
-        nodeId: params.nodeId,
-        model: getModel(),
-        toolId: call.name,
-        toolInput: {},
-        attemptNumber,
-      });
-      if (err instanceof ToolDispatchError && isRecoverableToolError(err, params.limits)) {
-        correctable = true;
-        results.push({
-          role: 'tool',
-          content: [
-            { type: 'tool_result', toolCallId: call.id, result: err.message, isError: true },
-          ],
-        });
-        params.emit({
-          type: 'agent:tool_result',
-          nodeId: params.nodeId,
-          toolId: call.name,
-          success: false,
-          outputSummary: err.message,
-          attemptNumber,
-        });
-        continue;
-      }
-      const { code, retryable } =
-        err instanceof ToolDispatchError
-          ? codeForToolError(err)
-          : { code: 'internal' as const, retryable: false };
-      const message = err instanceof Error ? err.message : 'tool dispatch failed';
-      throw new AgentTurnError(code, message, retryable);
+      // Either a model-correctable result to feed back, or a classified throw — see `toolFailureMessage`.
+      results.push(toolFailureMessage(err, call, params, getModel(), attemptNumber));
+      correctable = true;
     }
   }
   // ONE synthesized message for the whole response, after every tool result — never interleaved between
   // them. A turn that threw above never reaches here, so a failed dispatch delivers no media either.
-  const attachmentCount = pending.reduce((n, e) => n + unwrapUntrusted(e.media).length, 0);
-  if (attachmentCount > ADMISSION_CEILINGS.mediaAttachmentsPerResponse) {
-    // Fatal, and deliberately not `correctable`: every tool in the response has already run, so feeding an
-    // `isError` back would invite the model to re-run them. Refused here rather than at the adapter, where
-    // the same excess arrives as a `ZodError` on `MEDIA_MESSAGE_CAPS` — the seam's message, about the
-    // seam's limit, after the work is done.
-    throw new AgentTurnError(
-      'turn_limit',
-      `the response's tool calls produced ${attachmentCount} media attachments, over the limit of ${ADMISSION_CEILINGS.mediaAttachmentsPerResponse}`,
-      false,
-    );
-  }
+  assertAttachmentBudget(pending);
   const attachment = synthesizedMediaMessage(pending);
   if (attachment !== undefined) {
     results.push(attachment);

@@ -37,7 +37,9 @@ describe('FilesystemMediaStore (1.AF, ADR-0042 — content-addressed CAS)', () =
             const chunk = chunks[i];
             i += 1;
             return Promise.resolve(
-              chunk === undefined ? { done: true, value: undefined } : { done: false, value: chunk },
+              chunk === undefined
+                ? { done: true, value: undefined }
+                : { done: false, value: chunk },
             );
           },
         };
@@ -49,8 +51,7 @@ describe('FilesystemMediaStore (1.AF, ADR-0042 — content-addressed CAS)', () =
     // The digest is computed incrementally, so a body split across chunks must land on the byte-identical
     // content address — otherwise two writes of the same asset would produce two handles and the CAS would
     // stop being content-addressed.
-    const handle = await store.putStream(
-      chunkStream([HELLO.slice(0, 2), HELLO.slice(2)]));
+    const handle = await store.putStream(chunkStream([HELLO.slice(0, 2), HELLO.slice(2)]));
     expect(handle).toBe(expectedHandle);
     expect(await store.get(handle)).toEqual(HELLO);
   });
@@ -63,9 +64,9 @@ describe('FilesystemMediaStore (1.AF, ADR-0042 — content-addressed CAS)', () =
     const failRoot = mkdtempSync(join(tmpdir(), 'relavium-media-partial-'));
     try {
       const failing = new FilesystemMediaStore(failRoot);
-      await expect(
-        failing.putStream(chunkStream([HELLO.slice(0, 2)], 1)),
-      ).rejects.toThrow(/body failed mid-stream/);
+      await expect(failing.putStream(chunkStream([HELLO.slice(0, 2)], 1))).rejects.toThrow(
+        /body failed mid-stream/,
+      );
       expect(readdirSync(failRoot)).toEqual([]); // no shard directory, and no stray `.tmp`
     } finally {
       rmSync(failRoot, { recursive: true, force: true });

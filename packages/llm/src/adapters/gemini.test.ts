@@ -355,14 +355,16 @@ describe('Gemini adapter', () => {
 
     it('CAPTURES the signature off a functionCall part (non-streaming)', () => {
       const parts = mapContent(signedCall, new GeminiToolCallIds());
-      expect(parts[0]).toMatchObject({ type: 'tool_call', name: 'get_weather', signature: 'fn-sig' });
+      expect(parts[0]).toMatchObject({
+        type: 'tool_call',
+        name: 'get_weather',
+        signature: 'fn-sig',
+      });
     });
 
     it('omits the field when the part carries no signature', () => {
       const unsigned: GeminiResponse = {
-        candidates: [
-          { content: { parts: [{ functionCall: { name: 'get_weather', args: {} } }] } },
-        ],
+        candidates: [{ content: { parts: [{ functionCall: { name: 'get_weather', args: {} } }] } }],
       };
       expect(mapContent(unsigned, new GeminiToolCallIds())[0]).not.toHaveProperty('signature');
     });

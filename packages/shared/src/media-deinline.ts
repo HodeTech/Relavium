@@ -5,6 +5,7 @@ import {
   isCanonicalBase64Source,
   decodeBase64,
   mediaModalityOf,
+  pushMediaWalkChildren,
   type ContentPart,
   type DurableContentPart,
   type MediaStore,
@@ -81,6 +82,17 @@ function isInflightMediaPart(node: Record<string, unknown>): boolean {
   );
 }
 
+/** Whether `node` is an in-flight media part whose carrier still needs a store write to become a handle. */
+function needsStoreWrite(node: object): boolean {
+  if (!isRecord(node) || !isInflightMediaPart(node)) {
+    return false;
+  }
+  const source = node['source'];
+  // A part already at rest needs no write, so it does not spend the budget — the ceiling bounds WORK, not
+  // the shape of the value.
+  return isRecord(source) && source['kind'] !== 'handle';
+}
+
 /**
  * How many in-flight media parts in `value` would need a store write to pin — every carrier except one
  * already at rest (`{ kind: 'handle' }`). The engine's pre-flight count for `CR-54`'s re-host ceiling
@@ -107,32 +119,13 @@ export function countUnpinnedMedia(value: unknown): number {
       continue;
     }
     seen.add(node);
-    // A raw binary buffer is REFUSED by `deInlineMedia` in O(1), so counting it is pointless — and walking
-    // it is worse than pointless: `isRecord` is true for a `Uint8Array` (it is an object and not an Array),
-    // and `Object.values` on one yields **one entry per byte**. A multi-megabyte buffer anywhere in a node
-    // output would push millions of stack entries before the ceiling check returned, turning the guard
-    // added to refuse a hostile payload into the thing that payload attacks. Same short-circuit, same
-    // position, as `deInlineMedia`'s own walk.
-    if (isBinaryBuffer(node)) {
-      continue;
+    if (needsStoreWrite(node)) {
+      count += 1;
     }
-    if (isRecord(node) && isInflightMediaPart(node)) {
-      const source = node['source'];
-      // A part already at rest needs no write, so it does not spend the budget — the ceiling bounds WORK,
-      // not the shape of the value.
-      if (isRecord(source) && source['kind'] !== 'handle') {
-        count += 1;
-      }
-    }
-    if (Array.isArray(node)) {
-      for (const item of node) stack.push(item);
-    } else if (node instanceof Map) {
-      for (const [key, item] of node) stack.push(key, item);
-    } else if (node instanceof Set) {
-      for (const item of node) stack.push(item);
-    } else if (isRecord(node)) {
-      for (const item of Object.values(node)) stack.push(item);
-    }
+    // The SHARED walker — the same one `collectDurableMediaHandles` uses, and the same one this function
+    // had its own byte-identical copy of until a review pointed out they could drift. It also carries the
+    // raw-binary-buffer short-circuit, so a `Uint8Array` is not walked one byte at a time.
+    pushMediaWalkChildren(node, stack);
   }
   return count;
 }

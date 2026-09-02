@@ -965,7 +965,16 @@ export type MediaWritePort = (
 ) => Promise<MediaWriteResult>;
 
 /** Queue a walked node's children (array items / Map keys+values / Set values / record values) onto `stack`. */
-function pushMediaWalkChildren(node: object, stack: unknown[]): void {
+export function pushMediaWalkChildren(node: object, stack: unknown[]): void {
+  // A raw binary buffer has no children worth walking — it cannot contain a media part — and descending
+  // into one is actively harmful: `isRecord` is true for a `Uint8Array` (an object, not an Array) and
+  // `Object.values` on one yields ONE ENTRY PER BYTE, so a multi-megabyte buffer allocates an array as long
+  // as itself and pushes every byte onto the caller's stack. Guarded here rather than at each call site so
+  // every walk built on this gets it (`CR-54` found the same hazard in a sibling walk that had its own copy
+  // of this function; that copy is now gone).
+  if (isBinaryBuffer(node)) {
+    return;
+  }
   if (Array.isArray(node)) {
     for (const item of node) stack.push(item);
   } else if (node instanceof Map) {
