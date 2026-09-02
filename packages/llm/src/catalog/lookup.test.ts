@@ -82,7 +82,7 @@ describe('installCatalogRefresh — additive only, and the shipped snapshot is t
     // Every field is the SHIPPED one — the refresh did not write it.
     expect(catalogModel('gpt-5.5')).toEqual(shipped);
     // …so a $14.50 turn is still $14.50, not $0.00.
-    const billed = cost('gpt-5.5', { inputTokens: 1_000_000, outputTokens: 100_000 });
+    const billed = cost('gpt-5.5', { inputTokens: 1_000_000, outputTokens: 100_000 }).microcents;
     expect(billed).toBeGreaterThan(1_000_000_000); // > $10, not the ~$0 the downgrade would have billed
   });
 

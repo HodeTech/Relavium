@@ -56,7 +56,7 @@ describe('catalogPricing — the projection that replaced the hand-typed table',
   });
 
   it('NEVER bills a cached read at zero — a model with no published cache rate pays the full input rate', () => {
-    // The first projection wrote `?? 0`. `cost()` computes `cacheReadTokens × rate / 1e6`, so 0 does not mean
+    // The first projection wrote `?? 0`. `cost().microcents` computes `cacheReadTokens × rate / 1e6`, so 0 does not mean
     // "charge the normal rate" — it means CHARGE NOTHING, and eleven catalog models publish no cache rate. OpenAI
     // auto-caches, so the cached fraction of every prompt on `o1-pro` ($150/MTok in) billed at $0.00.
     //
@@ -72,7 +72,7 @@ describe('catalogPricing — the projection that replaced the hand-typed table',
     // that have one, and would be measuring two things at once.
     const CACHED = 100_000;
     for (const [id, entry] of uncached) {
-      const billed = cost(id, { inputTokens: 0, outputTokens: 0, cacheReadTokens: CACHED });
+      const billed = cost(id, { inputTokens: 0, outputTokens: 0, cacheReadTokens: CACHED }).microcents;
       expect(billed, id).toBe(Math.round((CACHED * entry.inputPerMtokMicrocents) / 1_000_000));
       expect(billed, id).toBeGreaterThan(0); // the point: NOT zero
     }
@@ -87,7 +87,7 @@ describe('catalogPricing — the projection that replaced the hand-typed table',
     expect(discounted).toBeDefined();
     if (discounted === undefined) return;
     const [id, entry] = discounted;
-    expect(cost(id, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 1_000_000 })).toBe(
+    expect(cost(id, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 1_000_000 }).microcents).toBe(
       entry.cachedInputPerMtokMicrocents,
     );
   });
@@ -101,8 +101,8 @@ describe('catalogPricing — the projection that replaced the hand-typed table',
 
     const base = entry?.inputPerMtokMicrocents ?? 0;
     const dear = entry?.contextTiers?.[0]?.inputPerMtokMicrocents ?? 0;
-    const short = cost('gemini-2.5-pro', { inputTokens: 100_000, outputTokens: 0 });
-    const long = cost('gemini-2.5-pro', { inputTokens: 300_000, outputTokens: 0 });
+    const short = cost('gemini-2.5-pro', { inputTokens: 100_000, outputTokens: 0 }).microcents;
+    const long = cost('gemini-2.5-pro', { inputTokens: 300_000, outputTokens: 0 }).microcents;
     expect(short).toBe(Math.round((100_000 * base) / 1_000_000)); // under the threshold: the base rate
     expect(long).toBe(Math.round((300_000 * dear) / 1_000_000)); // over it: the ABOVE rate
     expect(long / 3).toBeGreaterThan(short); // …strictly dearer PER TOKEN, which is the under-bill that was live

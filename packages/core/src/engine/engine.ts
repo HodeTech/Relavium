@@ -2625,16 +2625,11 @@ class RunExecution {
     // Mark before the first side effect. A terminal/error path may re-enter while a sink is unwinding; the provider
     // has only one submitted job, so the engine must never manufacture a second billed addend for it.
     job.costAccounted = true;
-    const costMicrocents = realizedMediaCost(
-      job.model,
-      job.modality,
-      job.units,
-      this.#resolvePrice,
-    );
+    const realized = realizedMediaCost(job.model, job.modality, job.units, this.#resolvePrice);
     // Reconcile the lease BEFORE publishing the engine cost event. If event delivery faults after a provider-paid
     // job, the reservation cannot be released as though the submission were free. Clear the process-local handle
     // after its idempotent settle so every terminal sweep remains exactly-once from the governor's perspective.
-    job.admission?.settle(costMicrocents);
+    job.admission?.settle(realized.costMicrocents);
     delete job.admission;
     this.#nodeEmit({
       type: 'cost:updated',
@@ -2642,8 +2637,13 @@ class RunExecution {
       model: job.model,
       inputTokens: 0,
       outputTokens: 0,
-      costMicrocents,
+      costMicrocents: realized.costMicrocents,
       cumulativeCostMicrocents: 0, // #nodeEmit overwrites with the authoritative run-wide total
+      // The async-job half of ADR-0089 §4. A minute-scale video generation is the single most expensive thing
+      // this engine emits a cost for, so a `0` here that cannot be told from "free" is the worst version of
+      // `CR-55` — and this settle runs on EVERY terminal (success, fail, deadline, cancel), because the
+      // provider bills regardless. `false` only; absence is the ordinary, fully-priced case.
+      ...(realized.priced ? {} : { priced: false }),
     });
   }
 

@@ -90,7 +90,7 @@ describe('priceModel', () => {
 describe('cost', () => {
   it('prices input + output in integer micro-cents (Opus 4.8)', () => {
     // 1000 in @ $5/MTok = 500_000µ¢; 500 out @ $25/MTok = 1_250_000µ¢
-    expect(cost('claude-opus-4-8', { inputTokens: 1000, outputTokens: 500 })).toBe(1_750_000);
+    expect(cost('claude-opus-4-8', { inputTokens: 1000, outputTokens: 500 }).microcents).toBe(1_750_000);
   });
 
   it('prices each token class once, including cache read + write (Opus 4.8)', () => {
@@ -100,26 +100,26 @@ describe('cost', () => {
         outputTokens: 500, // 1_250_000
         cacheReadTokens: 2000, // 2000 @ $0.50/MTok = 100_000
         cacheWriteTokens: 4000, // 4000 @ $6.25/MTok = 2_500_000
-      }),
+      }).microcents,
     ).toBe(4_350_000);
   });
 
   it('prices Sonnet 4.6 and DeepSeek from their own rows', () => {
-    expect(cost('claude-sonnet-4-6', { inputTokens: 1000, outputTokens: 500 })).toBe(1_050_000);
+    expect(cost('claude-sonnet-4-6', { inputTokens: 1000, outputTokens: 500 }).microcents).toBe(1_050_000);
     // deepseek-chat: 1000 in @ $0.14/MTok = 14_000µ¢; 500 out @ $0.28/MTok = 14_000µ¢
-    expect(cost('deepseek-chat', { inputTokens: 1000, outputTokens: 500 })).toBe(28_000);
+    expect(cost('deepseek-chat', { inputTokens: 1000, outputTokens: 500 }).microcents).toBe(28_000);
   });
 
   it('ignores cache-write tokens for a provider with no cache-write price (gpt-5.5)', () => {
     // gpt-5.5 has no cacheWritePerMtokMicrocents → the 1000 cache-write tokens cost 0.
-    expect(cost('gpt-5.5', { inputTokens: 1000, outputTokens: 0, cacheWriteTokens: 1000 })).toBe(
+    expect(cost('gpt-5.5', { inputTokens: 1000, outputTokens: 0, cacheWriteTokens: 1000 }).microcents).toBe(
       500_000,
     ); // 1000 in @ $5.00/MTok = 500_000
   });
 
   it('rounds the per-class micro-cent figure (half-up)', () => {
     // gpt-5.4-mini cached input $0.075/MTok = 7_500_000µ¢/MTok → 1 token = 7.5 → rounds to 8.
-    expect(cost('gpt-5.4-mini', { inputTokens: 0, outputTokens: 0, cacheReadTokens: 1 })).toBe(8);
+    expect(cost('gpt-5.4-mini', { inputTokens: 0, outputTokens: 0, cacheReadTokens: 1 }).microcents).toBe(8);
   });
 });
 
@@ -131,32 +131,39 @@ describe('mediaCost (1.AF/D17 — per-modality media output addend)', () => {
         { modality: 'audio', direction: 'output', units: 10, unit: 'second' }, // 10 × 200
         { modality: 'video', direction: 'output', units: 2, unit: 'second' }, // 2 × 5_000
       ]),
-    ).toBe(3_000 + 2_000 + 10_000);
+    ).toEqual({ microcents: 3_000 + 2_000 + 10_000, unpricedModalities: [] });
   });
 
   it('never charges INPUT-direction media (it bills as input tokens already)', () => {
+    // And it is not a GAP either: input media is billed as input tokens, so there is nothing missing to name.
     expect(
       mediaCost(PRICED_MEDIA, [{ modality: 'image', direction: 'input', units: 5, unit: 'count' }]),
-    ).toBe(0);
+    ).toEqual({ microcents: 0, unpricedModalities: [] });
   });
 
   it('rounds a fractional addend to an integer micro-cent (a fractional durationSeconds × rate)', () => {
     // 2.5s × 201/s = 502.5 → ROUNDED to 503; the cost path must never emit a non-integer micro-cent (1.AG §5).
     const oddAudio: ModelPricing = { ...PRICED_MEDIA, mediaOutputRates: { audio: 201 } };
-    const total = mediaCost(oddAudio, [
+    const { microcents } = mediaCost(oddAudio, [
       { modality: 'audio', direction: 'output', units: 2.5, unit: 'second' },
     ]);
-    expect(total).toBe(503);
-    expect(Number.isInteger(total)).toBe(true);
+    expect(microcents).toBe(503);
+    expect(Number.isInteger(microcents)).toBe(true);
   });
 
-  it('skips a modality the model does not rate (degrade-to-0, never hard-fail)', () => {
+  it('NAMES a modality the model does not rate, instead of contributing a silent 0 (ADR-0089 §4)', () => {
+    // REPLACES "skips a modality the model does not rate (degrade-to-0, never hard-fail)". That test pinned the
+    // `CR-55` defect as correct: the charge for produced units vanished into a 0, and a 0 is a PRICE — so a
+    // strict cap read paid generation as free and `cost:updated` reported nothing. The degrade half is
+    // unchanged and still asserted below (`microcents` is 0, and nothing throws); what is new is that the gap
+    // is reported rather than absorbed, which is what lets the governor and the event tell the two apart.
     const onlyImage: ModelPricing = { ...PRICED_MEDIA, mediaOutputRates: { image: 1_000 } };
     expect(
       mediaCost(onlyImage, [{ modality: 'audio', direction: 'output', units: 10, unit: 'second' }]),
-    ).toBe(0);
-    // No rates at all → 0 (the 1.AF reality for every real table row). The key is omitted entirely
-    // (not set to `undefined`, which exactOptionalPropertyTypes rejects).
+    ).toEqual({ microcents: 0, unpricedModalities: ['audio'] });
+
+    // No rates at all — the state of EVERY real table row until the W5 rate path lands. The key is omitted
+    // entirely (not set to `undefined`, which exactOptionalPropertyTypes rejects).
     const noRates: ModelPricing = {
       provider: 'gemini',
       nativeId: 'no-rates',
@@ -169,31 +176,52 @@ describe('mediaCost (1.AF/D17 — per-modality media output addend)', () => {
     };
     expect(
       mediaCost(noRates, [{ modality: 'image', direction: 'output', units: 3, unit: 'count' }]),
-    ).toBe(0);
+    ).toEqual({ microcents: 0, unpricedModalities: ['image'] });
   });
 
-  it('treats a token-`count` audio unit as observability-only when only a per-second rate exists', () => {
-    // A token-based provider reports audio as a raw token count (unit: 'count'); with only a per-second
-    // audio rate it does NOT bill (ADR-0044 §3 — never a fabricated tokens→seconds conversion).
+  it('reports each unpriced modality once, even across several entries', () => {
+    const onlyImage: ModelPricing = { ...PRICED_MEDIA, mediaOutputRates: { image: 1_000 } };
+    const { unpricedModalities } = mediaCost(onlyImage, [
+      { modality: 'audio', direction: 'output', units: 10, unit: 'second' },
+      { modality: 'audio', direction: 'output', units: 4, unit: 'second' },
+      { modality: 'video', direction: 'output', units: 2, unit: 'second' },
+    ]);
+    // A set, not a list of occurrences — the surface says "this model has no audio rate" once, not per entry.
+    expect([...unpricedModalities].sort()).toEqual(['audio', 'video']);
+  });
+
+  it('a ZERO-unit entry is not a gap — nothing was produced, so nothing is missing', () => {
+    // The distinction that keeps the notice honest: an unrated modality only matters once real units exist.
+    const onlyImage: ModelPricing = { ...PRICED_MEDIA, mediaOutputRates: { image: 1_000 } };
+    expect(
+      mediaCost(onlyImage, [{ modality: 'audio', direction: 'output', units: 0, unit: 'second' }]),
+    ).toEqual({ microcents: 0, unpricedModalities: [] });
+  });
+
+  it('names a token-`count` audio unit as unpriced when only a per-second rate exists', () => {
+    // A token-based provider reports audio as a raw token count (unit: 'count'); with only a per-second audio
+    // rate it still does NOT bill (ADR-0044 §3 — never a fabricated tokens→seconds conversion). But it is the
+    // same fact for the cap as a missing rate: real units were produced and this total does not contain their
+    // charge — so it is NAMED now, where the previous test asserted a bare 0.
     expect(
       mediaCost(PRICED_MEDIA, [
         { modality: 'audio', direction: 'output', units: 500, unit: 'count' },
       ]),
-    ).toBe(0);
+    ).toEqual({ microcents: 0, unpricedModalities: ['audio'] });
   });
 
-  it('undefined mediaUnits contributes 0 (the dominant text/handle-only case)', () => {
-    expect(mediaCost(PRICED_MEDIA, undefined)).toBe(0);
+  it('undefined mediaUnits contributes 0 and no gap (the dominant text/handle-only case)', () => {
+    expect(mediaCost(PRICED_MEDIA, undefined)).toEqual({ microcents: 0, unpricedModalities: [] });
   });
 
-  it('cost() folds media as a disjoint addend, never into the token path (real rows price media at 0)', () => {
+  it('cost().microcents folds media as a disjoint addend, never into the token path (real rows price media at 0)', () => {
     // A real table row carries no media rate, so a media-bearing usage adds 0 over the token cost.
     expect(
       cost('claude-opus-4-8', {
         inputTokens: 1000, // 500_000
         outputTokens: 500, // 1_250_000
         mediaUnits: [{ modality: 'image', direction: 'output', units: 2, unit: 'count' }],
-      }),
+      }).microcents,
     ).toBe(1_750_000);
   });
 });
@@ -271,13 +299,13 @@ describe('user-pricing overlay (2.5.G S10, ADR-0065 §2)', () => {
     expect(() => priceModel('not-anywhere', OVERLAY)).toThrowError(UnknownModelError);
   });
 
-  it('cost() prices a user-priced unknown model via the overlay (the cost-cap gap is closed)', () => {
+  it('cost().microcents prices a user-priced unknown model via the overlay (the cost-cap gap is closed)', () => {
     // 1000 in @ $3/MTok = 300_000µ¢; 500 out @ $9/MTok = 450_000µ¢ → 750_000µ¢.
-    expect(cost('acme-custom-1', { inputTokens: 1000, outputTokens: 500 }, OVERLAY)).toBe(750_000);
+    expect(cost('acme-custom-1', { inputTokens: 1000, outputTokens: 500 }, OVERLAY).microcents).toBe(750_000);
   });
 
-  it('cost() without an overlay still throws for the same unknown model (no silent zero)', () => {
-    expect(() => cost('acme-custom-1', { inputTokens: 1000, outputTokens: 500 })).toThrowError(
+  it('cost().microcents without an overlay still throws for the same unknown model (no silent zero)', () => {
+    expect(() => cost('acme-custom-1', { inputTokens: 1000, outputTokens: 500 }).microcents).toThrowError(
       UnknownModelError,
     );
   });

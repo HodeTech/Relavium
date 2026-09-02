@@ -798,18 +798,22 @@ function buildGenerativeOutcome(
   }
   // Exactly ONE realized cost:updated (ADR-0045 §5) — derived from the request volume × the per-model media
   // rate (best-effort: an unknown/unrated model degrades to 0, H4). The engine folds it into the run cumulative.
-  const costMicrocents = realizedMediaCost(primary.model, modality, units, resolvePrice);
+  const realized = realizedMediaCost(primary.model, modality, units, resolvePrice);
   // Settle before emitting to the engine: if a synchronous event sink faults after provider success, the admission
   // cannot be released as though the charged generation never happened.
-  onRealizedCost(costMicrocents);
+  onRealizedCost(realized.costMicrocents);
   ctx.emit({
     type: 'cost:updated',
     nodeId: node.id,
     model: primary.model,
     inputTokens: 0,
     outputTokens: 0,
-    costMicrocents,
+    costMicrocents: realized.costMicrocents,
     cumulativeCostMicrocents: 0, // placeholder — the engine overwrites with the authoritative run-wide total
+    // Only ever `false`, never `true` — mirroring the chain's `#emitFolded`, where the flag's absence is the
+    // ordinary case and its presence is the warning (ADR-0070 §6). A `0` here with real produced units and no
+    // flag would be indistinguishable from a genuinely free generation, which is the ambiguity `CR-55` names.
+    ...(realized.priced ? {} : { priced: false }),
   });
   // The pure-media node output ({ text:'', media:[part] }) de-inlines at #emitDurable exactly like the inline
   // path. `MediaGenResult.raw` is provider-internal and is never part of the media part (strip-on-sink, §7).
@@ -861,25 +865,36 @@ export function generativeUnits(modality: MediaBilledModality, node: AgentNode):
 
 /**
  * Best-effort realized media cost for a generative call (ADR-0045 §5): the request volume × the per-model
- * media rate, via the shared `cost()` fold (token counts are 0). An unknown/unrated model degrades to 0 (H4)
- * — never a hard fail on a missing rate, exactly as the chat path's best-effort cost does.
+ * media rate, via the shared `cost()` fold (token counts are 0).
+ *
+ * **It reports whether it could price the call, and that is the point**
+ * ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4). This path does NOT
+ * go through a `FallbackChain` attempt record, so the `priced: false` signal the chain emits for an unpriced
+ * model never reaches it — and a media generation is the call class most likely to be unpriced, which made
+ * the one path `CR-55` is about the one path unable to say so. It still degrades to 0 rather than failing (H4
+ * — a successful, already-paid generation must never become a failed node); what is new is that the caller is
+ * told the 0 is a gap, not a charge.
  */
 export function realizedMediaCost(
   model: string,
   modality: MediaBilledModality,
   units: number,
   resolvePrice?: PricingOverlay,
-): number {
+): { readonly costMicrocents: number; readonly priced: boolean } {
   const mediaUnits: MediaUnitsEntry[] = [
     { modality, direction: 'output', units, unit: modality === 'image' ? 'count' : 'second' },
   ];
   try {
-    return cost(model, { inputTokens: 0, outputTokens: 0, mediaUnits }, resolvePrice);
+    const priced = cost(model, { inputTokens: 0, outputTokens: 0, mediaUnits }, resolvePrice);
+    return {
+      costMicrocents: priced.microcents,
+      priced: priced.unpricedModalities.length === 0,
+    };
   } catch {
-    // Best-effort (H4): an unknown/unrated model — OR any pricing-layer fault — must NEVER turn a successful,
-    // already-paid generation into a failed node. Degrade to 0, matching the chain's best-effort cost fold
-    // (FallbackChain #emitSuccess swallows a pricing throw the same way).
-    return 0;
+    // An unknown model — OR any pricing-layer fault. Both mean the same thing to a reader of the event: this
+    // figure is not the charge. (FallbackChain #emitSuccess swallows a pricing throw the same way, and marks
+    // its attempt `priced: false` for it.)
+    return { costMicrocents: 0, priced: false };
   }
 }
 

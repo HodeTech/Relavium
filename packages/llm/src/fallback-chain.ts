@@ -1163,7 +1163,13 @@ export class FallbackChain {
       if (!(error_ instanceof UnknownModelError)) throw error_;
       return { unpriced: true };
     }
-    return { unpriced: false, ...(cost === undefined ? {} : { cost }) };
+    // TWO ways an egress fails to be priced, and they arrive by different routes (ADR-0089 §4). The throw above
+    // is an unpriced MODEL — nothing about the call could be priced. This is an unpriced MODALITY on a model
+    // that IS priced: the tokens were costed correctly and a produced image/audio/video was not, so
+    // `costMicrocents` is a floor. Both are `priced: false` to a reader, because the question that field answers
+    // — "is this figure the charge?" — has the same answer either way.
+    const unpriced = (cost?.unpricedModalities?.length ?? 0) > 0;
+    return { unpriced, ...(cost === undefined ? {} : { cost }) };
   }
 
   /** Emit the success record for an attempt whose usage has already been folded by {@link #foldUsage}. */

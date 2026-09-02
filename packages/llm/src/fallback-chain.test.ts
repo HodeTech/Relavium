@@ -882,6 +882,53 @@ describe('FallbackChain — backoff and cooldown', () => {
     expect(succeeded?.cost).toBeUndefined();
   });
 
+  it('records an unpriced MODALITY as priced:false too, on a model that IS priced (ADR-0089 §4)', async () => {
+    // The sibling of the test above, and the half `CR-55` was about. Here nothing throws: the model prices
+    // fine, the tokens are costed correctly, and a produced image the model has no rate for contributes
+    // nothing — so `costMicrocents` is a FLOOR, not the charge. A reader asking "is this figure the charge?"
+    // gets the same answer as for an unpriced model, so it gets the same flag.
+    const provider = makeProvider({ id: 'anthropic', generate: resolves('ok') });
+    const { options, trace } = makeOptions({
+      costTracker: {
+        record: () => ({
+          inputTokens: 10,
+          outputTokens: 5,
+          costMicrocents: 42,
+          cumulativeCostMicrocents: 42,
+          unpricedModalities: ['image'] as const,
+        }),
+      } as unknown as CostTracker,
+    });
+    const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
+
+    await chain.generate(userReq);
+
+    const succeeded = trace.find((r) => r.outcome === 'succeeded');
+    expect(succeeded?.priced).toBe(false);
+    // …and unlike the unpriced-MODEL case, the priced part is still recorded: the cap keeps working on what
+    // could be priced rather than being abandoned for the whole call.
+    expect(succeeded?.cost?.costMicrocents).toBe(42);
+  });
+
+  it('leaves `priced` absent when nothing was unpriced — the flag means something only if it is rare', async () => {
+    const provider = makeProvider({ id: 'anthropic', generate: resolves('ok') });
+    const { options, trace } = makeOptions({
+      costTracker: {
+        record: () => ({
+          inputTokens: 10,
+          outputTokens: 5,
+          costMicrocents: 42,
+          cumulativeCostMicrocents: 42,
+        }),
+      } as unknown as CostTracker,
+    });
+    const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
+
+    await chain.generate(userReq);
+
+    expect(trace.find((r) => r.outcome === 'succeeded')?.priced).toBeUndefined();
+  });
+
   it('does NOT swallow a non-pricing failure from the cost tracker (#194)', async () => {
     // The catch used to be bare, so a genuine defect in the money path — a bad Usage, a broken overlay, a
     // throwing custom tracker — produced "no cost" and looked exactly like an unpriced model.

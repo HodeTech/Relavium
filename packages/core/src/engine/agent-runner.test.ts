@@ -646,6 +646,50 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
     });
   });
 
+  it('marks the generative cost:updated `priced: false` when the model has no rate for the modality', async () => {
+    // `CR-55` on the path it is actually about ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4).
+    // No shipped catalog row carries a media rate, so this image generation costs 0 — and a bare 0 is
+    // indistinguishable from a genuinely free call. This path does NOT go through a `FallbackChain` attempt
+    // record, so the `priced: false` the chain emits for an unpriced model never reached it: the one cost
+    // event most likely to be unpriced was the one that could not say so.
+    const exec = createAgentNodeExecutor(genDeps(generativeProvider()));
+    const { ctx, events } = ctxFor(genVertex());
+    await exec.execute(ctx);
+    const cost = events.filter((e) => e.type === 'cost:updated');
+    expect(cost[0]).toMatchObject({ costMicrocents: 0, priced: false });
+  });
+
+  it('omits `priced` entirely when the modality IS rated — absence is the fully-priced signal', async () => {
+    // The flag is only ever `false`, mirroring the chain's `#emitFolded`: a reader treats its PRESENCE as the
+    // warning. Without this test the one above would also pass if `priced: false` were emitted unconditionally,
+    // which would make every media cost look untrustworthy and the signal worthless.
+    const overlay = new Map([
+      [
+        'claude-opus-4-8',
+        {
+          provider: 'anthropic' as const,
+          nativeId: 'claude-opus-4-8',
+          displayName: 'Priced Media',
+          contextWindowTokens: 1_000,
+          maxOutputTokens: 1_000,
+          inputPerMtokMicrocents: 0,
+          outputPerMtokMicrocents: 0,
+          cachedInputPerMtokMicrocents: 0,
+          mediaOutputRates: { image: 1_000 },
+        },
+      ],
+    ]);
+    const exec = createAgentNodeExecutor({
+      ...genDeps(generativeProvider()),
+      resolvePrice: overlay,
+    });
+    const { ctx, events } = ctxFor(genVertex());
+    await exec.execute(ctx);
+    const cost = events.filter((e) => e.type === 'cost:updated');
+    expect(cost[0]).not.toHaveProperty('priced');
+    expect(cost[0]).toMatchObject({ costMicrocents: 1_000 }); // 1 image × 1_000µ¢
+  });
+
   it('a chat model (default surface, no resolveMediaSurface) keeps the normal turn — never generateMedia', async () => {
     // No resolveMediaSurface dep → default 'chat'. The provider's generateMedia would throw if reached.
     const provider: LlmProvider = {
