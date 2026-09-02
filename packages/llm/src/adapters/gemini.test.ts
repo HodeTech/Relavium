@@ -332,6 +332,159 @@ describe('Gemini adapter', () => {
     expect(mapUsage({})).toEqual({ inputTokens: 0, outputTokens: 0 });
   });
 
+  describe('function-call continuation signature (CR-52, ADR-0090)', () => {
+    // Gemini attaches `thoughtSignature` to ANY part, `functionCall` included, and a thinking-plus-
+    // function-calling continuation can 400 without it replayed. The fold read it only for `thought: true`
+    // parts, so the one that matters was dropped. ADR-0089 §3 first decided a per-request sidecar; that was
+    // unbuildable (capture and replay straddle two adapter calls on a stateless adapter), so ADR-0090 puts
+    // the token on the part — the shape `reasoning.signature` has used since ADR-0030.
+    const signedCall: GeminiResponse = {
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                functionCall: { name: 'get_weather', args: { city: 'Paris' } },
+                thoughtSignature: 'fn-sig',
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    it('CAPTURES the signature off a functionCall part (non-streaming)', () => {
+      const parts = mapContent(signedCall, new GeminiToolCallIds());
+      expect(parts[0]).toMatchObject({
+        type: 'tool_call',
+        name: 'get_weather',
+        signature: 'fn-sig',
+      });
+    });
+
+    it('omits the field when the part carries no signature', () => {
+      const unsigned: GeminiResponse = {
+        candidates: [{ content: { parts: [{ functionCall: { name: 'get_weather', args: {} } }] } }],
+      };
+      expect(mapContent(unsigned, new GeminiToolCallIds())[0]).not.toHaveProperty('signature');
+    });
+
+    it('CAPTURES it on the terminating tool_call_end (streaming)', async () => {
+      // The streamed half. Without a carrier here the non-streaming path would work and a streamed tool
+      // loop would silently lose the token — `CR-52` closed on one side only.
+      const adapter = createGeminiAdapter({ transport: fakeTransport(signedCall, [signedCall]) });
+      const chunks = [];
+      for await (const chunk of adapter.stream(REQ, 'k')) chunks.push(chunk);
+      const end = chunks.find((c) => c.type === 'tool_call_end');
+      expect(end).toMatchObject({ type: 'tool_call_end', signature: 'fn-sig' });
+    });
+
+    it('REPLAYS it onto the outgoing functionCall', async () => {
+      const transport = fakeTransport({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] });
+      const adapter = createGeminiAdapter({ transport });
+      await adapter.generate(
+        {
+          ...REQ,
+          messages: [
+            {
+              role: 'assistant',
+              content: [
+                {
+                  type: 'tool_call',
+                  id: 'c1',
+                  name: 'get_weather',
+                  args: { city: 'Paris' },
+                  signature: 'fn-sig',
+                },
+              ],
+            },
+          ],
+        },
+        'k',
+      );
+      // Asserted on the OBJECT, at the position Gemini's wire contract puts it: `thoughtSignature` is a
+      // PART-level sibling of `functionCall`, which is exactly how the inbound `GeminiPart` reads it. Two
+      // `toContain` checks over the serialized request pinned only presence — a regression that nested the
+      // token INSIDE `functionCall` (where Gemini ignores it, silently losing the continuation) passed them.
+      const part = transport.lastRequest?.contents?.[0]?.parts?.[0];
+      expect(part).toMatchObject({
+        functionCall: { name: 'get_weather' },
+        thoughtSignature: 'fn-sig',
+      });
+      expect(part?.['functionCall']).not.toHaveProperty('thoughtSignature');
+    });
+
+    it('REPLAYS a signed reasoning part as a thought part (the second half of the CR-52 defect)', async () => {
+      // `toGeminiParts` dropped every reasoning part, so the fold captured `thoughtSignature` off a thought
+      // part and then discarded it one function away — a thinking-plus-tool continuation could 400 for the
+      // same reason the function-call half did. The chain's strip latch has already removed any reasoning
+      // that crossed a provider boundary, so anything still here belongs to this provider.
+      const transport = fakeTransport({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] });
+      await createGeminiAdapter({ transport }).generate(
+        {
+          ...REQ,
+          messages: [
+            {
+              role: 'assistant',
+              content: [{ type: 'reasoning', text: 'pondering', signature: 'think-sig' }],
+            },
+          ],
+        },
+        'k',
+      );
+      expect(transport.lastRequest?.contents?.[0]?.parts?.[0]).toMatchObject({
+        text: 'pondering',
+        thought: true,
+        thoughtSignature: 'think-sig',
+      });
+    });
+
+    it('drops an UNSIGNED reasoning part — no continuity obligation, so no tokens spent', async () => {
+      const transport = fakeTransport({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] });
+      await createGeminiAdapter({ transport }).generate(
+        {
+          ...REQ,
+          messages: [
+            {
+              role: 'assistant',
+              content: [
+                { type: 'reasoning', text: 'pondering' },
+                { type: 'text', text: 'answer' },
+              ],
+            },
+          ],
+        },
+        'k',
+      );
+      const parts = transport.lastRequest?.contents?.[0]?.parts ?? [];
+      expect(parts).toHaveLength(1);
+      expect(parts[0]).toMatchObject({ text: 'answer' });
+    });
+
+    it('sends NO thoughtSignature key when the part carries none', async () => {
+      // Asserted on the OBJECT, not on `JSON.stringify` — which erases an `undefined`-valued key and so
+      // could not see the thing this test is named for. `GeminiRequest.parts` is `Record<string, unknown>`,
+      // and `unknown` accepts `undefined`, so the compiler does not catch it either: an unconditional
+      // spread of `thoughtSignature: part.signature` typechecks AND passes a stringify-based check.
+      const transport = fakeTransport({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] });
+      await createGeminiAdapter({ transport }).generate(
+        {
+          ...REQ,
+          messages: [
+            {
+              role: 'assistant',
+              content: [{ type: 'tool_call', id: 'c1', name: 'get_weather', args: {} }],
+            },
+          ],
+        },
+        'k',
+      );
+      expect(transport.lastRequest?.contents?.[0]?.parts?.[0]).not.toHaveProperty(
+        'thoughtSignature',
+      );
+    });
+  });
+
   it('mapContent maps thought parts → reasoning, text, and a synthesized tool call', () => {
     const response: GeminiResponse = {
       candidates: [

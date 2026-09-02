@@ -76,6 +76,7 @@ function stubRegistry(): ToolRegistry {
       const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'OK' };
       return Promise.resolve({
         output: 'OK',
+        mediaAttachments: markUntrusted([]),
         toolResult: markUntrusted(result),
         truncated: false,
         events: {
@@ -646,6 +647,50 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
     });
   });
 
+  it('marks the generative cost:updated `priced: false` when the model has no rate for the modality', async () => {
+    // `CR-55` on the path it is actually about ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4).
+    // No shipped catalog row carries a media rate, so this image generation costs 0 — and a bare 0 is
+    // indistinguishable from a genuinely free call. This path does NOT go through a `FallbackChain` attempt
+    // record, so the `priced: false` the chain emits for an unpriced model never reached it: the one cost
+    // event most likely to be unpriced was the one that could not say so.
+    const exec = createAgentNodeExecutor(genDeps(generativeProvider()));
+    const { ctx, events } = ctxFor(genVertex());
+    await exec.execute(ctx);
+    const cost = events.filter((e) => e.type === 'cost:updated');
+    expect(cost[0]).toMatchObject({ costMicrocents: 0, priced: false });
+  });
+
+  it('omits `priced` entirely when the modality IS rated — absence is the fully-priced signal', async () => {
+    // The flag is only ever `false`, mirroring the chain's `#emitFolded`: a reader treats its PRESENCE as the
+    // warning. Without this test the one above would also pass if `priced: false` were emitted unconditionally,
+    // which would make every media cost look untrustworthy and the signal worthless.
+    const overlay = new Map([
+      [
+        'claude-opus-4-8',
+        {
+          provider: 'anthropic' as const,
+          nativeId: 'claude-opus-4-8',
+          displayName: 'Priced Media',
+          contextWindowTokens: 1_000,
+          maxOutputTokens: 1_000,
+          inputPerMtokMicrocents: 0,
+          outputPerMtokMicrocents: 0,
+          cachedInputPerMtokMicrocents: 0,
+          mediaOutputRates: { image: 1_000 },
+        },
+      ],
+    ]);
+    const exec = createAgentNodeExecutor({
+      ...genDeps(generativeProvider()),
+      resolvePrice: overlay,
+    });
+    const { ctx, events } = ctxFor(genVertex());
+    await exec.execute(ctx);
+    const cost = events.filter((e) => e.type === 'cost:updated');
+    expect(cost[0]).not.toHaveProperty('priced');
+    expect(cost[0]).toMatchObject({ costMicrocents: 1_000 }); // 1 image × 1_000µ¢
+  });
+
   it('a chat model (default surface, no resolveMediaSurface) keeps the normal turn — never generateMedia', async () => {
     // No resolveMediaSurface dep → default 'chat'. The provider's generateMedia would throw if reached.
     const provider: LlmProvider = {
@@ -1154,11 +1199,15 @@ describe('generativeUnits — authored media volume (ADR-0045 §5)', () => {
     expect(generativeUnits('video', agentNode())).toBe(DEFAULT_MEDIA_UNIT_ESTIMATE.video);
   });
 
-  it('audio/video: count × duration_seconds when BOTH are authored (N clips of D seconds)', () => {
-    expect(generativeUnits('video', agentNode({ duration_seconds: 10, count: 3 }))).toBe(30);
-    // count alone (no duration) multiplies the conservative duration default — never silently dropped.
+  it('audio/video: DURATION only — `count` is not billed, because no adapter sends it', () => {
+    // This test previously pinned `count × duration_seconds` and was the reason the over-charge survived:
+    // it asserted the ADR's formula rather than what the adapters do. Gemini's Veo hard-codes
+    // `numberOfVideos: 1` and never reads `req.count`, so `count: 3, duration_seconds: 10` produced ONE
+    // ten-second clip and billed thirty seconds — a 3× over-charge recorded as realized cost.
+    expect(generativeUnits('video', agentNode({ duration_seconds: 10, count: 3 }))).toBe(10);
+    // `count` alone likewise does not scale the conservative duration default.
     expect(generativeUnits('audio', agentNode({ count: 2 }))).toBe(
-      DEFAULT_MEDIA_UNIT_ESTIMATE.audio * 2,
+      DEFAULT_MEDIA_UNIT_ESTIMATE.audio,
     );
   });
 });

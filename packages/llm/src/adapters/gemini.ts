@@ -347,11 +347,17 @@ export function mapContent(response: GeminiResponse, ids: GeminiToolCallIds): Co
 function mapGeminiPart(part: GeminiPart, ids: GeminiToolCallIds): ContentPart | undefined {
   if (part.functionCall !== undefined) {
     const name = part.functionCall.name ?? '';
-    return normalizeToolCall(PROVIDER, {
+    const call = normalizeToolCall(PROVIDER, {
       id: ids.synthesize(name), // Gemini has no native id — mint a stable one (1.E)
       name,
       args: part.functionCall.args ?? {},
     });
+    // Gemini attaches `thoughtSignature` to ANY part, including a `functionCall` — and a thinking-plus-
+    // function-calling continuation can 400 without it replayed (ADR-0039's deferral, closed by ADR-0090).
+    // The fold used to read it only for `thought: true` parts, so this one was dropped on the floor.
+    return part.thoughtSignature !== undefined && part.thoughtSignature.length > 0
+      ? { ...call, signature: part.thoughtSignature }
+      : call;
   }
   const inline = part.inlineData;
   if (
@@ -527,7 +533,12 @@ function toGeminiParts(
     if (part.type === 'text') {
       parts.push({ text: part.text });
     } else if (part.type === 'tool_call') {
-      parts.push({ functionCall: { name: part.name, args: part.args } });
+      // Replayed to the SAME provider only — the `FallbackChain` strips the token on a cross-provider
+      // advance, so anything still here was issued by Gemini for this conversation (ADR-0090).
+      parts.push({
+        functionCall: { name: part.name, args: part.args },
+        ...(part.signature === undefined ? {} : { thoughtSignature: part.signature }),
+      });
     } else if (part.type === 'tool_result') {
       const name = nameById.get(part.toolCallId) ?? part.toolCallId;
       // `part.media` (handle-only durable attachments) is intentionally not lowered here — deferred to
@@ -535,8 +546,18 @@ function toGeminiParts(
       parts.push({ functionResponse: { name, response: toResponseObject(part.result) } });
     } else if (part.type === 'media') {
       parts.push(toGeminiMediaPart(part));
+    } else if (part.type === 'reasoning' && part.signature !== undefined && part.text.length > 0) {
+      // A SIGNED reasoning part is replayed as a thought part carrying its token (`CR-52`, the second half
+      // of ADR-0039's Gemini deferral). Gemini captures `thoughtSignature` on a thought part and expects it
+      // back on the continuation; dropping every reasoning part meant the token was captured and then
+      // discarded one function away, so a thinking-plus-tool continuation could 400 for the same reason the
+      // function-call half did. Anthropic already lowers its thinking blocks; this is the Gemini twin.
+      //
+      // Only a SIGNED part, and only one with text. An unsigned one carries no continuity obligation, so
+      // replaying it would add tokens for nothing — and the ephemerality rule still holds either way,
+      // because the chain's strip latch has already removed any reasoning that crossed a provider boundary.
+      parts.push({ text: part.text, thought: true, thoughtSignature: part.signature });
     }
-    // reasoning parts are ephemeral (ADR-0030) — dropped here, never replayed to the provider.
   }
   return parts;
 }
@@ -850,10 +871,16 @@ function foldGeminiPart(part: GeminiPart, state: GeminiStreamState): StreamChunk
     closeReasoning(state, out);
     const id = state.ids.synthesize(name);
     // Gemini delivers the whole args object in one event — emit start/delta/end together.
+    const signed =
+      part.thoughtSignature !== undefined && part.thoughtSignature.length > 0
+        ? { signature: part.thoughtSignature }
+        : {};
     out.push(
       { type: 'tool_call_start', id, name },
       { type: 'tool_call_delta', id, argsJsonDelta: JSON.stringify(part.functionCall.args ?? {}) },
-      { type: 'tool_call_end', id },
+      // The token rides the TERMINATING chunk (ADR-0090), mirroring `reasoning_end` — it belongs to the
+      // completed call. The turn core's accumulator carries it onto the assembled `tool_call` part.
+      { type: 'tool_call_end', id, ...signed },
     );
     state.hasToolCalls = true;
     return out;

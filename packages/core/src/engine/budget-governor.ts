@@ -7,10 +7,43 @@ import {
   type PricingOverlay,
   type ProviderId,
 } from '@relavium/llm';
-import type { Budget } from '@relavium/shared';
+import type { Budget, MediaBilledModality } from '@relavium/shared';
 
 import type { RunEventDraft } from './event-bus.js';
 import type { GateRequest } from './node-executor.js';
+
+/** The POSIX way to carry a literal `'` through single quotes: close, escape, reopen. */
+const ESCAPED_SINGLE_QUOTE = String.raw`'\''`;
+
+/**
+ * POSIX single-quote a value about to appear INSIDE a command this message tells the user to run.
+ *
+ * A model id is not ours — it comes from the authored workflow or the live catalog — and these two remedies
+ * are written to be copied into a shell. A value carrying `;`, `$(…)` or a backtick would otherwise be
+ * pasted into a command the refusal itself vouched for. Pure string work, so the engine stays platform-free.
+ * The PROSE occurrence keeps its existing `'…'` quoting; only the command argument is escaped.
+ */
+function shellArg(value: string): string {
+  // `String.raw` so the POSIX escape reads as the four characters it IS — `'\''` — rather than as a
+  // backslash-escaped string a reader has to decode before they can tell whether it is right.
+  // The escape is hoisted OUT of the template: a `String.raw` nested inside another template literal is
+  // three layers of quoting in one expression, and this one is security-relevant enough to read at a glance.
+  const escaped = value.replaceAll("'", ESCAPED_SINGLE_QUOTE);
+  return `'${escaped}'`;
+}
+
+/**
+ * Deterministic, locale-independent alphabetical order for a modality list.
+ *
+ * `Array#sort()` with no comparator is well-defined for strings, but it says nothing about intent and it is
+ * one refactor away from being applied to something that is not one. An explicit comparator also keeps the
+ * order out of the host locale's hands — `localeCompare` would let a Turkish locale order these differently
+ * from an English one, and this string is asserted in tests and pasted into a command by users.
+ */
+function byName(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
 
 /**
  * Default per-call output-token estimate used by the pre-egress budget governor when neither the
@@ -19,8 +52,17 @@ import type { GateRequest } from './node-executor.js';
  */
 export const DEFAULT_MAX_TOKENS_ESTIMATE = 4096;
 
-/** Why a strict budget check refused the prospective call. */
-export type BudgetExceededReason = 'projected_over_cap' | 'unpriced_model';
+/**
+ * Why a strict budget check refused the prospective call.
+ *
+ * `unpriced_model` and `unpriced_modality` are deliberately distinct, because the REMEDIES are: the first
+ * means the model has no price at all and needs `--input`/`--output`; the second means the model is priced
+ * for tokens and only a media rate is missing, which needs `--image`/`--audio`/`--video` and must NOT send
+ * the user to restate token rates (doing so writes a user row that outranks the catalog for tokens too —
+ * the exact trap ADR-0089 §4(c) exists to avoid). Both used to report `unpriced_model`, so a caller
+ * narrowing on `.reason` could not tell them apart even though the messages already did.
+ */
+export type BudgetExceededReason = 'projected_over_cap' | 'unpriced_model' | 'unpriced_modality';
 
 /**
  * Thrown when a priced pre-egress projection exceeds a configured `on_exceed: fail` cap, or when strict-cost mode
@@ -113,6 +155,12 @@ export type BudgetCheckResult =
    * — not swallowed — so the surface can say so once: a cost cap that silently does not apply is a false sense of
    * safety, and the user who set one deserves to know which model slipped past it.
    */
+  /**
+   * The MODEL has no price at all (ADR-0071 §K7). A partial gap — a priced model with an unrated modality —
+   * is deliberately NOT this verdict: it carries a real allow/warn/fail result and reports the gap out of band
+   * on {@link BudgetEvaluation.unpricedModalities}, because the cap still applies to the token side
+   * ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4).
+   */
   | { readonly kind: 'unpriced'; readonly model: string }
   | { readonly kind: 'fail'; readonly error: BudgetExceededError }
   | { readonly kind: 'pause'; readonly error: BudgetPauseError };
@@ -151,11 +199,23 @@ interface BudgetEvaluation {
   readonly result: BudgetCheckResult;
   /** Present only for a priced, bounded call; absent means there is nothing meaningful to reserve. */
   readonly estimateMicrocents?: number;
+  /**
+   * A PARTIAL pricing gap: the model is priced, the cap still applies to the token side, and one or more
+   * media modalities are missing a rate (ADR-0089 §4). Distinct from `result.kind === 'unpriced'`, which
+   * means nothing could be priced — here the verdict is a real allow/warn/fail and this rides alongside it,
+   * so the cap is still enforced on what IS priceable rather than abandoned wholesale.
+   */
+  readonly unpricedModalities?: readonly MediaBilledModality[];
 }
 
 /** The pricing lookup is deliberately separate from the policy verdict so an already-submitted job can be restored. */
 type EstimateResult =
-  | { readonly kind: 'priced'; readonly estimateMicrocents: number }
+  | {
+      readonly kind: 'priced';
+      readonly estimateMicrocents: number;
+      /** Billed modalities with requested volume and no rate — the figure above excludes their charge. */
+      readonly unpricedModalities: readonly MediaBilledModality[];
+    }
   | { readonly kind: 'unpriced' };
 
 /**
@@ -334,7 +394,11 @@ export class BudgetGovernor {
   #warningArmed = true;
   /** The one durable warning currently being written. Concurrent admissions await this exact promise. */
   #warningInFlight: Promise<void> | undefined;
-  readonly #onUnpriced: ((model: string, capMicrocents: number) => void) | undefined;
+  readonly #onUnpriced:
+    | ((model: string, capMicrocents: number, modalities?: readonly MediaBilledModality[]) => void)
+    | undefined;
+  /** `${model}\0${modality}` keys already announced — see {@link BudgetGovernor.#noticeUnpricedModalities}. */
+  readonly #unpricedModalityNotified = new Set<string>();
   readonly #onLegacyMediaJobHold: ((nodeIds: readonly string[]) => void) | undefined;
   readonly #unpricedNotified = new Set<string>(); // once per model — a standing condition, not a per-turn event
 
@@ -367,7 +431,12 @@ export class BudgetGovernor {
      * once per model. The engine cannot print; the host routes the notice (chat → the transcript, `run` → stderr).
      * Absent ⇒ silent, and `strict_cost_cap` (which BLOCKS instead) is the loud alternative for anyone who wants it.
      */
-    readonly onUnpriced?: (model: string, capMicrocents: number) => void;
+    readonly onUnpriced?: (
+      model: string,
+      capMicrocents: number,
+      /** Present ⇒ the MODEL is priced and only these billed modalities are not (ADR-0089 §4). */
+      modalities?: readonly MediaBilledModality[],
+    ) => void;
     /**
      * New egress is being HELD while a resumed pre-§3 media job's cost basis is unknown (ADR-0074 §3).
      *
@@ -435,7 +504,7 @@ export class BudgetGovernor {
               this.#cumulativeCostMicrocents,
               this.#budget.max_cost_microcents,
               undefined,
-              `model '${model}' has no price, so the ${this.#budget.max_cost_microcents}-micro-cent cap cannot be enforced on it (strict_cost_cap is on). Price it with \`relavium models pricing ${model}\`, or turn strict_cost_cap off.`,
+              `model '${model}' has no price, so the ${this.#budget.max_cost_microcents}-micro-cent cap cannot be enforced on it (strict_cost_cap is on). Price it with \`relavium models pricing ${shellArg(model)}\`, or turn strict_cost_cap off.`,
             ),
           },
         };
@@ -444,7 +513,49 @@ export class BudgetGovernor {
       // price row is missing is worse when the caller did not opt into strict mode. Allow — but SAY so once.
       return { result: { kind: 'unpriced', model } };
     }
+    // A priced MODEL with an unpriced MODALITY (ADR-0089 §4). The cap can still be enforced on the token side,
+    // so this is deliberately NOT the `unpriced` verdict above — that one abandons the cap for the whole call.
+    // What it shares with that case is the strict-mode answer, and for the identical reason ADR-0071 §K7 gave:
+    // the charge cannot be estimated, so under `strict_cost_cap` it is refused rather than guessed at.
+    //
+    // Before this, the media estimate contributed 0 for such a modality and the call sailed through a strict cap
+    // as though it were free — which is `CR-55`, and the reason the token path and the media path disagreed
+    // about what a strict cap means.
+    if (estimateResult.unpricedModalities.length > 0 && this.#budget.strict_cost_cap === true) {
+      const sorted = [...estimateResult.unpricedModalities].sort(byName);
+      const named = sorted.join(', ');
+      // Canonical billed units (ADR-0044 §3): an image per image, audio and video per second.
+      const flags = sorted
+        .map((m) => (m === 'image' ? '--image USD_PER_IMAGE' : `--${m} USD_PER_SECOND`))
+        .join(' ');
+      return {
+        result: {
+          kind: 'fail',
+          error: new BudgetExceededError(
+            this.#cumulativeCostMicrocents,
+            this.#budget.max_cost_microcents,
+            undefined,
+            // The remedy must be a command that RUNS. `relavium models pricing <model>` alone exits 2 on a
+            // missing `--provider`, and the flags that actually add a media rate are `--image`/`--audio`/
+            // `--video` — naming the bare command trains a user to give up and disable the cap instead, which
+            // is the failure ADR-0089 §4(c) exists to prevent.
+            `model '${model}' has no ${named} rate, so the ${this.#budget.max_cost_microcents}-micro-cent cap cannot be enforced on this generation (strict_cost_cap is on). Add one with \`relavium models pricing ${shellArg(model)} --provider PROVIDER_ID ${flags}\`, or turn strict_cost_cap off.`,
+            // EXPLICIT: the constructor's default would derive `unpriced_model` from the absent projection,
+            // which is false here — the model is priced, one modality is not.
+            'unpriced_modality',
+          ),
+        },
+      };
+    }
     const estimate = estimateResult.estimateMicrocents;
+    // Non-strict, and a modality had no rate: the verdict below is a REAL allow/warn/fail against the priced
+    // part, and the gap rides beside it so `checkPreEgress` can say so once. Attaching it to every arm rather
+    // than only to `allow` is deliberate — a call that trips the cap on its token side is still a call whose
+    // media charge we could not see, and the user is owed that sentence whichever way the verdict went.
+    const gap: Pick<BudgetEvaluation, 'unpricedModalities'> =
+      estimateResult.unpricedModalities.length === 0
+        ? {}
+        : { unpricedModalities: estimateResult.unpricedModalities };
     // This is the admission-control invariant: a later concurrent branch sees every already-authorized worst-case
     // call, not merely the last durable `cost:updated` snapshot. There is deliberately no await between this read
     // and the ledger insertion in `checkPreEgress` below.
@@ -454,11 +565,31 @@ export class BudgetGovernor {
       this.#reservedCostMicrocents +
       estimate;
     if (projected <= this.#budget.max_cost_microcents) {
-      return { result: { kind: 'allow' }, estimateMicrocents: estimate };
+      return { result: { kind: 'allow' }, estimateMicrocents: estimate, ...gap };
     }
 
     const thresholdPct = clampPct(Math.round((projected / this.#budget.max_cost_microcents) * 100));
 
+    // The three `on_exceed` arms are a pure projection of (verdict inputs → result), so they live in their
+    // own method: `#evaluate`'s complexity is the ADMISSION reasoning above, and a reader tracing a cap
+    // decision should not have to step over three result literals to see it.
+    const verdict = this.#overCapVerdict(projected, thresholdPct);
+    return {
+      ...verdict,
+      ...gap,
+      // ONLY on `warn`, which is the one over-cap arm that still ADMITS the call and therefore reserves
+      // against this number. `fail`/`pause` throw before any consumer reads it — so attaching it there was
+      // inert, but it would have made the field's own contract ("present only for a priced, bounded call")
+      // false, and a later consumer reserving budget for a refused call is exactly what that wording guards.
+      ...(verdict.result.kind === 'warn' ? { estimateMicrocents: estimate } : {}),
+    };
+  }
+
+  /**
+   * The `on_exceed` fork, once the projection is known to be over the cap. Pure: no state is read beyond
+   * the configured budget and the running totals, and no arm awaits.
+   */
+  #overCapVerdict(projected: number, thresholdPct: number): { readonly result: BudgetCheckResult } {
     switch (this.#budget.on_exceed) {
       case 'warn':
         return {
@@ -468,7 +599,6 @@ export class BudgetGovernor {
             limitMicrocents: this.#budget.max_cost_microcents,
             thresholdPct,
           },
-          estimateMicrocents: estimate,
         };
       case 'fail':
         return {
@@ -553,6 +683,13 @@ export class BudgetGovernor {
     }
     const evaluation = this.#evaluate(model, maxTokens, mediaUnitsEstimate, provider);
     const { result } = evaluation;
+    // A partial pricing gap (ADR-0089 §4): the verdict below stands on its own — the cap WAS applied to the
+    // priced part — and this only adds the sentence the user is owed. Announced before the verdict is acted on,
+    // because a `fail` arm throws and would otherwise swallow it. Deduped per (model, modality) for the same
+    // reason the unpriced-model notice is deduped: it is a standing condition of the model, not an event.
+    if (evaluation.unpricedModalities !== undefined) {
+      this.#noticeUnpricedModalities(model, evaluation.unpricedModalities);
+    }
     if (result.kind === 'allow') return this.#admit(model, evaluation.estimateMicrocents);
     if (result.kind === 'unpriced') {
       // Once per model — a standing condition, not an event (a `loop` over an unpriced model must not repeat it
@@ -791,6 +928,28 @@ export class BudgetGovernor {
     return estimate.kind === 'priced' ? this.#admit(model, estimate.estimateMicrocents) : undefined;
   }
 
+  /**
+   * Announce a partial pricing gap once per (model, modality).
+   *
+   * Separate from the unpriced-MODEL notice above, and keyed more finely on purpose: a model can be missing an
+   * image rate while carrying an audio one, and collapsing the two would either repeat the same sentence for a
+   * second modality or silence it. Best-effort exactly like its sibling — a misbehaving host renderer must
+   * never turn an advisory into a blocked call — and the dedupe is recorded even when the sink throws, so a
+   * broken renderer cannot produce an exception storm.
+   */
+  #noticeUnpricedModalities(model: string, modalities: readonly MediaBilledModality[]): void {
+    for (const modality of modalities) {
+      const key = `${model}\u0000${modality}`;
+      if (this.#unpricedModalityNotified.has(key)) continue;
+      this.#unpricedModalityNotified.add(key);
+      try {
+        this.#onUnpriced?.(model, this.#budget.max_cost_microcents, [modality]);
+      } catch {
+        // Advisory only; it cannot block or fail the check.
+      }
+    }
+  }
+
   /** Calculate a price without applying cap policy; shared by prospective admission and committed-job restoration. */
   #estimate(
     model: string,
@@ -799,22 +958,25 @@ export class BudgetGovernor {
     provider: ProviderId | undefined,
   ): EstimateResult {
     try {
-      // Token estimate + the disjoint media estimate (ADR-0044 §3). estimateMediaCost prices only the modalities
-      // the model rates (a missing rate degrades to 0); an unknown model follows the uniform policy in #evaluate.
+      // Token estimate + the disjoint media estimate (ADR-0044 §3). An unknown MODEL throws and follows the
+      // uniform policy in #evaluate; an unpriced MODALITY on a known model comes back named (ADR-0089 §4)
+      // rather than as a silent 0, because a 0 here is what let a strict cap admit paid generation (`CR-55`).
+      const tokens = estimateMaxNextCost(
+        model,
+        maxTokens ?? this.#defaultMaxTokensEstimate,
+        this.#overlay,
+        // Key the endpoint on the routing provider (review M2). A media-only gate omits it (`maxTokens: 0`
+        // makes the token estimate 0 regardless), so `official` is a harmless default there.
+        (provider === undefined ? undefined : this.#resolveEndpoint?.(provider)) ?? 'official',
+      );
+      const media =
+        mediaUnitsEstimate === undefined
+          ? undefined
+          : estimateMediaCost(model, mediaUnitsEstimate, this.#overlay);
       return {
         kind: 'priced',
-        estimateMicrocents:
-          estimateMaxNextCost(
-            model,
-            maxTokens ?? this.#defaultMaxTokensEstimate,
-            this.#overlay,
-            // Key the endpoint on the routing provider (review M2). A media-only gate omits it (`maxTokens: 0`
-            // makes the token estimate 0 regardless), so `official` is a harmless default there.
-            (provider === undefined ? undefined : this.#resolveEndpoint?.(provider)) ?? 'official',
-          ) +
-          (mediaUnitsEstimate === undefined
-            ? 0
-            : estimateMediaCost(model, mediaUnitsEstimate, this.#overlay)),
+        estimateMicrocents: tokens + (media?.microcents ?? 0),
+        unpricedModalities: media?.unpricedModalities ?? [],
       };
     } catch (err) {
       if (err instanceof UnknownModelError) return { kind: 'unpriced' };

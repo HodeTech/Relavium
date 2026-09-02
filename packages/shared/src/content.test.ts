@@ -262,6 +262,34 @@ describe('DurableContentPart (ADR-0031)', () => {
     expect(DurableContentPartSchema.innerType().options).toHaveLength(5);
   });
 
+  it('STRIPS a tool_call signature structurally — the durable arm has no field for it (ADR-0090)', () => {
+    // The exact guarantee `durableReasoningPartSchema` already makes for `reasoning.signature`, applied to
+    // the arm beside it. A continuation token is same-provider and same-turn; "it must never persist" is a
+    // property the TYPE makes impossible here, not one a test or an emit-time pass defends. Parsing an
+    // in-flight part through the durable union returns it with the token GONE — it is not a rejection.
+    const parsed = DurableContentPartSchema.safeParse({
+      type: 'tool_call',
+      id: 'c1',
+      name: 'read_file',
+      args: { path: 'x' },
+      signature: 'provider-token',
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data).not.toHaveProperty('signature');
+      expect(parsed.data).toMatchObject({ type: 'tool_call', id: 'c1', name: 'read_file' });
+    }
+    // …while the IN-FLIGHT union keeps it, or there would be nothing to strip.
+    const inFlight = ContentPartSchema.safeParse({
+      type: 'tool_call',
+      id: 'c1',
+      name: 'read_file',
+      args: {},
+      signature: 'provider-token',
+    });
+    expect(inFlight.success && 'signature' in inFlight.data).toBe(true);
+  });
+
   it('rejects a durable media part with a base64 or url source (structurally)', () => {
     for (const source of [
       { kind: 'base64', data: TINY_BASE64 },

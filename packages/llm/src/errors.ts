@@ -92,24 +92,37 @@ export class InvalidBaseUrlError extends LlmConfigError {
 }
 
 /**
- * A request needs a capability the chosen provider lacks (e.g. tools on a tools-less provider) —
- * surfaced rather than silently dropping the feature (1.D).
+ * A request needs a capability the chosen provider — or, since `CR-51`, the chosen MODEL — lacks. Surfaced
+ * rather than silently dropping the feature (1.D).
+ *
+ * `modelId` distinguishes the two, and the message follows it: saying "provider 'openai' does not support the
+ * 'tools' capability" for `gpt-3.5-turbo` would be false twice over — OpenAI does support tools, and the
+ * remedy is to change the model, not the provider. The id is a FIELD as well as being in the message, per
+ * error-handling.md's structured-context rule, so a test or a surface can assert on it without parsing prose.
  */
 export class UnsupportedCapabilityError extends LlmConfigError {
   readonly code = 'unsupported_capability';
   readonly provider: ProviderId;
   readonly capability: keyof CapabilityFlags;
   readonly detail: string | undefined;
+  /** Present ⇒ the MODEL lacks the capability and the provider may well have it (`CR-51`). */
+  readonly modelId: string | undefined;
 
-  constructor(provider: ProviderId, capability: keyof CapabilityFlags, detail?: string) {
-    const message =
-      detail === undefined
+  constructor(
+    provider: ProviderId,
+    capability: keyof CapabilityFlags,
+    detail?: string,
+    modelId?: string,
+  ) {
+    const subject =
+      modelId === undefined
         ? `provider '${provider}' does not support the '${capability}' capability`
-        : `provider '${provider}' does not support the '${capability}' capability: ${detail}`;
-    super(message);
+        : `model '${modelId}' (provider '${provider}') does not support the '${capability}' capability`;
+    super(detail === undefined ? subject : `${subject}: ${detail}`);
     this.name = 'UnsupportedCapabilityError';
     this.provider = provider;
     this.capability = capability;
     this.detail = detail;
+    this.modelId = modelId;
   }
 }

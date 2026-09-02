@@ -1,4 +1,4 @@
-import { isOutputCombinationSupported, type CapabilityFlags } from '@relavium/llm';
+import { isOutputCombinationSupported, modelAccepts, type CapabilityFlags } from '@relavium/llm';
 import {
   MEDIA_BILLED_MODALITIES,
   type MediaBilledModality,
@@ -21,6 +21,17 @@ function isBilledModality(modality: OutputModality): modality is MediaBilledModa
  * per-modality `FallbackChain` pre-skip — never a silent runtime drop.
  */
 export type WorkflowModelCatalog = (modelId: string) => CapabilityFlags | undefined;
+
+/**
+ * Host-supplied facts the load-check cannot derive from the workflow alone.
+ *
+ * `customEndpoint` answers "is this node's provider configured with a non-official `base_url`?" — the one
+ * thing that decides whether the shipped catalog's per-model verdicts apply at all. Absent ⇒ official, which
+ * is every host that configures none, so the behaviour is unchanged for them.
+ */
+export interface CatalogValidateOptions {
+  readonly customEndpoint?: (node: WorkflowDefinition['workflow']['nodes'][number]) => boolean;
+}
 
 type WorkflowNode = WorkflowDefinition['workflow']['nodes'][number];
 
@@ -51,6 +62,92 @@ function generativeModalityIssue(
   };
 }
 
+/** The inline agent a node binds, or `undefined` for a `$ref`'d one this document cannot settle. */
+function inlineAgent(node: WorkflowNode, workflow: WorkflowDefinition) {
+  if (node.type !== 'agent') return undefined;
+  const agent = workflow.workflow.agents?.find(
+    (candidate) => !('$ref' in candidate) && candidate.id === node.agent_ref,
+  );
+  return agent !== undefined && !('$ref' in agent) ? agent : undefined;
+}
+
+/**
+ * Every model this node could actually dispatch on: the effective primary, then the agent's `fallback_chain`
+ * entries in order.
+ *
+ * **The primary is `node.model ?? agent.model`, not `node.model`.** `node.model` is an OPTIONAL override and
+ * `agent.model` is the required one, so the overwhelmingly common authored shape declares the model on the
+ * agent and nothing on the node. Keying the load-check on `node.model` alone made it silently inert for that
+ * shape — the check appeared to pass because it never ran.
+ *
+ * **The fallback entries are included because a chain that can serve the request IS a valid workflow.** The
+ * runtime pre-skip exists precisely so an incapable primary advances to a capable alternate; refusing such a
+ * plan at load would reject a workflow the engine would have run correctly, and would contradict the promise
+ * the seam doc makes about that skip.
+ */
+function candidateModels(node: WorkflowNode, workflow: WorkflowDefinition): readonly string[] {
+  if (node.type !== 'agent') return [];
+  const agent = inlineAgent(node, workflow);
+  const primary = node.model ?? agent?.model;
+  if (primary === undefined) return []; // a `$ref`'d agent with no node override — defer to runtime
+  return [primary, ...(agent?.fallback_chain?.map((fallback) => fallback.model) ?? [])];
+}
+
+/**
+ * The AUTHORED tool grant a node would dispatch with — the agent's `tools`, narrowed by the node's own
+ * `tools:` when present (ADR-0029: a node narrows, never widens).
+ *
+ * Returned as a count because the load-check only needs "does this node use tools at all".
+ */
+function grantedToolCount(node: WorkflowNode, workflow: WorkflowDefinition): number {
+  if (node.type !== 'agent') return 0;
+  if (node.tools !== undefined) return node.tools.length;
+  return inlineAgent(node, workflow)?.tools?.length ?? 0;
+}
+
+/**
+ * The per-model TOOL capability load-check (`CR-51`, resolving
+ * [ADR-0071](../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §12's deferral).
+ *
+ * §12 carried the `tool_call` catalog data but deferred GATING it to "a **louder** signal (config-time
+ * validation, or a gate-level notice), not a silent drop". This is the first of the two it named. A runtime
+ * pre-skip alone would have been the quietest possible signal — it emits no event, and on a single-entry plan
+ * it surfaces partway through a run, after upstream nodes have already spent real money.
+ *
+ * **It refuses only when NO candidate can serve the grant.** A tool-incapable primary with a tool-capable
+ * fallback is a working workflow — the pre-skip is what makes it work — so refusing it here would reject a
+ * plan the engine runs correctly.
+ *
+ * Deliberately TOOL-only. There is no authored counterpart for `attachment`: media inputs are runtime values,
+ * so nothing at load time can know whether a turn will carry one. That half stays the runtime gate's, and the
+ * asymmetry is the honest one rather than a forgotten case.
+ */
+function toolCapabilityIssue(
+  node: WorkflowNode,
+  workflow: WorkflowDefinition,
+  opts: CatalogValidateOptions | undefined,
+): WorkflowIssue | undefined {
+  if (grantedToolCount(node, workflow) === 0) return undefined;
+  const candidates = candidateModels(node, workflow);
+  if (candidates.length === 0) return undefined; // unresolvable — defer to the runtime pre-skip
+  // The catalog governs a model id only on the OFFICIAL endpoint. A host that has configured a custom
+  // `base_url` for this provider tells us so, and the check DEFERS — the shipped metadata describes a
+  // different service that merely shares the id, and refusing on its strength broke the custom-endpoint
+  // feature outright. Absent ⇒ official, which is every host that does not configure one.
+  if (opts?.customEndpoint?.(node) === true) return undefined;
+  if (candidates.some((model) => modelAccepts(model, 'toolCall'))) return undefined;
+  // Two phrasings, because "model 'x' does not accept…" is wrong for a multi-entry plan (each entry was
+  // checked) and "no model in this node's plan…" is needlessly indirect when there is only one.
+  const subject =
+    candidates.length === 1
+      ? `model '${candidates[0]}' does not accept tool definitions`
+      : `no model in this node's plan (${candidates.join(', ')}) accepts tool definitions`;
+  return {
+    field: `node \`${node.id}\`.model`,
+    message: `${subject}, but this node grants tools — pick a tool-capable model, add a tool-capable fallback_chain entry, or remove the grant`,
+  };
+}
+
 /**
  * Load-check one node against the catalog, returning a {@link WorkflowIssue} or `undefined` when it is fine. A
  * non-agent / model-unspecified node and an unresolvable model both DEFER (no error — see
@@ -60,9 +157,20 @@ function generativeModalityIssue(
 function nodeCatalogIssue(
   node: WorkflowNode,
   catalog: WorkflowModelCatalog,
+  workflow: WorkflowDefinition,
+  opts: CatalogValidateOptions | undefined,
 ): WorkflowIssue | undefined {
-  if (node.type !== 'agent' || node.model === undefined) {
-    return undefined; // not an agent, or model-unspecified — nothing to load-check
+  if (node.type !== 'agent') {
+    return undefined; // not an agent — nothing to load-check
+  }
+  // FIRST, and before the `node.model` guard below: the tool check resolves its own effective model
+  // (`node.model ?? agent.model`) because the common authored shape declares the model on the AGENT and
+  // leaves the node's override absent. It is also independent of the host catalog — `modelAccepts` reads the
+  // shipped snapshot directly — so the verdict is available even when the host cannot resolve capabilities.
+  const toolIssue = toolCapabilityIssue(node, workflow, opts);
+  if (toolIssue !== undefined) return toolIssue;
+  if (node.model === undefined) {
+    return undefined; // the modality checks below need an explicit node model
   }
   const caps = catalog(node.model);
   if (caps === undefined) {
@@ -97,9 +205,10 @@ function nodeCatalogIssue(
 export function validateWorkflowWithCatalog(
   workflow: WorkflowDefinition,
   catalog: WorkflowModelCatalog,
+  opts?: CatalogValidateOptions,
 ): void {
   const issues = workflow.workflow.nodes
-    .map((node) => nodeCatalogIssue(node, catalog))
+    .map((node) => nodeCatalogIssue(node, catalog, workflow, opts))
     .filter((issue): issue is WorkflowIssue => issue !== undefined);
   if (issues.length > 0) {
     throw new WorkflowValidationError(issues);

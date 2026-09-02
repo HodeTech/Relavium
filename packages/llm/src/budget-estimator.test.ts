@@ -67,19 +67,65 @@ describe('estimateMaxNextCost — the estimate must price the request we ACTUALL
 });
 
 describe('estimateMediaCost (1.AF/D17 — pre-egress per-modality media estimate)', () => {
-  it('degrades to 0 for a real model (no row carries a media rate in 1.AF)', () => {
-    // Every shipped row leaves mediaOutputRates undefined, so a media-output turn adds no estimate — the
-    // H4 degrade-to-allow mirror (the per-modality multiplication math is covered in mediaCost's tests).
+  it('adds no estimate for a real model, and NAMES why (ADR-0089 §4)', () => {
+    // REPLACES "degrades to 0 for a real model (no row carries a media rate in 1.AF)", which asserted only the
+    // 0. The 0 is still correct — nothing is fabricated, and the H4 allow-degrade still holds on the non-strict
+    // path — but a bare 0 is exactly what let a strict cap admit paid generation (`CR-55`). The estimate now
+    // says which modalities it could not price, and the governor decides the policy.
     expect(
       estimateMediaCost('gemini-2.5-flash', [
         { modality: 'image', units: 4 },
         { modality: 'audio', units: 30 },
       ]),
-    ).toBe(0);
+    ).toEqual({ microcents: 0, unpricedModalities: ['image', 'audio'] });
   });
 
-  it('returns 0 for an empty estimate', () => {
-    expect(estimateMediaCost('claude-opus-4-8', [])).toBe(0);
+  it('an empty estimate is 0 with no gap — nothing was requested, so nothing is missing', () => {
+    expect(estimateMediaCost('claude-opus-4-8', [])).toEqual({
+      microcents: 0,
+      unpricedModalities: [],
+    });
+  });
+
+  it('names an unrated modality even at ZERO estimated units — the entry is the request, not the volume', () => {
+    // REPLACES 'a zero-unit entry is not a gap (the estimate must not cry wolf on volume nobody asked for)',
+    // which pinned the wrong reading. An entry reaches this function only because a node's `output_modalities`
+    // asked for that modality; the COUNT is a configured guess (`[defaults].media_cost_estimate`), and that key
+    // is `nonNegativeInt` — so `media_cost_estimate = { video = 0 }` in a git-committable `project.toml` made
+    // the gap vanish and silently disabled `strict_cost_cap` for video output.
+    //
+    // The realized fold's `units === 0` guard is NOT the same rule and must not be unified with this one: there,
+    // zero means the provider produced nothing, so an absent rate genuinely is not a gap.
+    expect(estimateMediaCost('claude-opus-4-8', [{ modality: 'video', units: 0 }])).toEqual({
+      microcents: 0,
+      unpricedModalities: ['video'],
+    });
+  });
+
+  it('a zero-unit entry on a RATED modality still contributes no cost', () => {
+    // The other half of the rule above: once a rate EXISTS there is no gap to report, and a zero volume simply
+    // multiplies to nothing. Without this, the fix could have been "always report every modality", which would
+    // make the notice fire on every priced media turn.
+    const overlay: ReadonlyMap<string, ModelPricing> = new Map([
+      [
+        'rated-video',
+        {
+          provider: 'openai',
+          nativeId: 'rated-video',
+          displayName: 'Rated Video',
+          contextWindowTokens: 1_000,
+          maxOutputTokens: 1_000,
+          inputPerMtokMicrocents: 0,
+          outputPerMtokMicrocents: 0,
+          cachedInputPerMtokMicrocents: 0,
+          mediaOutputRates: { video: 9_999 },
+        },
+      ],
+    ]);
+    expect(estimateMediaCost('rated-video', [{ modality: 'video', units: 0 }], overlay)).toEqual({
+      microcents: 0,
+      unpricedModalities: [],
+    });
   });
 
   it('throws UnknownModelError for an unlisted model (the governor catches it → degrade-to-allow)', () => {
@@ -116,7 +162,10 @@ describe('user-pricing overlay (2.5.G S10, ADR-0065 §2)', () => {
     expect(() => estimateMaxNextCost('not-anywhere', 10_000, OVERLAY)).toThrow('unknown model id');
   });
 
-  it('estimateMediaCost accepts the overlay (a user row carries no media rate → 0, never a throw)', () => {
-    expect(estimateMediaCost('acme-custom-1', [{ modality: 'image', units: 4 }], OVERLAY)).toBe(0);
+  it('estimateMediaCost accepts the overlay (a user row with no media rate is a named gap, never a throw)', () => {
+    expect(estimateMediaCost('acme-custom-1', [{ modality: 'image', units: 4 }], OVERLAY)).toEqual({
+      microcents: 0,
+      unpricedModalities: ['image'],
+    });
   });
 });

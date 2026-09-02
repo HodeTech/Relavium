@@ -530,6 +530,145 @@ describe('FallbackChain — ADR-0030 strip-on-failover', () => {
     expect(secondCallParts.some((p) => p.type === 'reasoning')).toBe(true); // not stripped
   });
 
+  it('strips a tool_call SIGNATURE on a cross-provider advance, keeping the call itself (ADR-0090)', async () => {
+    // The token is same-provider by construction: replaying Gemini's `thoughtSignature` to Anthropic is at
+    // best meaningless and at worst a 400. The reasoning latch already dropped whole `reasoning` parts for
+    // this reason; a `tool_call` must NOT be dropped the same way — the call and its result are the
+    // conversation the next provider still needs. Only the token goes.
+    const signedReq: LlmRequest = {
+      ...userReq,
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_call',
+              id: 'c1',
+              name: 'get_weather',
+              args: { city: 'Paris' },
+              signature: 'g',
+            },
+          ],
+        },
+      ],
+    };
+    const primary = makeProvider({ id: 'gemini', generate: rejects('gemini', 'overloaded') });
+    const next = makeProvider({ id: 'anthropic', generate: resolves('ok') });
+    const { options } = makeOptions();
+    const chain = new FallbackChain(
+      [entry(primary, 'gemini-2.5-pro'), entry(next, 'claude-opus-4-8')],
+      options,
+    );
+
+    await chain.generate(signedReq);
+
+    const forwarded = next.calls[0]?.messages.flatMap((m) => m.content) ?? [];
+    const call = forwarded.find((p) => p.type === 'tool_call');
+    expect(call).toBeDefined(); // the CALL survives…
+    expect(call).not.toHaveProperty('signature'); // …its token does not
+  });
+
+  it("strips it on a same-PROVIDER, cross-MODEL advance — the token is the MODEL's, not the provider's", async () => {
+    // `[gemini/gemini-2.5-pro → gemini/gemini-2.5-flash]` is an authorable chain, and a `tool_call` part is
+    // UNCONDITIONALLY replayed (it is the conversation) where a `reasoning` part is optional. Gemini
+    // validates thought signatures, so replaying the first model's token to the second is a 400 — the
+    // failover killing the turn it exists to save. Provider-only granularity would let it through.
+    const signedReq: LlmRequest = {
+      ...userReq,
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'tool_call', id: 'c1', name: 'get_weather', args: {}, signature: 'g3' },
+          ],
+        },
+      ],
+    };
+    const first = makeProvider({ id: 'gemini', generate: rejects('gemini', 'overloaded') });
+    const second = makeProvider({ id: 'gemini', generate: resolves('ok') });
+    const { options } = makeOptions();
+    const chain = new FallbackChain(
+      [entry(first, 'gemini-2.5-pro'), entry(second, 'gemini-2.5-flash')],
+      options,
+    );
+
+    await chain.generate(signedReq);
+
+    const forwarded = second.calls[0]?.messages.flatMap((m) => m.content) ?? [];
+    const call = forwarded.find((p) => p.type === 'tool_call');
+    expect(call).toBeDefined(); // the CALL survives…
+    expect(call).not.toHaveProperty('signature'); // …the other model's token does not
+  });
+
+  it('keeps the signature for a SAME-provider retry — stripping it there would be the other bug', async () => {
+    const signedReq: LlmRequest = {
+      ...userReq,
+      messages: [
+        {
+          role: 'assistant',
+          content: [{ type: 'tool_call', id: 'c1', name: 'get_weather', args: {}, signature: 'g' }],
+        },
+      ],
+    };
+    let attempt = 0;
+    const flaky = makeProvider({
+      id: 'gemini',
+      generate: (): Promise<LlmResult> => {
+        attempt += 1;
+        return attempt === 1
+          ? Promise.reject(providerError('gemini', 'overloaded'))
+          : Promise.resolve(result('ok'));
+      },
+    });
+    const { options } = makeOptions();
+    const chain = new FallbackChain([entry(flaky, 'gemini-2.5-pro', 2)], options);
+
+    await chain.generate(signedReq);
+
+    const second = flaky.calls[1]?.messages.flatMap((m) => m.content) ?? [];
+    expect(second.find((p) => p.type === 'tool_call')).toMatchObject({ signature: 'g' });
+  });
+
+  it('skips a MODEL the catalog says rejects tools, for free, even on a tool-capable provider (CR-51)', async () => {
+    // The whole point of `CR-51`. The provider flags say OpenAI does tools — and it does; `gpt-3.5-turbo` does
+    // not, which is a fact only the per-model catalog carries. Before this the chain admitted the entry, spent a
+    // real call, and earned a 400: a free skip turned into a paid failure. The FIRST entry is the incapable one,
+    // so a passing test can only mean the chain skipped it before egress.
+    const toolReq: LlmRequest = {
+      ...userReq,
+      tools: [{ name: 'read_file', parameters: { type: 'object' } }],
+    };
+    const incapable = makeProvider({ id: 'openai', generate: resolves('should never run') });
+    const capable = makeProvider({ id: 'anthropic', generate: resolves('ok') });
+    const { options, trace } = makeOptions();
+    const chain = new FallbackChain(
+      [entry(incapable, 'gpt-3.5-turbo'), entry(capable, 'claude-opus-4-8')],
+      options,
+    );
+
+    const result = await chain.generate(toolReq);
+
+    expect(incapable.calls).toHaveLength(0); // no egress at all — this is the "free" in "free skip"
+    expect(result.content).toEqual([{ type: 'text', text: 'ok' }]);
+    // …and the skip is RECORDED with its reason, never silent: a chain that quietly drops an entry is a chain
+    // whose behaviour nobody can explain from the trace.
+    const skip = trace.find((r) => r.outcome === 'skipped');
+    expect(skip?.model).toBe('gpt-3.5-turbo');
+    expect(skip?.skipReason).toMatch(/does not accept tool definitions/);
+  });
+
+  it('does NOT skip that same model for a text-only request', async () => {
+    // The gate is about what the request needs. Skipping a tool-incapable model for a plain text turn would
+    // strand the chain on a model that could have answered — the opposite failure, equally real.
+    const incapable = makeProvider({ id: 'openai', generate: resolves('ok') });
+    const { options } = makeOptions();
+    const chain = new FallbackChain([entry(incapable, 'gpt-3.5-turbo')], options);
+
+    await chain.generate(userReq);
+
+    expect(incapable.calls).toHaveLength(1);
+  });
+
   it('keeps reasoning for a same-provider entry after an intervening provider is skipped', async () => {
     // [anthropic, openai(skipped, lacks tools), anthropic] — the skipped openai entry must NOT count
     // as a provider boundary, or the third (same-provider) entry would wrongly lose its reasoning.
@@ -871,7 +1010,7 @@ describe('FallbackChain — backoff and cooldown', () => {
         record: () => {
           throw new UnknownModelError('self-hosted-model', ['claude-opus-4-8']);
         },
-      } as unknown as CostTracker,
+      },
     });
     const chain = new FallbackChain([entry(provider, 'self-hosted-model')], options);
 
@@ -880,6 +1019,53 @@ describe('FallbackChain — backoff and cooldown', () => {
     const succeeded = trace.find((r) => r.outcome === 'succeeded');
     expect(succeeded?.priced).toBe(false);
     expect(succeeded?.cost).toBeUndefined();
+  });
+
+  it('records an unpriced MODALITY as priced:false too, on a model that IS priced (ADR-0089 §4)', async () => {
+    // The sibling of the test above, and the half `CR-55` was about. Here nothing throws: the model prices
+    // fine, the tokens are costed correctly, and a produced image the model has no rate for contributes
+    // nothing — so `costMicrocents` is a FLOOR, not the charge. A reader asking "is this figure the charge?"
+    // gets the same answer as for an unpriced model, so it gets the same flag.
+    const provider = makeProvider({ id: 'anthropic', generate: resolves('ok') });
+    const { options, trace } = makeOptions({
+      costTracker: {
+        record: () => ({
+          inputTokens: 10,
+          outputTokens: 5,
+          costMicrocents: 42,
+          cumulativeCostMicrocents: 42,
+          unpricedModalities: ['image'] as const,
+        }),
+      },
+    });
+    const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
+
+    await chain.generate(userReq);
+
+    const succeeded = trace.find((r) => r.outcome === 'succeeded');
+    expect(succeeded?.priced).toBe(false);
+    // …and unlike the unpriced-MODEL case, the priced part is still recorded: the cap keeps working on what
+    // could be priced rather than being abandoned for the whole call.
+    expect(succeeded?.cost?.costMicrocents).toBe(42);
+  });
+
+  it('leaves `priced` absent when nothing was unpriced — the flag means something only if it is rare', async () => {
+    const provider = makeProvider({ id: 'anthropic', generate: resolves('ok') });
+    const { options, trace } = makeOptions({
+      costTracker: {
+        record: () => ({
+          inputTokens: 10,
+          outputTokens: 5,
+          costMicrocents: 42,
+          cumulativeCostMicrocents: 42,
+        }),
+      },
+    });
+    const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
+
+    await chain.generate(userReq);
+
+    expect(trace.find((r) => r.outcome === 'succeeded')?.priced).toBeUndefined();
   });
 
   it('does NOT swallow a non-pricing failure from the cost tracker (#194)', async () => {
@@ -891,7 +1077,7 @@ describe('FallbackChain — backoff and cooldown', () => {
         record: () => {
           throw new TypeError('cumulative overflowed');
         },
-      } as unknown as CostTracker,
+      },
     });
     const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
 
@@ -1101,6 +1287,42 @@ describe('FallbackChain — backoff and cooldown', () => {
     await chain.generate(userReq); // call 3: primary retried again
     expect(primary.calls).toHaveLength(2);
   });
+
+  it('a chain exhausted purely by COOLDOWN is retryable, not a bad request', async () => {
+    // A cooldown says the request cannot be served RIGHT NOW; a capability mismatch says it cannot be
+    // served AS WRITTEN. Folding both into `bad_request` mapped a chain that was merely resting into the
+    // engine's non-retryable `validation` code — reporting "no provider could serve the request" for a
+    // request that was fine and would have succeeded on the next attempt.
+    let clock = 0;
+    const only = makeProvider({ id: 'anthropic', generate: rejects('anthropic', 'rate_limit') });
+    const { options } = makeOptions({ now: () => clock, cooldownMs: 1000 });
+    const chain = new FallbackChain([entry(only, 'claude-opus-4-8')], options);
+
+    await expect(chain.generate(userReq)).rejects.toThrow(); // call 1 rate-limits → parks the cooldown
+    clock = 500; // still inside it, so call 2 skips the only entry and exhausts
+    const err = await rejectedError(chain.generate(userReq));
+    expect(err.kind).toBe('rate_limit');
+    expect(err.retryable).toBe(true);
+    expect(err.message).toMatch(/cooldown/);
+  });
+
+  it('…while a chain exhausted by CAPABILITY stays a non-retryable bad request', async () => {
+    // The other arm, asserted beside it: nothing about waiting fixes a model that rejects attachments.
+    const toolReq: LlmRequest = {
+      ...userReq,
+      tools: [{ name: 'read_file', parameters: { type: 'object' } }],
+    };
+    const incapable = makeProvider({
+      id: 'openai',
+      supports: { tools: false },
+      generate: resolves('unused'),
+    });
+    const { options } = makeOptions();
+    const chain = new FallbackChain([entry(incapable, 'gpt-5.5')], options);
+    const err = await rejectedError(chain.generate(toolReq));
+    expect(err.kind).toBe('bad_request');
+    expect(err.retryable).toBe(false);
+  });
 });
 
 // --- capability skip -------------------------------------------------------------------------
@@ -1146,8 +1368,15 @@ describe('FallbackChain — capability skip', () => {
 
     const err = await rejectedError(chain.generate(toolReq));
 
-    expect(err.kind).toBe('unknown');
+    // WAS `expect(err.kind).toBe('unknown')`. That pinned the opaque report as correct: `unknown` maps to the
+    // engine's `internal` code — its opaque-bug bucket — while the precise per-entry reasons were computed one
+    // line away and discarded. `CR-51` makes a wholly-skipped plan the COMMON case (a node with no authored
+    // `fallback_chain` has one entry, so a single capability mismatch exhausts it), so the synthesized error is
+    // the only thing the user ever sees. It is a request that cannot be served as written — `bad_request`,
+    // which the engine maps to `validation` — and it names why.
+    expect(err.kind).toBe('bad_request');
     expect(err.message).toMatch(/exhausted/);
+    expect(err.message).toMatch(/'tools' capability not supported/);
   });
 });
 
@@ -1226,7 +1455,7 @@ describe('FallbackChain.stream', () => {
         record: () => {
           throw thrown;
         },
-      } as unknown as CostTracker,
+      },
     });
     const chain = new FallbackChain(
       [entry(provider, 'claude-haiku-4-5'), entry(fallback, 'gpt-5.5')],
@@ -1459,7 +1688,7 @@ describe('FallbackChain.stream', () => {
         record: () => {
           throw new TypeError('cumulative overflowed');
         },
-      } as unknown as CostTracker,
+      },
     });
     const chain = new FallbackChain(
       [entry(provider, 'claude-opus-4-8'), entry(fallback, 'gpt-5.5')],
@@ -1716,7 +1945,9 @@ describe('FallbackChain.stream', () => {
 
     expect(chunks).toHaveLength(1);
     if (chunks[0]?.type === 'error') {
-      expect(chunks[0].error.kind).toBe('unknown');
+      // Same rewrite as the `generate` twin — see its note. A wholly-skipped stream reports the
+      // same actionable kind and the same reasons; the two paths must not disagree.
+      expect(chunks[0].error.kind).toBe('bad_request');
       expect(chunks[0].error.message).toMatch(/exhausted/);
     }
     expect(a.calls).toHaveLength(0);

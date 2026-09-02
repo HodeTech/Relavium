@@ -16,6 +16,7 @@ import {
   createMediaReferencePort,
   createMediaReferenceStore,
   fetchMediaBytes,
+  streamMediaBytes,
   type Db,
 } from '@relavium/db';
 import type { RunLeasePort } from '@relavium/shared';
@@ -212,6 +213,16 @@ export function createCliHost(
       // authored opt-in to honour. Private/loopback/metadata targets stay blocked (ADR-0088 §4 replaced the
       // old `allowPrivate: false` with an absent policy — the same answer, one fewer flag to flip).
       fetchMediaBytes(url, {
+        maxBytes,
+        ...(signal === undefined ? {} : { signal }),
+      }),
+    // The STREAMING twin (ADR-0089 §2), and the one the url re-host path actually takes: identical policy,
+    // yielded rather than buffered, so a large asset is bounded as it arrives instead of being downloaded
+    // whole and then measured. Wired unconditionally beside its sibling — a host that offers only the
+    // whole-buffer form would have every url media source refused, which is the correct refusal but a
+    // pointless one when the streaming mechanism exists right here.
+    streamMedia: (url, maxBytes, signal) =>
+      streamMediaBytes(url, {
         maxBytes,
         ...(signal === undefined ? {} : { signal }),
       }),

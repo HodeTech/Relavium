@@ -84,6 +84,106 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
     expect(out).toContain('acme-custom-1');
   });
 
+  describe('media output rates (CR-55, ADR-0089 §4)', () => {
+    it('stores each media rate per BILLED UNIT, and leaves an unstated one NULL', () => {
+      const { code, out } = run({ ...baseArgs, imageUsdPerCount: 0.04, videoUsdPerSecond: 0.5 });
+      expect(code).toBe(EXIT_CODES.success);
+      const listing = catalog.listAll().find((m) => m.modelId === 'acme-custom-1');
+      expect(listing?.mediaImageCostMicrocents).toBe(4_000_000); // $0.04 × 1e8, per IMAGE (not per Mtok)
+      expect(listing?.mediaVideoCostMicrocents).toBe(50_000_000); // $0.50 × 1e8, per SECOND
+      // NULL, not 0 — the column's whole purpose is to hold "nobody said" distinctly from "free".
+      expect(listing?.mediaAudioCostMicrocents).toBeNull();
+      // Echoed in the billed unit; "$0.04/Mtok" would read as a price a million times off.
+      expect(out).toContain('image $0.04/image');
+      expect(out).toContain('video $0.5/s');
+    });
+
+    it('writes a stated ZERO as 0, never as NULL', () => {
+      run({ ...baseArgs, audioUsdPerSecond: 0 });
+      const listing = catalog.listAll().find((m) => m.modelId === 'acme-custom-1');
+      expect(listing?.mediaAudioCostMicrocents).toBe(0);
+    });
+
+    it('a re-price that omits the media flags PRESERVES the stored rates', () => {
+      // The `--cached` omission rule, applied to media: re-pricing tokens must not silently drop a media rate
+      // the user hand-entered earlier. Without this, `models pricing … --input 4 --output 12` would quietly
+      // return the model to unpriced-for-media and (under strict) start refusing generations again.
+      run({ ...baseArgs, imageUsdPerCount: 0.04 });
+      run({ ...baseArgs, inputUsdPerMtok: 4, outputUsdPerMtok: 12 });
+      const listing = catalog.listAll().find((m) => m.modelId === 'acme-custom-1');
+      expect(listing?.inputCostPerMtokMicrocents).toBe(400_000_000);
+      expect(listing?.mediaImageCostMicrocents).toBe(4_000_000);
+    });
+
+    it('renders every combination of optional price parts as one clean list', () => {
+      // Each part is independently optional now that media-only and cache-only invocations are legal, so no
+      // part may carry its own separator or assume another precedes it. Stitching them with ad-hoc separators
+      // produced `): , cached $0.5/Mtokimage $0.04/image` for `--cached` + `--image` — a stray comma and two
+      // clauses run together. Every earlier test spread `baseArgs`, which always carries token rates, so the
+      // one shape that breaks the stitching was the one shape nothing exercised.
+      // A CATALOG-PRICED model, deliberately: a media-only invocation on a model nothing prices for tokens is
+      // now refused at write time, because the row it would create carries no usable token price and the media
+      // rate would never be applied. `gpt-4` is anchored to `openai`, the provider this suite registers.
+      const cachedPlusMedia = run({
+        model: 'gpt-4',
+        provider: 'openai',
+        cachedInputUsdPerMtok: 0.5,
+        imageUsdPerCount: 0.04,
+      });
+      expect(cachedPlusMedia.out).toContain('(openai): cached $0.5/Mtok, image $0.04/image.');
+      expect(cachedPlusMedia.out).not.toContain('): ,'); // no leading separator
+      expect(cachedPlusMedia.out).not.toContain('Mtokimage'); // no run-together clauses
+
+      const mediaOnly = run({ model: 'gpt-4', provider: 'openai', videoUsdPerSecond: 0.5 });
+      expect(mediaOnly.out).toContain('(openai): video $0.5/s.');
+      expect(mediaOnly.out).not.toContain('input $');
+
+      const everything = run({ ...baseArgs, cachedInputUsdPerMtok: 1, audioUsdPerSecond: 0.001 });
+      expect(everything.out).toContain(
+        '(openai): input $3/Mtok, output $9/Mtok, cached $1/Mtok, audio $0.001/s.',
+      );
+    });
+
+    it('a media-only write does NOT claim the token rates — it records that they were never stated', () => {
+      // THE defect this flag exists for. `input_/output_cost_per_mtok_microcents` are `NOT NULL DEFAULT 0`, so a
+      // media-only write lands `0`/`0` — and a `source='user'` row OUTRANKS the catalog. Without the flag,
+      // following the strict-cap refusal's own instruction ("add an image rate") billed every token on that
+      // model at nothing, permanently and silently: `CR-55`'s defect, reintroduced by its own remedy, on the
+      // axis that carries most of the spend.
+      run({ model: 'gpt-4', provider: 'openai', imageUsdPerCount: 0.04 });
+      const listing = catalog.listAll().find((m) => m.modelId === 'gpt-4');
+      expect(listing?.mediaImageCostMicrocents).toBe(4_000_000);
+      expect(listing?.tokenRatesStated).toBe(false); // …so a reader inherits the catalog's token rates
+    });
+
+    it('a token write DOES claim them, and a later media-only re-price preserves that claim', () => {
+      run({ ...baseArgs, model: 'gpt-4' });
+      expect(catalog.listAll().find((m) => m.modelId === 'gpt-4')?.tokenRatesStated).toBe(true);
+      // The `--cached` omission rule, applied to the flag: a media-only re-price must not demote token rates the
+      // user stated earlier, or their own numbers would silently revert to the catalog's.
+      run({ model: 'gpt-4', provider: 'openai', audioUsdPerSecond: 0.001 });
+      const listing = catalog.listAll().find((m) => m.modelId === 'gpt-4');
+      expect(listing?.tokenRatesStated).toBe(true);
+      expect(listing?.inputCostPerMtokMicrocents).toBe(300_000_000);
+      expect(listing?.mediaAudioCostMicrocents).toBe(100_000);
+    });
+
+    it('refuses a media-only write on a model NOTHING prices for tokens', () => {
+      // The row would carry no usable token price — the catalog has nothing to inherit and the `0` is a default —
+      // so `buildUserPricing` drops it and the media rate is unreachable. Refusing at write time is the
+      // difference between a clear exit 2 and a strict cap that keeps refusing after the user did what it asked.
+      expect(() =>
+        run({ model: 'acme-custom-1', provider: 'openai', imageUsdPerCount: 0.04 }),
+      ).toThrow(/has no token price/);
+      expect(catalog.listAll().find((m) => m.modelId === 'acme-custom-1')).toBeUndefined();
+    });
+
+    it('refuses an implausible per-unit price before writing anything', () => {
+      expect(() => run({ ...baseArgs, imageUsdPerCount: 5_000 })).toThrow(/implausibly large/);
+      expect(catalog.listAll().find((m) => m.modelId === 'acme-custom-1')).toBeUndefined();
+    });
+  });
+
   it('rounds a fractional USD price correctly ($0.15/Mtok → 15_000_000µ¢)', () => {
     run({ ...baseArgs, inputUsdPerMtok: 0.15, outputUsdPerMtok: 0.6 });
     const listing = catalog.listAll().find((m) => m.modelId === 'acme-custom-1');
@@ -115,11 +215,29 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
       source: 'user',
       inputCostPerMtokMicrocents: 300_000_000,
       outputCostPerMtokMicrocents: 900_000_000,
-      cachedInputCostPerMtokMicrocents: 0,
+      // `cachedInputCostPerMtokMicrocents` is OMITTED — `--cached` was not given, and the store PRESERVES
+      // the existing rate rather than writing a `0`. It used to be reported as `0`, which named a value the
+      // database does not hold; a caller confirming its own write was told a number nobody set.
       // The catalog has never heard of `acme-custom-1` — the case the user tier was invented for. Nothing is
       // overridden, so there is nothing to declare.
       overriddenCatalogPrice: null,
     });
+  });
+
+  it('--json OMITS overriddenCatalogPrice on a media-only re-price — it overrides no token price', () => {
+    // A media-only invocation replaces nothing in the catalog's token pricing, so declaring what it
+    // "overrides" claims a divergence that did not happen — the opposite of what the field is for.
+    const { code, out } = run(
+      // A model the CATALOG prices, so a media-only re-price is legal — and the field is still omitted,
+      // because this invocation overrode no token price.
+      { model: 'gpt-5.5', provider: 'openai', imageUsdPerCount: 0.04 },
+      true,
+    );
+    expect(code).toBe(EXIT_CODES.success);
+    const [rec] = parseNdjson(out);
+    expect(rec).not.toHaveProperty('overriddenCatalogPrice');
+    expect(rec).not.toHaveProperty('cachedInputCostPerMtokMicrocents');
+    expect(rec).toMatchObject({ mediaImageCostMicrocents: 4_000_000 });
   });
 
   it('--json DECLARES the catalog price an override replaces (ADR-0071 §5)', () => {

@@ -132,6 +132,7 @@ export { FilesystemMediaStore, InMemoryMediaStore } from './media-store.js';
 // Node-side (node:dns + node:https + node:net). The pure engine never imports this.
 export {
   fetchMediaBytes,
+  streamMediaBytes,
   nodeMediaEgressDeps,
   MediaEgressError,
   type FetchMediaBytesOptions,

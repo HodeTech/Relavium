@@ -10,14 +10,16 @@
 
 import {
   type EffectTier,
+  INLINE_MEDIA_CEILING,
   MEDIA_HANDLE_PATTERN,
-  type MediaPart,
+  MediaMimeTypeSchema,
+  mediaModalityOf,
   scopeSetIncludes,
-  validateByteRange,
 } from '@relavium/shared';
 import { z } from 'zod';
 
 import { ToolArgsInvalidError, ToolPolicyError, ToolUnavailableError } from './errors.js';
+import { attachMedia, type WithMediaAttachment } from './media-attachment.js';
 import {
   type EgressCapability,
   type FsCapability,
@@ -506,73 +508,103 @@ const notifyTool = defineBuiltin({
 const readMediaTool = defineBuiltin({
   id: 'read_media',
   description:
-    'Read a produced/received media handle (optionally a byte range) and return it inline for the model.',
+    'Read a produced/received media handle. Returns a short descriptor; the media itself is attached to the conversation for you to look at.',
   args: z
     .object({
       // Structural validation at the engine-pure policy layer: a malformed handle is rejected at parse
       // (a clear invalid_args on `handle`) rather than only at the host describe() (unknown_handle).
       handle: z.string().regex(MEDIA_HANDLE_PATTERN, 'must be a media://sha256-<64hex> handle'),
-      start: z.number().int().nonnegative().optional(),
-      end: z.number().int().nonnegative().optional(),
     })
+    // NO `start`/`end` (`CR-50`, ADR-0089 §1). A byte range had nowhere to go: the delivery rail is a
+    // top-level media part, which is whole-handle by construction, and a range would have to be written
+    // back as a NEW content-addressed handle — a store write plus a GC reference, to serve a caller that
+    // cannot use bytes 100–200 of a PNG. `.strict()` makes the removal enforced rather than advertised:
+    // a model that sends `start` now gets a typed `invalid_args` instead of a silently ignored argument.
     .strict(),
   llmVisibleParams: {
     type: 'object',
-    properties: {
-      handle: { type: 'string' },
-      start: { type: 'integer', minimum: 0 },
-      end: { type: 'integer', minimum: 0 },
-    },
+    properties: { handle: { type: 'string' } },
     required: ['handle'],
     additionalProperties: false,
   },
   policy: MEDIA_POLICY,
-  // Engine-pure byte-delivery gate (ADR-0044 §1): scope-set authz → Range validation → host readRange.
-  // The MediaStore + media_references access is the injected `ctx.mediaRead` delegate (NOT a ToolHost arm);
-  // the host returns an in-flight base64 source, so this dispatch never touches raw bytes.
-  dispatch: async (args, _host, ctx): Promise<MediaPart> => {
+  // Engine-pure authorization gate (ADR-0044 §1): scope-set membership, then a metadata lookup. The
+  // MediaStore + media_references access is the injected `ctx.mediaRead` delegate (NOT a ToolHost arm).
+  //
+  // The result is a short TEXT descriptor and the bytes ride an ATTACHMENT (ADR-0089 §1): a handle-only
+  // media part the turn loop delivers on a synthesized `user` message, where the chain's egress
+  // re-materialization resolves it and every adapter already knows how to lower it. This dispatch never
+  // touches raw bytes at all — it does not read them, so there is nothing for the I3 boundary to redact.
+  dispatch: async (args, _host, ctx): Promise<WithMediaAttachment<string>> => {
     const access = ctx.mediaRead;
     const requesting = ctx.requestingScope;
     if (access === undefined || requesting === undefined) {
       throw new ToolUnavailableError('read_media', 'media-read');
     }
     const info = await access.describe(args.handle, ctx.signal);
-    if (info === undefined) {
-      throw new ToolArgsInvalidError('read_media', ['handle'], 'read_media: unknown media handle');
-    }
-    // Authz FIRST (before any byte read): scope-set membership, never owner-equality / sha256-knowledge.
-    if (!scopeSetIncludes(info.allowedScopes, requesting)) {
+    // Authz, and **an unknown handle answers exactly as an unauthorized one does**. Splitting them made the
+    // tool an existence oracle: a caller who guessed a sha256 learned whether those bytes were in the store,
+    // because `unknown media handle` and `media_scope_denied` are distinguishable and both are fed back to
+    // the model. It never learned the content, so ADR-0044 §1's "knowing a sha256 is not authorization" held
+    // — but one bit is still one bit more than that posture implies, and the tool is reachable by anything
+    // the model can be talked into emitting. Both now say the same thing.
+    if (info === undefined || !scopeSetIncludes(info.allowedScopes, requesting)) {
       throw new ToolPolicyError(
         'read_media',
         'media_scope_denied',
-        'read_media: the requesting scope may not read this media handle',
+        'read_media: no media is readable at that handle from this scope',
       );
     }
-    // A zero-byte handle has no valid inclusive range; a whole-handle read returns the HANDLE source (the
-    // schema-valid representation of empty content — `{ kind:'base64', data:'' }` would violate the
-    // base64 `nonEmptyString` contract and break deInlineMedia's empty-decode) rather than tripping the
-    // fail-closed check on the default `end = byteLength - 1 = -1` (1.AF off-by-one). An EXPLICIT range on
-    // a 0-byte handle still falls through to validateByteRange and is correctly rejected.
-    if (info.byteLength === 0 && args.start === undefined && args.end === undefined) {
-      return {
-        type: 'media',
-        mimeType: info.mimeType,
-        source: { kind: 'handle', ref: args.handle },
-      };
-    }
-    // Whole-handle when no range is given; else validate the inclusive [start,end] against the durable
-    // byteLength (the engine-pure policy — fail-closed on a bad/out-of-bounds range before the host read).
-    const range = { start: args.start ?? 0, end: args.end ?? info.byteLength - 1 };
-    const checked = validateByteRange(range, info.byteLength);
-    if (!checked.ok) {
+    // **Refuse what the delivery rail cannot carry, HERE, where the model can still correct.** The bytes
+    // reach the model as an in-flight `base64` part, and `INLINE_MEDIA_CEILING` refuses video and PDF at any
+    // size and image/audio over 256 KiB — enforced by the seam's own schema at the adapter. Without this
+    // check the tool authorized the handle, described it ("4192304 bytes — attached below"), and the model
+    // then read a descriptor for something the NEXT request died trying to send: a `ZodError` after the
+    // tool had already run, on every plan entry, telling the caller to "pass a handle instead" — which is
+    // exactly what the engine passed. A screenshot, a photo, a generated image or any PDF is over the line.
+    //
+    // A typed `invalid_args` instead, so the model gets a correctable refusal naming the limit and can pick
+    // a different handle or stop asking. The real fix is a delivery path that does not inline — a
+    // provider-ref upload through `resolveForEgress` — which ADR-0089 §2's amendment already records as open.
+    // The host supplies `mimeType` as a bare `string` (it comes from `media_objects.mime_type`), and it is
+    // interpolated into the descriptor — which becomes the tool result AND `agent:tool_result.outputSummary`
+    // on a durable event. ADR-0044 §1 already names an unbounded value here as a bytes-smuggling channel
+    // into the very logs I3 guards; that bound applied to the rejection path, and this is the success path.
+    const checkedMime = MediaMimeTypeSchema.safeParse(info.mimeType);
+    if (!checkedMime.success) {
       throw new ToolArgsInvalidError(
         'read_media',
-        ['start', 'end'],
-        `read_media: ${checked.reason}`,
+        ['handle'],
+        'read_media: the stored media has no usable media type',
       );
     }
-    const source = await access.readRange(args.handle, checked.range, ctx.signal);
-    return { type: 'media', mimeType: info.mimeType, source };
+    const mimeType = checkedMime.data;
+    const modality = mediaModalityOf(mimeType);
+    if (modality === undefined) {
+      throw new ToolArgsInvalidError(
+        'read_media',
+        ['handle'],
+        `read_media: ${mimeType} is not a media type the model can be shown`,
+      );
+    }
+    const ceiling = INLINE_MEDIA_CEILING[modality];
+    if (ceiling === 0) {
+      throw new ToolArgsInvalidError(
+        'read_media',
+        ['handle'],
+        `read_media: ${modality} media cannot be delivered inline to a model — describe it or extract frames instead`,
+      );
+    }
+    if (info.byteLength > ceiling) {
+      throw new ToolArgsInvalidError(
+        'read_media',
+        ['handle'],
+        `read_media: this ${modality} is ${info.byteLength} bytes, over the ${ceiling}-byte inline limit — a smaller or downscaled handle can be delivered`,
+      );
+    }
+    return attachMedia(`${mimeType}, ${info.byteLength} bytes, ${args.handle} — attached below.`, [
+      { type: 'media', mimeType, source: { kind: 'handle', ref: args.handle } },
+    ]);
   },
 });
 

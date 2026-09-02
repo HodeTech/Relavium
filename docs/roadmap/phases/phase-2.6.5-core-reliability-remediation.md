@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` (media correctness) is next (28 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28)
+- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` (media correctness) is COMPLETE on `development` behind ADR-0089 + ADR-0090; **`W6` (authoring correctness) is next** (38 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28)
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -280,12 +280,12 @@ to correct.
 | `CR-40` | made (forward signal + deadline) · ✅ closed 2026-09-01 | [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1 | no | hostile MCP |
 | `CR-41` | made 2026-08-31 (full pinning on `http`/`sse`; a **remote `websocket` is refused at admission**; a redirect is refused, not followed; the local opt-in is ONE bound policy) | [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §2–§4 | no | hostile MCP |
 | `CR-42` | made 2026-08-31 — **256** tools/server · **8 KiB** description · **1 MiB** discovery/server · **4 KiB** schema string · **256 B** property name · **1 MiB** result text · **4 MiB** per `http`/`sse` message. Transport-level (pre-parse, memory) and application-level (post-parse, admission) are separate guarantees; a local transport has only the second, and its bound is the consent gate | [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §5–§6 | no | hostile MCP |
-| `CR-50` | **open** — complete the handle path, or remove the tool | — | yes | media bytes |
-| `CR-51` | made (gate on model-level capability) | — | no | — |
-| `CR-52` | made (pull [ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md)'s deferral forward) | ADR-0039 follow-up | no | — |
-| `CR-53` | made (bounded stream to the store) | — | no | media bytes |
-| `CR-54` | made (content-hashed handle at first resolution) | — | no | media bytes |
-| `CR-55` | made (missing rate ⇒ unpriced) | — | yes | — |
+| `CR-50` | made 2026-09-02 (complete it; handle-only tool + bytes on a marked synthesized `user` message over the media-input rail) · ✅ DELIVERY closed 2026-09-02; the host delegate + session-scope producer are recorded residuals | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1 | yes | media bytes |
+| `CR-51` | made · ✅ closed 2026-09-02 (gate on model-level capability — `toolCall`/`attachment` join `requestSupportReason`, so the chain pre-skips for free and the adapter refuses; `temperature`/`structuredOutput` stay withheld knobs) · ✅ closed 2026-09-02 | — | no | — |
+| `CR-52` | made 2026-09-02 · ✅ closed 2026-09-02 (pull [ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md)'s deferral forward — an optional `signature` on the canonical `tool_call` part + `tool_call_end`, with a signature-less durable arm; the ADR-0089 §3 sidecar proved unbuildable) | [ADR-0090](../../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md), superseding [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §3 | no | — |
+| `CR-53` | made · ✅ INGEST closed 2026-09-02 (`MediaUrlStream` + `MediaStore.putStream?` + an idle-deadlined, cancellable body; a url with no streaming hook REFUSED). The adapter-side base64 and the `resolveForEgress` delivery half are recorded residuals | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §2 | no | media bytes |
+| `CR-54` | made · ✅ closed 2026-09-02 for the two paths that produce one — the node OUTPUT and the human-gate resume PAYLOAD are pinned at first resolution, bounded, and classified on failure. ADR-0043 §3's INGEST half (an `AgentSession` message, an MCP tool result) is a recorded residual | [ADR-0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md) §3 | no | media bytes |
+| `CR-55` | made · ✅ closed 2026-09-02 (missing rate ⇒ unpriced, on both cost paths; strict refuses; the rate path + CLI fields land with it) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §4 | yes | — |
 | `CR-60` | **open** — race semantics, or rename + correct the table | — | no | — |
 | `CR-61` | **open** — needs a JSON-Schema validator dependency | new (dependency ADR) | no | — |
 | `CR-62` | **open** — extract dependencies, or fail loudly | — | no | — |
@@ -1602,22 +1602,78 @@ four could not fail at all, each stopping at a seam one layer above the thing it
 
 ## W5 — Media correctness
 
-### CR-50 — `read_media` does not work end to end · High · **decision open**
-The builtin returns a base64 media part, the registry places generic output into the tool result, and the LLM
-message schema explicitly forbids raw media bytes there. The canonical alternative is a handle-only attachment,
-but all three adapters deliberately drop that field, and production chat does not wire the media-read scope.
-There is no registry → turn → chain → adapter path.
-**Open decision.** Complete the handle path through the adapters, or remove the tool from the catalog until it
-works. Either is acceptable; shipping an advertised tool that cannot work is not.
-**Fix + acceptance.** An end-to-end test proves the chosen answer. If removal is chosen, a test asserts the tool
-is absent from the catalog the model sees.
+> **Status: all six items closed, 2026-09-02.** Two of the six closed one half of a two-part obligation and
+> say so in their own heading — `CR-50` (delivery; the host delegate awaits a producer that does not exist
+> yet) and `CR-53` (ingest; the adapter and delivery halves are recorded residuals). Nothing here is marked
+> closed on a claim wider than the code: every residual is written out in
+> [deferred-tasks.md](../deferred-tasks.md) rather than left inside a checked box.
+>
+> The wave's security sitting — media bytes, covering `CR-50`, `CR-53` and `CR-54` (phase clause 7) — is
+> recorded in [security-review.md](../../standards/security-review.md#sitting-media-bytes--cr-50-cr-53-cr-54-2026-09-02)
+> with nine controls, each naming the adversarial test that exercises it. It produced two findings of its
+> own, both fixed in the wave: the streaming egress had no redirect-bypass test, and the security standard
+> claimed a feature flag was off that had been on since 1.AE.
+>
+> **What the review rounds cost and bought.** Every item took an Opus round and a Sonnet round. They found
+> four defects that would have shipped: the media pin ran in a place that fetched a `save_to` url twice and
+> corrupted a timed-out node's terminal; `read_media`'s message was appended per tool call, which every
+> provider rejects for a parallel response; the tool accepted handles the delivery rail cannot carry; and
+> the registry-level split was defended by no test at all. Two of my own tests passed under their own
+> mutation and had to be rewritten to measure the property they named.
 
-### CR-51 — Model-level tool/attachment capability is not enforced · High
+### CR-50 — `read_media` does not work end to end · High · ✅ DELIVERY closed 2026-09-02 (host wiring recorded)
+The builtin returns a base64 media part, the registry places generic output into the tool result, and the LLM
+message schema explicitly forbids raw media bytes there. The canonical alternative looked like the handle-only
+`tool_result.media` attachment — but review found nothing can deliver it: the chain's egress re-materialization
+walks only top-level `media` parts and never descends into `tool_result.media`, OpenAI's `role:'tool'` lowering
+filters the message to `tool_result` parts (so anything else there is dropped), and ADR-0043 §1 forbids the
+adapter resolving a handle itself. Production chat also does not wire the media-read scope.
+**Decision (maintainer, 2026-09-02).** **Complete** the path, delivering the bytes over the *media-input* rail
+that already works on all three providers: `read_media` takes a **handle only** (no `start`/`end`), its tool
+result is a short text descriptor, and the media rides as a top-level `media` part on a **marked,
+engine-synthesized `user` message**. `tool_result.media` is left to the provider-executed case ADR-0031 #7 built
+it for. No seam shape changes.
+**Fix + acceptance.** An end-to-end test per provider proves a `read_media` call reaches the model as media.
+The synthesized message asserts its engine-authored preamble (it must never present as the user's own words),
+and a test pins that the tool exposes no range parameters.
+
+**What landed (2026-09-02).** All three acceptance clauses, plus the piece the ADR implies but does not
+name — the refusal. `read_media` takes a handle only (`.strict()`, so a range is REJECTED, not ignored),
+answers with a text descriptor, and hands the engine a handle-only attachment over a private-symbol envelope
+split at the dispatch boundary, so `output_mapping`, bounding, the spill and the durable event never see it.
+The turn loop appends a marked `user` message after the tool result. Per-provider proof lives in
+`packages/llm/src/read-media-delivery.test.ts` (Anthropic, OpenAI, Gemini — all three redden when the fixture
+is reverted to `tool_result.media`, which is the defect ADR-0089 §1 describes); the producing half is pinned
+in `agent-turn.test.ts` and break-verified against three separate mutations. Because the bytes ride the
+ordinary media-INPUT rail, a model with no image input **refuses the turn** rather than reading a descriptor
+for something it never got — `CR-51`'s gate doing the work, at no extra cost.
+
+**What the review round added (2026-09-02).** A systematic read found one blocker and two highs, all real
+and all fixed here. The synthesized message was appended INSIDE the dispatch loop, so a response with two
+tool calls produced `tool, user, tool, user` — which OpenAI 400s (tool messages must follow their
+`tool_calls` turn contiguously), Gemini rejects (function-response count must match function-call count),
+and Anthropic merges into one block array with an image between two `tool_result` blocks. It is now one
+message for the whole response. `read_media` also accepted handles the rail cannot carry — video and PDF are
+never inline and an image over 256 KiB is refused by the seam's schema — so the tool authorized and
+described a handle whose delivery then killed the turn; it now refuses correctably, naming the limit. And a
+journaled tool returning an attachment is refused outright, because the journal round-trips JSON and a
+replay would restore the descriptor while delivering no media, silently.
+
+**What did NOT land, and why it is a producer problem rather than an omission.** The defect text also names
+"production chat does not wire the media-read scope". It still does not, and wiring it now would be worse
+than leaving it: **nothing anywhere creates a `session`- or `workspace`-scope `media_references` row**, and
+`describe` deliberately excludes the `run`-scope rows (ADR-0044 §1 — a run-lifetime reference never grants
+read). A wired delegate would therefore answer every call `unknown media handle`. The CLI has no producer
+either: `read_file` fail-closes on a binary file, and `@`-mention injects text. So the honest state is
+**fail-closed by absence of the delegate**, and the missing piece is a producer plus a session-scope
+reference — recorded in [deferred-tasks.md](../deferred-tasks.md), not implied by a checked box.
+
+### CR-51 — Model-level tool/attachment capability is not enforced · High · ✅ closed 2026-09-02
 The catalog carries `toolCall` and `attachment` metadata, but runtime gates on the provider-wide flags and the
 adapters attach tools unconditionally. A model the catalog marks as tool-incapable can still be sent tools, and
 the chain can treat it as capable instead of pre-skipping it — turning a free skip into a paid 400.
 
-### CR-52 — Gemini reasoning/tool continuation metadata is lost · Medium-High
+### CR-52 — Gemini reasoning/tool continuation metadata is lost · Medium-High · ✅ closed 2026-09-02
 Part-level thought signatures on function calls are not captured, and replay drops reasoning after a tool
 result. Multi-turn thinking-plus-function-calling continuations can 400 or break semantically.
 **Governance note.** This is **not** newly discovered drift. [ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md)
@@ -1625,25 +1681,66 @@ deliberately deferred it and recorded it in [deferred-tasks.md](../deferred-task
 deferral forward; the item closes by landing the work **and** checking off the deferred-tasks entry, so the two
 records do not disagree.
 
-### CR-53 — Large media travels fully buffered and base64-encoded · High
+### CR-53 — Large media travels fully buffered and base64-encoded · High · ✅ INGEST closed 2026-09-02 (delivery + adapter halves recorded)
 Audio and video responses are read into a full buffer and converted to base64; raw buffer, typed view, base64
 string and the store's decoded copy can all exist at once.
-**Fix + acceptance.** A bounded stream or download lease from the adapter; the host writes straight to the media
-store with a `Content-Length` and streamed-byte ceiling. A large-media test asserts peak memory stays bounded.
+**Fix + acceptance** (reconciled 2026-09-02 with what shipped). The INGEST half landed: a streamed,
+size-bounded, idle-deadlined fetch (`MediaUrlStream`) writing straight into the store (`MediaStore.putStream?`),
+with `put` reserved for sub-ceiling bodies and a url refused outright where no streaming hook exists.
+**Three clauses of the original acceptance did NOT land and are residuals, not silent omissions:**
+(a) *"from the adapter"* — `packages/llm` is untouched, so a generated image/audio still returns
+`{ kind: 'base64' }` and only the `url` carrier streams; (b) no `Content-Length` is read — the ceiling is
+enforced against the stream instead, which is strictly safer against a lying header but is not what the text
+says; (c) no test measures peak MEMORY — the shipped test counts what the source produced and stops at the
+bound, which proves the transfer is cut off, not the resident set. The DELIVERY half is likewise open:
+`resolveForEgress`/`readRange` still materialize a whole object and base64-encode it. Recorded in
+[deferred-tasks.md](../deferred-tasks.md); the mutation that would close (c) is a harness that samples RSS
+inside the body generator across two processes.
 
-### CR-54 — URL media can produce different bytes on resume · High
+### CR-54 — URL media can produce different bytes on resume · High · ✅ node-output + gate-payload halves closed 2026-09-02
 Remote URL media is resolved again on resume, and the same URL can return different content, a different
 redirect or a different DNS answer. The run appears to have the same inputs while the model sees different bytes.
-**Fix + acceptance.** Convert to a content-hashed handle at first resolution; resume must not re-fetch. Pairs
-with `CR-17`: the input digest is only meaningful if a URL input's bytes are pinned.
+**Fix + acceptance.** Convert to a content-hashed handle at first resolution; resume must not re-fetch.
 
-### CR-55 — Missing media rates can bypass a strict cost cap · Blocker for the strict-cap claim
+**Correction to the pairing note (2026-09-02).** This section used to say *"Pairs with `CR-17`: the input
+digest is only meaningful if a URL input's bytes are pinned."* That is false, and implementation is what
+established it: an authored workflow input is `string | number | boolean | file_path | code_diff | secret`,
+so **a url media part cannot arrive as an input at all**. The real pairing is with the NODE OUTPUT — the
+digest over `run.outputs[...]` is what the pin makes meaningful. Kept as a correction rather than a silent
+edit, because the wrong version is what sent the first implementation attempt at the wrong half.
+
+**What landed (2026-09-02).** The pin runs at the **dispatch boundary**, immediately after the executor
+returns and before anything reads the outcome, so one fetch serves `save_to`, the run scope, the durable
+event, every later reader and a resume. Two systematic reviews found the first placement (inside
+`#settleCompleted`) broke two invariants, both reproduced and both fixed here: a `save_to` output fetched a
+drifting url **twice** — the file on the user's disk and the handle in the run history were different
+objects, over a `run:completed` — and the pin's `await` sat between the size checks and the status write, so
+a node deadline firing mid-pin stamped the vertex `completed` after it had already failed, putting a
+timed-out node's output into `run:failed.partialOutputs`. The **human-gate resume payload** is pinned too:
+it is a first resolution like any node output and took the one route into `#states` that
+`#settleCompleted` does not cover. The re-host is **bounded** (`ADMISSION_CEILINGS.mediaPartsPerNodeOutput`)
+and refused before the first fetch — a legal node output can carry thousands of url parts inside the size
+bound, since that bound measures the pointer — and a pin failure is now a classified `node:failed` naming
+which of refused / transient / cancelled happened, instead of an anonymous `internal` with no node terminal.
+
+**Not closed by this, and recorded rather than implied:** ADR-0043 §3's *other* clause, "an input URL
+re-hosted at ingest", covers surfaces this does not reach (an `AgentSession` message, an MCP tool result).
+See [deferred-tasks.md](../deferred-tasks.md).
+
+### CR-55 — Missing media rates can bypass a strict cost cap · Blocker for the strict-cap claim · ✅ closed 2026-09-02
 Where a media rate is absent the estimator can fall to zero, the generated catalog projection produces no media
 rate, and the DB's media-rate columns are not carried into the listing/overlay path. The governor can then treat
 a missing rate as *priced at zero* rather than *unpriced*, admitting paid image/audio/video generation under a
 strict cap and reporting `cost:updated = 0`.
-**Fix + acceptance.** Missing media rate ⇒ unpriced, never zero. Under a strict cap an unpriced media generation
-is refused. Carry the media rates through the overlay path. Break-verify by restoring the zero fallback.
+**Fix + acceptance** (refined 2026-09-02 by [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §4).
+Missing media rate ⇒ unpriced, never zero — on **both** producing paths, including the `generateMedia` path,
+which emits `cost:updated` directly and is not a `FallbackChain` attempt. Under the authored opt-in
+`strict_cost_cap` an unpriced media generation is refused, reusing the existing `BudgetExceededError` on the
+existing pre-egress path (ADR-0044 §3's "no new event or error class" holds; its "degrades to allow" remains the
+**non-strict default**). The rate path lands with it — DB media-rate columns projected into
+`ModelPricing.mediaOutputRates`, user > snapshot precedence (the live tier prices nothing — ADR-0064 §6), missing distinguished from a stated `0`, and
+`relavium models pricing` gaining the three media fields — because a refusal whose remedy nobody can perform is
+an outage, not a cap. Break-verify by restoring the zero fallback.
 
 ---
 

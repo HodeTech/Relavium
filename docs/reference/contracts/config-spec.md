@@ -180,9 +180,12 @@ auto_compact = true                # ADR-0062: auto-compact when a turn's real i
 compact_threshold = 0.8            # ADR-0062: the context-window fraction that triggers auto-compaction; a fraction in (0, 1] (absent ⇒ 0.8)
 max_cost_microcents = 0            # 0 = unbounded; >0 = per-session pre-egress cost cap (the same governor as a workflow budget — ADR-0028)
 on_exceed = "pause_for_approval"   # fail | pause_for_approval | warn — when a session hits its cap
-strict_cost_cap = false            # ADR-0071 §K7: refuse a turn on a model we cannot PRICE. Default false — the cap
-                                   # degrades to allow with a one-time notice (an unpriced model is a hole in it);
-                                   # true blocks the turn. `models pricing <model>` closes the hole either way.
+strict_cost_cap = false            # ADR-0071 §K7 + ADR-0089 §4: refuse a turn we cannot PRICE. Two cases, one rule
+                                   # — an unpriced MODEL, and a priced model whose requested media MODALITY carries
+                                   # no image/audio/video rate. Default false — the cap degrades to allow with a
+                                   # one-time notice naming which of the two it is; true blocks the turn pre-egress.
+                                   # `models pricing <model> …` closes either hole (`--input/--output` for a model,
+                                   # `--image/--audio/--video` for a modality), and the refusal names the flag.
                                    # INERT without a positive max_cost_microcents: with no cap there is nothing to
                                    # enforce, so strict_cost_cap does nothing until a cap is also set.
 allowed_commands = []              # !-shell allowlist (ADR-0061): EXACT full-command-string match; EMPTY/absent ⇒ !-shell disabled

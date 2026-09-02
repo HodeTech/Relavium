@@ -167,8 +167,9 @@ A chat-only relaxation of any rule here is a security violation, not a feature.
 > config tweak.
 
 There are **four** outbound-URL paths (the fourth — the multimodal media `url` carrier — is now wired
-host-side via [ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)'s `fetchMediaBytes`;
-see the last bullet), and they share **one** vetted SSRF range-primitive — never a second hand-rolled parser.
+host-side via [ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)'s media egress —
+`streamMediaBytes` for a media body, `fetchMediaBytes` for the rest; see the last bullet), and they share
+**one** vetted SSRF range-primitive — never a second hand-rolled parser.
 The **shared** rule (what every path runs through the one primitive) is the **range block**: reject
 private/loopback/link-local/metadata ranges — `127.0.0.0/8`, `::1`, `10/8`, `172.16/12`, `192.168/16`,
 `100.64/10` (CGNAT), `169.254/16` incl. the cloud metadata IP `169.254.169.254` (and the IPv6 forms that embed
@@ -211,15 +212,26 @@ is therefore **narrowed to a local, opted-in endpoint** rather than left on a fl
   [ADR-0029](../decisions/0029-tool-policy-hardening.md) for the rationale.
 - **Media `url` carrier (multimodal — [ADR-0031](../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) A7 / [ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)) — a fourth path, now wired host-side.**
   A media `url` source (a provider-returned output URL re-hosted to a handle, or a user-supplied input URL) is
-  fetched through the **host** `fetchMedia` port — `@relavium/db`'s **`fetchMediaBytes`**, the one vetted
-  SSRF primitive (DNS-resolve → validate-every-IP → connect-by-validated-IP → re-validate per redirect), never an
-  adapter and never a second parser. The CLI host wires it with **no local-endpoint policy at all** — the
+  fetched through the **host** media-egress port — `@relavium/db`'s **`streamMediaBytes`**, which writes the
+  body straight into the store under a size ceiling, an idle deadline and the run `AbortSignal`
+  ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §2), never an adapter and never a second
+  parser. It is not a second primitive: it shares `connectValidated` with its whole-buffer twin
+  `fetchMediaBytes` (DNS-resolve → validate-every-IP → connect-by-validated-IP → re-validate per redirect), so
+  there is still exactly one place that decides whether an address may be reached. **A media `url` with no
+  streaming hook wired is REFUSED**, not quietly whole-buffered — the fallback that would have re-opened the
+  unbounded read does not exist. The CLI host wires it with **no local-endpoint policy at all** — the
   default-deny posture, which [ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md) §4 expresses as an
   ABSENT `localEndpoint` rather than the old `allowPrivate: false` boolean, so there is no flag a later edit
   can flip to "private is fine, anywhere"; the engine owns the
-  `maxBytes` size bound + the run `AbortSignal`. The shared primitive **has landed** (ADR-0043, tested); a
-  user-supplied `url` INPUT *source* (a `url` media part crossing the seam) stays **feature-flag-OFF**
-  (`MEDIA_URL_SOURCE_ENABLED`) until the BYOK local-endpoint opt-in lands behind a fresh ADR.
+  `maxBytes` size bound + the run `AbortSignal`. The shared primitive **has landed** (ADR-0043, tested), and
+  so has the local-endpoint opt-in — as ADR-0088 §4's ABSENT `localEndpoint`, cited in this same bullet
+  above. `MEDIA_URL_SOURCE_ENABLED` is therefore **`true`** (flipped at 1.AE per ADR-0043 §3): a `url` media
+  part crosses the seam today. It is admitted and then **re-hosted**, not trusted — the engine pins it to a
+  content-addressed handle at the dispatch boundary before anything reads it (`CR-54`), so the bytes are
+  fetched exactly once, through the one vetted primitive, and no later reader re-fetches a pointer whose
+  answer may have changed. *(This clause previously claimed the flag was off. It had not been off since
+  1.AE — a control asserted in a document with nothing behind it, which is the pattern the media-bytes
+  sitting exists to catch.)*
 - **The check and the connect must see the same address (no TOCTOU).** The primitive resolves the
   hostname, validates **every** resolved IP against the range-block, and then **pins the connection
   to a validated IP** (connect-by-validated-IP / a lookup-pinned HTTP agent). Validating one
@@ -264,6 +276,30 @@ upload surface must confirm:
 *(Not yet built for the surface — these are binding acceptance criteria for the `read_media` / Rust-CAS
 workstreams, 1.AF/1.AH. The `save_to` host write port + its jail land in 1.AF (`@relavium/db`'s
 `createFilesystemMediaWrite`); the surface rendering is 1.AH.)*
+
+### Sitting: media bytes — `CR-50`, `CR-53`, `CR-54` (2026-09-02)
+
+The phase-2.6.5 media-bytes security sitting
+([phase clause 7](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md)). Each line below names the
+control and **the adversarial test that exercises it** — a reviewer's assurance is not an entry.
+
+| Control | Adversarial test |
+|---|---|
+| A public target that REDIRECTS inward is refused, and the inward hop is never dialled | `media-egress.test.ts` — "a public first hop that redirects to a private host is blocked on the STREAM path too" (`169.254.169.254`; control-verified — the same request succeeds when that host resolves public, so the refusal is the private-ness) |
+| A redirect that downgrades to `http://` is refused on the streaming path | `media-egress.test.ts` — "a redirect to a non-HTTPS target is blocked on the STREAM path too" |
+| The dial carries the VALIDATED address, so a rebinding answer between validation and connect cannot land | `media-egress.test.ts` — "the connection is pinned to the VALIDATED ip, not re-resolved" |
+| A body that never ends is abandoned; a body over the ceiling is cut off rather than completed-then-rejected | `media-egress.test.ts` — "ABANDONS a stalled body", "ABORTS mid-flight when the ceiling is crossed" |
+| A url's bytes cannot change between two readers of the same run | `engine.test.ts` — "the scope and the durable record carry the SAME handle" and "a `save_to` output writes the SAME bytes the durable record names", both against a host that returns DIFFERENT bytes on a second fetch |
+| An untrusted producer cannot compel unbounded egress from one node output | `engine.test.ts` — "REFUSES a node output with more media parts than it will re-host, before fetching any" |
+| A failed pin names its reason without leaking the url | `engine.test.ts` — "a failed pin fails the NODE with an actionable reason": asserts the reason IS present and the host is NOT |
+| Knowing a sha256 is not authorization | `builtins.test.ts` — "denies (media_scope_denied) when the scope is NOT in allowedScopes", asserted before any delivery |
+| A tool cannot put raw bytes into a durable position | `DurableMediaPart` makes the attachment channel handle-only **by type**; `builtins.test.ts` — "never delivers bytes itself — the attachment is a HANDLE, and `readRange` is never called" |
+
+**Two findings the sitting produced, both fixed in the same wave rather than filed:** the streaming egress
+was only tested against refusals decided BEFORE a connection opens, so the redirect-based bypass — the one
+an attacker actually reaches for — was untested on the newer path; and this document claimed a user-supplied
+`url` media source stayed feature-flag-OFF, which had not been true since 1.AE (see the SSRF section above).
+Both are the same failure: a control believed rather than measured.
 
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 

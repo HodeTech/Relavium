@@ -62,6 +62,49 @@ export const ADMISSION_CEILINGS = {
   /** `node:started` events in one run — the runtime backstop for the multiplication the others permit. */
   nodeDispatchesPerRun: 500,
   /**
+   * Media parts in ONE node output that the engine will re-host (`CR-54`). Like
+   * {@link ADMISSION_CEILINGS.toolCallsPerResponse}, its subject is a RESPONSE rather than an authored
+   * file, so it cannot live at admission — a provider, an authored `transform`, or an MCP tool result
+   * chooses this width, not the author.
+   *
+   * It exists because the size bound cannot see it: `SIZE_BOUNDS.nodeOutputBytes` measures the POINTER, and
+   * a url media part serialises to well under a hundred bytes, so a legal node output can carry thousands
+   * of them — each becoming its own multi-megabyte download into the CAS that no admission reserved and no
+   * `cost:updated` reported. Refused before the first fetch, because a bound discovered as egress is not a
+   * bound.
+   *
+   * 32 is deliberately generous against real output (a generative node returns one part, a fan-in of media
+   * nodes a handful) and still cheap in the worst case.
+   */
+  mediaPartsPerNodeOutput: 32,
+  /**
+   * Media attachments ONE model response may cause to be delivered (`CR-50`) — the sum across every tool
+   * call in the response, not per call. Its subject is a response, like
+   * {@link ADMISSION_CEILINGS.toolCallsPerResponse}, so it cannot live at admission.
+   *
+   * Without it the only backstop was `MEDIA_MESSAGE_CAPS.maxPartsPerMessage`, enforced POST-resolution at
+   * the adapter — so a 17-attachment response was a `ZodError` that killed the turn after every tool had
+   * run, rather than a refusal the model could correct. And the bytes are re-resolved from the store on
+   * every attempt and every provider call of the turn, which is real spend the pre-egress governor cannot
+   * see (it receives only model/provider/maxTokens).
+   *
+   * Deliberately below `maxPartsPerMessage` (16) so the engine refuses before the seam does, and the error
+   * the model sees is ours.
+   */
+  mediaAttachmentsPerResponse: 12,
+  /**
+   * Media parts one RUN will re-host — the backstop for the multiplication
+   * {@link ADMISSION_CEILINGS.mediaPartsPerNodeOutput} permits, exactly as `nodeDispatchesPerRun` backstops
+   * retry × chain length (ADR-0086 §4).
+   *
+   * The per-node ceiling alone bounds nothing at the run scale: a `parallel_of` at the 50-wide `fanOut`
+   * ceiling, each branch producing 32 parts, admits ~1,600 re-host fetches in ONE graph layer — the shape
+   * ADR-0086 names as its whole reason for existing, applied to a ceiling that did not yet apply it to
+   * itself. Generous against real work (a run producing a few dozen media outputs is already unusual) and
+   * decisive against the multiplication.
+   */
+  mediaPartsPerRun: 256,
+  /**
    * Settled runs a `WorkflowEngine` keeps addressable in memory (`CR-33`). Not an admission ceiling like
    * its siblings — nothing is rejected — but it lives here because it is the same kind of promise: a number
    * a host can read rather than a growth nobody bounded.

@@ -42,7 +42,8 @@ export interface ModelCatalogRecord {
   /** The parsed `capabilities` JSON object (validated to be a JSON object here; the host validates it against
    *  the `@relavium/llm` `CapabilityFlagsSchema`). */
   readonly capabilities: Record<string, unknown>;
-  /** Per-modality media-output rates in integer µ¢; `null` ⇒ no metered rate → cost degrades to 0 (ADR-0044 §3 H4). */
+  /** Per-modality media-output rates in integer µ¢; `null` ⇒ no metered rate ⇒ the modality is UNPRICED —
+   *  counted, and refused under a strict cap (ADR-0089 §4). Not a price of zero; a stated `0` is that. */
   readonly mediaImageCostMicrocents: number | null;
   readonly mediaAudioCostMicrocents: number | null;
   readonly mediaVideoCostMicrocents: number | null;
@@ -105,6 +106,31 @@ export interface ModelCatalogListing {
   readonly cachedInputCostPerMtokMicrocents: number;
   /** `true` ⇒ the number above is the user's own; `false` ⇒ they never said, so a reader derives it (ADR-0071 §10). */
   readonly cachedInputStated: boolean;
+  /**
+   * `true` ⇒ the INPUT/OUTPUT rates above are the user's own, zero included; `false` ⇒ they never stated them,
+   * so a reader must inherit the catalog's rather than read the `NOT NULL DEFAULT 0` columns as values
+   * (migration 0016, [ADR-0089](../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4).
+   *
+   * The sibling of {@link cachedInputStated}, and it exists for the same reason that one does. It became
+   * load-bearing when a MEDIA-ONLY `models pricing` invocation became legal: without it, pricing an image rate
+   * on a model the catalog prices for tokens writes `0`/`0`, the user row outranks the catalog, and every token
+   * on that model bills at nothing — `CR-55`'s own defect, reintroduced by its remedy, on the bigger cost axis.
+   */
+  readonly tokenRatesStated: boolean;
+  /**
+   * Per-modality media-OUTPUT rates in integer µ¢ per billed unit — per image, per audio-second, per
+   * video-second ([ADR-0089](../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4).
+   *
+   * **`null` and `0` are different answers, and no `…Stated` flag is needed to tell them apart.** Unlike the
+   * token columns (`NOT NULL DEFAULT 0`, which is why `cachedInputStated` exists), these are NULLABLE: `null`
+   * is "nobody has priced this modality" and `0` is "it is free, and someone said so". A reader that collapses
+   * them re-creates `CR-55` one layer down — a cap that cannot be enforced would look like a call that costs
+   * nothing. They were on the ROW since 1.AF and never on this projection, which is why the cost path could
+   * not see a rate even once one existed.
+   */
+  readonly mediaImageCostMicrocents: number | null;
+  readonly mediaAudioCostMicrocents: number | null;
+  readonly mediaVideoCostMicrocents: number | null;
   /** Live-discovered deprecation epoch-ms (ADR-0064 §7); `undefined` when none. */
   readonly deprecationDate?: number;
   /** Provenance, validated at the read boundary (a foreign value degrades to `'static'`). */
@@ -191,7 +217,7 @@ export interface ModelCatalogStore {
    * `source='live'` row of THIS provider whose model id is ABSENT from `rows` is SOFT-DEACTIVATED (`isActive=false`,
    * `deletedAt` untouched). `source='user'`/`source='static'` rows are NEVER touched (the ADR-0065 §1 "a refresh
    * never clobbers a user row" invariant + the media-routing seed's integrity), and nothing is ever hard-DELETED
-   * (`model_catalog.id` is an FK target from five tables).
+   * (`model_catalog.id` is an FK target from SIX tables — `session_costs` joined them at ADR-0070).
    *
    * Returns the {@link ReplaceProviderModelsResult} tallies (added/updated/deactivated), counted ATOMICALLY inside
    * the transaction — so a concurrent same-provider refresh can never miscount (an external before/after diff would
@@ -255,6 +281,11 @@ function toListing(row: ModelCatalogRow): ModelCatalogListing {
     outputCostPerMtokMicrocents: row.outputCostPerMtokMicrocents,
     cachedInputCostPerMtokMicrocents: row.cachedInputCostPerMtokMicrocents,
     cachedInputStated: row.cachedInputStated,
+    tokenRatesStated: row.tokenRatesStated,
+    // Carried verbatim, `null` included — the projection must not decide what a missing rate means (ADR-0089 §4).
+    mediaImageCostMicrocents: row.mediaImageCostMicrocents,
+    mediaAudioCostMicrocents: row.mediaAudioCostMicrocents,
+    mediaVideoCostMicrocents: row.mediaVideoCostMicrocents,
     ...(row.deprecationDate === null ? {} : { deprecationDate: row.deprecationDate }),
     source: coerceModelCatalogSource(row.source),
     ...(row.lastRefreshedAt === null ? {} : { lastRefreshedAt: row.lastRefreshedAt }),
@@ -314,6 +345,26 @@ function fromRow(row: ModelCatalogRow): ModelCatalogRecord {
     mediaAudioCostMicrocents: row.mediaAudioCostMicrocents,
     mediaVideoCostMicrocents: row.mediaVideoCostMicrocents,
   };
+}
+
+/**
+ * The `token_rates_stated` half of an upsert: supplying BOTH rates counts as stating them; otherwise the
+ * column is left alone (which is what lets a media-only re-price preserve rates stated earlier).
+ *
+ * **The store DERIVES it and a caller cannot override it** — the guarantee `database-schema.md` states as
+ * "the store derives it, no writer can forget". An `ModelCatalogUpsert.tokenRatesStated` field used to sit
+ * beside the rates and win over this derivation, which made the guarantee false in two directions: setting
+ * it true with no rates marked the DB's `0`/`0` as a deliberate free price, and setting it false with real
+ * rates stored numbers every reader then discarded. No caller ever wrote it, so removing the field costs
+ * nothing and makes the invariant structural rather than documented (ADR-0089 §4).
+ */
+function tokenRatesStatedPatch(input: ModelCatalogUpsert): { tokenRatesStated?: boolean } {
+  const bothRates =
+    input.inputCostPerMtokMicrocents !== undefined &&
+    input.outputCostPerMtokMicrocents !== undefined;
+  // Omitting both leaves the flag untouched, which is what makes a media-only re-price preserve token rates
+  // the user stated earlier.
+  return bothRates ? { tokenRatesStated: true } : {};
 }
 
 /** Wire a {@link ModelCatalogStore} over a `@relavium/db` connection. */
@@ -387,7 +438,14 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
           ),
         )
         .get();
-      if (existing !== undefined && existing.source !== 'live') {
+      // A RETIRED user override no longer protects anything, so a refresh may take the id back. Without
+      // this, `clearUserPricing` left the row `source='user'` + inactive, the refresh skipped it as
+      // non-live, and the model DISAPPEARED from every active-only reader permanently — a live model
+      // deleted from the catalog by the act of un-pricing it. Only an INACTIVE `user` row qualifies:
+      // `clearUserPricing` is the sole writer of that combination, and a `static` seed is never deactivated.
+      const retiredOverride =
+        existing !== undefined && existing.source === 'user' && !existing.isActive;
+      if (existing !== undefined && existing.source !== 'live' && !retiredOverride) {
         // A `source='user'` (user pricing, ADR-0065 §1) or `source='static'` (a media-routing seed —
         // media_surface/capabilities/rates) row already represents this model. A live refresh must NEVER clobber
         // it (that would drop user pricing or regress media routing), so it is left UNTOUCHED and, being non-`live`,
@@ -431,7 +489,7 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
     // Soft-deactivate the vanished live rows: every currently-active `source='live'` row of THIS provider whose
     // model id is absent from the new list. `isActive=false` with `deletedAt` untouched keeps the partial-unique
     // slot occupied so a reappearing model reuses the SAME row (reactivated above). NEVER a hard-DELETE (FK target
-    // from five tables); NEVER touches `source='user'`/`source='static'`.
+    // from SIX tables); NEVER touches `source='user'`/`source='static'` unless the override was retired.
     const incomingModelIds = rows.map((r) => r.modelId);
     const deactivateScope = and(
       eq(modelCatalog.providerId, providerId),
@@ -536,6 +594,13 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
               ...(input.cachedInputStated === undefined
                 ? {}
                 : { cachedInputStated: input.cachedInputStated }),
+              // The rates and the FACT of stating them ride together, or neither does — and the store DERIVES the
+              // fact rather than trusting a caller to remember it (ADR-0089 §4). Supplying both rates IS stating
+              // them, so a caller that writes them and forgets the flag would otherwise leave a row whose real
+              // numbers a reader discards in favour of the catalog's. An explicit value still wins, so a caller
+              // with a reason can say otherwise. Omitting both leaves the flag alone, which is what makes a
+              // media-only re-price preserve token rates the user stated earlier.
+              ...tokenRatesStatedPatch(input),
               cachedInputCostPerMtokMicrocents:
                 input.cachedInputCostPerMtokMicrocents ??
                 existing?.cachedInputCostPerMtokMicrocents ??
@@ -627,6 +692,18 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
             outputCostPerMtokMicrocents: 0,
             cachedInputCostPerMtokMicrocents: 0,
             cachedInputStated: false,
+            // Reset with its rates, for the reason the comment above gives: a reused row must start from a clean
+            // baseline, or a later media-only re-price would resurrect a cleared `0`/`0` AS IF the user had
+            // stated it — billing every token on that model at nothing (ADR-0089 §4).
+            tokenRatesStated: false,
+            // The media rates reset for exactly the same reason, and they were missed when `W5` added them.
+            // They are NULLABLE — null IS "unpriced" here, distinct from a stated `0` — so the clean baseline
+            // is null, not zero. Without this, a cleared row that is later re-priced for TOKENS only would
+            // resurrect the user's old image/audio/video rates as if they had just been stated, and bill
+            // generation at a price the user had explicitly retired.
+            mediaImageCostMicrocents: null,
+            mediaAudioCostMicrocents: null,
+            mediaVideoCostMicrocents: null,
             updatedAt: deps.now(),
           })
           .where(

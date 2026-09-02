@@ -35,6 +35,7 @@ import {
   RETRYABLE_ERROR_CODES,
   RunEventSchema,
   collectDurableMediaHandles,
+  countUnpinnedMedia,
   containsDurableUnsafeMedia,
   deInlineMedia,
   type DurableMediaMeta,
@@ -43,7 +44,7 @@ import {
   type LlmProviderId,
   type MaskedSecret,
   type MediaBilledModality,
-  type MediaUrlFetch,
+  type MediaEgressHooks,
   type NodeSkippedReason,
   RUN_LEASE_HEARTBEAT_MS,
   RUN_LEASE_TTL_MS,
@@ -108,6 +109,7 @@ import type {
   NodeOutcome,
   NodeStreamEvent,
 } from './node-executor.js';
+import { NodeMediaPinError } from './media-pin-error.js';
 import { codeForLlmError } from './agent-turn.js';
 import {
   DEFAULT_MEDIA_UNIT_ESTIMATE,
@@ -331,7 +333,12 @@ export interface WorkflowEngineDeps {
    * Called once per model when a turn runs UNPRICED, so the cost cap could not apply to it (ADR-0071 §K7). The
    * engine cannot print; the host routes it (`run` → stderr). Absent ⇒ silent (`strict_cost_cap` is the block).
    */
-  readonly onUnpriced?: (model: string, capMicrocents: number) => void;
+  readonly onUnpriced?: (
+    model: string,
+    capMicrocents: number,
+    /** Present ⇒ the MODEL is priced and only these billed modalities are not (ADR-0089 §4). */
+    modalities?: readonly MediaBilledModality[],
+  ) => void;
   /**
    * Called once when new egress is HELD because a resumed media job's cost basis is unknown — a row written
    * before ADR-0074 §3 froze it. §3 requires this fallback be observable; without it a `resume` looks like an
@@ -436,6 +443,9 @@ class RunExecution {
   #noNewDispatch = false;
   /** ADR-0085 §5's fence: the dispatch id currently authoritative for each vertex. */
   readonly #activeDispatchByVertex = new Map<string, number>();
+  /** Media parts this run has re-hosted — the run-scope half of `CR-54`'s ceiling (ADR-0086 §4). */
+  #pinnedMediaParts = 0;
+
   /** The dispatch id a vertex's in-flight work was started under — the value `#isLive` is checked against. */
   readonly #dispatchIdForVertex = new Map<string, number>();
   /**
@@ -572,7 +582,11 @@ class RunExecution {
      *  model is enforced by `budget`. Host-injected; the realized path rides the runner's own `resolvePrice`. */
     resolvePrice?: PricingOverlay;
     resolveEndpoint?: (provider: ProviderId) => EndpointKind;
-    onUnpriced?: (model: string, capMicrocents: number) => void;
+    onUnpriced?: (
+      model: string,
+      capMicrocents: number,
+      modalities?: readonly MediaBilledModality[],
+    ) => void;
     onLegacyMediaJobHold?: (nodeIds: readonly string[]) => void;
     /** When present, the run is REHYDRATED from this checkpoint (resume) rather than started fresh (1.R). */
     checkpoint?: CheckpointState;
@@ -719,6 +733,76 @@ class RunExecution {
         this.#closeStream = close;
       },
     );
+  }
+
+  /**
+   * Pin a node's produced media to content-addressed handles, so everything downstream holds bytes we own
+   * (`CR-54`). Named for the OUTPUT, not for urls: `deInlineMedia` rewrites **every** in-flight carrier, so
+   * a `base64` source becomes a handle here too. That is the wider (and correct) behaviour — the run scope
+   * ends up durable-safe rather than half-pinned — but it is wider than "a url", and an author reading
+   * `run.outputs.gen.image.source.data` sees a handle where inline bytes used to be.
+   *
+   * Bounded before it fetches. A node output can legally carry thousands of url parts inside
+   * `SIZE_BOUNDS.nodeOutputBytes` (a url part serialises to well under a hundred bytes, and the size check
+   * measures the POINTER), and each one would become its own multi-megabyte download that no admission
+   * reserved and no `cost:updated` reported. The producer need not even be a provider: an authored
+   * `transform` can fabricate a url media part, and so can an MCP tool result, which ADR-0088 treats as
+   * hostile outright. So the count is refused up front rather than discovered as egress.
+   *
+   * With no `MediaStore` the value is returned unchanged and the emit choke point makes the refusal one
+   * step later — duplicating that check here would only change WHICH error a media-bearing run without a
+   * store reports. **With a store wired this IS the I3 gate**, simply running earlier than it used to: the
+   * full `deInlineMedia` hard-fails on a raw buffer, a loose base64 source, an unknown source kind, an
+   * unknown mimeType, and a url with no streaming hook. An earlier draft of this comment called it "not a
+   * second I3 gate", which read as "this cannot fail" — and the ordering of its failure is exactly what
+   * had to be got right.
+   *
+   * The overwhelmingly common case is a text output, which pays `deInlineMedia`'s cheap scan and returns
+   * the same reference.
+   */
+  async #pinMediaOutput(outcome: NodeOutcome, nodeId: string): Promise<NodeOutcome> {
+    if (outcome.kind !== 'completed') {
+      return outcome;
+    }
+    return { ...outcome, output: await this.#pinMediaValue(outcome.output, nodeId) };
+  }
+
+  /**
+   * The pin itself, over any value. Shared by the node-output path and the human-gate resume payload —
+   * a gate payload is a first resolution too (a human uploads or a surface attaches media), and it takes
+   * the one route into `#states` that does not pass through `#settleCompleted`.
+   */
+  async #pinMediaValue(value: unknown, nodeId: string): Promise<unknown> {
+    const store = this.#host.mediaStore;
+    if (store === undefined) {
+      return value;
+    }
+    const unpinned = countUnpinnedMedia(value);
+    if (unpinned > ADMISSION_CEILINGS.mediaPartsPerNodeOutput) {
+      throw new NodeMediaPinError(
+        `node \`${nodeId}\` produced ${unpinned} media parts to re-host, over its limit of ${ADMISSION_CEILINGS.mediaPartsPerNodeOutput}`,
+        'validation',
+      );
+    }
+    // The RUN-level backstop. The per-node ceiling bounds one output; a 50-wide `fan_out` at 32 parts each
+    // is ~1,600 fetches in one graph layer, which is the multiplication ADR-0086 §4 exists to catch.
+    if (this.#pinnedMediaParts + unpinned > ADMISSION_CEILINGS.mediaPartsPerRun) {
+      throw new NodeMediaPinError(
+        `this run has re-hosted ${this.#pinnedMediaParts} media parts and node \`${nodeId}\` adds ${unpinned}, over the run limit of ${ADMISSION_CEILINGS.mediaPartsPerRun}`,
+        'validation',
+      );
+    }
+    this.#pinnedMediaParts += unpinned;
+    try {
+      return await deInlineMedia(value, store, this.#mediaEgress());
+    } catch (error) {
+      // Classified HERE, where the cause is still legible. Left to escape, it reached `#onOutcome`'s bare
+      // catch and became `the engine failed while settling a node` with NO `node:failed` at all — an
+      // ordinary provider-CDN hiccup reported as an engine defect, on what is now the happy path of every
+      // Gemini video generation. The three distinctions the user needs already exist one layer down; this
+      // keeps them, and keeps the url itself out of the message (I3).
+      throw NodeMediaPinError.from(error, nodeId, this.#abort.signal.aborted);
+    }
   }
 
   // --- lifecycle ------------------------------------------------------------------------------
@@ -1186,6 +1270,17 @@ class RunExecution {
       // hand a resumed run the whole 4 MiB again on top of what it just restored. It is the same defect
       // `nodeDispatches` has its own seed for, one bound over.
       this.#workflowStateBytes += measureNodeOutput(id, node.output).bytes;
+      // **`CR-54`'s re-host ceiling is seeded too, and for the identical reason.** Starting it at zero made
+      // the bound "per process instance" rather than per run: a run that pinned its full allowance, parked
+      // at a gate and resumed in another process was handed the whole allowance again, so the network / CAS
+      // / disk backstop it exists to be was defeated by any checkpoint. A restored output's media parts are
+      // durable handles — already re-hosted — so they are counted from the durable form.
+      //
+      // `collectDurableMediaHandles` dedupes by handle, so N nodes that produced the SAME bytes seed 1. That
+      // under-counts the historical fetches and over-counts nothing: the seed measures the distinct objects
+      // the run is holding, which is the resource the ceiling is protecting, and erring permissive here
+      // beats refusing a resumed run work it already paid for.
+      this.#pinnedMediaParts += collectDurableMediaHandles(node.output).length;
     }
     for (const gate of cp.pendingGates) {
       this.#pendingGates.set(gate.gateId, {
@@ -1493,8 +1588,29 @@ class RunExecution {
     // Mark the gate vertex completed SYNCHRONOUSLY before the await — mirroring #settleCompleted — so a
     // concurrent #step (e.g. a sibling gate's timeout firing during this persist) never sees this gate as
     // still `paused` while it is already out of #pendingGates, which would mis-read the run as stalled.
+    // PIN the payload's media before it enters the scope (`CR-54`). A gate payload is a first resolution
+    // like any node output — a human uploads a file, a surface attaches one — and it took the one route
+    // into `#states` that `#settleCompleted` does not cover, so without this the durable event said
+    // "handle" while the running run held a url, and the two could resolve to different bytes.
+    //
+    // Before the status write, because the pin awaits and that write must stay on one tick with the emit
+    // below. A throw here is fatal for the run but must still `#schedule()`: the gate is already out of
+    // `#pendingGates` and its timer disarmed, so returning early would strand the run with no terminal.
+    let gateOutput: unknown;
+    try {
+      gateOutput = await this.#pinMediaValue(
+        decision.payload ?? { decision: decision.decision },
+        gate.vertexId,
+      );
+    } catch (error) {
+      this.#failGateResume(
+        gate.vertexId,
+        NodeMediaPinError.from(error, gate.vertexId, false).failure,
+      );
+      this.#schedule();
+      return;
+    }
     const state = this.#states.get(gate.vertexId);
-    const gateOutput = decision.payload ?? { decision: decision.decision };
     if (state !== undefined) {
       state.status = 'completed';
       state.output = gateOutput;
@@ -1522,22 +1638,41 @@ class RunExecution {
         nodeId: gate.vertexId,
         decision: decision.decision,
         decidedBy: decision.decidedBy,
-        ...(decision.payload === undefined ? {} : { payload: decision.payload }),
+        // The PINNED payload — the same value the run scope now holds (`CR-54`). Emitting
+        // `decision.payload` raw made the choke point re-fetch what had just been pinned, so one url was
+        // fetched twice and the scope and the record could disagree about the bytes.
+        ...(decision.payload === undefined ? {} : { payload: gateOutput }),
       });
     } catch {
-      if (this.#failure === undefined && !this.#cancelling) {
-        this.#failure = {
-          nodeId: gate.vertexId,
-          error: {
-            code: 'internal',
-            message: 'the gate decision payload could not be made durable-safe',
-            retryable: false,
-          },
-        };
-        this.#abort.abort();
-      }
+      this.#failGateResume(gate.vertexId, {
+        code: 'internal',
+        message: 'the gate decision payload could not be made durable-safe',
+        retryable: false,
+      });
     }
     this.#schedule();
+  }
+
+  /**
+   * Record a fatal failure of the gate-resume path, once, without stomping a cancel or an earlier cause.
+   * Both of `resume()`'s failure arms — the media pin and the durable emit — go through here; each used to
+   * inline the same three lines, and the pin arm has to be the one that does NOT strand the run.
+   */
+  #failGateResume(nodeId: string, error: NodeFailure): void {
+    // Transition the vertex OUT of `paused` first, and unconditionally — the same move
+    // {@link #failNodeInternal} makes, for the same reason. By this point the gate is out of
+    // `#pendingGates` and its timer is disarmed, so a vertex left `paused` describes a wait that nothing is
+    // waiting on: the run reports its terminal while the in-memory state still says the node is parked at a
+    // gate. Unconditional because the correction is right even when an earlier cause already claimed
+    // `#failure` — the state should match the outcome either way.
+    const state = this.#states.get(nodeId);
+    if (state?.status === 'paused' || state?.status === 'running') {
+      state.status = 'failed';
+    }
+    if (this.#failure === undefined && !this.#cancelling) {
+      this.#failure = { nodeId, error };
+      this.#abort.abort();
+    }
   }
 
   /**
@@ -2182,9 +2317,27 @@ class RunExecution {
               ),
             }),
       };
+      // PIN the produced output ONCE, here, before anything reads it (`CR-54`,
+      // [ADR-0043](../../../../docs/decisions/0043-media-egress-failover-rematerialization-ssrf.md) §3).
+      //
+      // A url is not a value; it is a promise about a value the world is free to break — the same URL can
+      // return different bytes, a different redirect, or a different DNS answer on the next fetch. Gemini's
+      // video generation is the live producer: `pollMediaJob` returns `{ kind: 'url' }`.
+      //
+      // **The dispatch boundary is the only place one pin serves every reader.** Pinning inside the settle
+      // instead (the first version) left `save_to` to de-inline the RAW outcome on its own — so a drifting
+      // url was fetched twice, the file written to the user's disk came from fetch #1 and the handle in the
+      // durable record from fetch #2, and the run reported `run:completed` over two different objects. That
+      // is the very defect `CR-54` exists to close, landing on the one path with a user-visible deliverable.
+      // One pin here means `save_to`, the run scope, the durable event, every later reader and a resume all
+      // see one handle for one fetch.
+      //
+      // It is also the only place the pin can await safely: a throw is classified by this method's own
+      // catch, and the settle path stays synchronous from its size checks through its status write.
+      const produced = await this.#pinMediaOutput(await this.#executor.execute(ctx), vertex.id);
       // After the executor completes, an `output` node with `save_to` writes its produced media to the
       // host (1.AF/D16). A write failure FAILS the node (→ run:failed) — save_to is a real deliverable.
-      return await this.#applySaveTo(vertex, await this.#executor.execute(ctx), dispatchId);
+      return await this.#applySaveTo(vertex, produced, dispatchId);
     } catch (error) {
       // A money-durability failure is NOT an anonymous handler throw. Barriers B1 and B2 (ADR-0077) both sit
       // INSIDE the turn, and `throwMappedChainError` has two arms whose only job is to keep the class and its
@@ -2211,6 +2364,14 @@ class RunExecution {
             retryable: false,
           },
         };
+      }
+      // A media-pin failure carries its own classification and a message that names WHICH of the three
+      // things went wrong — a refused/oversized url, a transient network fault, or a cancel. Left to the
+      // catch-all below it became `internal` / "the node handler threw an unexpected error", which is the
+      // wrong shape twice over: a provider CDN hiccup is not an engine defect, and a transient failure
+      // reported as non-retryable never gets the retry it deserves.
+      if (error instanceof NodeMediaPinError) {
+        return { kind: 'failed', error: error.failure };
       }
       // The catch-all: any uncaught throw from a node handler maps to a single internal failure
       // (a tool handler classifies its own failures as tool_failed; a sandbox throw as sandbox_error).
@@ -2388,6 +2549,12 @@ class RunExecution {
     }
     this.#workflowStateBytes += measured.bytes;
 
+    // `outcome.output` arrives ALREADY PINNED — `#pinMediaOutput` ran at the dispatch boundary, before
+    // `save_to` and before this method (`CR-54`). Nothing here awaits, which is what keeps the status write
+    // below on the same tick as the checks above: an `await` between them left the vertex `running` for the
+    // length of a network fetch, and both the node-deadline guard and `#onOutcome`'s re-entrancy guard read
+    // that status — so a deadline firing mid-pin produced `node:failed` AND `node:completed` for one node,
+    // reopening exactly the window ADR-0085 §5 closed.
     const state = this.#states.get(vertex.id);
     if (state !== undefined) {
       state.status = 'completed';
@@ -2403,6 +2570,7 @@ class RunExecution {
       type: 'node:completed',
       runId: this.runId,
       nodeId: vertex.id,
+      // The same pinned value the run scope holds — see the note above.
       output: outcome.output,
       tokensUsed: tokens,
       durationMs: Math.max(0, this.#elapsedMs() - startedAtMs),
@@ -2625,16 +2793,11 @@ class RunExecution {
     // Mark before the first side effect. A terminal/error path may re-enter while a sink is unwinding; the provider
     // has only one submitted job, so the engine must never manufacture a second billed addend for it.
     job.costAccounted = true;
-    const costMicrocents = realizedMediaCost(
-      job.model,
-      job.modality,
-      job.units,
-      this.#resolvePrice,
-    );
+    const realized = realizedMediaCost(job.model, job.modality, job.units, this.#resolvePrice);
     // Reconcile the lease BEFORE publishing the engine cost event. If event delivery faults after a provider-paid
     // job, the reservation cannot be released as though the submission were free. Clear the process-local handle
     // after its idempotent settle so every terminal sweep remains exactly-once from the governor's perspective.
-    job.admission?.settle(costMicrocents);
+    job.admission?.settle(realized.costMicrocents);
     delete job.admission;
     this.#nodeEmit({
       type: 'cost:updated',
@@ -2642,8 +2805,13 @@ class RunExecution {
       model: job.model,
       inputTokens: 0,
       outputTokens: 0,
-      costMicrocents,
+      costMicrocents: realized.costMicrocents,
       cumulativeCostMicrocents: 0, // #nodeEmit overwrites with the authoritative run-wide total
+      // The async-job half of ADR-0089 §4. A minute-scale video generation is the single most expensive thing
+      // this engine emits a cost for, so a `0` here that cannot be told from "free" is the worst version of
+      // `CR-55` — and this settle runs on EVERY terminal (success, fail, deadline, cancel), because the
+      // provider bills regardless. `false` only; absence is the ordinary, fully-priced case.
+      ...(realized.priced ? {} : { priced: false }),
     });
   }
 
@@ -2867,14 +3035,37 @@ class RunExecution {
   ): Promise<void> {
     this.#clearMediaJob(vertex.id);
     this.#emitMediaJobCost(vertex.id, job); // the lone realized cost:updated (ADR-0045 §5)
-    // The pure-media node output ({ text:'', media }) matches the SYNC generative shape exactly (so a downstream
-    // {{ outputs.x.text }} resolves to '' regardless of sync-vs-LRO) and de-inlines to a media:// handle at
-    // #emitDurable (the I3 boundary); `media` is the seam MediaPart (base64 or a re-hostable url).
+    // The pure-media node output ({ text:'', media }) matches the SYNC generative shape exactly, so a
+    // downstream {{ outputs.x.text }} resolves to '' regardless of sync-vs-LRO.
+    //
+    // **PINNED HERE, because this path does not pass through `#dispatch`** (`CR-54`). The synchronous route
+    // pins at the dispatch boundary and `#settleCompleted` relies on that — it writes `outcome.output`
+    // into the live scope verbatim. An async job re-enters at `#onOutcome` from the poll loop, so without
+    // this the raw `{ kind: 'url' }` Veo returns went into the run scope while only the durable event copy
+    // became a handle: the url was fetched twice, a downstream node read the pointer, and the node and
+    // output events carried different content addresses — under a `run:completed`. That is `CR-54`'s exact
+    // defect on the one path its own comments call the live producer.
+    let pinned: unknown;
+    try {
+      pinned = await this.#pinMediaValue({ text: '', media: [media] }, vertex.id);
+    } catch (error) {
+      // The provider already billed (the cost went out above), so the node fails rather than the run
+      // silently keeping an unpinned handle. Classified like any other pin failure.
+      await this.#onOutcome(
+        vertex,
+        {
+          kind: 'failed',
+          error: NodeMediaPinError.from(error, vertex.id, this.#abort.signal.aborted).failure,
+        },
+        job.submittedAtMs,
+      );
+      return;
+    }
     await this.#onOutcome(
       vertex,
       {
         kind: 'completed',
-        output: { text: '', media: [media] },
+        output: pinned,
         tokensUsed: { input: 0, output: 0, model: job.model },
       },
       // The job's submit time (not `now`) — so `node:completed.durationMs` is the full async wall-clock
@@ -3807,7 +3998,7 @@ class RunExecution {
     if (store !== undefined) {
       // Pass the host media-egress hook (D9) so a `url` media source is re-hosted to a handle; undefined
       // when the host has no egress mechanism, in which case a `url` hard-fails inside deInlineMedia (I3).
-      return (await deInlineMedia(draft, store, this.#mediaUrlFetch())) as RunEventDraft;
+      return (await deInlineMedia(draft, store, this.#mediaEgress())) as RunEventDraft;
     }
     // No store: a draft carrying inline bytes OR an un-re-hosted url media part cannot be made
     // durable-safe — throw (the broadened #emitDurable catch + the #onOutcome/#begin backstops map it to
@@ -3823,18 +4014,31 @@ class RunExecution {
   }
 
   /**
-   * Build the `deInlineMedia` url-rehost hook (1.AF/D9) from the host media-egress port, bound to this
-   * run's size-bound **policy** ({@link DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES}) and abort signal — so the host
-   * mechanism receives the engine-supplied bound. `undefined` when the host has no egress mechanism, in
-   * which case a `url` media source hard-fails inside `deInlineMedia` (an un-re-hosted url may never
-   * persist, I3).
+   * Build the `deInlineMedia` url-rehost hooks (1.AF/D9, ADR-0089 §2) from the host media-egress ports,
+   * bound to this run's size-bound **policy** ({@link DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES}) and abort signal —
+   * so the host mechanism receives the engine-supplied bound. Either hook may be absent; with no STREAMING
+   * one a `url` media source hard-fails inside `deInlineMedia` (an un-re-hosted url may never persist, I3,
+   * and the url path must never be whole-buffered).
    */
-  #mediaUrlFetch(): MediaUrlFetch | undefined {
+  #mediaEgress(): MediaEgressHooks {
     const fetchMedia = this.#host.fetchMedia;
-    if (fetchMedia === undefined) {
-      return undefined;
-    }
-    return (url) => fetchMedia(url, DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES, this.#abort.signal);
+    const streamMedia = this.#host.streamMedia;
+    return {
+      // The url path takes the STREAMING hook (ADR-0089 §2); the whole-buffer one is carried for a
+      // sub-ceiling caller and is deliberately NOT a fallback for it.
+      ...(streamMedia === undefined
+        ? {}
+        : {
+            streamUrl: (url: string) =>
+              streamMedia(url, DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES, this.#abort.signal),
+          }),
+      ...(fetchMedia === undefined
+        ? {}
+        : {
+            fetchUrl: (url: string) =>
+              fetchMedia(url, DEFAULT_MAX_MEDIA_DOWNLOAD_BYTES, this.#abort.signal),
+          }),
+    };
   }
 
   /**
@@ -3926,15 +4130,16 @@ class RunExecution {
       // the binding control; this narrows the surface (defense-in-depth).
       const scope: RunScope = { inputs: {}, ctx: {}, outputs: {}, runId: this.runId };
       const relativePath = await resolveTemplate(saveTo, scope, {}, this.#abort.signal);
-      // `state.output` retains the RAW in-flight form (deInlineMedia is non-mutating), so de-inline a copy
-      // to obtain the durable handle. The content-addressed `put` is idempotent — these are the same bytes
-      // the node:completed emit stores, so the double de-inline produces the same handle, not a second
-      // distinct write. (Tradeoff: a `url`-sourced media part in a save_to output is FETCHED twice — once
-      // here, once at the node:completed emit — since the host fetch is not memoized across the two
-      // de-inline passes; the put still dedupes the bytes. A url media part on an output node is rare; the
-      // alternative — threading one de-inlined result into both paths — is deferred (deferred-tasks.md).)
-      const durable = await deInlineMedia(output, store, this.#mediaUrlFetch());
-      const handles = collectDurableMediaHandles(durable);
+      // `output` arrives ALREADY PINNED from `#pinMediaOutput` at the dispatch boundary, so the handles are
+      // simply read off it — no second de-inline, and no second fetch.
+      //
+      // **That double fetch was a real defect, not a tradeoff, once `CR-54` landed.** The note here used to
+      // say a `url` part is fetched twice and shrug, on the grounds that a content-addressed `put` dedupes
+      // the bytes. It does — for bytes that do not change. A drifting url returns different bytes on the
+      // second fetch, and `CR-54` made the SECOND fetch's handle the one the durable record carries: so the
+      // file written to the user's disk and the handle in the run history were different objects, and the
+      // run reported `run:completed` over both. One pin upstream removes the second fetch entirely.
+      const handles = collectDurableMediaHandles(output);
       if (handles.length !== 1) {
         return {
           code: 'validation',
@@ -4098,7 +4303,9 @@ export class WorkflowEngine {
   // built a governor without an endpoint resolver (ADR-0071 §7 — the estimate assumed `official` and under-
   // authorized a custom-base_url turn) and without an unpriced sink (§K7 — the notice was dead on `run`/`gate`).
   readonly #resolveEndpoint: ((provider: ProviderId) => EndpointKind) | undefined;
-  readonly #onUnpriced: ((model: string, capMicrocents: number) => void) | undefined;
+  readonly #onUnpriced:
+    | ((model: string, capMicrocents: number, modalities?: readonly MediaBilledModality[]) => void)
+    | undefined;
   /**
    * The THIRD occurrence of the same bug the comment above records, found by the #W15-16 review: declared on
    * `WorkflowEngineDeps`, forwarded by `build-engine.ts` from a real `gate.ts` sentence, and never read here —

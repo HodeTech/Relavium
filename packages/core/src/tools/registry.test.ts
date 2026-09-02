@@ -1,4 +1,4 @@
-import type { AbortSignalLike, ToolPolicy } from '@relavium/shared';
+import type { AbortSignalLike, Scope, ToolPolicy } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import { BUILTIN_TOOLS, BUILTIN_TOOL_IDS } from './builtins.js';
@@ -17,6 +17,7 @@ import type {
   EgressRequest,
   EgressResponse,
   FsCapability,
+  MediaReadAccess,
   ToolApprovalDecision,
   ToolApprovalRequest,
   ToolCallPart,
@@ -114,6 +115,51 @@ async function rejectsWith<E>(promise: Promise<unknown>): Promise<E> {
 function registry(host: ToolHost = stubHost()): ReturnType<typeof createToolRegistry> {
   return createToolRegistry({ tools: BUILTIN_TOOLS, host });
 }
+
+/* --- the media-attachment split (`CR-50`, ADR-0089 §1) --- */
+
+describe('ToolRegistry — a media-answering tool splits its attachment from its result', () => {
+  const HANDLE = `media://sha256-${'a'.repeat(64)}`;
+  const SESSION: Scope = { kind: 'session', id: 's1' };
+  const mediaRead: MediaReadAccess = {
+    describe: () =>
+      Promise.resolve({ mimeType: 'image/png', byteLength: 5, allowedScopes: [SESSION] }),
+    readRange: () => Promise.reject(new Error('read_media must not deliver bytes itself')),
+  };
+
+  /**
+   * The segment the other three test files leave uncovered. `builtins.test.ts` calls `dispatch` directly,
+   * `agent-turn.test.ts` uses a stub registry with a hand-written outcome, and the llm proof starts from a
+   * hand-written message — so a review found that deleting `mediaAttachments` from the registry's returned
+   * outcome, or removing the `takeMediaAttachment` call entirely, left the whole suite green. This is the
+   * join: the real builtin, through the real registry, out to the real outcome.
+   */
+  it('carries the handle on the OUTCOME and keeps the envelope out of every other field', async () => {
+    const out = await registry().dispatch(
+      call('read_media', { handle: HANDLE }),
+      ctx({ requestingScope: SESSION, mediaRead }),
+    );
+    expect(unwrapUntrusted(out.mediaAttachments)).toEqual([
+      { type: 'media', mimeType: 'image/png', source: { kind: 'handle', ref: HANDLE } },
+    ]);
+    // The envelope is split at the dispatch boundary, so `output_mapping` (→ workflow state), the
+    // model-facing result and the event summary all see the plain descriptor. If the split were removed
+    // these would carry `{ value, media }` — with the symbol dropped by `JSON.stringify`, i.e. a leak into
+    // the tool result plus a delivery of nothing.
+    const descriptor = `image/png, 5 bytes, ${HANDLE} — attached below.`;
+    expect(out.output).toBe(descriptor);
+    expect(unwrapUntrusted(out.toolResult).result).toBe(descriptor);
+    expect(out.events.result.outputSummary).toContain('image/png');
+    // A string, not an object. If the split were removed, `output` would be the envelope — the descriptor
+    // itself legitimately contains `media://`, so the type is the assertion that discriminates.
+    expect(typeof out.output).toBe('string');
+  });
+
+  it('leaves `mediaAttachments` empty for an ordinary tool', async () => {
+    const out = await registry().dispatch(call('read_file', { path: 'a.txt' }), ctx());
+    expect(unwrapUntrusted(out.mediaAttachments)).toEqual([]);
+  });
+});
 
 /* --- happy path + shape --- */
 

@@ -507,16 +507,19 @@ function registerModels(program: Command, ctx?: CommandContext): void {
     // `buildModelsPricingArgs`, which can express it; commander's required-flag check cannot.
     .option(
       '--input <usd-per-mtok>',
-      'input (prompt) price, USD per million tokens (required unless --clear)',
+      'input (prompt) price, USD per million tokens — required WITH --output when either is given; omit both to price only media',
     )
     .option(
       '--output <usd-per-mtok>',
-      'output (completion) price, USD per million tokens (required unless --clear)',
+      'output (completion) price, USD per million tokens — required WITH --input when either is given; omit both to price only media',
     )
     .option(
       '--cached <usd-per-mtok>',
       "cache-read price, USD per million tokens; omitted ⇒ the catalog's cache discount, applied to your input rate",
     )
+    .option('--image <usd-per-image>', 'image-output price, USD per image')
+    .option('--audio <usd-per-second>', 'audio-output price, USD per second')
+    .option('--video <usd-per-second>', 'video-output price, USD per second')
     .option('--clear', "remove your price for this model — it falls back to the catalog's");
 
   if (ctx === undefined) {
@@ -556,6 +559,13 @@ function registerModels(program: Command, ctx?: CommandContext): void {
         input?: string;
         output?: string;
         cached?: string;
+        // The media rates are DECLARED as options above and must be forwarded here. They were not, so
+        // `relavium models pricing <model> --provider p --image 0.04` reached the dispatch with no `image`
+        // and failed "missing required option --input" — the media-only invocation `CR-55` exists to make
+        // legal, and the exact command a `strict_cost_cap` refusal tells the user to run.
+        image?: string;
+        audio?: string;
+        video?: string;
         clear?: boolean;
       },
     ) => {
@@ -568,6 +578,9 @@ function registerModels(program: Command, ctx?: CommandContext): void {
             input: opts.input,
             output: opts.output,
             cached: opts.cached,
+            image: opts.image,
+            audio: opts.audio,
+            video: opts.video,
             clear: opts.clear,
           },
         },

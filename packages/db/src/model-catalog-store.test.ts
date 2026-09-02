@@ -44,6 +44,60 @@ describe('createModelCatalogStore (2.S — media routing + load-check reader)', 
     client.sqlite.close();
   });
 
+  it('derives tokenRatesStated from the presence of both rates, so no caller can forget it', () => {
+    // The rule lives in the store, not in `models pricing`, because that command was never the only writer —
+    // and a row whose real token rates a reader discards (because the flag was forgotten) is the same money
+    // defect as a row whose default `0` a reader believes.
+    store.upsert({
+      providerId,
+      modelId: 'stated-pair',
+      source: 'user',
+      inputCostPerMtokMicrocents: 300_000_000,
+      outputCostPerMtokMicrocents: 900_000_000,
+    });
+    expect(store.listAll().find((m) => m.modelId === 'stated-pair')?.tokenRatesStated).toBe(true);
+
+    // A MEDIA-ONLY write states nothing about tokens, so the flag stays down and a reader inherits the
+    // catalog's rates instead of reading the `NOT NULL DEFAULT 0` columns as a price.
+    store.upsert({
+      providerId,
+      modelId: 'media-only',
+      source: 'user',
+      mediaImageCostMicrocents: 4_000_000,
+    });
+    expect(store.listAll().find((m) => m.modelId === 'media-only')?.tokenRatesStated).toBe(false);
+
+    // …and a later media-only re-price does not demote a row that DID state them.
+    store.upsert({
+      providerId,
+      modelId: 'stated-pair',
+      source: 'user',
+      mediaAudioCostMicrocents: 7,
+    });
+    expect(store.listAll().find((m) => m.modelId === 'stated-pair')?.tokenRatesStated).toBe(true);
+  });
+
+  it('listAll carries the media rate columns verbatim, null included (ADR-0089 §4)', () => {
+    // `fromRow` (the narrow media/capability record) has carried these since 1.AF; `toListing` — the PRICING
+    // projection the cost overlay reads — did not, so a rate on the row could never reach `ModelPricing`. The
+    // existing media-column tests all read `getByModelId`, a different projection, so this package's own suite
+    // could not have noticed. `null` must survive as `null`: it is "nobody priced this", distinct from a
+    // stated `0`, and the whole strict-cap decision rests on telling those apart.
+    store.upsert({
+      providerId,
+      modelId: 'rate-carrier',
+      source: 'user',
+      inputCostPerMtokMicrocents: 1,
+      outputCostPerMtokMicrocents: 1,
+      mediaImageCostMicrocents: 4_000_000,
+      mediaAudioCostMicrocents: 0,
+    });
+    const listing = store.listAll().find((m) => m.modelId === 'rate-carrier');
+    expect(listing?.mediaImageCostMicrocents).toBe(4_000_000);
+    expect(listing?.mediaAudioCostMicrocents).toBe(0); // stated free — believed, not collapsed to null
+    expect(listing?.mediaVideoCostMicrocents).toBeNull(); // never stated
+  });
+
   it('replaceProviderModels opens an IMMEDIATE write transaction (2.5.I — the ADR-0064 §5 concurrent-refresh path)', () => {
     const txnSpy = vi.spyOn(client.db, 'transaction');
     store.replaceProviderModels(
@@ -915,6 +969,79 @@ describe('createModelCatalogStore (2.5.G / ADR-0064 — live-discovery cache)', 
     expect(listing?.inputCostPerMtokMicrocents).toBe(1234);
     expect(listing?.outputCostPerMtokMicrocents).toBe(5678);
     expect(listing?.cachedInputCostPerMtokMicrocents).toBe(42);
+  });
+
+  it('a refresh RECLAIMS a model whose user pricing was cleared — un-pricing must not delete it', () => {
+    // live → user pricing → clear → refresh left the row `source='user'` + inactive; the refresh skipped
+    // every non-live row, so the model vanished from every active-only reader FOREVER. Un-pricing a model
+    // deleted it from the catalog.
+    const read = (): ModelCatalogListing | undefined =>
+      store.listByProvider(providerId).find((m) => m.modelId === 'reclaim-me');
+    const live = [
+      {
+        modelId: 'reclaim-me',
+        displayName: 'Reclaim Me',
+        contextWindowTokens: 1000,
+        maxOutputTokens: 1000,
+      },
+    ];
+
+    store.replaceProviderModels(providerId, live, 1);
+    expect(read()).toBeDefined();
+
+    // The user prices it, then retires the price.
+    store.upsert({
+      providerId,
+      modelId: 'reclaim-me',
+      source: 'user',
+      inputCostPerMtokMicrocents: 1_000_000,
+      outputCostPerMtokMicrocents: 2_000_000,
+    });
+    expect(store.clearUserPricing('reclaim-me', providerId)).toBe(true);
+    expect(read()).toBeUndefined(); // deactivated, as `clear` intends
+
+    // The next refresh still lists it, so it must come BACK — the override is retired, not protecting.
+    const result = store.replaceProviderModels(providerId, live, 2);
+    expect(read()).toBeDefined();
+    expect(result.added + result.updated).toBeGreaterThan(0);
+  });
+
+  it('clearUserPricing resets the MEDIA rates too — a cleared image price does not resurrect', () => {
+    // The same defect the cache-rate test below covers, on the columns `W5` added and the reset missed.
+    // A user who retires an override and later re-prices only TOKENS must not find their old image rate
+    // billing generation again.
+    const read = (): ModelCatalogListing | undefined =>
+      store.listByProvider(providerId).find((m) => m.modelId === 'media-clear-model');
+
+    store.upsert({
+      providerId,
+      modelId: 'media-clear-model',
+      displayName: 'Media Clear',
+      source: 'user',
+      inputCostPerMtokMicrocents: 1_000_000,
+      outputCostPerMtokMicrocents: 2_000_000,
+      mediaImageCostMicrocents: 4000,
+      mediaAudioCostMicrocents: 200,
+      mediaVideoCostMicrocents: 50_000,
+    });
+    expect(read()).toMatchObject({ mediaImageCostMicrocents: 4000 });
+
+    expect(store.clearUserPricing('media-clear-model', providerId)).toBe(true);
+
+    store.upsert({
+      providerId,
+      modelId: 'media-clear-model',
+      source: 'user',
+      inputCostPerMtokMicrocents: 3_000_000,
+      outputCostPerMtokMicrocents: 4_000_000,
+    });
+
+    const repriced = read();
+    expect(repriced?.inputCostPerMtokMicrocents).toBe(3_000_000);
+    // NULL, not 0 — these columns are nullable and null IS "unpriced", distinct from a stated free rate.
+    expect(repriced?.mediaImageCostMicrocents ?? null).toBeNull();
+    expect(repriced?.mediaAudioCostMicrocents ?? null).toBeNull();
+    expect(repriced?.mediaVideoCostMicrocents ?? null).toBeNull();
   });
 
   it('clearUserPricing resets the pricing columns, so a later partial re-price does not resurrect the cleared cache rate (review M3)', () => {

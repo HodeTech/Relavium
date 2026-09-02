@@ -108,8 +108,14 @@ export interface CatalogModel {
  * here (not on the seam struct) exactly as `reasoning` does.
  *
  * A field is present ONLY when upstream says the model does NOT accept the parameter (`false`); **absent ⇒
- * accepted** — the safe default, so a model we have no data for is never denied a parameter it takes. The adapters
- * WITHHOLD the wire parameter when the flag is `false`, turning a provider 400 into a dropped-and-noted field.
+ * accepted** — the safe default, so a model we have no data for is never denied a parameter it takes.
+ *
+ * **Two fields are withheld, two GATE** (`CR-51`, resolving ADR-0071 §12's deferral). `temperature` and
+ * `structuredOutput` are knobs: the adapters WITHHOLD the wire parameter when the flag is `false`, turning a
+ * provider 400 into a dropped-and-noted field, and the turn still runs correctly. `toolCall` and `attachment`
+ * are not knobs — withholding tools from a turn that needs them, or dropping the image the question is about,
+ * would change the answer — so they are gated instead: refused at load time where an authored grant makes it
+ * visible, and pre-skipped by the `FallbackChain` at runtime.
  */
 export interface RequestCapabilities {
   /** `false` ⇒ the model rejects a `temperature` parameter (models.dev). Absent ⇒ accepted. */

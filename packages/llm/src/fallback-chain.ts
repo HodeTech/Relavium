@@ -11,6 +11,7 @@ import {
 } from './attempt-deadline.js';
 import { isRetryable, LlmProviderError, makeLlmError } from './llm-error.js';
 import { verifyStreamGrammar } from './stream-grammar.js';
+import { ProviderIdSchema } from './types.js';
 import type {
   LlmError,
   LlmMessage,
@@ -150,8 +151,12 @@ export interface FallbackChainOptions {
   /**
    * The per-node/session cost sink. `record(model, usage)` is called once per attempt that produced
    * usage, against **that attempt's** canonical model id, so cost stays accurate across a failover.
+   *
+   * Declared as the RECORD CONTRACT rather than the concrete `CostTracker` class, because that is all the
+   * chain consumes. A real tracker satisfies it unchanged; what it removes is the reason every test double
+   * needed an `as unknown as CostTracker` to stand in for a class it was never pretending to be.
    */
-  readonly costTracker?: CostTracker;
+  readonly costTracker?: Pick<CostTracker, 'record'>;
   /** Visibility hook fired once per attempt (succeeded / failed / skipped). */
   readonly onAttempt?: (record: AttemptRecord) => void;
   /**
@@ -232,6 +237,46 @@ type Verdict = 'fatal' | 'retryable' | 'auth-refreshed' | 'advance';
  * along with `text`/`redacted`; a message left with no content is dropped. Runs on a cross-provider
  * advance so a provider-signed reasoning block never crosses a provider boundary (ADR-0030).
  */
+/**
+ * Drop every `tool_call` continuation token from a request, keeping the calls themselves (ADR-0090).
+ *
+ * Separate from {@link stripReasoningParts} because the two answer different questions. A reasoning part is
+ * DROPPED WHOLE on a provider boundary — its text is the provider's, and the next one has no use for it. A
+ * `tool_call` must SURVIVE: the call and its result are the conversation the next model still needs, and
+ * only the opaque token is meaningless (or, on Gemini, rejected) to it. Non-mutating, like its sibling; a
+ * message never empties, so no adjacent-role merge is needed.
+ */
+export function stripToolCallSignatures(req: LlmRequest): LlmRequest {
+  return {
+    ...req,
+    messages: req.messages.map((message) => ({
+      ...message,
+      content: message.content.map((part) =>
+        part.type === 'tool_call' && part.signature !== undefined
+          ? stripToolCallSignature(part)
+          : part,
+      ),
+    })),
+  };
+}
+
+/**
+ * Drop a `tool_call`'s ephemeral continuation token, keeping every other field (ADR-0090).
+ *
+ * Rebuilt field-by-field rather than destructured-and-spread: with `exactOptionalPropertyTypes` an explicit
+ * `undefined` is not the same as an ABSENT key, and both the durable parse and the Gemini replay test for
+ * absence — so the token has to be genuinely gone, not merely undefined.
+ */
+function stripToolCallSignature(part: Extract<ContentPart, { type: 'tool_call' }>): ContentPart {
+  return {
+    type: 'tool_call',
+    id: part.id,
+    name: part.name,
+    args: part.args,
+    ...(part.providerExecuted === undefined ? {} : { providerExecuted: part.providerExecuted }),
+  };
+}
+
 export function stripReasoningParts(req: LlmRequest): LlmRequest {
   const kept = req.messages
     .map((message) => ({
@@ -384,7 +429,7 @@ export class FallbackChain {
   // instance is **single-flight by contract** — one node execution's *sequential* tool loop; concurrent
   // generate/stream on the same instance would race this latch, so concurrent agent vertices each get
   // their own chain (the AgentRunner builds one per node execution — ADR-0038).
-  #lastProviderAcrossCalls: ProviderId | undefined;
+  #lastProviderAcrossCalls: string | undefined;
   /** Providers whose one-shot auth refresh has already been spent on this instance. */
   readonly #authRefreshed = new Set<ProviderId>();
   /** A provider id to attribute an all-skipped synthetic error to (the last plan entry's). */
@@ -435,11 +480,15 @@ export class FallbackChain {
    */
   async generate(req: LlmRequest): Promise<LlmResult> {
     const run = new ChainRun(req, this.#lastProviderAcrossCalls);
+    // Why every skip's reason is kept: when the whole plan is skipped there is no provider error to report,
+    // and the synthesized one is the only thing the user sees (`CR-51` — see `#exhaustedError`).
+    const skipped: string[] = [];
     try {
       for (const entry of this.#plan) {
         this.#throwIfAborted(req, entry.provider.id);
         const skip = this.#skipReason(entry, run.previewRequest(entry));
         if (skip !== undefined) {
+          skipped.push(skip);
           this.#emit(run.next(entry, { outcome: 'skipped', skipReason: skip }));
           continue;
         }
@@ -453,9 +502,9 @@ export class FallbackChain {
           return result;
         }
       }
-      throw new LlmProviderError(run.lastError ?? this.#exhaustedError());
+      throw new LlmProviderError(run.lastError ?? this.#exhaustedError(skipped));
     } finally {
-      this.#lastProviderAcrossCalls = run.lastProvider; // fold the call's latch back for the next call
+      this.#lastProviderAcrossCalls = run.lastIssuer; // fold the call's latch back for the next call
     }
   }
 
@@ -505,6 +554,8 @@ export class FallbackChain {
    */
   async *stream(req: LlmRequest): AsyncIterable<StreamChunk> {
     const run = new ChainRun(req, this.#lastProviderAcrossCalls);
+    // See the `generate` twin: a wholly-skipped plan has no provider error, so the reasons ARE the report.
+    const skipped: string[] = [];
     try {
       for (const entry of this.#plan) {
         if (this.#aborted(req)) {
@@ -513,6 +564,7 @@ export class FallbackChain {
         }
         const skip = this.#skipReason(entry, run.previewRequest(entry), { streaming: true });
         if (skip !== undefined) {
+          skipped.push(skip);
           this.#emit(run.next(entry, { outcome: 'skipped', skipReason: skip }));
           continue;
         }
@@ -526,9 +578,9 @@ export class FallbackChain {
           return;
         }
       }
-      yield { type: 'error', error: run.lastError ?? this.#exhaustedError() };
+      yield { type: 'error', error: run.lastError ?? this.#exhaustedError(skipped) };
     } finally {
-      this.#lastProviderAcrossCalls = run.lastProvider; // fold the call's latch back for the next call
+      this.#lastProviderAcrossCalls = run.lastIssuer; // fold the call's latch back for the next call
     }
   }
 
@@ -957,12 +1009,16 @@ export class FallbackChain {
   ): string | undefined {
     const cooldownUntil = this.#cooldownUntil.get(entry.provider.id);
     if (cooldownUntil !== undefined && this.#now() < cooldownUntil) {
-      return 'provider in rate-limit cooldown';
+      return COOLDOWN_SKIP_REASON;
     }
     if (opts?.streaming === true && !entry.provider.supports.streaming) {
       return 'provider does not support streaming';
     }
-    const unsupported = requestSupportReason(entry.provider.supports, req);
+    // The catalog is authoritative only for the OFFICIAL endpoint: a custom `base_url` reusing a known
+    // model id must not inherit that id's verdicts (`LlmProvider.customEndpoint`).
+    const unsupported = requestSupportReason(entry.provider.supports, req, {
+      catalogAuthoritative: entry.provider.customEndpoint !== true,
+    });
     if (unsupported !== null) {
       // Per-modality (1.AF): an incapable provider is SKIPPED with the specific reason, never silently
       // flattened; the reason matches the adapter-entry `assertMediaCapabilities` throw (one predicate).
@@ -1047,12 +1103,41 @@ export class FallbackChain {
     return this.#aborted(req) ? this.#cancelledError(provider) : disown(error);
   }
 
-  #exhaustedError(): LlmError {
-    // No real provider error to surface (every entry was skipped): synthesize a fatal one.
+  /**
+   * The terminal error when every entry was SKIPPED — no provider error exists to surface, so one is
+   * synthesized from the skip reasons that were collected on the way past.
+   *
+   * **The reasons are carried, and the kind is `bad_request`, because this is the common case now** (`CR-51`).
+   * A node with no authored `fallback_chain` builds a ONE-entry plan, so a single capability mismatch — a tool
+   * grant on a model the catalog says rejects tools, an attached image on a model that rejects attachments —
+   * exhausts the chain immediately. Reporting that as `kind: 'unknown'` mapped it to the engine's `internal`
+   * code: the opaque-bug bucket, with the precise reason discarded and nothing for the user to act on. The
+   * skip is the right behaviour (it is free, where the old path bought a 400) but only if it can be explained,
+   * and the explanation was already computed one line away.
+   *
+   * Deduped, so a five-entry chain that fails the same way five times says it once.
+   *
+   * **`reasons` is non-empty by construction, so there is no opaque fallback branch.** Reaching here means
+   * `run.lastError` was never set, which means no entry was ATTEMPTED, which means every entry was skipped —
+   * and the constructor refuses an empty plan. A branch for the empty case would be unreachable code with an
+   * unwritable test, which is worse than the invariant stated here.
+   */
+  #exhaustedError(reasons: readonly string[]): LlmError {
+    // **A cooldown skip is TRANSIENT, and classifying it `bad_request` told the user a lie they could not
+    // act on.** `#skipReason` produces three kinds: a capability mismatch and a missing-streaming arm, both
+    // of which mean the request cannot be served AS WRITTEN — and a rate-limit cooldown, which means it
+    // cannot be served RIGHT NOW. Folding all three into `bad_request` mapped a chain that was merely
+    // resting into the engine's non-retryable `validation` code, reporting "no provider could serve the
+    // request" for a request that was fine and would have succeeded on the next attempt.
+    //
+    // ANY cooldown makes it retryable, not only an all-cooldown set: a mixed plan of [cooled-down, incapable]
+    // still has an entry that will come back, so a retry has a real chance. The reverse default would be the
+    // damaging one — a permanent failure for a temporary condition.
+    const cooledDown = reasons.includes(COOLDOWN_SKIP_REASON);
     return makeLlmError({
       provider: this.#exhaustedProvider,
-      kind: 'unknown',
-      message: 'fallback chain exhausted: no provider could serve the request',
+      kind: cooledDown ? 'rate_limit' : 'bad_request',
+      message: `fallback chain exhausted: no provider could serve the request (${[...new Set(reasons)].join('; ')})`,
     });
   }
 
@@ -1163,7 +1248,13 @@ export class FallbackChain {
       if (!(error_ instanceof UnknownModelError)) throw error_;
       return { unpriced: true };
     }
-    return { unpriced: false, ...(cost === undefined ? {} : { cost }) };
+    // TWO ways an egress fails to be priced, and they arrive by different routes (ADR-0089 §4). The throw above
+    // is an unpriced MODEL — nothing about the call could be priced. This is an unpriced MODALITY on a model
+    // that IS priced: the tokens were costed correctly and a produced image/audio/video was not, so
+    // `costMicrocents` is a floor. Both are `priced: false` to a reader, because the question that field answers
+    // — "is this figure the charge?" — has the same answer either way.
+    const unpriced = (cost?.unpricedModalities?.length ?? 0) > 0;
+    return { unpriced, ...(cost === undefined ? {} : { cost }) };
   }
 
   /** Emit the success record for an attempt whose usage has already been folded by {@link #foldUsage}. */
@@ -1196,25 +1287,46 @@ interface StreamAttemptState {
 }
 
 /**
+ * The one skip reason that is TRANSIENT rather than a statement about the request. Hoisted to a constant
+ * because `#exhaustedError` classifies on it: a string literal in two places is a latch waiting to drift,
+ * and the failure mode of drifting is a temporary condition reported as a permanent one.
+ */
+const COOLDOWN_SKIP_REASON = 'provider in rate-limit cooldown';
+
+/**
  * Per-call mutable state: the running (possibly reasoning-stripped) request, the per-provider strip
  * latch, the attempt counter, and the most recent failure for exhaustion surfacing.
  */
 class ChainRun {
   #req: LlmRequest;
   #lastProvider: ProviderId | undefined;
+  /** `provider\0model` of the last ATTEMPTED entry — the strip latch's real key (ADR-0090, `CR-52`). */
+  #lastIssuer: string | undefined;
   #attemptNumber = 0;
   lastError: LlmError | undefined;
 
   /**
-   * Seed `#lastProvider` from the chain instance's cross-call latch ([ADR-0039](../../../docs/decisions/0039-same-provider-reasoning-replay.md)):
+   * Seed the strip latch from the chain instance's cross-call one ([ADR-0039](../../../docs/decisions/0039-same-provider-reasoning-replay.md)):
    * a tool loop is a sequence of separate `generate`/`stream` calls, so the strip latch must survive
    * across them. With the seed, the first attempted entry strips this call's incoming reasoning when
    * the previous call settled on a *different* provider — closing the multi-turn cross-provider replay
    * hole a fresh-per-call latch left open.
    */
-  constructor(req: LlmRequest, seedLastProvider?: ProviderId) {
+  constructor(req: LlmRequest, seedLastIssuer?: string) {
     this.#req = req;
-    this.#lastProvider = seedLastProvider;
+    this.#lastIssuer = seedLastIssuer;
+    // Derived so `lastProvider` keeps its meaning for any consumer that only cares about the provider half.
+    // PARSED, not asserted: the seed is a string this class folded back from a previous call, and an `as
+    // ProviderId` would silently accept a malformed one — then compare unequal to every real id and strip
+    // reasoning on every first attempt forever. A failed parse leaves it `undefined`, which is the same
+    // no-seed behaviour a first call has (CLAUDE.md rule 1).
+    const seededProvider = ProviderIdSchema.safeParse(seedLastIssuer?.split('\u0000')[0]);
+    this.#lastProvider = seededProvider.success ? seededProvider.data : undefined;
+  }
+
+  /** The `provider\0model` of the last attempted entry — folded back as the next call's seed. */
+  get lastIssuer(): string | undefined {
+    return this.#lastIssuer;
   }
 
   /** The provider of the last attempted (non-skipped) entry — the chain folds it back as the next seed. */
@@ -1240,10 +1352,30 @@ class ChainRun {
    */
   beginEntry(entry: FallbackPlanEntry): LlmRequest {
     const providerId = entry.provider.id;
+    const issuer = `${providerId}\u0000${entry.model}`;
+    // TWO latches, at deliberately different granularities.
+    //
+    // REASONING strips on a PROVIDER boundary — ADR-0039's accepted rule, unchanged. Narrowing it to the
+    // model would be a real behaviour change to an Accepted decision and belongs in its own ADR, not here.
+    //
+    // A `tool_call` SIGNATURE strips on a (provider, MODEL) boundary (`CR-52`, ADR-0090). The stricter rule
+    // is warranted because the risk profile differs: a `reasoning` part is optional in a response, while a
+    // `tool_call` part is UNCONDITIONALLY replayed — it is the conversation — so a token issued by
+    // `gemini-3-pro` rides onto an authorable `gemini-2.5-flash` rescue attempt with no boundary to catch it.
+    // Gemini validates thought signatures, so that is a `400 INVALID_ARGUMENT`: the failover killing the turn
+    // it exists to save, which is the shape `withEntryModel` was written to prevent one field over.
+    //
+    // Conservative in the other direction too: returning to an entry after a foreign hop strips a token that
+    // entry itself issued, so a continuation is LOST rather than rejected. That is the pre-`CR-52` behaviour
+    // — never worse — and closing it needs per-part issuer provenance the seam does not carry. Recorded.
     if (this.#lastProvider !== undefined && this.#lastProvider !== providerId) {
       this.#req = stripReasoningParts(this.#req);
     }
+    if (this.#lastIssuer !== undefined && this.#lastIssuer !== issuer) {
+      this.#req = stripToolCallSignatures(this.#req);
+    }
     this.#lastProvider = providerId;
+    this.#lastIssuer = issuer;
     return withEntryModel(this.#req, entry.model);
   }
 

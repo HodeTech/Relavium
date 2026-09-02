@@ -111,6 +111,7 @@ const echoRegistry: ToolRegistry = {
     const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'TOOL-OK' };
     return Promise.resolve({
       output: 'TOOL-OK',
+      mediaAttachments: markUntrusted([]),
       toolResult: markUntrusted(result),
       truncated: false,
       events: {

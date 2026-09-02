@@ -9,6 +9,7 @@ import {
   WorkflowParseError,
 } from '@relavium/core';
 import { liveMcpChildPids } from '@relavium/mcp';
+import type { MediaBilledModality } from '@relavium/shared';
 import type { McpClient, McpServerConfig } from '@relavium/mcp';
 
 import { loadResolvedConfig } from '../config/load.js';
@@ -299,9 +300,13 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     );
     // ADR-0071 §K7: a turn ran on a model we could not price, so `budget.max_cost_microcents` did not apply. The
     // governor already dedups per model. STDERR, never stdout (`--json`). `budget.strict_cost_cap` blocks instead.
-    const onUnpriced = (model: string, capMicrocents: number): void =>
+    const onUnpriced = (
+      model: string,
+      capMicrocents: number,
+      modalities?: readonly MediaBilledModality[],
+    ): void =>
       deps.io.writeErr(
-        `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap')}\n`,
+        `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap', modalities)}\n`,
       );
     let engineOptions: BuildEngineOptions = {
       providers,

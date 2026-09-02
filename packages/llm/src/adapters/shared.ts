@@ -1,6 +1,6 @@
 import type { AbortSignalLike } from '@relavium/shared';
 
-import { mediaSupportReason } from '../capabilities.js';
+import { assertModelAcceptsAttachments, mediaSupportReason } from '../capabilities.js';
 import { UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError, makeLlmError, retryAfterMsFromHeaders } from '../llm-error.js';
 import { catalogModel } from '../catalog/lookup.js';
@@ -103,6 +103,12 @@ export function assertMediaCapabilities(
   for (const message of req.messages) {
     LlmMessageSchema.parse(message);
   }
+  // AFTER the parse, and that order is the whole reason this call is here rather than in `assertSupported`
+  // (`CR-51`): the per-MODEL attachment gate inspects message content, so running it earlier would reclassify
+  // an unknown MIME or an over-ceiling inline payload as a capability refusal instead of the `ZodError` this
+  // function's contract promises. It precedes the per-modality provider gate because "this model takes no
+  // attachments at all" is the more specific answer.
+  assertModelAcceptsAttachments(provider, req);
   const reason = mediaSupportReason(supports, req);
   if (reason !== null) {
     throw new UnsupportedCapabilityError(provider, 'media', reason);

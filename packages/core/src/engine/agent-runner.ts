@@ -52,6 +52,7 @@ import {
   type ProviderId,
   type ResponseFormat,
   type ToolDef as LlmToolDef,
+  UnknownModelError,
 } from '@relavium/llm';
 
 import { resolveTemplate } from '../interpolation/resolve.js';
@@ -798,18 +799,22 @@ function buildGenerativeOutcome(
   }
   // Exactly ONE realized cost:updated (ADR-0045 §5) — derived from the request volume × the per-model media
   // rate (best-effort: an unknown/unrated model degrades to 0, H4). The engine folds it into the run cumulative.
-  const costMicrocents = realizedMediaCost(primary.model, modality, units, resolvePrice);
+  const realized = realizedMediaCost(primary.model, modality, units, resolvePrice);
   // Settle before emitting to the engine: if a synchronous event sink faults after provider success, the admission
   // cannot be released as though the charged generation never happened.
-  onRealizedCost(costMicrocents);
+  onRealizedCost(realized.costMicrocents);
   ctx.emit({
     type: 'cost:updated',
     nodeId: node.id,
     model: primary.model,
     inputTokens: 0,
     outputTokens: 0,
-    costMicrocents,
+    costMicrocents: realized.costMicrocents,
     cumulativeCostMicrocents: 0, // placeholder — the engine overwrites with the authoritative run-wide total
+    // Only ever `false`, never `true` — mirroring the chain's `#emitFolded`, where the flag's absence is the
+    // ordinary case and its presence is the warning (ADR-0070 §6). A `0` here with real produced units and no
+    // flag would be indistinguishable from a genuinely free generation, which is the ambiguity `CR-55` names.
+    ...(realized.priced ? {} : { priced: false }),
   });
   // The pure-media node output ({ text:'', media:[part] }) de-inlines at #emitDurable exactly like the inline
   // path. `MediaGenResult.raw` is provider-internal and is never part of the media part (strip-on-sink, §7).
@@ -842,10 +847,9 @@ function singleBilledModality(
 
 /**
  * The authored generation volume for a modality: `count` (image) or `duration_seconds` (audio/video). For an
- * audio/video generator that takes BOTH (N clips of D seconds each), the volume is `count × duration_seconds`
- * (ADR-0045 §5 — "count × durationSeconds for a generator that takes both"); a `duration`-only node multiplies
- * by an implicit `count` of 1, so it is unchanged. Each missing field falls back to the conservative built-in
- * default ({@link DEFAULT_MEDIA_UNIT_ESTIMATE}).
+ * audio/video generator, the volume is the DURATION alone — see the comment in the body for why `count` is
+ * not multiplied in. Each missing field falls back to the conservative built-in default
+ * ({@link DEFAULT_MEDIA_UNIT_ESTIMATE}).
  *
  * NOTE: unlike the chat path's {@link buildMediaUnitsEstimate} (which reads `[defaults].media_cost_estimate`),
  * the generative path uses the AUTHOR-DECLARED volume (`count`/`duration_seconds`) directly — the realized fold
@@ -855,31 +859,52 @@ export function generativeUnits(modality: MediaBilledModality, node: AgentNode):
   if (modality === 'image') {
     return node.count ?? DEFAULT_MEDIA_UNIT_ESTIMATE.image;
   }
-  const duration = node.duration_seconds ?? DEFAULT_MEDIA_UNIT_ESTIMATE[modality];
-  return duration * (node.count ?? 1);
+  // **Duration ONLY — `count` is not multiplied in, because no adapter sends it for audio/video.** Gemini's
+  // Veo hard-codes `numberOfVideos: 1` and never reads `req.count`; the OpenAI TTS and Sora paths do not
+  // carry it either. So `count: 3, duration_seconds: 4` produced ONE four-second clip and billed twelve
+  // seconds — a 3× over-charge on a successful call, recorded as realized cost.
+  //
+  // ADR-0045 §5's "count × durationSeconds for a generator that takes both" is the right formula for a
+  // generator that takes both; none of ours does yet. When one does, the multiplication comes back HERE and
+  // in the adapter together — the two must move as a pair, which is exactly what they did not do before.
+  // That the author's `count` is silently ignored for audio/video is a separate, recorded gap.
+  return node.duration_seconds ?? DEFAULT_MEDIA_UNIT_ESTIMATE[modality];
 }
 
 /**
  * Best-effort realized media cost for a generative call (ADR-0045 §5): the request volume × the per-model
- * media rate, via the shared `cost()` fold (token counts are 0). An unknown/unrated model degrades to 0 (H4)
- * — never a hard fail on a missing rate, exactly as the chat path's best-effort cost does.
+ * media rate, via the shared `cost()` fold (token counts are 0).
+ *
+ * **It reports whether it could price the call, and that is the point**
+ * ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4). This path does NOT
+ * go through a `FallbackChain` attempt record, so the `priced: false` signal the chain emits for an unpriced
+ * model never reaches it — and a media generation is the call class most likely to be unpriced, which made
+ * the one path `CR-55` is about the one path unable to say so. It still degrades to 0 rather than failing (H4
+ * — a successful, already-paid generation must never become a failed node); what is new is that the caller is
+ * told the 0 is a gap, not a charge.
  */
 export function realizedMediaCost(
   model: string,
   modality: MediaBilledModality,
   units: number,
   resolvePrice?: PricingOverlay,
-): number {
+): { readonly costMicrocents: number; readonly priced: boolean } {
   const mediaUnits: MediaUnitsEntry[] = [
     { modality, direction: 'output', units, unit: modality === 'image' ? 'count' : 'second' },
   ];
   try {
-    return cost(model, { inputTokens: 0, outputTokens: 0, mediaUnits }, resolvePrice);
-  } catch {
-    // Best-effort (H4): an unknown/unrated model — OR any pricing-layer fault — must NEVER turn a successful,
-    // already-paid generation into a failed node. Degrade to 0, matching the chain's best-effort cost fold
-    // (FallbackChain #emitSuccess swallows a pricing throw the same way).
-    return 0;
+    const priced = cost(model, { inputTokens: 0, outputTokens: 0, mediaUnits }, resolvePrice);
+    return {
+      costMicrocents: priced.microcents,
+      priced: priced.unpricedModalities.length === 0,
+    };
+  } catch (err) {
+    // NARROW, not bare — matching the chain's `#foldUsage`, which was deliberately narrowed for #194 because a
+    // bare catch made a genuine money-path defect (a bad `Usage`, a broken overlay, a throwing tracker) look
+    // exactly like an unpriced model. An unknown model is a fact about the catalog and degrades to unpriced;
+    // anything else is a bug and must be loud. The asymmetry with the chain was undefended before this.
+    if (!(err instanceof UnknownModelError)) throw err;
+    return { costMicrocents: 0, priced: false };
   }
 }
 

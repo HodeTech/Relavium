@@ -12,6 +12,26 @@ import type { MediaUnitsEntry, Usage } from './types.js';
  */
 
 /**
+ * A priced amount, plus the billed modalities that amount does **not** contain
+ * ([ADR-0089](../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4).
+ *
+ * The second field exists because a bare number cannot tell the two apart, and the cost cap depends on the
+ * difference: a call that produced an image the model has no rate for costs `0` *for that image*, which the
+ * governor reads as "free" — so a strict cap admits paid generation and `cost:updated` reports `0`. That is
+ * `CR-55`. `unpricedModalities` is empty on the overwhelmingly common path (text, or media the model rates),
+ * so "could this be priced" is `length === 0` and never a guess about whether a zero is real.
+ */
+export interface MediaCost {
+  /** Integer micro-cents actually accounted for — the priced part, never a stand-in for the whole. */
+  readonly microcents: number;
+  /** Billed modalities with produced units and no usable rate. Empty ⇒ the amount above is the whole charge. */
+  readonly unpricedModalities: readonly MediaBilledModality[];
+}
+
+/** The shared empty result — no units, so nothing to charge AND no rate gap. */
+const NOTHING_TO_CHARGE: MediaCost = { microcents: 0, unpricedModalities: [] };
+
+/**
  * An optional **user-pricing overlay** (2.5.G S10, [ADR-0065](../../../docs/decisions/0065-provider-economics-and-extensibility.md) §2)
  * — canonical model id → {@link ModelPricing}, host-built from the `model_catalog` `source='user'` rows and
  * injected **exactly like `keyFor`** (a plain Relavium map; `@relavium/core`/`@relavium/llm` never import
@@ -161,7 +181,7 @@ function assertAccountableUsage(modelId: string, usage: Usage): void {
   }
 }
 
-export function cost(modelId: string, usage: Usage, overlay?: PricingOverlay): number {
+export function cost(modelId: string, usage: Usage, overlay?: PricingOverlay): MediaCost {
   const p = priceModel(modelId, overlay);
   const cacheReadTokens = usage.cacheReadTokens ?? 0;
   const cacheWriteTokens = usage.cacheWriteTokens ?? 0;
@@ -170,15 +190,18 @@ export function cost(modelId: string, usage: Usage, overlay?: PricingOverlay): n
   const rates = ratesFor(p, usage.inputTokens + cacheReadTokens + cacheWriteTokens);
   const perClass = (tokens: number, ratePerMtok: number): number =>
     Math.round((tokens * ratePerMtok) / TOKENS_PER_MTOK);
-  return (
-    perClass(usage.inputTokens, rates.input) +
-    perClass(usage.outputTokens, rates.output) +
-    perClass(cacheReadTokens, rates.cachedInput) +
-    perClass(cacheWriteTokens, p.cacheWritePerMtokMicrocents ?? 0) +
-    // Media is a DISJOINT addend (1.AF/D17, ADR-0044 §3) — priced per image / audio-second / video-second,
-    // never mixed into the token cost path, so the cumulative figure folds realized media spend.
-    mediaCost(p, usage.mediaUnits)
-  );
+  // Media is a DISJOINT addend (1.AF/D17, ADR-0044 §3) — priced per image / audio-second / video-second,
+  // never mixed into the token cost path, so the cumulative figure folds realized media spend.
+  const media = mediaCost(p, usage.mediaUnits);
+  return {
+    microcents:
+      perClass(usage.inputTokens, rates.input) +
+      perClass(usage.outputTokens, rates.output) +
+      perClass(cacheReadTokens, rates.cachedInput) +
+      perClass(cacheWriteTokens, p.cacheWritePerMtokMicrocents ?? 0) +
+      media.microcents,
+    unpricedModalities: media.unpricedModalities,
+  };
 }
 
 /** The canonical billed unit per modality: `image` is per-COUNT, `audio`/`video` per-SECOND. */
@@ -190,35 +213,57 @@ function unitMatchesBilledModality(
 }
 
 /**
- * The integer micro-cent cost of one usage record's media units (1.AF/D17, ADR-0044 §3) — a disjoint
- * addend, never mixed into the token path. Prices only **`output`-direction** entries (input media bills as
- * input tokens already, folded into `inputTokens` by the adapter), and only when the model declares a rate
- * for that modality AND the reported `unit` matches its canonical billed unit (image=count, audio/video=
- * second). A missing rate, or a token-`count` audio unit from a token-based provider with only a per-second
- * rate, contributes **0** (observability-only) — never a hard fail (H4). Exported for direct unit testing
- * against a constructed `ModelPricing`, since no 1.AF model carries a media rate.
+ * The media half of one usage record's cost (1.AF/D17, ADR-0044 §3) — a disjoint addend, never mixed into
+ * the token path. Prices only **`output`-direction** entries (input media bills as input tokens already,
+ * folded into `inputTokens` by the adapter), and only when the model declares a rate for that modality AND
+ * the reported `unit` matches its canonical billed unit (image=count, audio/video=second).
+ *
+ * **A gap is reported, not absorbed** ([ADR-0089](../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4).
+ * Where units were produced and no usable rate exists, the modality is named in `unpricedModalities` instead
+ * of silently contributing 0. It still never hard-fails (H4 holds — the non-strict path allows and says so);
+ * what changes is that the caller can now tell "we could not price this" from "this was free", which is what
+ * `strict_cost_cap` and `cost:updated.priced` both need in order to mean anything on the media path.
+ *
+ * Exported for direct unit testing against a constructed {@link ModelPricing}.
  */
 export function mediaCost(
   pricing: ModelPricing,
   mediaUnits: readonly MediaUnitsEntry[] | undefined,
-): number {
+): MediaCost {
   if (mediaUnits === undefined) {
-    return 0;
+    return NOTHING_TO_CHARGE;
   }
-  let total = 0;
+  let microcents = 0;
+  const unpriced = new Set<MediaBilledModality>();
   for (const entry of mediaUnits) {
     if (entry.direction !== 'output') {
       continue; // input media is billed as input tokens, never double-counted here
     }
+    if (entry.units === 0) {
+      continue; // nothing to charge, so nothing to price — an absent rate here is not a gap
+    }
     const rate = pricing.mediaOutputRates?.[entry.modality];
-    if (rate === undefined || !unitMatchesBilledModality(entry.modality, entry.unit)) {
-      continue; // unpriced modality, or a unit that does not match the model's billed unit → observability-only
+    // The rate is validated where it is READ (the host's catalog projection), but this is the seam every
+    // pricing source flows through — a custom overlay, a future provider sync — so the arithmetic guards
+    // itself too. A negative or non-finite rate is treated as MISSING, never as a discount: a negative
+    // addend would give a strict cap headroom it has not got, and the whole point of `CR-55` is that the
+    // governor can tell "not priced" from "priced at nothing".
+    const usable = rate !== undefined && Number.isFinite(rate) && rate >= 0;
+    if (!usable || !unitMatchesBilledModality(entry.modality, entry.unit)) {
+      // A missing rate, or a unit that does not match the model's billed one (a token-`count` audio figure
+      // against a per-second rate). BOTH are the same fact for the cap: real units were produced and this
+      // total does not contain their charge. Naming them is the whole of `CR-55` — the old `continue` here
+      // contributed 0, and a 0 is a PRICE, indistinguishable to the governor from "nothing to charge".
+      unpriced.add(entry.modality);
+      continue;
     }
     // Round once to an INTEGER micro-cent (a fractional `durationSeconds` × per-second rate would otherwise
     // produce a non-integer addend) — matching the token path's per-class rounding so every cost stays integer.
-    total += Math.round(entry.units * rate);
+    microcents += Math.round(entry.units * rate);
   }
-  return total;
+  return unpriced.size === 0
+    ? { microcents, unpricedModalities: [] }
+    : { microcents, unpricedModalities: [...unpriced] };
 }
 
 /** The cost figures for one `cost:updated` event (the engine adds `nodeId` / `model` / `attemptNumber`). */
@@ -227,6 +272,13 @@ export interface CostUpdate {
   readonly outputTokens: number;
   readonly costMicrocents: number;
   readonly cumulativeCostMicrocents: number;
+  /**
+   * Billed modalities this figure could not account for (ADR-0089 §4). **Absent on every fully-priced call**,
+   * which is why it is optional rather than an always-present empty array: the presence of the key is itself
+   * the signal, and the common path allocates nothing. A consumer that sees it must treat `costMicrocents` as
+   * a floor, not the charge — the `FallbackChain` turns it into the attempt record's `priced: false`.
+   */
+  readonly unpricedModalities?: readonly MediaBilledModality[];
 }
 
 /**
@@ -255,13 +307,19 @@ export class CostTracker {
    */
   record(modelId: string, usage: Usage): CostUpdate {
     assertAccountableUsage(modelId, usage);
-    const costMicrocents = cost(modelId, usage, this.#overlay);
-    this.#cumulativeMicrocents += costMicrocents;
+    const priced = cost(modelId, usage, this.#overlay);
+    // The PRICED part is what folds into the running total. An unpriced modality adds nothing here on purpose:
+    // fabricating a figure for it would put an invented number inside the cap, which is worse than a known gap.
+    // The gap rides out on `unpricedModalities` so the caller can mark the egress unpriced (ADR-0089 §4).
+    this.#cumulativeMicrocents += priced.microcents;
     return {
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
-      costMicrocents,
+      costMicrocents: priced.microcents,
       cumulativeCostMicrocents: this.#cumulativeMicrocents,
+      ...(priced.unpricedModalities.length === 0
+        ? {}
+        : { unpricedModalities: priced.unpricedModalities }),
     };
   }
 

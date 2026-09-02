@@ -228,6 +228,39 @@ function parseUsdPerMtok(raw: string, flag: string): number {
   return value;
 }
 
+/**
+ * `--clear` retires the WHOLE override row, so accepting a price alongside it would silently discard half
+ * the invocation. Every price flag is refused, media included — extracted from
+ * {@link buildModelsPricingArgs}, whose branch count is what Sonar flags.
+ */
+function assertClearTakesNoPrice(input: CommandInput): void {
+  for (const flag of ['input', 'output', 'cached', 'image', 'audio', 'video'] as const) {
+    if (optString(input.options[flag]) !== undefined) {
+      throw new CliError(
+        'invalid_invocation',
+        `--clear removes the price; it takes no --${flag}. Nothing written.`,
+      );
+    }
+  }
+}
+
+/** Parse one USD-per-billed-unit option string → a finite number ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md)
+ *  §4). Shape only, like its per-Mtok sibling; the command core owns the non-negative + ceiling rules. It is a
+ *  separate function purely so the error sentence names the right DENOMINATOR — a user told "USD per million
+ *  tokens" while pricing one image would reasonably enter a millionth of the number they meant. The arithmetic
+ *  is identical to `parseUsdPerMtok`'s; only the sentence differs. */
+function parseUsdPerUnit(raw: string, flag: string): number {
+  const trimmed = raw.trim();
+  const value = Number(trimmed);
+  if (trimmed === '' || !Number.isFinite(value)) {
+    throw new CliError(
+      'invalid_invocation',
+      `${flag} must be a finite number of USD per billed unit (per image, or per second).`,
+    );
+  }
+  return value;
+}
+
 export function buildModelsPricingArgs(input: CommandInput): ModelsPricingCommandArgs {
   const provider = optString(input.options['provider']);
   if (provider === undefined) {
@@ -238,33 +271,66 @@ export function buildModelsPricingArgs(input: CommandInput): ModelsPricingComman
   // by mistake was stuck with their own number for good. It takes no price flags, and rejects them rather than
   // quietly ignoring half an invocation.
   if (input.options['clear'] === true) {
-    for (const flag of ['input', 'output', 'cached'] as const) {
-      if (optString(input.options[flag]) !== undefined) {
-        throw new CliError(
-          'invalid_invocation',
-          `--clear removes the price; it takes no --${flag}. Nothing written.`,
-        );
-      }
-    }
+    assertClearTakesNoPrice(input);
     return { model: reqPositional(input, 0, 'model'), provider, clear: true };
   }
   const rawInput = optString(input.options['input']);
   const rawOutput = optString(input.options['output']);
-  if (rawInput === undefined) {
-    throw new CliError('invalid_invocation', 'missing required option --input <usd-per-mtok>.');
-  }
-  if (rawOutput === undefined) {
-    throw new CliError('invalid_invocation', 'missing required option --output <usd-per-mtok>.');
-  }
   const rawCached = optString(input.options['cached']);
+  const rawImage = optString(input.options['image']);
+  const rawAudio = optString(input.options['audio']);
+  const rawVideo = optString(input.options['video']);
+  // A MEDIA-ONLY invocation is legitimate, and making it legitimate is part of `CR-55`
+  // ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4(c)). A strict-cap
+  // refusal points the user here to add an image rate to a model the CATALOG already prices for tokens. If
+  // `--input`/`--output` stayed mandatory, satisfying that refusal would force them to restate token rates they
+  // may not know into a `source='user'` row that then OUTRANKS the catalog for tokens too — so the honest-looking
+  // `--input 0 --output 0` would bill every token on that model at nothing, permanently, and silently reopen the
+  // very cap they were trying to satisfy. The store's upsert-omission rule preserves an absent column, so
+  // omitting them here leaves the catalog's token pricing exactly where it was.
+  const hasMedia = rawImage !== undefined || rawAudio !== undefined || rawVideo !== undefined;
+  // `--cached` alone is a legitimate partial re-price, for exactly the reason media-only is: the store's
+  // upsert PRESERVES a column the caller omits, so setting a cache rate leaves the token rates where they
+  // were. It was rejected here while the command core and the docs both treated it as legal — a contract
+  // that disagreed with itself, and one more flag a user had to restate to change an unrelated number.
+  const hasNonTokenPrice = hasMedia || rawCached !== undefined;
+  if (rawInput === undefined && !hasNonTokenPrice) {
+    throw new CliError(
+      'invalid_invocation',
+      'missing required option --input USD_PER_MTOK (or price only --cached / --image / --audio / --video).',
+    );
+  }
+  if (rawOutput === undefined && !hasNonTokenPrice) {
+    throw new CliError(
+      'invalid_invocation',
+      'missing required option --output USD_PER_MTOK (or price only --cached / --image / --audio / --video).',
+    );
+  }
+  // Stating ONE token rate without the other is still an error: they are a pair, and a half-stated pair would
+  // write a `0` the reader cannot tell from an instruction.
+  if ((rawInput === undefined) !== (rawOutput === undefined)) {
+    throw new CliError(
+      'invalid_invocation',
+      '--input and --output must be given together (or omit both and price only media rates).',
+    );
+  }
   return {
     model: reqPositional(input, 0, 'model'),
     provider,
-    inputUsdPerMtok: parseUsdPerMtok(rawInput, '--input'),
-    outputUsdPerMtok: parseUsdPerMtok(rawOutput, '--output'),
+    // Per BILLED UNIT for the media three, per Mtok for the token pair — `parseUsdPerUnit` exists so the two
+    // denominators cannot be confused at the parse boundary either.
+    ...(rawInput === undefined || rawOutput === undefined
+      ? {}
+      : {
+          inputUsdPerMtok: parseUsdPerMtok(rawInput, '--input'),
+          outputUsdPerMtok: parseUsdPerMtok(rawOutput, '--output'),
+        }),
     ...(rawCached === undefined
       ? {}
       : { cachedInputUsdPerMtok: parseUsdPerMtok(rawCached, '--cached') }),
+    ...(rawImage === undefined ? {} : { imageUsdPerCount: parseUsdPerUnit(rawImage, '--image') }),
+    ...(rawAudio === undefined ? {} : { audioUsdPerSecond: parseUsdPerUnit(rawAudio, '--audio') }),
+    ...(rawVideo === undefined ? {} : { videoUsdPerSecond: parseUsdPerUnit(rawVideo, '--video') }),
   };
 }
 

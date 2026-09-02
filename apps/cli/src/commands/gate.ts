@@ -300,9 +300,9 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       onEffortWithheld: onceEffortNotice((note) => deps.io.writeErr(`warning: ${note}\n`)),
       // ADR-0071 §K7: a resumed agent node on an unpriced model degrades to `allow`, so `budget.max_cost_microcents`
       // did not apply to it — say so on stderr (never stdout, `--json`). `budget.strict_cost_cap` blocks instead.
-      onUnpriced: (model, capMicrocents) =>
+      onUnpriced: (model, capMicrocents, modalities) =>
         deps.io.writeErr(
-          `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap')}\n`,
+          `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap', modalities)}\n`,
         ),
       // ADR-0074 §3: new egress is HELD while a resumed media job submitted by an older Relavium settles — its
       // cost basis was not recorded, so the cap cannot be trusted until the job reports its real charge. Say so,

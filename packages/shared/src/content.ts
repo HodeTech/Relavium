@@ -557,6 +557,31 @@ const toolCallPartSchema = z.object({
   // engine's ToolDispatcher does NOT execute it and does not apply its allowlist to it — it only
   // records/forwards. Omitted (or false) means an engine-executed call. See ADR-0030 / ADR-0029.
   providerExecuted: z.boolean().optional(),
+  // An opaque provider CONTINUATION token for this call
+  // ([ADR-0090](../../../docs/decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md)) —
+  // Gemini's `thoughtSignature` on a `functionCall` part is the live case, and a thinking-plus-function
+  // continuation can 400 without it. EPHEMERAL, exactly like `reasoning.signature`: replayed only to the
+  // provider that issued it, stripped on a cross-provider failover, and structurally absent from
+  // {@link DurableContentPartSchema}'s tool_call arm — the persisted type has no field to put it in.
+  // The engine never interprets it.
+  signature: z.string().optional(),
+});
+
+/**
+ * The **durable** `tool_call` arm — identical but for the missing `signature`
+ * ([ADR-0090](../../../docs/decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md)).
+ *
+ * The same compiler-proof move as {@link durableReasoningPartSchema} one arm over, and for the same reason:
+ * a continuation token is a same-provider, same-turn value, so "it must never persist" should be a property
+ * the TYPE makes impossible rather than one a test defends. Parsing an in-flight part through the durable
+ * union drops the field; no durable position can express one.
+ */
+const durableToolCallPartSchema = z.object({
+  type: z.literal('tool_call'),
+  id: nonEmptyString,
+  name: nonEmptyString,
+  args: z.unknown(),
+  providerExecuted: z.boolean().optional(),
 });
 
 const toolResultPartSchema = z.object({
@@ -626,7 +651,7 @@ const durableReasoningPartSchema = z.object({
 export const DurableContentPartSchema = z
   .discriminatedUnion('type', [
     textPartSchema,
-    toolCallPartSchema,
+    durableToolCallPartSchema,
     toolResultPartSchema,
     durableReasoningPartSchema,
     durableMediaPartObjectSchema,
@@ -769,8 +794,31 @@ export function refineInFlightMediaPart(
  * deliberately NOT specified here (A3 — reserved, host-implementation-defined).
  */
 export interface MediaStore {
-  /** Content-address `bytes` and return the canonical `media://sha256-<64hex>` handle. */
+  /**
+   * Content-address `bytes` and return the canonical `media://sha256-<64hex>` handle.
+   *
+   * **For a body already known to be under {@link INLINE_MEDIA_CEILING}** — a base64 carrier, a small
+   * generated image ([ADR-0089](../../../docs/decisions/0089-media-correctness-four-boundaries.md) §2). It is
+   * NOT the general fallback for {@link putStream}: taking a whole `Uint8Array` is precisely the shape that
+   * makes "never fully buffered" impossible, so the large-media path must not reach it.
+   */
   put(bytes: Uint8Array, mimeType: string): Promise<string>;
+  /**
+   * Content-address a STREAMED body without ever holding it whole
+   * ([ADR-0089](../../../docs/decisions/0089-media-correctness-four-boundaries.md) §2, fulfilling
+   * [ADR-0043](../../../docs/decisions/0043-media-egress-failover-rematerialization-ssrf.md) §2's
+   * "never fully buffered in process").
+   *
+   * Optional and absent-tolerant, like the sibling ports on `ExecutionHost`: a host with no streaming write
+   * leaves it undefined. What that host may NOT do is silently fall back to {@link put} for a large body —
+   * an optional guarantee with a buffering fallback is not a guarantee. The engine refuses the large-media
+   * path loudly instead.
+   *
+   * The implementation writes as it consumes, cleans up a partial write on failure, and publishes the
+   * content-addressed handle only once the whole object is durable — so a failed stream leaves no
+   * half-object and no handle anyone could resolve.
+   */
+  putStream?(bytes: AsyncIterable<Uint8Array>, mimeType: string): Promise<string>;
   /** Resolve a handle back to its bytes (display, `save_to`, provider re-upload on failover). */
   get(handle: string): Promise<Uint8Array>;
   /**
@@ -917,7 +965,16 @@ export type MediaWritePort = (
 ) => Promise<MediaWriteResult>;
 
 /** Queue a walked node's children (array items / Map keys+values / Set values / record values) onto `stack`. */
-function pushMediaWalkChildren(node: object, stack: unknown[]): void {
+export function pushMediaWalkChildren(node: object, stack: unknown[]): void {
+  // A raw binary buffer has no children worth walking — it cannot contain a media part — and descending
+  // into one is actively harmful: `isRecord` is true for a `Uint8Array` (an object, not an Array) and
+  // `Object.values` on one yields ONE ENTRY PER BYTE, so a multi-megabyte buffer allocates an array as long
+  // as itself and pushes every byte onto the caller's stack. Guarded here rather than at each call site so
+  // every walk built on this gets it (`CR-54` found the same hazard in a sibling walk that had its own copy
+  // of this function; that copy is now gone).
+  if (isBinaryBuffer(node)) {
+    return;
+  }
   if (Array.isArray(node)) {
     for (const item of node) stack.push(item);
   } else if (node instanceof Map) {
@@ -997,9 +1054,9 @@ export interface DeInlineMedia {
   (
     parts: readonly ContentPart[],
     store: MediaStore,
-    fetchUrl?: MediaUrlFetch,
+    egress?: MediaEgressHooks,
   ): Promise<DurableContentPart[]>;
-  (value: unknown, store: MediaStore, fetchUrl?: MediaUrlFetch): Promise<unknown>;
+  (value: unknown, store: MediaStore, egress?: MediaEgressHooks): Promise<unknown>;
 }
 
 /**
@@ -1014,6 +1071,36 @@ export interface DeInlineMedia {
  * hook is wired, `deInlineMedia` hard-fails a `url` source (an un-re-hosted url may never persist, I3).
  */
 export type MediaUrlFetch = (url: string) => Promise<Uint8Array>;
+
+/**
+ * The STREAMING sibling of {@link MediaUrlFetch}
+ * ([ADR-0089](../../../docs/decisions/0089-media-correctness-four-boundaries.md) §2).
+ *
+ * The buffering this closes was never at the store — it was here. A `url → Promise<Uint8Array>` materializes
+ * the whole asset before `MediaStore.put` is ever called, so adding a streaming write alone would have left
+ * ADR-0043 §2's obligation exactly as unmet as it was. The host enforces the same SSRF-validated connect,
+ * per-hop redirect re-validation, size ceiling, timeout and `AbortSignal` as its whole-buffer twin — the
+ * difference is only that the bound is applied to the stream as it is consumed, so an over-size response is
+ * aborted mid-flight rather than completed and then rejected.
+ *
+ * The whole-buffer form is kept for sub-ceiling callers; it is not the media path.
+ */
+export type MediaUrlStream = (url: string) => AsyncIterable<Uint8Array>;
+
+/**
+ * The host media-egress hooks `deInlineMedia` may use to re-host a `url` media source.
+ *
+ * A bag rather than positional parameters because the two are not interchangeable: `streamUrl` is the one
+ * the url path REQUIRES (a url is the unbounded carrier), and `fetchUrl` remains for a caller that already
+ * knows its body is sub-ceiling. Absent hooks are not a silent degrade — a url source with no `streamUrl`
+ * is refused, per [ADR-0089](../../../docs/decisions/0089-media-correctness-four-boundaries.md) §2.
+ */
+export interface MediaEgressHooks {
+  /** Streamed, SSRF-validated, size-bounded — the media path. */
+  readonly streamUrl?: MediaUrlStream;
+  /** Whole-buffer form, kept for sub-ceiling callers; never used for a `url` media source. */
+  readonly fetchUrl?: MediaUrlFetch;
+}
 
 /* ------------------------------------------------------------------------------------------------
  * SSRF range-block — the one shared primitive (1.AE, security-review.md, ADR-0031 §Guardrails)

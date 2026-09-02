@@ -326,6 +326,7 @@ const echoRegistry: ToolRegistry = {
     const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'TOOL-OK' };
     return Promise.resolve({
       output: 'TOOL-OK',
+      mediaAttachments: markUntrusted([]),
       toolResult: markUntrusted(result),
       truncated: false,
       events: {
@@ -1176,7 +1177,14 @@ workflow:
     expect(JSON.stringify(events)).not.toContain('aGVsbG8='); // I3 — the in-flight bytes never go durable
     expect(job.generateCalls()).toBe(1); // submitted once
     expect(job.pollCalls()).toBeGreaterThanOrEqual(2); // pending then done
-    expect(costsOf(events).filter((c) => c.nodeId === 'work')).toHaveLength(1); // the lone realized addend (§5)
+    const realized = costsOf(events).filter((c) => c.nodeId === 'work');
+    expect(realized).toHaveLength(1); // the lone realized addend (§5)
+    // …and it says it could not be priced ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4).
+    // This engine runs with no pricing overlay and no shipped row carries a media rate, so the addend is 0 — and
+    // a 0 a reader cannot tell from "free" is `CR-55` on the single most expensive event this engine emits
+    // (a minute-scale LRO video). `priced` is `.optional()` on the schema, so `assertCanonicalSchema` below
+    // cannot catch a dropped flag; only this can.
+    expect(realized[0]?.priced).toBe(false);
     assertGapFreeSeq(events);
     assertCanonicalSchema(events);
   });

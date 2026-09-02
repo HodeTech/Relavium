@@ -8,6 +8,7 @@
  */
 
 import {
+  type DurableMediaPart,
   type EffectPrepareVerdict,
   type EffectTier,
   extractHttpsHost,
@@ -33,6 +34,7 @@ import {
   ToolPolicyError,
   UnknownToolError,
 } from './errors.js';
+import { takeMediaAttachment } from './media-attachment.js';
 import { markUntrusted } from './untrusted.js';
 import {
   DEFAULT_TOOL_RESULT_LIMITS,
@@ -454,6 +456,9 @@ async function dispatch(
   // (cancel-wins-all, ADR-0036) and the denial becomes `ToolCancelledError`.
   let outputMapped: unknown;
   let bounded: Awaited<ReturnType<typeof boundForModel>>;
+  // Handle-only media the dispatch asks the turn loop to deliver on a synthesized `user` message
+  // (`CR-50` / ADR-0089 §1). Declared at the outcome's scope, split off at the dispatch boundary below.
+  let mediaAttachments: readonly DurableMediaPart[] = [];
   try {
     throwIfAborted(ctx, def.id);
     // 4b. Per-tool approval (ADR-0057 EA3): under the interactive-approval regime (chat), a governed-class
@@ -483,8 +488,33 @@ async function dispatch(
       }
     }
     let output: unknown;
+    // Split the attachment off HERE, immediately at the dispatch boundary, so everything downstream —
+    // `output_mapping`, bounding, the tool result, the spill — sees the ordinary descriptor value and never
+    // the envelope. Only `read_media` produces one, and it declares no effect tier, so a replayed value can
+    // never carry an attachment (the journal round-trips JSON, which has no symbol to round-trip).
     try {
-      output = replayed === NOT_REPLAYED ? await def.dispatch(args, host, ctx) : replayed.value;
+      if (replayed === NOT_REPLAYED) {
+        const dispatched = takeMediaAttachment(await def.dispatch(args, host, ctx));
+        // **A journaled effect and a media attachment have no correct resume semantics, so the combination
+        // is refused rather than commented against.** The journal round-trips JSON, which cannot carry the
+        // envelope's symbol, so a replayed dispatch would restore the descriptor and deliver NO media — the
+        // model reading "attached below" for something it never received, silently, with no error and no
+        // event. `read_media` declares no tier today, but every discovered MCP tool is unconditionally tier
+        // 3, so the next tool that answers with media is one `effect:` away from this. Loud here beats
+        // silent on a resume nobody is watching.
+        if (tier !== undefined && dispatched.media.length > 0) {
+          throw new ToolExecutionError(
+            def.id,
+            `tool \`${def.id}\` returned a media attachment on a journaled dispatch — a replay cannot re-deliver it`,
+            undefined,
+            { recoverable: false, retryable: false },
+          );
+        }
+        output = dispatched.value;
+        mediaAttachments = dispatched.media;
+      } else {
+        output = replayed.value;
+      }
     } catch (cause) {
       await journalDispatchFailure(ctx, def.id, tier, replayed === NOT_REPLAYED, cause);
       throw cause;
@@ -574,6 +604,7 @@ async function dispatch(
   return {
     output: outputMapped,
     toolResult: markUntrusted(toolResult),
+    mediaAttachments: markUntrusted(mediaAttachments),
     truncated: bounded.truncated,
     events: {
       call: { toolId: def.id, toolInput: sanitizeInput(def, effective, ctx.secretArgKeys) },

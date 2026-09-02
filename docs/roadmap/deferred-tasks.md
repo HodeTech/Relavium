@@ -286,17 +286,17 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > contract that the 1.AH wiring must resolve coherently (it touches the inert read_media path, so fixing it in
 > isolation now risks conflicting with the 1.AH host design), plus one test-injection gap.
 
-- [ ] **`read_media` result must be schema-conforming for a multi-turn message (1.AH read_media contract).**
-  `read_media` returns a `{ type:'media', source:{ kind:'base64', data } }` MediaPart placed in
-  `tool_result.result`; on the **next** LLM call `LlmMessageSchema.superRefine` runs `containsInlineMediaBytes`
-  over the tool-result part and **rejects inline base64** — so a wired read_media would break the turn. The
-  result should carry a **handle** (durable form, resolved on egress by the seam), not inline base64. **Defer
-  with the 1.AH host wiring** (it co-decides base64-vs-handle for `MediaReadAccess`): (a) read_media returns a
-  handle source; (b) **narrow `MediaReadAccess.readRange`** from `Promise<MediaSource>` to the chosen base64/
-  handle form (today the wide type permits a `url`/`handle` source a host could mis-return → I3/SSRF surface);
-  (c) **thread `AbortSignalLike`** into `MediaReadAccess.describe`/`readRange` (the only host-delegated path with
-  no cancellation, unlike `MediaStore.readRange`). *(Sonnet review HIGH/MEDIUM, latent — read_media is inert;
-  packages/core/src/tools/builtins.ts + types.ts; 1.AH)*
+- [x] **`read_media` result must be schema-conforming for a multi-turn message (1.AH read_media contract).**
+  ~~`read_media` returns a `{ type:'media', source:{ kind:'base64', data } }` MediaPart placed in
+  `tool_result.result` … the result should carry a **handle**.~~ **Closed 2026-09-02 by `CR-50`**
+  ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §1), and closed differently from what
+  this item proposed: the tool returns **no `MediaPart` at all**. Its result is a short text descriptor and
+  the media travels the media-INPUT rail on a synthesized `user` message, because `tool_result.media` is a
+  position nothing lowers. Sub-item (c) — threading `AbortSignalLike` into `describe` — landed and is
+  pinned by a test. Sub-item (b), narrowing `MediaReadAccess.readRange`, is **superseded**: the engine no
+  longer calls `readRange` at all, so the wide type is no longer reachable from here; it is re-recorded in
+  the `CR-50` residuals above as an arm awaiting its 1.AH desktop caller. *(Marked closed rather than
+  deleted: this item and the `CR-50` residual disagreed with each other in the same file for a day.)*
 - [ ] **Budget-governor media-cost block/warn/fail path has no non-zero-estimate test.** No shipped model
   carries a `mediaOutputRates` row, so `estimateMediaCost` always returns 0 and the governor's media-driven
   `warn`/`fail`/`pause` arm is never exercised end-to-end (the units×rate math IS covered in `mediaCost`/
@@ -346,6 +346,216 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   throttles/queues subsequent egresses or only surfaces a one-time advisory event. Deferred until
   there is concrete surface demand or telemetry showing operators need an earlier signal.
   *(1.AC; ADR-0028; config-spec.md; workflow-yaml-spec.md)*
+
+## Phase 2.6.5 `W5` residuals — `CR-55` ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §4, 2026-09-02)
+
+> Recorded, not implied. `CR-55` closed the "a missing media rate reads as a price of zero" defect on both cost
+> paths and extended `strict_cost_cap` to an unpriced modality. These two are reachable and named rather than
+> left to be rediscovered — the phase rule is close it or name it, and each of these is genuinely a separate
+> decision rather than an unfinished part of this one.
+
+- [ ] **The pre-egress estimate has no billed-UNIT predicate, so a rate can clear the gate and still not price
+      the call.** `estimateMediaCost` keys only on `{modality}`; the realized `mediaCost` additionally requires
+      `unitMatchesBilledModality` (image=count, audio/video=second). A token-based provider reports audio as a
+      raw token **count** (`openai.ts` maps `completion_tokens_details.audio_tokens` that way, deliberately —
+      ADR-0044 §3 forbids a fabricated tokens→seconds conversion). So `models pricing <m> --audio 0.001` clears
+      a `strict_cost_cap` refusal, and the realized fold *still* reports `audio` unpriced and contributes 0.
+      The estimator cannot fix this alone: it does not know which unit the provider will report. The honest
+      options are a per-COUNT audio rate alongside the per-second one, or refusing the `--audio` remedy for a
+      provider known to bill audio by token. **The call is not mis-billed** — `priced: false` reaches the event
+      and `/cost` says *price unknown* — but the strict gate admits a call it provably cannot price.
+      *(medium · packages/llm/src/budget-estimator.ts, packages/llm/src/cost-tracker.ts; ADR-0089 §4)*
+- [ ] **The media-rate INHERITANCE branch has no test, because nothing to inherit ships.** `mediaRates`
+      (`apps/cli/src/engine/model-catalog-view.ts`) resolves `userRate ?? catalogRate`, and no shipped snapshot
+      row carries a media rate — so deleting the catalog fall-through keeps the suite green. The test names the
+      gap and pins `catalogPricing(id)?.mediaOutputRates` as `undefined` so it fails loudly the day a snapshot
+      ships one; closing it properly needs that snapshot row (or a fixture catalog).
+      *(low · apps/cli/src/engine/model-catalog-view.test.ts; ADR-0089 §4(c))*
+- [ ] **A capability skip that SUCCEEDS on a later entry still emits nothing** (`CR-51`). When the chain skips
+      a tool- or attachment-incapable model and a later entry serves the request, the run completes correctly
+      and no event says a model was passed over — `agent-turn.ts` drops a `skipped` attempt record before any
+      emit. The two loud cases are covered (a load-time refusal for an authored tool grant, and a
+      reason-carrying `bad_request` when the whole chain is skipped), so this is the residual quiet case:
+      a fallback silently doing its job, which is also the case where the user is least harmed. Closing it
+      needs an event or a host notice channel that does not exist for chain skips today.
+      *(low · packages/core/src/engine/agent-turn.ts; ADR-0071 §12, `CR-51`)*
+- [ ] **A wrong shipped `toolCall`/`attachment` row has no user override** (`CR-51`). These fields were inert
+      before this wave; now they deny service, and `admitRefreshedModels` deliberately refuses to let any
+      refresh shadow a shipped id (a money guard). So a false-negative in the generated snapshot cannot be
+      corrected by `models refresh`, by the DB catalog, or by any setting — only by a release. Reachable for a
+      user pointing a custom `base_url` at a shipped id whose upstream row is wrong. An escape hatch would
+      need a deliberate decision about which side errs: today the snapshot wins, which is right for money and
+      arguably wrong for capability.
+      *(medium · packages/llm/src/catalog/lookup.ts; `CR-51`)*
+- [ ] **The widened `onUnpriced` modality argument is unproven at the CLI host boundary.** The governor's own
+      test proves `checkPreEgress` passes `[modality]` to an injected sink, and `effort-notice.test.ts` proves
+      `unpricedModelNote` renders the right sentence from it — but the three hand-written arrow functions that
+      join them (`apps/cli/src/commands/run.ts`, `commands/gate.ts`, `chat/session-host.ts`) have no test
+      exercising them with a non-empty `modalities`. That is structurally the same "TypeScript accepts a shorter
+      parameter list, so the argument dies silently" risk this wave already fixed one layer down. The existing
+      `session-host.test.ts` coverage is for the unpriced-MODEL (no-modality) shape only.
+      *(medium · apps/cli/src/commands/{run,gate}.ts, apps/cli/src/chat/session-host.ts; ADR-0089 §4)*
+- [ ] **No single test runs `models pricing --image` from argv to `ModelPricing.mediaOutputRates`.** Coverage
+      exists as four adjacent segments — argv→args (`dispatch.test.ts`), args→real store (`models-pricing.test.ts`),
+      store row→listing (`model-catalog-store.test.ts`), listing→overlay (`model-catalog-view.test.ts`) — each
+      pair joined by a shared TypeScript type and, for the CLI registration half, by the pre-existing
+      commander↔manifest parity test. The seams are typed, so the risk is real but bounded.
+      *(low · apps/cli; ADR-0089 §4(c))*
+- [ ] **A `node:failed` message can carry an unsanitized model id.** The new strict refusal interpolates the
+      model id into `BudgetExceededError.message`, which reaches the terminal renderer through
+      `run:failed.error.message`. The CLI's own `unpricedModelNote` sanitizes for exactly this reason, but
+      `packages/core` cannot import a surface sanitizer, and the pre-existing unpriced-**model** refusal has the
+      same shape — so this is a replicated pattern, not a new class. The correct fix is host-side stripping of
+      `node:failed` / `run:failed` message text, which is broader than `W5`.
+      *(low · packages/core/src/engine/budget-governor.ts; security-review.md)*
+
+## Phase 2.6.5 `W5` residuals — `CR-54` ([ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md) §3, 2026-09-02)
+
+> `CR-54` pinned the two paths that produce a url at first resolution — the node output and the human-gate
+> resume payload. ADR-0043 §3 has a second clause these do not reach.
+
+- [ ] **"An input URL re-hosted at INGEST" is still open for the surfaces that can carry one.** A `url`
+      media part arriving on an `AgentSession` user message, or inside an MCP `tool_result` folded into a
+      transcript, is not pinned — it can reach `#materializeMedia` and be handed to an adapter as a live
+      url, and a second attempt may resolve to different bytes. `MEDIA_URL_SOURCE_ENABLED` is `true`, so
+      this is a live path, not a hypothetical. The workflow half is closed; the session half is not.
+      *(medium · packages/core/src/engine/agent-session.ts; ADR-0043 §3, `CR-54`)*
+- [ ] **A pinned object is orphaned when the dispatch fails after the pin.** The pin runs at the dispatch
+      boundary, so a node that then fails — a `save_to` template that will not resolve, a bounding breach —
+      has already written bytes into the CAS. `#recordProducedMedia`, the only thing that registers a handle
+      for the D11 terminal sweep, runs on the **durable event draft**, and a failed node emits `node:failed`
+      with no output — so the object is never recorded and never reclaimed by any mechanism. Small and real.
+      Closing it means recording a reference for a pinned-but-never-emitted object, or sweeping the CAS
+      against `listObjectHandles` for row-less blobs past their age floor (the media GC already has that
+      shape). A test comment asserted the opposite until a review checked it.
+      *(low · packages/core/src/engine/engine.ts, apps/cli/src/engine/media-gc.ts; ADR-0042 §4, `CR-54`)*
+- [ ] **A transient re-host failure fails the node rather than retrying the re-host.** A media pin that
+      fails on a network blip is classified non-retryable ON PURPOSE — `retryable: true` means "re-dispatch
+      the node" in this engine, and the node's own work already succeeded, so retrying would make a second
+      paid generative call to fix a CDN hiccup downstream of it. The right answer is a bounded retry around
+      the RE-HOST alone, which never re-invokes the executor. Until then a blip on a large video fails a
+      node whose model call was fine.
+      *(medium · packages/core/src/engine/engine.ts, media-pin-error.ts; ADR-0040, `CR-54`)*
+- [ ] **`MediaStore.put` / `putStream` take no `AbortSignal`.** The fetch half of a pin honours the run
+      signal; the STORE half cannot be interrupted by a cancel, a run timeout or a node deadline. Moving
+      the pin to the dispatch boundary means an uncancellable write no longer corrupts a node's terminal —
+      it now only delays one — but a very large write still holds a cancelling run open for its duration.
+      *(low · packages/shared/src/content.ts, packages/db/src/media-store.ts; ADR-0042, ADR-0085)*
+- [ ] **A post-terminal `node:completed` can still reach a live `subscribe()` observer.** Reproduced by a
+      review and confirmed PRE-EXISTING (it occurs with `CR-54` fully reverted, because the emit's own
+      de-inline `await` had the same window). Never persisted — `#authorizeWrite` refuses a `lost`/`done`
+      run — so this is a delivery artefact, not a durability breach.
+      *(low · packages/core/src/engine/engine.ts; ADR-0036, ADR-0085)*
+
+## Phase 2.6.5 `W5` residuals — `CR-50` ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §1, 2026-09-02)
+
+> `CR-50` closed its DELIVERY half: a `read_media` call now reaches the model as media on all three
+> providers, over a marked engine-synthesized `user` message. What remains is a **producer**, not a wire.
+
+- [ ] **Nothing creates a `session`/`workspace` media reference, so `read_media` can authorize nothing.**
+      `MediaReferencePort` records only `run`-scope rows, and `describe` deliberately excludes those
+      (ADR-0044 §1 — a run-lifetime reference never grants read). Wiring the host delegate today would give
+      the model a tool that answers `unknown media handle` to every call, which is worse than the current
+      fail-closed absence. Closing it needs a place where a handle ENTERS a session or workspace and a
+      reference is recorded there — the natural home is an `AgentSession` de-inline choke point, which the
+      session does not have at all today (the workflow engine's is in `engine.ts`).
+      *(medium · packages/core/src/engine/agent-session.ts, packages/db/src/media-reference-store.ts;
+      ADR-0042 §3-4, ADR-0044 §1, `CR-50`)*
+- [ ] **The CLI chat has no media producer either.** `read_file` fail-closes on a binary/media file (the
+      durable-handle arm is unwired in `apps/cli/src/engine/tool-host/fs.ts`) and `@`-mention injects text,
+      so even with the two items above a chat session would have no handle to read. These three close
+      together or not at all.
+      *(medium · apps/cli/src/engine/tool-host/fs.ts, apps/cli/src/chat/session-host.ts; `CR-50`)*
+- [ ] **`MediaReadAccess.readRange` now has no engine caller.** `CR-50` removed the tool's byte delivery, so
+      the delegate's `readRange` arm and `validateByteRange` are exercised only by their own unit tests until
+      the 1.AH desktop `read_media(ref)` display command lands. Retained deliberately (ADR-0089 §1 names that
+      command as the caller) and re-homed in [testing.md](../standards/testing.md) as an OPEN acceptance
+      criterion — recorded here so "wired but dead" is a known state rather than a discovery.
+      *(low · packages/core/src/tools/types.ts; ADR-0089 §1)*
+- [ ] **The synthesized media message has no reader but the model.** It lives in the turn's context window
+      and nowhere else: `AgentSession` re-appends only the user text and the final assistant text, so it
+      never reaches `history.db` or an export, and no event is emitted for it. The provenance preamble's
+      stated audience — "anyone reading a transcript or an exported workflow" — does not exist, and no
+      surface can show the user that an image was placed in the conversation on their behalf. Closing it is
+      a surface change (an event, or persistence), which ADR-0089 §1 did not decide. Its Negative is
+      amended in place with the correction.
+      *(low · packages/core/src/engine/agent-session.ts; ADR-0089 §1)*
+- [ ] **`read_media` is advertised to models that cannot receive an image.** The tool is offered on grant
+      alone, so a model with no image input can call it, get a descriptor, and then have the whole turn die
+      when the continuation is pre-skipped by every plan entry — a chain-exhausted failure for choosing a
+      tool the engine offered. `CR-51` built the per-model capability metadata that would let the advertise
+      filter drop it; wiring that (or turning the refusal into a correctable `isError`) is the fix.
+      *(medium · packages/core/src/engine/agent-session.ts, packages/core/src/tools/registry.ts; `CR-50`, `CR-51`)*
+- [ ] **Media over the inline ceiling cannot be delivered to a model at all.** `read_media` now refuses a
+      video, a PDF, or an image over 256 KiB with a correctable error naming the limit — honest, but it
+      means a screenshot or a photo often cannot be shown. The real fix is a delivery path that does not
+      inline: `resolveForEgress` returning a provider-hosted ref (a Gemini `fileUri`, an OpenAI `file_id`)
+      instead of base64, which ADR-0031 already reserves the sidecar for.
+      *(medium · packages/llm/src/fallback-chain.ts, packages/db/src/media-store.ts; ADR-0031, ADR-0089 §1)*
+- [ ] **`count` is silently ignored for an audio/video generative node.** Gemini's Veo hard-codes
+      `numberOfVideos: 1` and the OpenAI TTS/Sora paths carry no count either, so an author writing
+      `count: 3, duration_seconds: 4` gets ONE four-second clip. The BILLING now matches that (duration
+      only — it used to charge `count × duration`, a 3× over-charge on a successful call), but the author's
+      declaration is still accepted and then disregarded. Either refuse `count` on an audio/video generative
+      node at validation, or carry it into the adapter request. Whichever: the accounting and the adapter
+      must move together, which is precisely what they did not do.
+      *(medium · packages/core/src/engine/agent-runner.ts, packages/llm/src/adapters/gemini.ts; ADR-0045 §5)*
+- [ ] **Token rates from the DB are not range-validated, only the media ones are.** `mediaRates` now refuses
+      a negative / non-finite / unsafe-integer value fail-closed, but `rowToUserPricing`'s
+      `input`/`output`/`cached` columns take the same unchecked path from the same user-writable file. A
+      negative token rate is the same cap bypass on the dominant cost axis. Left out of PR #88 only because
+      the media columns are what `W5` added; the fix is the same predicate.
+      *(medium · apps/cli/src/engine/model-catalog-view.ts; ADR-0089 §4, ADR-0050)*
+- [ ] **Three more pasted remedies still use `<angle-bracket>` placeholders.**
+      `provider.ts:198` and `models.ts:140,303` tell the user to run
+      `relavium provider set-key <name>`; `<` is a shell redirection, so the pasted command tries to read
+      stdin from a file named `name` and fails. Strictly less bad than the `W5` case fixed in
+      `budget-governor.ts` / `effort-notice.ts` — those carried a `>` too, which CREATES a file named
+      `--image` in the user's cwd — but the same defect. Left out of PR #88 only because those files are
+      untouched by the wave; the fix is the same bare-word substitution.
+      *(low · apps/cli/src/commands/provider.ts, models.ts)*
+- [ ] **Three functions this wave touched sit over the 15 cognitive-complexity threshold.**
+      `models-pricing.ts` (37), `budget-governor.ts:checkPreEgress` (16) and `dispatch.ts`
+      `buildModelsPricingArgs` (17). SonarCloud reports them as issues, not gate failures, and they are
+      branch-heavy for real reasons (each price flag has its own unit, its own validation and its own
+      remedy sentence). Two others from the same wave were decomposed when the fix also removed a
+      duplication — `dispatchToolCalls` and `countUnpinnedMedia` — which is the bar the rest should meet:
+      refactor when it buys something beyond the number.
+      *(low · apps/cli/src/commands/models-pricing.ts, dispatch.ts, packages/core/src/engine/budget-governor.ts)*
+- [ ] **A signature Gemini attaches to a `text` or `inlineData` part is still dropped.**
+      [ADR-0090](../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md)'s named deferral:
+      neither `text` nor `media` has a field for a continuation token, and the streaming fold flattens text
+      and loses part order. The failure there is degraded quality, not a rejected request.
+      *(low · packages/llm/src/adapters/gemini.ts; ADR-0090 Scope)*
+
+## Phase 2.6.5 `W5` residuals — `CR-53` ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §2, 2026-09-02)
+
+> `CR-53` closed its INGEST half: a url media body now streams from the network into the store under a size
+> ceiling, an idle deadline and the run `AbortSignal`, and `put` is reserved for sub-ceiling bodies. Three
+> clauses of its own acceptance did not land. Named here rather than left inside a closed checkbox.
+
+- [ ] **The ADAPTER still returns whole base64 for generated media.** `packages/llm` is untouched by
+      `CR-53`: Imagen and OpenAI image output return `{ kind: 'base64', data }`, and only Veo's `url`
+      fallback arm streams. The defect text — "audio and video responses are read into a full buffer and
+      converted to base64" — describes the adapter path, so the common generative case still pays it.
+      Closing it needs a download-lease shape on the `generateMedia` seam.
+      *(medium · packages/llm/src/adapters/gemini.ts, openai.ts; ADR-0089 §2, `CR-53`)*
+- [ ] **DELIVERY is still whole-buffered.** `resolveForEgress` does `get(handle)` then base64-encodes the
+      whole object, and `readRange` slices a fully-read buffer — the third buffering site ADR-0089's own
+      Context names, and the only one on the path a provider re-upload takes. Ingest streams; delivery does
+      not, so "end to end" is true of one direction.
+      *(medium · packages/db/src/media-store.ts; ADR-0043 §2, ADR-0089 §2)*
+- [ ] **No test measures peak MEMORY.** The acceptance says "a large-media test asserts peak memory stays
+      bounded". What ships counts what the source produced and asserts it stops at the bound — honest, and a
+      real property, but it proves the transfer is cut off rather than that the resident set is bounded. The
+      mutation that would close it: a harness sampling RSS inside the body generator, in a separate process,
+      comparing the streamed path against `readBounded`.
+      *(low · packages/db/src/media-egress.test.ts; `CR-53` acceptance)*
+- [ ] **`readBounded`'s double buffer was documented, not collapsed.** ADR-0089 §2's third bullet says it is
+      collapsed; what shipped routes media around it instead and records what it costs. Bypassing is
+      arguably the better answer — but it is a different one from the Accepted text, and the text egress
+      path still pays ~2× peak. Either collapse it or amend §2.
+      *(low · packages/db/src/safe-egress.ts; ADR-0089 §2)*
 
 ## Phase 2.6.5 `W3` residuals (PR #86, merged 2026-08-30)
 
@@ -570,11 +780,38 @@ so directly: these "should remain visible rather than disappear behind the green
   replay needs the canonical reasoning `ContentPart` to carry an opaque continuation payload; until then a
   `redacted` part is carried as-is and not replayed, and redacted-thinking continuations are out of 1.O scope.
   *(high · packages/llm/src/adapters/anthropic.ts:126-127, packages/shared/src/content.ts:447-450; ADR-0030 follow-up)*
-- [ ] **Gemini part-level `thoughtSignature` replay** — Gemini carries the continuity signature on **any** `Part`
-  including a `functionCall`; the adapter drops it (`mapContent` reads only name/args) and the canonical
-  `tool_call` part has no field for it, so Gemini 3 function-calling continuations cannot replay it (and can
-  themselves 400). Needs a continuation-metadata carrier on the canonical `tool_call`/`reasoning` parts plus
-  adapter capture/replay. *(high · packages/llm/src/adapters/gemini.ts:193-198, packages/shared/src/content.ts:419-441; ADR-0030 follow-up)*
+- [x] **Gemini part-level `thoughtSignature` replay** — ✅ closed 2026-09-02 by `CR-52`. Gemini carries the
+  continuity signature on any `Part`, and the adapter dropped it on a `functionCall` while `toGeminiParts`
+  dropped every `reasoning` part outright — so the token was captured and then discarded one function away.
+  Both halves now round-trip:
+  [ADR-0090](../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md) put an optional
+  `signature` on the canonical `tool_call` part and on the streamed `tool_call_end`, with
+  `DurableContentPartSchema` forking a signature-less arm so "never persists" is structural; and a SIGNED
+  reasoning part is now lowered back as a `thought` part carrying its token. ADR-0089 §3's sidecar was
+  unbuildable — capture and replay straddle two adapter calls on a stateless adapter. The sibling
+  **`redacted_thinking` opaque `data`** deferral is untouched and still open, as is the text/`inlineData`
+  half recorded immediately below.
+  *(was high · packages/llm/src/adapters/gemini.ts; ADR-0030 follow-up)*
+- [ ] **Gemini `thoughtSignature` on a TEXT or `inlineData` part** — a named deferral of
+  [ADR-0090](../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md), which scopes itself to
+  the FUNCTION-CALL signature (the half that can 400). Google attaches the token to any `Part`, including a
+  plain text part and an `inlineData` part on the image models, and neither `text` nor `media` has a field for
+  one — while the streaming fold concatenates text and loses part order, so even capturing it would have
+  nowhere to put it back. The failure here is degraded quality rather than a rejected request. Closing it
+  needs a part-order-preserving fold, which is a larger change than the carrier decision.
+  *(medium · packages/llm/src/adapters/gemini.ts, packages/shared/src/content.ts; ADR-0090)*
+- [ ] **A continuation token is lost when a chain RETURNS to its issuing entry after a foreign hop** — the
+  strip latch tracks the last ATTEMPTED entry, not each part's issuer, so `[gemini → openai → gemini]` inside
+  one turn strips a gemini-issued token from a request going back to gemini. The result is a lost
+  continuation, never a foreign token replayed — i.e. the pre-`CR-52` behaviour, never worse. Closing it needs
+  per-part issuer provenance the seam does not carry.
+  *(low · packages/llm/src/fallback-chain.ts; ADR-0090, `CR-52`)*
+- [ ] **A `reasoning` signature still strips on the PROVIDER boundary, not the model one** — `CR-52` tightened
+  the `tool_call` latch to (provider, model) because that part is unconditionally replayed; the reasoning
+  latch keeps ADR-0039's accepted provider-only rule. A same-provider cross-model advance can therefore
+  replay one model's signed thinking to another. Pre-existing, out of `CR-52`'s scope, and narrowing an
+  Accepted decision belongs in its own ADR rather than a fold.
+  *(low · packages/llm/src/fallback-chain.ts; ADR-0039)*
 - [ ] **`output_schema` deep JSON-Schema conformance** — 1.O validates an `agent` node's `output_schema`
   node-side but **parse-as-JSON only** (the seam's `responseFormat` is a request hint; a
   schema-violating-but-valid JSON output, e.g. `{"wrong":true}` for a `{ n: number }` schema, currently

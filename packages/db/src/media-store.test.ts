@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -20,6 +20,93 @@ describe('FilesystemMediaStore (1.AF, ADR-0042 — content-addressed CAS)', () =
     store = new FilesystemMediaStore(root);
   });
   afterAll(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+
+  /** An `AsyncIterable` over a chunk list, optionally throwing part-way. */
+  function chunkStream(
+    chunks: readonly Uint8Array[],
+    throwAfter?: number,
+  ): AsyncIterable<Uint8Array> {
+    return {
+      [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+        let i = 0;
+        return {
+          next: (): Promise<IteratorResult<Uint8Array>> => {
+            if (throwAfter !== undefined && i === throwAfter) {
+              return Promise.reject(new Error('body failed mid-stream'));
+            }
+            const chunk = chunks[i];
+            i += 1;
+            return Promise.resolve(
+              chunk === undefined
+                ? { done: true, value: undefined }
+                : { done: false, value: chunk },
+            );
+          },
+        };
+      },
+    };
+  }
+
+  it('putStream content-addresses a chunked body to the SAME handle put would', async () => {
+    // The digest is computed incrementally, so a body split across chunks must land on the byte-identical
+    // content address — otherwise two writes of the same asset would produce two handles and the CAS would
+    // stop being content-addressed.
+    const handle = await store.putStream(chunkStream([HELLO.slice(0, 2), HELLO.slice(2)]));
+    expect(handle).toBe(expectedHandle);
+    expect(await store.get(handle)).toEqual(HELLO);
+  });
+
+  it('publishes NOTHING and leaves no temp file when the body fails mid-stream', async () => {
+    // ADR-0089 §2 makes this a decision bullet: "a partial write is cleaned up and the handle is published
+    // only once the whole object is durable". A half-object at a content-addressed path would be worse than
+    // no object — `get()` verifies the digest on every read, so it would be a permanently unreadable handle
+    // the durable event insists exists.
+    const failRoot = mkdtempSync(join(tmpdir(), 'relavium-media-partial-'));
+    try {
+      const failing = new FilesystemMediaStore(failRoot);
+      await expect(failing.putStream(chunkStream([HELLO.slice(0, 2)], 1))).rejects.toThrow(
+        /body failed mid-stream/,
+      );
+      expect(readdirSync(failRoot)).toEqual([]); // no shard directory, and no stray `.tmp`
+    } finally {
+      rmSync(failRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not hold the whole body — it writes as it consumes', async () => {
+    // The claim the whole change exists for. It has to be measured on the STORE's side of the seam: an
+    // earlier version of this test counted a `written` variable the SOURCE incremented in its own `next()`,
+    // so it recorded how many chunks had been PRODUCED, not how many bytes had been WRITTEN — and a store
+    // that drained the whole iterator before writing a byte produces exactly the same sequence. It could
+    // not fail. What discriminates is the size of the store's own temp file at each pull.
+    const streamRoot = mkdtempSync(join(tmpdir(), 'relavium-media-lazy-'));
+    const tmpBytes = (): number => {
+      const tmp = readdirSync(streamRoot).find((name) => name.endsWith('.tmp'));
+      return tmp === undefined ? 0 : statSync(join(streamRoot, tmp)).size;
+    };
+    const seen: number[] = [];
+    const observed: AsyncIterable<Uint8Array> = {
+      [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+        let i = 0;
+        return {
+          next: (): Promise<IteratorResult<Uint8Array>> => {
+            seen.push(tmpBytes()); // bytes the STORE had durably written when this chunk was requested
+            i += 1;
+            if (i > 3) return Promise.resolve({ done: true, value: undefined });
+            return Promise.resolve({ done: false, value: new Uint8Array([i]) });
+          },
+        };
+      },
+    };
+    try {
+      await new FilesystemMediaStore(streamRoot).putStream(observed);
+      // Pull N found N-1 bytes already on disk — the store wrote each chunk before asking for the next.
+      // A buffering store would have found 0 every time.
+      expect(seen).toEqual([0, 1, 2, 3]);
+    } finally {
+      rmSync(streamRoot, { recursive: true, force: true });
+    }
+  });
 
   it('put returns the canonical media://sha256-<hex> handle = sha256 of the bytes', async () => {
     const handle = await store.put(HELLO);

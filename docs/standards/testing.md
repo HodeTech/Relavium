@@ -71,8 +71,19 @@ substitute. Each carries its own unit suite with the malicious/edge inputs spell
   a `..` traversal, an absolute path outside the run/session dir, and a **symlink** that escapes it.
 - **The keychain bridge**: the raw key is never returned from an IPC command and never appears in a command
   result; only a key *reference* crosses to the WebView.
-- **`read_media` / byte delivery**: a negative, reversed (`end < start`), or out-of-bounds `Range` is
-  rejected; an oversize upload is rejected; a cross-session handle read is denied (scope-set authz).
+- **`read_media` / byte delivery**: an oversize upload is rejected; a cross-session handle read is denied
+  (scope-set authz). The **model-facing tool** now performs authorization and metadata lookup only — it takes
+  a whole handle, returns a text descriptor, and delivers the media as a top-level part on a synthesized
+  message ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §1, landed in `W5`/`CR-50`), so
+  it has no `Range` to exercise and its tests assert instead that no range parameter is accepted or
+  advertised.
+- **`Range` validation (byte delivery)**: a negative, reversed (`end < start`), or out-of-bounds `Range` is
+  rejected. Re-homed here from the clause above when `CR-50` landed, per ADR-0089 §1: the caller is the
+  **desktop `read_media(ref)` display command** (1.AH), the only one that still delivers bytes. The
+  engine-pure primitive it must use (`validateByteRange`, fail-closed against the host-populated
+  `byteLength`) ships and is unit-tested in `@relavium/shared`; this clause is an **open acceptance
+  criterion** for 1.AH, not a satisfied one — stated so the requirement is visibly waiting for its caller
+  rather than quietly gone with the code that used to meet it.
 - **`INLINE_MEDIA_CEILING` + per-message caps**: an over-ceiling base64 part, an over-count message, and an
   over-aggregate-bytes message are each rejected (the inputs the happy path never sends).
 

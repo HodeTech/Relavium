@@ -2,7 +2,7 @@
 
 > Status: Living
 >
-> Last updated: 2026-08-29
+> Last updated: 2026-09-02
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -91,7 +91,7 @@ flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
     LEDGER["#W15-1 — realized-cost ledger ✅<br/>ADR-0076 + ADR-0077"]
-    P265["Phase 2.6.5 — Core reliability<br/>48 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker (28 of 48)<br/>W4 merged — the hostile-MCP class, ADR-0088"]
+    P265["Phase 2.6.5 — Core reliability<br/>48 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 in PR #88 — media correctness, ADR-0089+0090 (38 of 48) · W6 next"]
     W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
@@ -472,7 +472,11 @@ the exit rule and the execution order, and added two items (`CR-17` resume ident
 docs-only); `CR-64` came from the Batch 1 triage, `CR-21b` from ADR-0082 §10 and `CR-21c` from the `W2`
 document review on 2026-08-25, which is why the total has moved since the list was first written.
 
-> **Live status — 28 of 48 closed. `W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with one reproduced BLOCKER and nine verified findings open — see the `W3` residuals in [deferred-tasks.md](deferred-tasks.md). `W4` MERGED 2026-09-01 (PR #87) behind [ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md): a systematic review of the branch found five merge blockers — an orphaned MCP child on a signal, an optional validated `fetch`, a bypassable transport byte bound, discovery paging past its budget, and two cloud-metadata endpoints reachable through the local opt-in — all reproduced and fixed before it merged. `W5` (media correctness) is next, and its `CR-50` opens with a decision the maintainer owns.**
+> **Live status — 38 of 48 closed. `W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with one reproduced BLOCKER and nine verified findings open — see the `W3` residuals in [deferred-tasks.md](deferred-tasks.md). `W4` MERGED 2026-09-01 (PR #87) behind [ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md): a systematic review of the branch found five merge blockers — an orphaned MCP child on a signal, an optional validated `fetch`, a bypassable transport byte bound, discovery paging past its budget, and two cloud-metadata endpoints reachable through the local opt-in — all reproduced and fixed before it merged. `W5` (media correctness) is COMPLETE on `development` (2026-09-02, PR pending) behind
+> [ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) and
+> [ADR-0090](../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md): all six of `CR-50`–`CR-55`
+> closed, two of them for one half of a two-part obligation and saying so in their own heading. `W6`
+> (authoring correctness) is next.**
 >
 > **The `W4`-waits-for-the-`W3`-blocker gate was lifted deliberately on 2026-09-01, by the maintainer, and it is recorded here rather than left to be inferred from the commit order.** The reasoning: the blocker is a `BoundedEventStream` drop on a stream nobody iterates, its fix is ADR-0087 §1 — a decision that is still **Proposed** and unapproved — and `W4` touches a disjoint surface (the MCP boundary). Blocking a whole wave on an unapproved ADR would have stalled the phase rather than protected it. **The blocker stays open and stays first in the `W3` residuals**; nothing here closes it or reduces its severity.
 >

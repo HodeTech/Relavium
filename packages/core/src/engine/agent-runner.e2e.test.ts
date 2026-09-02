@@ -68,6 +68,7 @@ const echoRegistry: ToolRegistry = {
     const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'TOOL-OK' };
     return Promise.resolve({
       output: 'TOOL-OK',
+      mediaAttachments: markUntrusted([]),
       toolResult: markUntrusted(result),
       truncated: false,
       events: {
@@ -646,6 +647,42 @@ describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
     );
     expect(events.at(-1)?.type).toBe('run:completed'); // unpriced degrades to allow — the run still finishes
     expect(unpriced).toEqual(['my-self-hosted-model']); // …but the notice fired, through the engine boundary
+  });
+
+  it('the cost:updated for an unrated modality says priced:false, on a model that IS priced', async () => {
+    // `CR-55` on the busiest path, and the one the chain's own test could not reach. `FallbackChain` sets
+    // `AttemptRecord.priced = false`, but the EVENT is built in `agent-turn`, which re-derived the flag from
+    // `record.cost !== undefined`. For an unrated modality `cost` IS defined, so the event published
+    // `priced: true` with a figure that omits the media charge — the defect surviving its own fix, one seam up.
+    //
+    // The usage shape is the real one: a token-based provider reports audio as a raw token COUNT
+    // (`openai.ts` maps `completion_tokens_details.audio_tokens` this way), which no per-second rate can price.
+    // No `output_modalities` is needed — this is an ordinary chat turn that happens to bill media units, which
+    // is exactly how the case arises in production.
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      executor: agentExecutor(() =>
+        provider([
+          { type: 'text_delta', text: 'ok' },
+          {
+            type: 'stop',
+            stopReason: 'stop',
+            usage: {
+              inputTokens: 1_000,
+              outputTokens: 10,
+              mediaUnits: [{ modality: 'audio', direction: 'output', units: 500, unit: 'count' }],
+            },
+          },
+        ]),
+      ),
+    });
+    const events = await drain(
+      engine.start({ workflow: budgetWorkflow('warn'), inputs: { text: 'x' } }),
+    );
+    const cost = events.find((e) => e.type === 'cost:updated');
+    expect(cost?.type === 'cost:updated' && cost.priced).toBe(false);
+    // The TOKEN half is still priced and folded — a partial gap, not an abandoned total.
+    expect(cost?.type === 'cost:updated' ? cost.costMicrocents : 0).toBeGreaterThan(0);
   });
 
   it('strict_cost_cap BLOCKS an unpriced model through WorkflowEngine, regardless of on_exceed', async () => {

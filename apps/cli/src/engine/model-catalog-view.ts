@@ -11,7 +11,7 @@ import {
   type PricingOverlay,
   type ProviderId,
 } from '@relavium/llm';
-import { LLM_PROVIDERS } from '@relavium/shared';
+import { LLM_PROVIDERS, type MediaBilledModality } from '@relavium/shared';
 
 /**
  * The host projection that turns the durable `model_catalog` cache rows into the merged, display-ready catalog the
@@ -68,11 +68,16 @@ function isProviderId(slug: string): slug is ProviderId {
  * A deprecation date is decoration; the catalog is not. Same guarded-parse discipline the limit columns get
  * from {@link statedLimit} a few lines down.
  */
-function spreadIfSet<K extends string>(
-  key: K,
-  value: string | undefined,
-): Record<K, string> | Record<string, never> {
-  return value === undefined ? {} : ({ [key]: value } as Record<K, string>);
+function spreadIfSet<K extends string, V>(key: K, value: V | undefined): Partial<Record<K, V>> {
+  // `Partial<Record<K, V>>` is the honest return type — the `undefined` branch yields `{}`, which
+  // `Record<K, V>` never describes — and building it by assignment rather than as a computed-key literal
+  // keeps it fully checked. A literal `{ [key]: value }` cannot be inferred against a generic `K`, which is
+  // what the previous `as Record<K, V>` was papering over (CLAUDE.md rule 1).
+  const out: Partial<Record<K, V>> = {};
+  if (value !== undefined) {
+    out[key] = value;
+  }
+  return out;
 }
 
 function isoDateOrUndefined(epochMs: number | undefined): string | undefined {
@@ -181,10 +186,67 @@ function scaledTiers(
  * `--cached 0` cannot be told apart from an omitted `--cached`: one column, one sentinel. Treating an explicit zero
  * as "not stated" is the safe reading of the ambiguity — the alternative bills a whole class of tokens at nothing.
  */
-function rowToUserPricing(row: ModelCatalogListing, provider: ProviderId): ModelPricing {
-  const base = catalogPricing(row.modelId); // undefined for a model the catalog has never heard of
-  const input = row.inputCostPerMtokMicrocents;
-  const output = row.outputCostPerMtokMicrocents;
+/**
+ * The per-modality media-output rates for a user row, under the same partial-override rule as every other
+ * dimension ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4): the user
+ * outranks the catalog per MODALITY, and a modality they said nothing about inherits the catalog's.
+ *
+ * The `null`/`0` distinction is load-bearing and is what these NULLABLE columns buy over the token side's
+ * `NOT NULL DEFAULT 0` + `…Stated` flag. `null` ⇒ not stated ⇒ fall through to the catalog, and if the catalog
+ * has none either the modality stays ABSENT — which is what makes it *unpriced* rather than free, the whole
+ * point of `CR-55`. A stated `0` is believed: someone said this modality is free, and the cap should treat it
+ * as priced at nothing rather than as a hole it cannot see.
+ *
+ * Returns `undefined` when no modality resolves, so the key is omitted entirely rather than set to an empty
+ * object — `mediaOutputRates: {}` and an absent `mediaOutputRates` mean the same thing to `mediaCost`, and one
+ * of them allocates.
+ */
+function mediaRates(
+  row: ModelCatalogListing,
+  base: ModelPricing | undefined,
+): Partial<Record<MediaBilledModality, number>> | undefined {
+  const stated: [MediaBilledModality, number | null][] = [
+    ['image', row.mediaImageCostMicrocents],
+    ['audio', row.mediaAudioCostMicrocents],
+    ['video', row.mediaVideoCostMicrocents],
+  ];
+  const rates: Partial<Record<MediaBilledModality, number>> = {};
+  for (const [modality, userRate] of stated) {
+    const resolved = userRate ?? base?.mediaOutputRates?.[modality];
+    // **Validated at the read boundary, and a bad value is UNPRICED rather than zero.** The column is a
+    // plain SQLite `integer` with no CHECK, and `history.db` is user-writable (guarded by file permissions
+    // only — ADR-0050). A negative rate reached `mediaCost` unchecked and produced a NEGATIVE cost, which
+    // hands a strict cap fake headroom — the exact bypass `CR-55` exists to close, arriving through the
+    // remedy rather than the defect. A non-finite or unsafe-integer value corrupts the arithmetic instead.
+    //
+    // Dropping the key (rather than coercing to 0) is what makes it fail CLOSED: an absent rate is
+    // "unpriced" to `mediaCost`, so a strict cap REFUSES the call. A 0 would be a stated free price, which
+    // is the very conflation ADR-0089 §4 removed.
+    if (resolved !== undefined && Number.isSafeInteger(resolved) && resolved >= 0) {
+      rates[modality] = resolved;
+    }
+  }
+  return Object.keys(rates).length === 0 ? undefined : rates;
+}
+
+function rowToUserPricing(
+  row: ModelCatalogListing,
+  provider: ProviderId,
+  base: ModelPricing | undefined,
+): ModelPricing {
+  // STATED ⇒ their numbers, zero included. NOT stated ⇒ the catalog's, because the columns are
+  // `NOT NULL DEFAULT 0` and a `0` there is a default, not an instruction — the same rule `cachedInputStated`
+  // already carries, extended to the token pair by migration 0016 (ADR-0089 §4).
+  //
+  // It became load-bearing when a MEDIA-ONLY invocation became legal. Reading these unconditionally meant that
+  // adding an image rate to a catalog-priced model — the documented remedy for a strict-cap media refusal —
+  // wrote `0`/`0`, and this row then OUTRANKED the catalog, billing every token on that model at nothing.
+  const input = row.tokenRatesStated
+    ? row.inputCostPerMtokMicrocents
+    : (base?.inputPerMtokMicrocents ?? row.inputCostPerMtokMicrocents);
+  const output = row.tokenRatesStated
+    ? row.outputCostPerMtokMicrocents
+    : (base?.outputPerMtokMicrocents ?? row.outputCostPerMtokMicrocents);
   // STATED ⇒ their number, zero included. NOT stated ⇒ derive it, because the column's `0` is a default and not an
   // instruction (ADR-0071 §10 — the flag exists precisely so the two can be told apart).
   const cachedInput = row.cachedInputStated
@@ -205,6 +267,7 @@ function rowToUserPricing(row: ModelCatalogListing, provider: ProviderId): Model
     ...(base?.cacheWritePerMtokMicrocents === undefined
       ? {}
       : { cacheWritePerMtokMicrocents: base.cacheWritePerMtokMicrocents }),
+    ...spreadIfSet('mediaOutputRates', mediaRates(row, base)),
     ...(tiers === undefined ? {} : { contextTiers: tiers }),
     ...spreadIfSet('deprecatedAt', isoDateOrUndefined(row.deprecationDate)),
   };
@@ -242,7 +305,17 @@ export function buildUserPricing(input: {
     // `max_cost_microcents` unenforceable on it — while the UI displayed $5/MTok. Not merely silent: actively wrong.
     const anchored = catalogModel(row.modelId)?.provider;
     if (anchored !== undefined && anchored !== slug) continue;
-    map.set(row.modelId, rowToUserPricing(row, slug));
+    const base = catalogPricing(row.modelId); // undefined for a model the catalog has never heard of
+    // A row whose token rates were never stated AND whose model the catalog cannot price has no token price at
+    // all — and `ModelPricing` has no way to say "unpriced", only a number. Emitting `0`/`0` here would tell the
+    // governor the model is FREE, which is precisely the `CR-55` confusion, on the axis that carries most of the
+    // spend. Skipping leaves the model genuinely unpriced: `priceModel` throws, the governor takes its
+    // established unpriced-model path, and `strict_cost_cap` refuses it. The media rate on the row goes with it,
+    // which is correct — there is nothing meaningful about pricing one modality of a model nothing else prices.
+    // `models pricing` refuses to create this shape in the first place; this is the defense-in-depth floor for a
+    // legacy or directly-edited database.
+    if (!row.tokenRatesStated && base === undefined) continue;
+    map.set(row.modelId, rowToUserPricing(row, slug, base));
   }
   return map;
 }

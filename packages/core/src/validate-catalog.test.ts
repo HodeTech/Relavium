@@ -29,6 +29,128 @@ function agentWorkflow(fields: string): WorkflowDefinition {
   );
 }
 
+describe('per-model TOOL capability at load time (CR-51, ADR-0071 §12)', () => {
+  /**
+   * A workflow whose inline agent grants tools, on the given model.
+   *
+   * The node deliberately carries NO `model:` override — that is the common authored shape, since
+   * `agent.model` is required and `node.model` is an optional override. An earlier version of this fixture
+   * wrote the model to BOTH, which hid the fact that the check keyed on `node.model` alone and was therefore
+   * silently inert for every ordinary workflow. The override case gets its own test below.
+   */
+  function toolGrantingWorkflow(
+    model: string,
+    agentTools = "['read_file']",
+    extra = '',
+  ): WorkflowDefinition {
+    return parseWorkflow(
+      `schema_version: '1.0'\nworkflow:\n  id: wf\n  agents:\n    - { id: writer, model: ${model}, provider: openai, system_prompt: hi, tools: ${agentTools}${extra} }\n  nodes:\n    - { id: n, type: agent, agent_ref: writer }\n  edges: []`,
+    );
+  }
+  const noCatalog: WorkflowModelCatalog = () => undefined;
+
+  it('REFUSES at load when the model rejects tools and the node grants them', () => {
+    // ADR-0071 §12 carried this catalog data but deferred gating it to "a louder signal (config-time
+    // validation, or a gate-level notice), not a silent drop". This is that config-time validation. Without
+    // it the only signal is a runtime pre-skip that emits no event — the quietest possible one — and on a
+    // single-entry plan it surfaces partway through a run, after upstream nodes have spent real money.
+    expect(() =>
+      validateWorkflowWithCatalog(toolGrantingWorkflow('gpt-3.5-turbo'), noCatalog),
+    ).toThrow(WorkflowValidationError);
+    expect(() =>
+      validateWorkflowWithCatalog(toolGrantingWorkflow('gpt-3.5-turbo'), noCatalog),
+    ).toThrow(/does not accept tool definitions/);
+  });
+
+  it('names the NODE and the remedy, before any run id exists', () => {
+    // Captured, then asserted OUTSIDE any guard. Written as `catch { if (err instanceof X) { … } }` the
+    // whole test was hollow: `expect.unreachable` throws, the guard does not match it, and the catch
+    // swallows it — so a version that refused nothing at all still passed.
+    let thrown: unknown;
+    try {
+      validateWorkflowWithCatalog(toolGrantingWorkflow('gpt-3.5-turbo'), noCatalog);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(WorkflowValidationError);
+    const issues = thrown instanceof WorkflowValidationError ? thrown.issues : [];
+    expect(issues[0]?.field).toBe('node `n`.model');
+    expect(issues[0]?.message).toMatch(
+      /pick a tool-capable model, add a tool-capable fallback_chain entry, or remove the grant/,
+    );
+  });
+
+  it('allows the same model when the node grants NO tools', () => {
+    // The check is about what the node USES, not about the model in the abstract — refusing a text-only node
+    // would reject a perfectly valid workflow.
+    expect(() =>
+      validateWorkflowWithCatalog(toolGrantingWorkflow('gpt-3.5-turbo', '[]'), noCatalog),
+    ).not.toThrow();
+  });
+
+  it('allows a tool grant on a tool-capable model', () => {
+    expect(() =>
+      validateWorkflowWithCatalog(toolGrantingWorkflow('claude-opus-4-8'), noCatalog),
+    ).not.toThrow();
+  });
+
+  it("uses the NODE's model when it overrides the agent's", () => {
+    // The override is the other half of `node.model ?? agent.model`: a tool-capable agent model must not
+    // excuse a tool-incapable node override, and vice versa.
+    const overridden = parseWorkflow(
+      `schema_version: '1.0'\nworkflow:\n  id: wf\n  agents:\n    - { id: writer, model: claude-opus-4-8, provider: openai, system_prompt: hi, tools: ['read_file'] }\n  nodes:\n    - { id: n, type: agent, agent_ref: writer, model: gpt-3.5-turbo }\n  edges: []`,
+    );
+    expect(() => validateWorkflowWithCatalog(overridden, noCatalog)).toThrow(
+      /does not accept tool definitions/,
+    );
+  });
+
+  it('ACCEPTS a tool-incapable primary when a fallback entry can serve the grant', () => {
+    // The runtime pre-skip exists precisely so an incapable primary advances to a capable alternate, and the
+    // seam doc promises that behaviour. Refusing this plan at load would reject a workflow the engine runs
+    // correctly — a louder signal is only an improvement if it is also a TRUE one.
+    const withFallback = toolGrantingWorkflow(
+      'gpt-3.5-turbo',
+      "['read_file']",
+      ', fallback_chain: [{ model: claude-opus-4-8, provider: anthropic, max_attempts: 1 }]',
+    );
+    expect(() => validateWorkflowWithCatalog(withFallback, noCatalog)).not.toThrow();
+  });
+
+  it('still refuses when NO entry in the plan can serve the grant', () => {
+    const allIncapable = toolGrantingWorkflow(
+      'gpt-3.5-turbo',
+      "['read_file']",
+      ', fallback_chain: [{ model: gemini-omni-flash-preview, provider: gemini, max_attempts: 1 }]',
+    );
+    expect(() => validateWorkflowWithCatalog(allIncapable, noCatalog)).toThrow(
+      /no model in this node's plan/,
+    );
+  });
+
+  it('DEFERS for a model the catalog cannot describe', () => {
+    // Same degrade-to-accepted rule the runtime gate uses: a custom `base_url` or a brand-new id must not be
+    // denied a capability it has on the strength of missing metadata.
+    expect(() =>
+      validateWorkflowWithCatalog(toolGrantingWorkflow('totally-unknown-2099'), noCatalog),
+    ).not.toThrow();
+  });
+
+  it('runs WITHOUT a host catalog — it reads the shipped snapshot directly', () => {
+    // Asserted explicitly because the sibling output-modality check defers entirely when the host cannot
+    // resolve a model; this one must not, or the louder signal would be absent exactly where it matters most.
+    let asked = 0;
+    const counting: WorkflowModelCatalog = () => {
+      asked += 1;
+      return undefined;
+    };
+    expect(() =>
+      validateWorkflowWithCatalog(toolGrantingWorkflow('gpt-3.5-turbo'), counting),
+    ).toThrow();
+    expect(asked).toBe(0); // refused before the host lookup was needed
+  });
+});
+
 describe('validateWorkflowWithCatalog (1.AF/D15 — output_modalities load-check)', () => {
   it('passes when the requested output combination is a member of the model outputCombinations', () => {
     const wf = agentWorkflow(", model: m1, output_modalities: ['text', 'image']");

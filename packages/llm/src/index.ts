@@ -148,7 +148,7 @@ export type { ModelPricing } from './pricing.js';
 export { collapseAliasDatedPinPairs, datedPinBase, mergeModelCatalog } from './model-catalog.js';
 export type { ModelCatalogEntry, MergeModelCatalogInput, PricingSource } from './model-catalog.js';
 export { priceModel, cost, mediaCost, CostTracker } from './cost-tracker.js';
-export type { CostUpdate, PricingOverlay } from './cost-tracker.js';
+export type { CostUpdate, MediaCost, PricingOverlay } from './cost-tracker.js';
 export { estimateMaxNextCost, estimateMediaCost } from './budget-estimator.js';
 export type { MediaUnitsEstimate } from './budget-estimator.js';
 

@@ -59,9 +59,15 @@ export function createCustomOpenAiProvider(deps: {
   readonly baseURL: string;
   readonly fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 }): LlmProvider {
-  return createOpenAiAdapter({
-    providerId: deps.providerId,
-    baseURL: deps.baseURL,
-    ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
-  });
+  // MARKED custom, so the shipped catalog stops governing this provider's models. Without it an endpoint
+  // that serves a tool-capable model under a well-known id inherited that id's OpenAI verdicts and was
+  // refused — breaking the custom-`base_url` feature this factory exists for.
+  return {
+    ...createOpenAiAdapter({
+      providerId: deps.providerId,
+      baseURL: deps.baseURL,
+      ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
+    }),
+    customEndpoint: true,
+  };
 }

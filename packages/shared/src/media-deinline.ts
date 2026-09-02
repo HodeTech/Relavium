@@ -5,10 +5,11 @@ import {
   isCanonicalBase64Source,
   decodeBase64,
   mediaModalityOf,
+  pushMediaWalkChildren,
   type ContentPart,
   type DurableContentPart,
   type MediaStore,
-  type MediaUrlFetch,
+  type MediaEgressHooks,
 } from './content.js';
 
 /**
@@ -24,7 +25,7 @@ import {
  * refine cannot recurse into.
  *
  * A **`url`** media source (1.AF/D9, [ADR-0043](../../../docs/decisions/0043-media-egress-failover-rematerialization-ssrf.md)
- * §3): when an optional `fetchUrl` host hook is injected, a canonical `url` media part is **re-hosted** —
+ * §3): when an optional `egress` host hook is injected, a canonical `url` media part is **re-hosted** —
  * the host fetch performs the SSRF-validated, streamed, size-bounded connect, and the returned bytes are
  * content-addressed via `MediaStore.put` exactly like a base64 source. When **no** hook is wired (or the
  * url is malformed / has no mimeType to content-address against), the `url` source **hard-fails** — an
@@ -44,17 +45,17 @@ import {
 export function deInlineMedia(
   parts: readonly ContentPart[],
   store: MediaStore,
-  fetchUrl?: MediaUrlFetch,
+  egress?: MediaEgressHooks,
 ): Promise<DurableContentPart[]>;
 export function deInlineMedia(
   value: unknown,
   store: MediaStore,
-  fetchUrl?: MediaUrlFetch,
+  egress?: MediaEgressHooks,
 ): Promise<unknown>;
 export async function deInlineMedia(
   value: unknown,
   store: MediaStore,
-  fetchUrl?: MediaUrlFetch,
+  egress?: MediaEgressHooks,
 ): Promise<unknown> {
   // No-unsafe-media fast path — the dominant text/handle-only emit pays only a cheap cycle-safe scan,
   // no store round-trip and no clone. This scan ALSO flags a url media part (containsDurableUnsafeMedia,
@@ -63,7 +64,7 @@ export async function deInlineMedia(
   if (!containsDurableUnsafeMedia(value)) {
     return value;
   }
-  return rewrite(value, store, new Map<object, unknown>(), fetchUrl);
+  return rewrite(value, store, new Map<object, unknown>(), egress);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -81,10 +82,58 @@ function isInflightMediaPart(node: Record<string, unknown>): boolean {
   );
 }
 
+/** Whether `node` is an in-flight media part whose carrier still needs a store write to become a handle. */
+function needsStoreWrite(node: object): boolean {
+  if (!isRecord(node) || !isInflightMediaPart(node)) {
+    return false;
+  }
+  const source = node['source'];
+  // A part already at rest needs no write, so it does not spend the budget — the ceiling bounds WORK, not
+  // the shape of the value.
+  return isRecord(source) && source['kind'] !== 'handle';
+}
+
+/**
+ * How many in-flight media parts in `value` would need a store write to pin — every carrier except one
+ * already at rest (`{ kind: 'handle' }`). The engine's pre-flight count for `CR-54`'s re-host ceiling
+ * (`ADMISSION_CEILINGS.mediaPartsPerNodeOutput`), so a bound can be REFUSED before the first fetch rather
+ * than discovered as egress that already happened.
+ *
+ * Walks the same container shapes {@link deInlineMedia} rewrites — arrays, plain objects, `Map` keys and
+ * values, `Set` values — and is cycle-safe over the same graph, with the same O(1) refusal of a raw binary
+ * buffer.
+ *
+ * **It is a COUNT, not a validation, and the two deliberately disagree in one direction.** `deInlineMedia`
+ * additionally hard-fails on a base64 `data:` URI string, a loose `{ kind: 'base64' }` record and an
+ * unknown source kind; this walk skips strings outright and has no analogue for those. That is safe because
+ * every one of them still throws when the pin runs — the count can only ever be an UNDER-estimate of the
+ * work, never a licence for work that would not otherwise happen.
+ */
+export function countUnpinnedMedia(value: unknown): number {
+  let count = 0;
+  const seen = new Set<object>();
+  const stack: unknown[] = [value];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (typeof node !== 'object' || node === null || seen.has(node)) {
+      continue;
+    }
+    seen.add(node);
+    if (needsStoreWrite(node)) {
+      count += 1;
+    }
+    // The SHARED walker — the same one `collectDurableMediaHandles` uses, and the same one this function
+    // had its own byte-identical copy of until a review pointed out they could drift. It also carries the
+    // raw-binary-buffer short-circuit, so a `Uint8Array` is not walked one byte at a time.
+    pushMediaWalkChildren(node, stack);
+  }
+  return count;
+}
+
 async function rewriteMediaPart(
   node: Record<string, unknown>,
   store: MediaStore,
-  fetchUrl: MediaUrlFetch | undefined,
+  egress: MediaEgressHooks | undefined,
 ): Promise<Record<string, unknown>> {
   const source = node['source'];
   const mimeType = node['mimeType'];
@@ -101,14 +150,14 @@ async function rewriteMediaPart(
   if (mediaModalityOf(mimeType) === undefined) {
     throw new Error(`deInlineMedia: unsupported media mimeType '${mimeType}'`);
   }
-  const bytes = await mediaPartBytes(source, kind, fetchUrl);
-  const handle = await store.put(bytes, mimeType);
+  const resolved = mediaPartBytes(source, kind, egress);
+  const stored = await storeResolved(resolved, mimeType, store);
   // Build the durable part: handle-only source + Y3 byteLength; preserve the text hints / duration.
   const durable: Record<string, unknown> = {
     type: 'media',
     mimeType,
-    source: { kind: 'handle', ref: handle },
-    byteLength: bytes.length,
+    source: { kind: 'handle', ref: stored.handle },
+    byteLength: stored.byteLength,
   };
   if (typeof node['name'] === 'string') durable['name'] = node['name'];
   if (typeof node['transcript'] === 'string') durable['transcript'] = node['transcript'];
@@ -117,16 +166,70 @@ async function rewriteMediaPart(
 }
 
 /**
- * Resolve a non-handle media source to its raw bytes: decode a `base64` source, or **re-host** a `url`
+ * Write a resolved media body to the store and report its handle + exact byte count.
+ *
+ * The two carriers take DIFFERENT store methods, and that is the point of ADR-0089 §2. A decoded `base64`
+ * body is already whole and already bounded by `INLINE_MEDIA_CEILING`, so `put` is correct for it. A `url`
+ * body arrives as a stream of unknown size, so it takes `putStream` — and a host without one was already
+ * refused upstream, rather than being quietly routed through `put`.
+ *
+ * The stream is wrapped in a COUNTING pass rather than being buffered to learn its length: `byteLength` is
+ * required on the durable part (ADR-0031 Y3), and materializing the body just to measure it would undo the
+ * whole change. The count is exact because every chunk passes through it.
+ */
+async function storeResolved(
+  resolved: Uint8Array | AsyncIterable<Uint8Array>,
+  mimeType: string,
+  store: MediaStore,
+): Promise<{ handle: string; byteLength: number }> {
+  if (resolved instanceof Uint8Array) {
+    return { handle: await store.put(resolved, mimeType), byteLength: resolved.length };
+  }
+  // Bound to the store rather than pulled off it: `putStream` is a method, and an implementation is free to
+  // use `this` (the filesystem one does, for its root path). Calling a detached reference would silently
+  // change what `this` means.
+  const putStream = store.putStream?.bind(store);
+  if (putStream === undefined) {
+    throw new Error(
+      'deInlineMedia cannot re-host a url media source — this MediaStore implements no putStream (ADR-0089 §2)',
+    );
+  }
+  let byteLength = 0;
+  let drained = false;
+  const counted = (async function* count(): AsyncIterable<Uint8Array> {
+    for await (const chunk of resolved) {
+      byteLength += chunk.length;
+      yield chunk;
+    }
+    drained = true;
+  })();
+  const handle = await putStream(counted, mimeType);
+  // A store that returned a handle without consuming the whole stream would publish a TRUNCATED object and
+  // report a short `byteLength` — and that number is what ADR-0044's `Range` gate is later validated
+  // against, so a short count is not cosmetic. The `putStream` contract does not spell full consumption
+  // out, so this checks rather than trusts: both shipped stores drain, and a third that does not fails
+  // loudly here instead of publishing a lie.
+  if (!drained) {
+    throw new Error(
+      'deInlineMedia: the MediaStore returned a handle without consuming the whole media stream',
+    );
+  }
+  return { handle, byteLength };
+}
+
+/**
+ * Resolve a non-handle media source to its body — a decoded `Uint8Array` for `base64`, or a STREAM for a
+ * `url` (ADR-0089 §2: a url is the unbounded carrier and is never materialized whole). Decode a `base64`
+ * source, or **re-host** a `url`
  * source via the injected host fetch (the SSRF-validated, size-bounded connect — D9). Fail-closed on an
  * unknown source kind, a malformed source, or a `url` with no fetch hook wired (an un-re-hosted url must
  * never reach a durable position, I3).
  */
-async function mediaPartBytes(
+function mediaPartBytes(
   source: Record<string, unknown>,
   kind: unknown,
-  fetchUrl: MediaUrlFetch | undefined,
-): Promise<Uint8Array> {
+  egress: MediaEgressHooks | undefined,
+): Uint8Array | AsyncIterable<Uint8Array> {
   if (kind === 'base64') {
     const data = source['data'];
     if (typeof data !== 'string') {
@@ -143,14 +246,25 @@ async function mediaPartBytes(
   }
   if (kind === 'url') {
     const url = source['url'];
-    if (fetchUrl === undefined || typeof url !== 'string') {
-      // No host media-egress fetch wired (or a malformed url) — an un-re-hosted url must never pass.
+    if (typeof url !== 'string') {
+      // Same convention as the `data` guard above, which this branch was missed by: a `typeof` guard ⇒
+      // TypeError, and the message names the ACTUAL fault. The old text said the media-egress step "must
+      // materialize it to a handle first" — describing a url source arriving at all, which is no longer
+      // refused (ADR-0089 §2 re-hosts it through the streaming pair a few lines down). So it named a
+      // condition that is not this one, for a reader debugging a malformed part. Secret-free: the url is
+      // never interpolated (I3) — it can carry a signed query token.
+      throw new TypeError('deInlineMedia: url media source.url must be a string');
+    }
+    // A `url` IS the large-media path: unlike `base64` (bounded by INLINE_MEDIA_CEILING at the schema), its
+    // size is unknown until it is fetched. So it takes the STREAMING pair, and a host that lacks either half
+    // is refused loudly rather than quietly routed through the whole-buffer one — ADR-0089 §2: an optional
+    // guarantee with a buffering fallback is not a guarantee.
+    if (egress?.streamUrl === undefined) {
       throw new Error(
-        'deInlineMedia cannot re-host a url media source — the engine media-egress step (1.AF, ADR-0043) must materialize it to a handle first',
+        'deInlineMedia cannot re-host a url media source — no streaming media-egress hook is wired (ADR-0089 §2); a url is the unbounded path and must not be whole-buffered',
       );
     }
-    // The host hook performs the SSRF-validated, streamed, size-bounded connect (D9); we only consume bytes.
-    return fetchUrl(url);
+    return egress.streamUrl(url);
   }
   // An unknown source kind on a media part cannot be made durable-safe — fail closed (never pass through).
   // `kind` is interpolated bounded (slice 64) — on the unknown `unknown`-overload walk it is only typed
@@ -165,7 +279,7 @@ async function rewrite(
   value: unknown,
   store: MediaStore,
   cache: Map<object, unknown>,
-  fetchUrl: MediaUrlFetch | undefined,
+  egress: MediaEgressHooks | undefined,
 ): Promise<unknown> {
   if (typeof value === 'string') {
     if (isBase64DataUri(value)) {
@@ -189,7 +303,7 @@ async function rewrite(
     throw new Error('deInlineMedia: a raw binary buffer may not cross the durable boundary');
   }
 
-  const container = await rewriteContainer(value, store, cache, fetchUrl);
+  const container = await rewriteContainer(value, store, cache, egress);
   if (container !== null) {
     return container.clone;
   }
@@ -198,7 +312,7 @@ async function rewrite(
   }
 
   if (isInflightMediaPart(value)) {
-    const durable = await rewriteMediaPart(value, store, fetchUrl);
+    const durable = await rewriteMediaPart(value, store, egress);
     cache.set(value, durable);
     return durable;
   }
@@ -226,7 +340,7 @@ async function rewrite(
   const clone: Record<string, unknown> = {};
   cache.set(value, clone);
   for (const [key, nested] of Object.entries(value)) {
-    clone[key] = await rewrite(nested, store, cache, fetchUrl);
+    clone[key] = await rewrite(nested, store, cache, egress);
   }
   return clone;
 }
@@ -241,13 +355,13 @@ async function rewriteContainer(
   value: object,
   store: MediaStore,
   cache: Map<object, unknown>,
-  fetchUrl: MediaUrlFetch | undefined,
+  egress: MediaEgressHooks | undefined,
 ): Promise<{ clone: unknown } | null> {
   if (Array.isArray(value)) {
     const clone: unknown[] = [];
     cache.set(value, clone);
     for (const item of value) {
-      clone.push(await rewrite(item, store, cache, fetchUrl));
+      clone.push(await rewrite(item, store, cache, egress));
     }
     return { clone };
   }
@@ -255,7 +369,7 @@ async function rewriteContainer(
     const clone = new Map<unknown, unknown>();
     cache.set(value, clone);
     for (const [k, v] of value) {
-      clone.set(await rewrite(k, store, cache, fetchUrl), await rewrite(v, store, cache, fetchUrl));
+      clone.set(await rewrite(k, store, cache, egress), await rewrite(v, store, cache, egress));
     }
     return { clone };
   }
@@ -263,7 +377,7 @@ async function rewriteContainer(
     const clone = new Set<unknown>();
     cache.set(value, clone);
     for (const item of value) {
-      clone.add(await rewrite(item, store, cache, fetchUrl));
+      clone.add(await rewrite(item, store, cache, egress));
     }
     return { clone };
   }

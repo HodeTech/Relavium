@@ -339,22 +339,42 @@ const ENTRIES: readonly CommandManifestEntry[] = [
         description: 'the provider that serves the model (must be registered)',
       },
       {
-        // Not `required` at the manifest level, because `--clear` takes none of the three price flags. The command's
-        // arg builder enforces the real rule: exactly one of "set a price" or "--clear".
+        // Not `required` at the manifest level, because `--clear` takes none of the price flags and a
+        // media-only invocation takes neither token flag. The command's arg builder enforces the real rule.
         name: 'input',
         type: 'string',
-        description: 'input (prompt) price, USD per million tokens (required unless --clear)',
+        description:
+          'input (prompt) price, USD per million tokens — required WITH --output when either is given; omit both to price only media',
       },
       {
         name: 'output',
         type: 'string',
-        description: 'output (completion) price, USD per million tokens (required unless --clear)',
+        description:
+          'output (completion) price, USD per million tokens — required WITH --input when either is given; omit both to price only media',
       },
       {
         name: 'cached',
         type: 'string',
         description:
           "cache-read price, USD per million tokens; omitted ⇒ the catalog's cache discount, applied to your input rate",
+      },
+      {
+        // Per BILLED UNIT, never per Mtok (ADR-0044 §3's canonical units; ADR-0089 §4). No shipped catalog row
+        // carries a media rate, so these are currently the ONLY way to price one — and under `strict_cost_cap`
+        // an unpriced modality is refused, which makes them the remedy that refusal points at.
+        name: 'image',
+        type: 'string',
+        description: 'image-output price, USD per image',
+      },
+      {
+        name: 'audio',
+        type: 'string',
+        description: 'audio-output price, USD per second',
+      },
+      {
+        name: 'video',
+        type: 'string',
+        description: 'video-output price, USD per second',
       },
       {
         name: 'clear',

@@ -39,10 +39,13 @@ describe('BudgetGovernor', () => {
     /** The `budget:warning` subset — what every pre-ADR-0074 assertion in this file is about. */
     warnings: Extract<GovernorEventDraft, { type: 'budget:warning' }>[];
     unpriced: string[];
+    /** Every `onUnpriced` call verbatim — the modality arm needs the third argument the list above drops. */
+    unpricedCalls: { model: string; modalities?: readonly string[] }[];
   } {
     const emitted: GovernorEventDraft[] = [];
     const warnings: Extract<GovernorEventDraft, { type: 'budget:warning' }>[] = [];
     const unpriced: string[] = [];
+    const unpricedCalls: { model: string; modalities?: readonly string[] }[] = [];
     const governor = new BudgetGovernor({
       budget: overrides.budget ?? budget,
       ...(overrides.defaultMaxTokensEstimate === undefined
@@ -52,7 +55,10 @@ describe('BudgetGovernor', () => {
       ...(overrides.resolveEndpoint === undefined
         ? {}
         : { resolveEndpoint: overrides.resolveEndpoint }),
-      onUnpriced: (model) => unpriced.push(model),
+      onUnpriced: (model, _cap, modalities) => {
+        unpriced.push(model);
+        unpricedCalls.push({ model, ...(modalities === undefined ? {} : { modalities }) });
+      },
       ...(overrides.onLegacyMediaJobHold === undefined
         ? {}
         : { onLegacyMediaJobHold: overrides.onLegacyMediaJobHold }),
@@ -62,8 +68,169 @@ describe('BudgetGovernor', () => {
         return overrides.emitOutcome?.(event) ?? Promise.resolve();
       },
     });
-    return { governor, emitted, warnings, unpriced };
+    return { governor, emitted, warnings, unpriced, unpricedCalls };
   }
+
+  describe('an unpriced MODALITY on a priced model (CR-55, ADR-0089 §4)', () => {
+    // Every shipped catalog row leaves `mediaOutputRates` undefined, so `claude-haiku-4-5` is a priced MODEL
+    // with no image rate — the exact shape `CR-55` is about, and the reason no overlay is needed to reach it.
+    const IMAGE_TURN = [{ modality: 'image' as const, units: 4 }];
+
+    it('REFUSES under strict_cost_cap, naming the modality and the remedy', async () => {
+      const { governor } = makeGovernor({
+        budget: { max_cost_microcents: 1_000_000, on_exceed: 'warn', strict_cost_cap: true },
+      });
+      // Before ADR-0089 the media estimate contributed a silent 0 here, the projection stayed under the cap,
+      // and this call was ADMITTED — a strict cap waving through paid image generation. Restore the `continue`
+      // in `estimateMediaCost` and this assertion goes green on an `allow`, which is the break-verification.
+      await expect(governor.checkPreEgress('claude-haiku-4-5', 0, IMAGE_TURN)).rejects.toThrow(
+        BudgetExceededError,
+      );
+      await expect(governor.checkPreEgress('claude-haiku-4-5', 0, IMAGE_TURN)).rejects.toThrow(
+        /has no image rate/,
+      );
+      // The remedy has to be in the sentence: a refusal the user cannot act on is an outage, not a cap.
+      await expect(governor.checkPreEgress('claude-haiku-4-5', 0, IMAGE_TURN)).rejects.toThrow(
+        /relavium models pricing/,
+      );
+    });
+
+    it('refuses on the strict path even though the TOKEN side is priced and well under the cap', async () => {
+      // The distinction from an unpriced MODEL: everything else about this call prices correctly. What cannot
+      // be estimated is the image, and that alone is enough — the cap cannot bound a charge it cannot see.
+      const { governor } = makeGovernor({
+        budget: { max_cost_microcents: 1_000_000_000, on_exceed: 'fail', strict_cost_cap: true },
+      });
+      await expect(governor.checkPreEgress('claude-haiku-4-5', 10, IMAGE_TURN)).rejects.toThrow(
+        /has no image rate/,
+      );
+      // …and the same model with NO media requested is admitted, so the refusal is about the modality, not
+      // the model. (Without this the test would also pass if strict simply blocked `claude-haiku-4-5`.)
+      await expect(governor.checkPreEgress('claude-haiku-4-5', 10)).resolves.not.toThrow();
+    });
+
+    it('ALLOWS with a once-per-modality notice when strict_cost_cap is off (ADR-0028 H4 holds)', async () => {
+      const { governor, unpricedCalls } = makeGovernor({
+        budget: { max_cost_microcents: 1_000_000_000, on_exceed: 'fail' },
+      });
+      await expect(
+        governor.checkPreEgress('claude-haiku-4-5', 10, IMAGE_TURN),
+      ).resolves.not.toThrow();
+      expect(unpricedCalls).toEqual([{ model: 'claude-haiku-4-5', modalities: ['image'] }]);
+
+      // A standing condition of the model, not an event: the second and third identical calls stay silent.
+      await governor.checkPreEgress('claude-haiku-4-5', 10, IMAGE_TURN);
+      await governor.checkPreEgress('claude-haiku-4-5', 10, IMAGE_TURN);
+      expect(unpricedCalls).toHaveLength(1);
+
+      // …but a DIFFERENT modality on the same model is a different sentence, and is said.
+      await governor.checkPreEgress('claude-haiku-4-5', 10, [{ modality: 'audio', units: 30 }]);
+      expect(unpricedCalls).toEqual([
+        { model: 'claude-haiku-4-5', modalities: ['image'] },
+        { model: 'claude-haiku-4-5', modalities: ['audio'] },
+      ]);
+    });
+
+    it('refuses a ZERO-unit estimate too — a config guess of 0 must not disable the cap', async () => {
+      // REPLACES 'says nothing when no media volume is requested — a zero-unit turn is not a gap', which pinned
+      // a reachable bypass as correct. The estimate's unit counts come from `[defaults].media_cost_estimate`,
+      // typed `nonNegativeInt` — so `media_cost_estimate = { video = 0 }` in a git-committable `project.toml`
+      // made the gap disappear and silently turned `strict_cost_cap` off for video, in a file a cloned workflow
+      // repo can carry. The entry existing at all means the node ASKED for that modality; the count is a guess.
+      const { governor } = makeGovernor({
+        budget: { max_cost_microcents: 1_000_000_000, on_exceed: 'fail', strict_cost_cap: true },
+      });
+      await expect(
+        governor.checkPreEgress('claude-haiku-4-5', 10, [{ modality: 'video', units: 0 }]),
+      ).rejects.toThrow(/has no video rate/);
+    });
+
+    it('the refusal names a command that actually runs', async () => {
+      // `relavium models pricing <model>` alone exits 2 (missing --provider), and none of --input/--output add a
+      // media rate. A remedy the user cannot perform trains them to disable the cap, which is the failure
+      // ADR-0089 §4(c) exists to prevent — so the flags and their BILLED units are in the sentence.
+      const { governor } = makeGovernor({
+        budget: { max_cost_microcents: 1_000_000, on_exceed: 'warn', strict_cost_cap: true },
+      });
+      await expect(
+        governor.checkPreEgress('claude-haiku-4-5', 0, [{ modality: 'image', units: 4 }]),
+      ).rejects.toThrow(/--provider PROVIDER_ID --image USD_PER_IMAGE/);
+      await expect(
+        governor.checkPreEgress('claude-haiku-4-5', 0, [{ modality: 'audio', units: 4 }]),
+      ).rejects.toThrow(/--audio USD_PER_SECOND/);
+    });
+
+    it('reports `unpriced_modality`, distinct from `unpriced_model` — the remedies differ', async () => {
+      // A caller narrowing on `.reason` has to tell "no price at all" (needs --input/--output) from
+      // "priced for tokens, missing a media rate" (needs --image/--audio/--video). Both used to say
+      // `unpriced_model`, and sending a user to restate token rates writes a row that outranks the catalog
+      // for tokens too — the trap ADR-0089 §4(c) exists to avoid.
+      const { governor } = makeGovernor({
+        budget: { max_cost_microcents: 1_000_000, on_exceed: 'warn', strict_cost_cap: true },
+      });
+      const modality = await governor
+        .checkPreEgress('claude-haiku-4-5', 0, [{ modality: 'image', units: 1 }])
+        .then(() => undefined)
+        .catch((e: unknown) => (e instanceof BudgetExceededError ? e.reason : undefined));
+      expect(modality).toBe('unpriced_modality');
+
+      // …and a wholly unpriced MODEL still reports the other one.
+      const model = await governor
+        .checkPreEgress('evil-unknown-model', 10)
+        .then(() => undefined)
+        .catch((e: unknown) => (e instanceof BudgetExceededError ? e.reason : undefined));
+      expect(model).toBe('unpriced_model');
+    });
+
+    it('uses BARE-WORD placeholders — an angle bracket would redirect when pasted', async () => {
+      // `<` and `>` are shell redirections. `--provider <p> --image <usd-per-image>` pasted into a shell
+      // reads stdin from a file named `p` and CREATES a file named `--image` in the user's cwd. A remedy
+      // that fails and leaves junk behind trains the user to disable the cap instead.
+      const { governor } = makeGovernor({
+        budget: { max_cost_microcents: 1_000_000, on_exceed: 'warn', strict_cost_cap: true },
+      });
+      const err = await governor
+        .checkPreEgress('claude-haiku-4-5', 0, [{ modality: 'image', units: 1 }])
+        .then(() => undefined)
+        .catch((e: unknown) => (e instanceof Error ? e.message : ''));
+      expect(err).toBeDefined();
+      expect(err ?? '').not.toMatch(/<[a-z-]+>/); // no angle-bracket placeholder anywhere in the remedy
+    });
+
+    it('quotes the model id in the command, so a hostile id cannot ride into the shell', async () => {
+      // The remedy is written to be COPIED into a shell, and a model id is not ours — it comes from the
+      // authored workflow or the live catalog. Unquoted, an id carrying `;` or `$(…)` would be pasted into
+      // a command the refusal itself vouched for. The prose keeps its own quoting; the ARGUMENT is escaped.
+      const { governor } = makeGovernor({
+        budget: { max_cost_microcents: 1_000_000, on_exceed: 'warn', strict_cost_cap: true },
+      });
+      await expect(
+        governor.checkPreEgress('evil; rm -rf ~', 0, [{ modality: 'image', units: 1 }]),
+        // An unknown id takes the unpriced-MODEL branch; the escaping is the same on both remedies.
+      ).rejects.toThrow(/Price it with `relavium models pricing 'evil; rm -rf ~'`/);
+    });
+
+    it('a host notice that THROWS cannot turn the advisory into a blocked call', async () => {
+      // Mirrors the unpriced-MODEL posture: the notice is best-effort, and a broken renderer must not become
+      // a budget failure. The dedupe is still recorded, so a throwing sink cannot produce an exception storm.
+      let calls = 0;
+      const governor = new BudgetGovernor({
+        budget: { max_cost_microcents: 1_000_000_000, on_exceed: 'fail' },
+        onUnpriced: () => {
+          calls += 1;
+          throw new Error('renderer exploded');
+        },
+        emit: () => Promise.resolve(),
+      });
+      await expect(
+        governor.checkPreEgress('claude-haiku-4-5', 10, IMAGE_TURN),
+      ).resolves.not.toThrow();
+      await expect(
+        governor.checkPreEgress('claude-haiku-4-5', 10, IMAGE_TURN),
+      ).resolves.not.toThrow();
+      expect(calls).toBe(1);
+    });
+  });
 
   it('allows a call whose estimate stays within the cap', async () => {
     const { governor, warnings } = makeGovernor();

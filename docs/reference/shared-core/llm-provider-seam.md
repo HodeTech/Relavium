@@ -71,7 +71,7 @@ interface LlmMessage {
 type ContentPart =
   | { type: 'text'; text: string }
   | { type: 'reasoning'; text: string; signature?: string; redacted?: boolean }  // ADR-0030; signature is ephemeral — replayed SAME-provider (the Anthropic adapter lowers it back to a thinking block), stripped on a cross-provider failover (ADR-0039)
-  | { type: 'tool_call'; id: string; name: string; args: unknown; providerExecuted?: boolean }   // assistant -> wants tool
+  | { type: 'tool_call'; id: string; name: string; args: unknown; providerExecuted?: boolean; signature?: string }   // assistant -> wants tool; signature is an ephemeral provider continuation token (ADR-0090) — replayed SAME-provider, stripped on failover, structurally absent from the durable arm
   | { type: 'tool_result'; toolCallId: string; result: unknown; isError?: boolean; providerExecuted?: boolean;
       media?: DurableMediaPart[] }  // ADR-0031 #7 — typed handle-only attachments; raw media bytes in `result` are FORBIDDEN
   | { type: 'media'; mimeType: string; source: MediaSource; name?: string; transcript?: string };  // ADR-0031 — the in-flight media arm; modality = MIME prefix
@@ -101,9 +101,10 @@ type DurableMediaPart = {
   byteLength?: number;   // bounds a Range/byte-delivery request without trusting a raw file size
   durationMs?: number;   // audio/video only — render/desync metadata
 };
-// DurableContentPart mirrors ContentPart with the durable media arm and a SIGNATURE-LESS reasoning
-// arm ({ type: 'reasoning'; text; redacted? }) — the ADR-0030 "never persisted" guarantee made
-// structural. deInlineMedia (engine-owned, wired at 1.AF) is the typed flight→durable transform.
+// DurableContentPart mirrors ContentPart with the durable media arm and TWO signature-less arms — a
+// reasoning arm ({ type: 'reasoning'; text; redacted? }) and, since ADR-0090, a tool_call arm with no
+// `signature` — so the ADR-0030 "never persisted" guarantee is structural for both continuation tokens
+// rather than defended by a test. deInlineMedia (engine-owned, wired at 1.AF) is the flight→durable transform.
 
 interface ToolDef {
   name: string;
@@ -130,7 +131,7 @@ interface Usage {
   cacheWriteTokens?: number;
   reasoningTokens?: number;      // ADR-0030 — OBSERVABILITY only; a subset of outputTokens (≤), never billed separately
   mediaUnits?: MediaUnitsEntry[]; // ADR-0031 — a DISJOINT media axis (per-image / per-second), never folded into tokens
-  costMicrocents?: number;              // integer micro-cents (canonical unit defined below); computed by a pricing table keyed on canonical model id
+  costMicrocents?: number;              // integer micro-cents (canonical unit defined below); computed by the generated catalog snapshot keyed on canonical model id (ADR-0071)
 }
 
 // One media usage record (ADR-0031). `modality` is the deliberately complete media-BILLED closed
@@ -151,7 +152,7 @@ type StreamChunk =
   | { type: 'reasoning_end'; id: string; signature?: string; redacted?: boolean }  // signature/redacted both surfaced on the stream
   | { type: 'tool_call_start'; id: string; name: string }
   | { type: 'tool_call_delta'; id: string; argsJsonDelta: string }  // partial JSON; count/timing is provider-dependent — accumulate, parse at tool_call_end
-  | { type: 'tool_call_end'; id: string }
+  | { type: 'tool_call_end'; id: string; signature?: string }  // ADR-0090 — the ephemeral continuation token for the COMPLETED call, mirroring reasoning_end.signature; the accumulator carries it onto the assembled tool_call part
   | { type: 'media_start'; id: string; mimeType: string }            // ADR-0031 — media output channel (mirrors the triads); mimeType is bounded bare type/subtype (MediaMimeTypeSchema)
   | { type: 'media_delta'; id: string; progress?: number; partialRef?: string }  // progress is a 0..1 fraction; NO base64 ever; partialRef is a RESERVED preview HANDLE (A3)
   | { type: 'media_end'; id: string; media: DurableMediaPart }       // closes the media block — the finished media as a handle-only durable part
@@ -199,6 +200,31 @@ interface CapabilityFlags {
   };
 }
 ```
+
+> **`CapabilityFlags` is per-PROVIDER; a second, per-MODEL axis sits beside it (`CR-51`,
+> [ADR-0071](../../decisions/0071-models-dev-as-the-model-metadata-source.md) amendment).** The catalog's
+> `RequestCapabilities` records what one MODEL accepts, which varies inside a single provider — OpenAI does
+> tools, `gpt-3.5-turbo` does not. Two of its four fields gate the request rather than a preference. Each is
+> ONE predicate, read by BOTH the `FallbackChain` pre-skip (through `requestSupportReason`) and the adapter
+> entry, so the two cannot disagree — pinned by a test that drives one shared input table through both seams:
+>
+> - **`toolCall`** — a request carrying `tools` on a model that rejects them.
+> - **`attachment`** — a request carrying a `media` input part on a model that rejects them.
+>
+> The **tool** gate additionally runs at LOAD time: a workflow node granting tools on a tool-incapable model
+> fails `validateWorkflowWithCatalog` before a run id exists. That is the "config-time validation"
+> [ADR-0071](../../decisions/0071-models-dev-as-the-model-metadata-source.md) §12 named when it deferred this
+> gate to "a louder signal … not a silent drop"; `attachment` has no load-time counterpart, because media
+> inputs are runtime values and nothing at load can see one. When no chain entry can serve the request, the
+> exhausted-chain error carries every skip reason and classifies as `bad_request`, so the refusal is
+> explainable rather than opaque.
+>
+> The other two (`temperature`, `structuredOutput`) are knobs the adapters simply **withhold** from the wire:
+> a dropped preference changes nothing about the answer. These two are not knobs — withholding tools from a
+> turn that needs them, or dropping the image the question is about, buys a confidently wrong answer at full
+> price, and sending them buys a 400. So the chain skips to a model that can serve the request, for free,
+> before any egress. A model the catalog cannot describe (a custom `base_url`, a new id) degrades to
+> **accepted**, so missing metadata never withholds a capability a model actually has.
 
 > **The `key` parameter is host-aware (its `string` *type* is unchanged).** On the
 > **Node-style surfaces** (CLI, VS Code extension host, Phase-2 Bun API) `key` is the
@@ -400,7 +426,25 @@ adapters):
   not interpret it; only the originating adapter feeds it back (a same-provider,
   same-turn obligation enforced by the 1.K `FallbackChain` strip-on-failover, which
   drops every `reasoning` part on a cross-provider advance — see the fallback section
-  below).
+  below). Since [ADR-0090](../../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md)
+  a sibling latch strips `tool_call.signature` — on a **narrower** boundary. Reasoning is
+  stripped when the **provider** changes; a `tool_call.signature` is stripped when the
+  **issuer** changes, and the issuer is `provider\0model`. So advancing to a different MODEL
+  of the same provider keeps the reasoning and drops the tool-call token. That is deliberate:
+  Gemini's `thoughtSignature` is minted against the model that issued the call, so replaying it
+  to a sibling model can 400, while reasoning replay is a provider-level contract. The
+  `tool_call` itself is NOT dropped — only its signature — because the call and its result are
+  the conversation the next provider still needs. *(This paragraph previously described both
+  strips as sharing one predicate; the code has always used two.)*
+- **`customEndpoint?`** on `LlmProvider` (`CR-51` review, 2026-09-02) — `true` when the adapter targets a
+  **non-official `base_url`**. The shipped model catalog is keyed by model id ALONE, so a custom
+  OpenAI-compatible service serving a tool-capable model under a well-known id inherited that id's verdicts
+  and was refused at load and skipped in the chain — breaking the custom-`base_url` feature outright.
+  Optional and absent-means-official, so every existing adapter and host is unchanged;
+  `createCustomOpenAiProvider` sets it. When set, the catalog stops governing this provider's models and they
+  fall back to the same degrade-to-ACCEPTED default an un-described model already gets, because missing (or
+  foreign) metadata must never withhold a capability a model actually has. The host tells the engine's
+  load-time check the same fact through `CatalogValidateOptions.customEndpoint`.
 - **`responseFormat`** on `LlmRequest` — `{ type: 'text' } | { type: 'json', schema, name?, strict? }`,
   one canonical JSON-Schema each adapter lowers to the provider's native
   structured-output mode (OpenAI `response_format`, Gemini `responseJsonSchema`,
@@ -437,8 +481,18 @@ managed mode) are recorded in the ADR — this section is the dry shape referenc
   additionally drops the reasoning `signature` **structurally** (parsing a signed part
   through it strips the field — the ADR-0030 never-persisted rule made type-level). An
   ephemeral provider-hosted ref (Gemini `fileUri`, OpenAI `file_id`/`audio.id`) is
-  **structurally absent from every part** — it lives only in a process-scoped adapter
-  sidecar keyed by `(provider, sha256)` (ADR-0031 §Guardrails).
+  **structurally absent from every part** — it lives only in a sidecar keyed by
+  `(provider, sha256)`, owned **per-`FallbackChain` run-instance**
+  ([ADR-0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md) §4,
+  which sharpened ADR-0031 §Guardrails' looser "process-scoped adapter sidecar" wording —
+  a process-wide map would leak refs across unrelated runs). It works because the CHAIN owns
+  it and re-materializes **before** invoking the adapter, so its value never has to survive an
+  adapter boundary.
+  A continuation token has no such hook — capture and replay straddle two adapter calls — so
+  Gemini's function-call `thoughtSignature` rides the **part**, not a sidecar
+  ([ADR-0090](../../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md),
+  superseding ADR-0089 §3; decided and landing in `W5`): `tool_call.signature?` in flight,
+  `tool_call_end.signature?` on the stream, and structurally absent from the durable arm.
 - **The `media_start` / `media_delta` / `media_end` `StreamChunk` triad** (mirrors the
   `tool_call_*`/`reasoning_*` triads; `id` correlates). **No base64 ever rides the
   normalized stream**: `media_delta` carries `progress?` plus `partialRef?` — a
@@ -495,11 +549,13 @@ managed mode) are recorded in the ADR — this section is the dry shape referenc
   cancel→abort→terminal sweep; failed→`content_filter`), and the async adapters implement it — **OpenAI/Sora**
   (`videos.create` → an opaque `jobId`, `pollMediaJob` → `videos.retrieve`/`downloadContent` → base64, 1.AH A3)
   and **Gemini/Veo** (`models.generateVideos` → an operation, `pollMediaJob` → `operations.getVideosOperation`
-  → inline `videoBytes` base64 OR a re-hostable `url` source the engine de-inlines via `fetchMediaBytes`,
+  → inline `videoBytes` base64 OR a re-hostable `url` source the engine de-inlines by STREAMING it into the
+  store (`MediaUrlStream` + `MediaStore.putStream`, ADR-0089 §2 — never `fetchMediaBytes`, which whole-buffers),
   1.AH A4). The opaque jobId reversibly encodes the vendor id/op-name (`rlv-mediajob:1:<base64url(id)>`, the
   shared `encodeMediaJobId`/`decodeMediaJobId`) so a cold-process re-attach resolves it statelessly (ADR-0045
-  §7). The remaining work is **1.AH host-wiring**: the per-model `media_surface` lookup, the `MediaUrlFetch`
-  re-host hook (a Veo `url` result needs it end-to-end), and verified generative pricing rows.
+  §7). The remaining work is **1.AH host-wiring**: the per-model `media_surface` lookup and verified
+  generative pricing rows. The re-host hook itself LANDED in `W5`/`CR-53`: a `url` carrier takes
+  `MediaUrlStream`, and a `url` with no streaming hook wired is REFUSED rather than silently inlined.
 
   ```ts
   // Seam shape (A5; ADR-0045) — behavior WIRED at 1.AG (sync generateMedia Section C, async poll loop Section D).
@@ -542,18 +598,29 @@ the **`persistableMediaRefine` backstop** (a tripwire — the primary guarantee 
 split plus the engine's active `deInlineMedia` pass at the one emit choke point, wired at
 1.AF). Result content is deliberately **not** ceiling-bounded: a generated image
 legitimately exceeds the inline ceiling in flight and is de-inlined at the seam return.
-The platform-free **`MediaStore`** contract (`put`/`get`/`resolveForEgress` — bytes as
-`Uint8Array`, named only by the handle string) and the **`DeInlineMedia`** transform
-signature are landed as reserved shape; implementations and the choke-point wiring are
-1.AF.
+The platform-free **`MediaStore`** contract — `put` / `get` / `resolveForEgress` /
+`readRange`, bytes as `Uint8Array`, named only by the handle string — and the
+**`DeInlineMedia`** transform are **implemented**: `@relavium/db` ships the filesystem CAS
+and an in-memory reference, and the choke-point wiring landed at 1.AF.
+[ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §2 adds a fifth
+method, optional **`putStream?(bytes: AsyncIterable<Uint8Array>, mimeType)`**, plus
+**`MediaUrlStream`** — the streaming sibling of `MediaUrlFetch` — so a media body is never
+materialized whole between the network and the store. The two are not interchangeable and
+the **carrier decides**: a decoded `base64` body is already whole and already bounded by
+`INLINE_MEDIA_CEILING`, so it takes `put`; a `url` is the UNBOUNDED carrier (its size is
+unknown until fetched) so it takes the streaming pair, and a host offering only the
+whole-buffer form has its `url` sources **refused** rather than quietly buffered — an
+optional guarantee with a buffering fallback is not a guarantee. The bound is enforced as
+the stream is consumed, so an over-size body is aborted mid-flight instead of downloaded
+and then rejected.
 
 ### Model discovery — the `listModels?` capability ([ADR-0064](../../decisions/0064-live-model-catalog.md))
 
 `listModels?(key, signal?): Promise<ModelListing[]>` is an **optional, capability-varying** method (the same
 pattern as `generateMedia?` / `contextLimit?`): a provider without a live list endpoint omits it and the host
-degrades to the static registry ([pricing.ts](../../../packages/llm/src/pricing.ts)) for that provider. It
+degrades to the generated catalog snapshot ([catalog/snapshot.ts](../../../packages/llm/src/catalog/snapshot.ts)) for that provider. It
 returns **live discovery** — which model ids a given `key` can actually reach (tier/allowlist-gated). The live
-tier decides **availability**; the static registry stays the **pricing** authority (ADR-0064 §6), so
+tier decides **availability**; the shipped catalog snapshot stays the **pricing** authority (ADR-0064 §6, ADR-0071 §5), so
 `ModelListing` deliberately carries **no price**. Each adapter maps its vendor `models.list()` row to
 `ModelListing` **inside `src/adapters/*`** — **no vendor SDK type crosses this seam** (ADR-0011).
 
@@ -565,7 +632,7 @@ interface ModelListing {
   displayName?: string;           // Anthropic/Gemini return one; OpenAI/DeepSeek do not
   contextWindowTokens?: number;   // Anthropic `max_input_tokens` / Gemini `inputTokenLimit`; positive-only (a 0/absent limit is "unknown" → OMITTED, never a stored 0)
   maxOutputTokens?: number;       // Anthropic `max_tokens` / Gemini `outputTokenLimit`; positive-only
-  deprecatedAt?: string;          // ISO-8601; the LIVE list leaves it UNDEFINED — the static registry supplies the deprecation half, unioned at merge time (ADR-0064 §7)
+  deprecatedAt?: string;          // ISO-8601; the LIVE list leaves it UNDEFINED — the Relavium-owned deprecation overlay supplies the deprecation half, unioned at merge time (ADR-0064 §7)
 }
 ```
 
@@ -693,7 +760,7 @@ Two streaming subtleties the adapters must handle:
   usage chunk; Anthropic puts usage in `message_delta`; Gemini in the final
   chunk.
 - **`costMicrocents` is ours, never the provider's** — it is computed by a Relavium
-  pricing table keyed on the **canonical model id**, not read from any provider
+  generated catalog snapshot keyed on the **canonical model id** (ADR-0071), not read from any provider
   response. This is the same `costMicrocents` that surfaces in the `cost:updated` run
   event (see [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md)).
 
@@ -756,9 +823,13 @@ followed by each authored `fallback_chain` entry:
 - **No failover after the first streamed content chunk:** once `stream` has
   forwarded content, a mid-stream error surfaces to the node-retry layer (1.S)
   rather than re-issuing on the next provider.
-- **Strip-on-failover (ADR-0030):** crossing to a *different* provider drops
-  every `reasoning` part (and its ephemeral `signature`) from the request before
-  re-issuing — a signature is never replayed across a provider boundary.
+- **Strip-on-failover (ADR-0030, extended by [ADR-0090](../../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md)):**
+  crossing to a *different* provider drops every `reasoning` part (and its
+  ephemeral `signature`) from the request before re-issuing. A `tool_call`'s
+  `signature` strips on the finer **(provider, model)** boundary — a token is the
+  MODEL's, and a `tool_call` part is unconditionally replayed where a `reasoning`
+  part is optional — but the **call itself survives**: it is the conversation the
+  next model still needs, so only the token goes.
 - Surface **per-attempt usage** to the injected `CostTracker` (against that
   attempt's model) so cost stays accurate across a failover, and report each
   attempt (succeeded / failed / skipped) via an `onAttempt` observer so the

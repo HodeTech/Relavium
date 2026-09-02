@@ -16,7 +16,7 @@ import {
   WorkflowEngine,
 } from '@relavium/core';
 import { effortTiersFor, type PricingOverlay } from '@relavium/llm';
-import type { MediaCostEstimate, MediaSurface } from '@relavium/shared';
+import type { MediaBilledModality, MediaCostEstimate, MediaSurface } from '@relavium/shared';
 
 import { effortWithheldNote, reasoningWithheldByCapFor } from '../chat/effort-notice.js';
 import { hostAbortController, hostDeadlineTimer, hostSleep } from '../process/sleep.js';
@@ -91,7 +91,11 @@ export interface BuildEngineOptions {
    * Sink for an UNPRICED model turn (ADR-0071 §K7) — the cost cap could not apply. `run.ts` wires it to stderr,
    * never stdout (`--json`). The governor already dedups per model. Absent ⇒ silent.
    */
-  readonly onUnpriced?: (model: string, capMicrocents: number) => void;
+  readonly onUnpriced?: (
+    model: string,
+    capMicrocents: number,
+    modalities?: readonly MediaBilledModality[],
+  ) => void;
   /** ADR-0074 §3 — new egress is held while a resumed legacy media job's cost basis is unknown. Routed to stderr. */
   readonly onLegacyMediaJobHold?: (nodeIds: readonly string[]) => void;
 }
