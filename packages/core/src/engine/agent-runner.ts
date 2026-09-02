@@ -970,11 +970,16 @@ function resolveGrant(
 ): { ok: true; ids: readonly string[] } | { ok: false; message: string } {
   const agentSet = agentTools ?? [];
   if (nodeTools === undefined) return { ok: true, ids: agentSet };
-  const widening = nodeTools.filter((t) => !agentSet.includes(t));
-  if (widening.length > 0) {
+  // POSITIONAL, and the authored tool value is never echoed (ADR-0094). `node.tools` is validated only as a
+  // non-empty string — no charset, no length bound — so an id can carry a newline, a terminal escape, or
+  // secret-shaped text, and this message reaches a `node:failed` event and a log. The plan-build check that
+  // now catches this first reports it the same way; this is the floor, for a host that builds no plan.
+  const wideningAt = nodeTools.flatMap((t, i) => (agentSet.includes(t) ? [] : [i]));
+  if (wideningAt.length > 0) {
+    const positions = wideningAt.map((i) => `tools[${i}]`).join(', ');
     return {
       ok: false,
-      message: `node tools [${widening.join(', ')}] are not granted to the agent (a node narrows, never widens)`,
+      message: `node ${positions} ${wideningAt.length === 1 ? 'is' : 'are'} not granted to the agent (a node narrows, never widens)`,
     };
   }
   return { ok: true, ids: nodeTools };

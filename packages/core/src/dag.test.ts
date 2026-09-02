@@ -683,6 +683,84 @@ describe('buildRunPlan — agent_ref resolution', () => {
     expect(err.issues[0]?.field).toContain('agent_ref');
   });
 
+  describe('node `tools:` narrows and never widens, at PLAN BUILD (CR-64, ADR-0094)', () => {
+    /** An inline agent granted `read_file`, and a node that narrows or widens it. */
+    const withTools = (nodeTools: string, agentExtra = ''): string =>
+      doc(`  id: grant
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+      tools: [read_file, list_directory]${agentExtra}
+  nodes:
+    - { id: n, type: agent, agent_ref: a, prompt_template: 'go', tools: ${nodeTools} }
+  edges: []`);
+
+    it('REFUSES a node listing a tool its inline agent lacks — before any run id exists', () => {
+      // The whole point of the item: this used to pass every pre-run check and fail partway through a run,
+      // after upstream nodes had already spent money. Five documents said the parser caught it; none did.
+      const err = expectGraphError(withTools('[read_file, run_command]'));
+      expect(err.issues[0]?.kind).toBe('tool_grant_widened');
+    });
+
+    it('locates the offence POSITIONALLY and never echoes the authored tool value', () => {
+      // `node.tools` is only `nonEmptyString` — no charset, no length — so an authored id can carry a
+      // newline, a terminal escape, or secret-shaped text, and a GraphIssue is surfaced AND logged.
+      // errors.ts binds every field to "a *name* … never an authored value"; an invalid edge handle is
+      // already reported as `edge #n` for exactly this reason.
+      const hostile = 'sk-live-AAAABBBBCCCC';
+      const err = expectGraphError(withTools(`[read_file, ${hostile}]`));
+      expect(err.issues[0]?.field).toBe('node `n`.tools[1]'); // the INDEX, not the value
+      expect(JSON.stringify(err.issues[0])).not.toContain(hostile);
+    });
+
+    it('accepts a genuine narrowing, and a node that declares no tools at all', () => {
+      expect(plan(withTools('[read_file]')).vertices.has('n')).toBe(true);
+      expect(
+        plan(
+          doc(`  id: grant
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+      tools: [read_file]
+  nodes:
+    - { id: n, type: agent, agent_ref: a, prompt_template: 'go' }
+  edges: []`),
+        ).vertices.has('n'),
+      ).toBe(true);
+    });
+
+    it('SKIPS an agent whose grant depends on an unconnected MCP server, unless the host says it is final', () => {
+      // An agent declaring `mcp_servers` has a grant that is not knowable from the document: its tools
+      // arrive at connect. Refusing here would reject a workflow that is about to be valid — so the check
+      // stands down, and `resolveGrant` remains its only line. Recorded, never silent.
+      const mcp = `
+      mcp_servers:
+        - { id: s, transport: stdio, command: ./srv }`;
+      expect(plan(withTools('[read_file, from_mcp]', mcp)).vertices.has('n')).toBe(true);
+
+      // …and once the host asserts the grant is final (it connected and augmented the workflow), the same
+      // widening IS refused. This is the flag `relavium run` passes.
+      const err = expectGraphError(withTools('[read_file, from_mcp]', mcp), {
+        toolGrantsFinal: true,
+      });
+      expect(err.issues[0]?.kind).toBe('tool_grant_widened');
+    });
+
+    it('checks an MCP-free agent either way — its grant is complete in the document', () => {
+      // No `mcp_servers` ⇒ no ordering can change the grant, so the flag is irrelevant.
+      expect(expectGraphError(withTools('[run_command]')).issues[0]?.kind).toBe(
+        'tool_grant_widened',
+      );
+      expect(
+        expectGraphError(withTools('[run_command]'), { toolGrantsFinal: true }).issues[0]?.kind,
+      ).toBe('tool_grant_widened');
+    });
+  });
+
   it('attaches the resolved agent and its fallback chain to an agent vertex', () => {
     const agents = new Map<string, Agent>([
       [

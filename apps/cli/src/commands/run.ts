@@ -385,7 +385,15 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     await engine.drainTerminalOutbox().catch(() => undefined);
     // The AUGMENTED workflow — the same one the store froze above, so the durable snapshot and the executed
     // graph are one thing rather than two that happen to be close.
-    const handle = engine.start({ workflow: runWorkflow, inputs });
+    // `toolGrantsFinal`: the MCP servers were connected and the workflow rewritten above, so every inline
+    // agent's `tools` already includes what its servers discovered. That makes the plan-build narrowing
+    // check correct here (ADR-0094) — a node listing a tool its agent lacks is refused before the run id
+    // exists, rather than partway through, after upstream nodes have spent money.
+    const handle = engine.start({
+      workflow: runWorkflow,
+      inputs,
+      planOptions: { toolGrantsFinal: true },
+    });
 
     // Hand the live run to the shared driver (2.G): it owns the event loop, the SIGINT cooperative-cancel
     // contract, the renderer lifecycle (constructed inside, after SIGINT registration — output mode per

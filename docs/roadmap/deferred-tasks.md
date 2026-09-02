@@ -447,6 +447,24 @@ Severity is the review's verified rating. Check an item off in the PR that resol
       run — so this is a delivery artefact, not a durability breach.
       *(low · packages/core/src/engine/engine.ts; ADR-0036, ADR-0085)*
 
+## Phase 2.6.5 `W6` residuals — `CR-64` ([ADR-0094](../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md), 2026-09-02)
+
+> The plan-build narrowing check covers an INLINE agent completely. Two halves of the surface do not exist
+> yet, and both are stated here rather than implied by a closed item.
+
+- [ ] **`$ref` agent resolution is unwired on EVERY surface.** `BuildRunPlanOptions.agents` is exported and
+      documented, and **nothing populates it** — not `relavium run`, not the engine's own call sites. So the
+      `dangling_ref` check (pre-existing) and the new `tool_grant_widened` check are both inert for an
+      external `$ref`'d agent: there is nothing to resolve against. Closing it means a host reading and
+      validating `.agent.yaml` files and passing the registry — a surface feature, not a check.
+      *(medium · apps/cli/src/commands/run.ts, packages/core/src/dag.ts; ADR-0094 §5)*
+- [ ] **A host that does not assert `toolGrantsFinal` gets no plan-build check for an MCP-declaring agent.**
+      By design — an agent whose `mcp_servers` are unconnected has a grant that is not knowable from the
+      document, and refusing there would reject a workflow about to be valid. `relavium run` asserts it (it
+      connects and augments first). Any future host must do the same or accept `resolveGrant` as its only
+      line. The risk is that a new surface forgets, silently.
+      *(low · packages/core/src/dag.ts; ADR-0094 §2)*
+
 ## Phase 2.6.5 `W5` residuals — `CR-50` ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §1, 2026-09-02)
 
 > `CR-50` closed its DELIVERY half: a `read_media` call now reaches the model as media on all three

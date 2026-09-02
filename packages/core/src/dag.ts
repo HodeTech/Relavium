@@ -55,6 +55,23 @@ export interface BuildRunPlanOptions {
    * secret-taint gate. When omitted, `agent_ref` resolution is deferred (no dangling check).
    */
   readonly agents?: ReadonlyMap<string, Agent>;
+  /**
+   * The host asserts every referenced agent's tool grant is FINAL — its `mcp_servers` are connected and the
+   * workflow has been rewritten so each agent's `tools` includes what they discovered
+   * ([ADR-0094](../../../docs/decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md)).
+   *
+   * This exists because the narrowing check below cannot be correct without it. An agent that declares
+   * `mcp_servers` has a grant that is not knowable from the document alone: refusing a node against the
+   * un-augmented grant would reject a workflow that is about to be valid. So the check runs for such an
+   * agent ONLY when a host says the grant is final — which `relavium run` does, by connecting its servers
+   * and augmenting the workflow BEFORE it calls `engine.start()`.
+   *
+   * An agent that declares no `mcp_servers` is checked either way: its grant is complete in the document,
+   * and no ordering can change that. Absent ⇒ not asserted, so an MCP-declaring agent's nodes are skipped
+   * and the runtime `resolveGrant` check remains their only line — never silently, see the residual in
+   * deferred-tasks.md.
+   */
+  readonly toolGrantsFinal?: boolean;
 }
 
 /** Mirrors parser.ts: only a value matching its field's schema charset is echoed into an error. */
@@ -140,7 +157,15 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
   // a compile step they never see. They join the same `issues` batch as every other graph fault, so an
   // author sees all of them at once instead of fixing one per run.
   collectCeilingIssues(def, agentsById, issues);
-  validateAndWireEdges(spec, nodesById, agentsById, opts?.agents !== undefined, addEdge, issues);
+  validateAndWireEdges(
+    spec,
+    nodesById,
+    agentsById,
+    opts?.agents !== undefined,
+    addEdge,
+    issues,
+    opts?.toolGrantsFinal === true,
+  );
 
   // 4. Kahn topological order (authored-order tie-break → reproducible plan; deep-equal-testable).
   const order = kahnOrder(spec.nodes, dependents, dependencies, authoredIndex);
@@ -199,6 +224,7 @@ function validateAndWireEdges(
   registrySupplied: boolean,
   addEdge: (producer: string, consumer: string) => void,
   issues: GraphIssue[],
+  grantsFinal: boolean,
 ): void {
   // 3a. Structural edges + handle validation.
   spec.edges.forEach((edge, i) => validateStructuralEdge(edge, i, nodesById, addEdge, issues));
@@ -210,7 +236,15 @@ function validateAndWireEdges(
     } else if (node.type === 'condition') {
       wireConditionNode(node, nodesById, addEdge, issues);
     } else if (node.type === 'agent') {
-      validateAgentNode(node, agentsById, registrySupplied, nodesById, addEdge, issues);
+      validateAgentNode(
+        node,
+        agentsById,
+        registrySupplied,
+        nodesById,
+        addEdge,
+        issues,
+        grantsFinal,
+      );
     }
     wireOwnDataEdges(node, addEdge);
   }
@@ -387,6 +421,47 @@ function wireConditionNode(
   }
 }
 
+/**
+ * A node's `tools:` may only NARROW its agent's grant (ADR-0029 §b). This is where that is enforced —
+ * before a run id exists ([ADR-0094](../../../docs/decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md)).
+ *
+ * Two ADRs, a third by attribution, and the binding `security-review.md` all said the PARSER enforced this.
+ * None of them did: nothing in `parser.ts`, `dag.ts` or `run-plan.ts` read `tools` at all, and the only real
+ * check was `resolveGrant` in the node executor — reached after the run had started and after upstream nodes
+ * had spent money. The security boundary held; its stated location did not.
+ *
+ * **The locator is POSITIONAL and the tool value is never echoed.** `node.tools` is validated only as a
+ * non-empty string — no charset, no length bound — so an authored tool id can carry a newline, a terminal
+ * escape, or secret-shaped text, and a `GraphIssue` is surfaced and logged. This file already keeps that
+ * rule for an invalid edge handle (`edge #n`); a widened grant is reported the same way.
+ */
+function collectToolGrantIssues(
+  node: AgentNode,
+  agent: Agent,
+  grantsFinal: boolean,
+  issues: GraphIssue[],
+): void {
+  const narrowed = node.tools;
+  if (narrowed === undefined || narrowed.length === 0) {
+    return; // no narrowing declared ⇒ the agent's grant stands, nothing to widen
+  }
+  // An agent whose grant depends on an MCP server it has not connected is not knowable from the document.
+  // Skip rather than guess — refusing here would reject a workflow that is about to be valid.
+  if ((agent.mcp_servers ?? []).length > 0 && !grantsFinal) {
+    return;
+  }
+  const granted = new Set(agent.tools ?? []);
+  narrowed.forEach((tool, index) => {
+    if (!granted.has(tool)) {
+      issues.push({
+        kind: 'tool_grant_widened',
+        field: `node \`${node.id}\`.tools[${index}]`,
+        message: `this node's \`tools\` names a tool that agent \`${node.agent_ref}\` was not granted — a node may only narrow the grant, never widen it`,
+      });
+    }
+  });
+}
+
 /** Validate an `agent` node's `agent_ref` and wire data edges from the resolved agent's system prompt. */
 function validateAgentNode(
   node: AgentNode,
@@ -395,6 +470,7 @@ function validateAgentNode(
   nodesById: ReadonlyMap<string, WorkflowNode>,
   addEdge: AddEdge,
   issues: GraphIssue[],
+  grantsFinal: boolean,
 ): void {
   if (registrySupplied && !agentsById.has(node.agent_ref)) {
     issues.push({
@@ -407,6 +483,7 @@ function validateAgentNode(
   const agent = agentsById.get(node.agent_ref);
   if (agent !== undefined) {
     wireDataEdges(agent.system_prompt, node.id, nodesById, addEdge);
+    collectToolGrantIssues(node, agent, grantsFinal, issues);
   }
 }
 

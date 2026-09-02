@@ -368,6 +368,27 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
     expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'validation' } });
   });
 
+  it('…and its message is POSITIONAL — a hostile tool id never reaches the event (ADR-0094)', async () => {
+    // `node.tools` is only `nonEmptyString`: no charset, no length bound. This message rides a
+    // `node:failed` event and a log line, so echoing the authored value would put an unbounded — possibly
+    // secret-shaped or terminal-escaping — string there. The plan-build check (dag.ts) refuses this first
+    // and reports it the same way; this is the floor for a host that builds no plan.
+    const hostile = 'sk-live-AAAABBBBCCCC';
+    const agentWithTools: Agent = { ...AGENT, tools: ['read_file'] };
+    const exec = createAgentNodeExecutor(deps(provider([STOP])));
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ tools: ['read_file', hostile] }),
+        resolvedAgent: agentWithTools,
+      }),
+    );
+    const outcome = await exec.execute(ctx);
+    const message = outcome.kind === 'failed' ? outcome.error.message : '';
+    expect(message).toContain('tools[1]'); // the INDEX
+    expect(message).not.toContain(hostile); // never the value
+  });
+
   it('does NOT use node.retry for within-chain primary retry (it is the engine above-chain budget, ADR-0040)', async () => {
     let streamCalls = 0;
     const failing: LlmProvider = {
