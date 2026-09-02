@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` (media correctness) is COMPLETE on `development` behind ADR-0089 + ADR-0090; **`W6` (authoring correctness) is next** (38 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28)
+- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` merged 2026-09-02 (PR #88) behind ADR-0089 + ADR-0090 — a systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed before it merged; **`W6` (authoring correctness) is next** (38 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28)
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -1600,9 +1600,9 @@ four could not fail at all, each stopping at a seam one layer above the thing it
 
 ---
 
-## W5 — Media correctness
+## W5 — Media correctness · ✅ MERGED 2026-09-02 (PR #88, [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) + [ADR-0090](../../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md))
 
-> **Status: all six items closed, 2026-09-02.** Two of the six closed one half of a two-part obligation and
+> **Status: MERGED 2026-09-02 as PR #88; all six items closed.** Two of the six closed one half of a two-part obligation and
 > say so in their own heading — `CR-50` (delivery; the host delegate awaits a producer that does not exist
 > yet) and `CR-53` (ingest; the adapter and delivery halves are recorded residuals). Nothing here is marked
 > closed on a claim wider than the code: every residual is written out in

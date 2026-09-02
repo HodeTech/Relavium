@@ -78,15 +78,16 @@ cancellable, `http`/`sse` connect by validated pinned IP, a redirect is refused,
 refused at admission, a server's ingress is bounded at two levels, and its tool DEFINITIONS are treated as
 untrusted. No new product surface in either wave — only the invariants an existing surface already claims.
 A systematic review of PR #87 found **five merge blockers** in `W4` — all reproduced and fixed before it
-merged; the phase doc's `W4` section records what they were and what the pattern says. **`W5` — media correctness — is COMPLETE on `development` (2026-09-02, PR pending)** behind
+merged; the phase doc's `W4` section records what they were and what the pattern says. **`W5` — media correctness — MERGED 2026-09-02 (PR #88)** behind
 [ADR-0089](docs/decisions/0089-media-correctness-four-boundaries.md) and
 [ADR-0090](docs/decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md): `read_media` delivers
 over the media-input rail on a marked, fenced synthesized message; tool and attachment capability is gated on
 the MODEL; Gemini's function-call continuation token rides the part it belongs to; a media body streams from
 the network into the store under a size ceiling, an idle deadline and the run signal; a `url` output is pinned
 to a content-addressed handle at first resolution; and a missing media rate is unpriced rather than a price of
-zero. Two items closed one half of a two-part obligation and say so; every residual is written out rather than
-left inside a checked box. **`W6` (authoring correctness) is next.**
+zero. A systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed
+before it merged. Two items closed one half of a two-part obligation and say so; every residual is written out
+rather than left inside a checked box. **`W6` (authoring correctness) is next.**
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);
