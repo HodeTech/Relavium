@@ -160,6 +160,19 @@ describe('BudgetGovernor', () => {
       ).rejects.toThrow(/--audio <usd-per-second>/);
     });
 
+    it('quotes the model id in the command, so a hostile id cannot ride into the shell', async () => {
+      // The remedy is written to be COPIED into a shell, and a model id is not ours — it comes from the
+      // authored workflow or the live catalog. Unquoted, an id carrying `;` or `$(…)` would be pasted into
+      // a command the refusal itself vouched for. The prose keeps its own quoting; the ARGUMENT is escaped.
+      const { governor } = makeGovernor({
+        budget: { max_cost_microcents: 1_000_000, on_exceed: 'warn', strict_cost_cap: true },
+      });
+      await expect(
+        governor.checkPreEgress('evil; rm -rf ~', 0, [{ modality: 'image', units: 1 }]),
+        // An unknown id takes the unpriced-MODEL branch; the escaping is the same on both remedies.
+      ).rejects.toThrow(/Price it with `relavium models pricing 'evil; rm -rf ~'`/);
+    });
+
     it('a host notice that THROWS cannot turn the advisory into a blocked call', async () => {
       // Mirrors the unpriced-MODEL posture: the notice is best-effort, and a broken renderer must not become
       // a budget failure. The dedupe is still recorded, so a throwing sink cannot produce an exception storm.

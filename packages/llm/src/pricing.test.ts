@@ -72,7 +72,11 @@ describe('catalogPricing — the projection that replaced the hand-typed table',
     // that have one, and would be measuring two things at once.
     const CACHED = 100_000;
     for (const [id, entry] of uncached) {
-      const billed = cost(id, { inputTokens: 0, outputTokens: 0, cacheReadTokens: CACHED }).microcents;
+      const billed = cost(id, {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: CACHED,
+      }).microcents;
       expect(billed, id).toBe(Math.round((CACHED * entry.inputPerMtokMicrocents) / 1_000_000));
       expect(billed, id).toBeGreaterThan(0); // the point: NOT zero
     }
@@ -87,9 +91,9 @@ describe('catalogPricing — the projection that replaced the hand-typed table',
     expect(discounted).toBeDefined();
     if (discounted === undefined) return;
     const [id, entry] = discounted;
-    expect(cost(id, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 1_000_000 }).microcents).toBe(
-      entry.cachedInputPerMtokMicrocents,
-    );
+    expect(
+      cost(id, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 1_000_000 }).microcents,
+    ).toBe(entry.cachedInputPerMtokMicrocents);
   });
 
   it('prices a LONG prompt at the tier it actually landed in — not the cheap one (ADR-0071 §11)', () => {

@@ -255,7 +255,9 @@ export function mediaCost(
     // produce a non-integer addend) — matching the token path's per-class rounding so every cost stays integer.
     microcents += Math.round(entry.units * rate);
   }
-  return unpriced.size === 0 ? { microcents, unpricedModalities: [] } : { microcents, unpricedModalities: [...unpriced] };
+  return unpriced.size === 0
+    ? { microcents, unpricedModalities: [] }
+    : { microcents, unpricedModalities: [...unpriced] };
 }
 
 /** The cost figures for one `cost:updated` event (the engine adds `nodeId` / `model` / `attemptNumber`). */

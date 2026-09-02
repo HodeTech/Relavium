@@ -675,6 +675,14 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
             // baseline, or a later media-only re-price would resurrect a cleared `0`/`0` AS IF the user had
             // stated it — billing every token on that model at nothing (ADR-0089 §4).
             tokenRatesStated: false,
+            // The media rates reset for exactly the same reason, and they were missed when `W5` added them.
+            // They are NULLABLE — null IS "unpriced" here, distinct from a stated `0` — so the clean baseline
+            // is null, not zero. Without this, a cleared row that is later re-priced for TOKENS only would
+            // resurrect the user's old image/audio/video rates as if they had just been stated, and bill
+            // generation at a price the user had explicitly retired.
+            mediaImageCostMicrocents: null,
+            mediaAudioCostMicrocents: null,
+            mediaVideoCostMicrocents: null,
             updatedAt: deps.now(),
           })
           .where(

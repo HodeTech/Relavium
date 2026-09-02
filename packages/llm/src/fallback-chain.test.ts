@@ -541,7 +541,13 @@ describe('FallbackChain — ADR-0030 strip-on-failover', () => {
         {
           role: 'assistant',
           content: [
-            { type: 'tool_call', id: 'c1', name: 'get_weather', args: { city: 'Paris' }, signature: 'g' },
+            {
+              type: 'tool_call',
+              id: 'c1',
+              name: 'get_weather',
+              args: { city: 'Paris' },
+              signature: 'g',
+            },
           ],
         },
       ],
@@ -562,7 +568,7 @@ describe('FallbackChain — ADR-0030 strip-on-failover', () => {
     expect(call).not.toHaveProperty('signature'); // …its token does not
   });
 
-  it('strips it on a same-PROVIDER, cross-MODEL advance — the token is the MODEL\'s, not the provider\'s', async () => {
+  it("strips it on a same-PROVIDER, cross-MODEL advance — the token is the MODEL's, not the provider's", async () => {
     // `[gemini/gemini-2.5-pro → gemini/gemini-2.5-flash]` is an authorable chain, and a `tool_call` part is
     // UNCONDITIONALLY replayed (it is the conversation) where a `reasoning` part is optional. Gemini
     // validates thought signatures, so replaying the first model's token to the second is a 400 — the
@@ -600,9 +606,7 @@ describe('FallbackChain — ADR-0030 strip-on-failover', () => {
       messages: [
         {
           role: 'assistant',
-          content: [
-            { type: 'tool_call', id: 'c1', name: 'get_weather', args: {}, signature: 'g' },
-          ],
+          content: [{ type: 'tool_call', id: 'c1', name: 'get_weather', args: {}, signature: 'g' }],
         },
       ],
     };

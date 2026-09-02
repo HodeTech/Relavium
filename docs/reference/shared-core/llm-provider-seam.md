@@ -427,10 +427,15 @@ adapters):
   same-turn obligation enforced by the 1.K `FallbackChain` strip-on-failover, which
   drops every `reasoning` part on a cross-provider advance — see the fallback section
   below). Since [ADR-0090](../../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md)
-  the same latch also strips `tool_call.signature` on that advance: it is the same kind of
-  token on a second part, so it is one predicate rather than a second policy. The `tool_call`
-  itself is NOT dropped — only its signature — because the call and its result are the
-  conversation the next provider still needs.
+  a sibling latch strips `tool_call.signature` — on a **narrower** boundary. Reasoning is
+  stripped when the **provider** changes; a `tool_call.signature` is stripped when the
+  **issuer** changes, and the issuer is `provider\0model`. So advancing to a different MODEL
+  of the same provider keeps the reasoning and drops the tool-call token. That is deliberate:
+  Gemini's `thoughtSignature` is minted against the model that issued the call, so replaying it
+  to a sibling model can 400, while reasoning replay is a provider-level contract. The
+  `tool_call` itself is NOT dropped — only its signature — because the call and its result are
+  the conversation the next provider still needs. *(This paragraph previously described both
+  strips as sharing one predicate; the code has always used two.)*
 - **`responseFormat`** on `LlmRequest` — `{ type: 'text' } | { type: 'json', schema, name?, strict? }`,
   one canonical JSON-Schema each adapter lowers to the provider's native
   structured-output mode (OpenAI `response_format`, Gemini `responseJsonSchema`,

@@ -17,6 +17,19 @@ import {
 import { sanitizeInline } from '../render/sanitize.js';
 
 /**
+ * Deterministic, locale-independent alphabetical order for a modality list.
+ *
+ * `Array#sort()` with no comparator is well-defined for strings, but it says nothing about intent and it is
+ * one refactor away from being applied to something that is not one. An explicit comparator also keeps the
+ * order out of the host locale's hands — `localeCompare` would let a Turkish locale order these differently
+ * from an English one, and this string is asserted in tests and pasted into a command by users.
+ */
+function byName(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
+/**
  * What we TELL the user when a reasoning tier is withheld
  * ([ADR-0071](../../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §6).
  *
@@ -29,6 +42,23 @@ import { sanitizeInline } from '../render/sanitize.js';
  * It lives here rather than beside the picker because the picker is one CONSUMER of it: the engine host
  * (`build-engine.ts`) and the session host both need it too, and neither should be reaching into `render/tui/`.
  */
+
+/**
+ * POSIX single-quote a value that is about to appear INSIDE a command we are telling the user to run.
+ *
+ * `sanitizeInline` makes a model id safe to PRINT — it strips terminal control sequences — but says nothing
+ * about what happens when the surrounding line is copied into a shell, which is precisely what these two
+ * messages ask the user to do. A model id is not ours: it arrives from the live catalog (models.dev) or a
+ * user's config, so a value carrying `;`, `$(…)`, or a backtick would be pasted straight into a command the
+ * remedy told them to trust.
+ *
+ * Single quotes rather than a placeholder because the remedy has to stay copy-pasteable to be a remedy at
+ * all; `'\''` is the standard way to carry a literal quote through them. The PROSE occurrence stays
+ * unquoted — it is a sentence, not an argument.
+ */
+function shellArg(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
 
 /** The model id, safe to write to a terminal — it comes from an authored YAML and is only `nonEmptyString` there. */
 function safeModel(model: string): string {
@@ -266,14 +296,14 @@ export function unpricedModelNote(
     // cap DID apply to its token side, and `models pricing <id> --input … --output …` will not add a media rate.
     // Saying the model has no price would send a user to fix something that is not broken — and the fix they
     // would reach for (restating token rates) writes a user row that outranks the catalog for tokens too.
-    const sorted = [...modalities].sort();
+    const sorted = [...modalities].sort(byName);
     const named = sorted.join(', ');
     // The flags in their canonical BILLED units — an image is priced per image, audio and video per second
     // (ADR-0044 §3). Printing `--audio <usd-per-mtok>` would send the user to a number a million times off.
     const flags = sorted
       .map((m) => (m === 'image' ? '--image <usd-per-image>' : `--${m} <usd-per-second>`))
       .join(' ');
-    return `${safeModel} has no ${named} rate, so the cost cap (${capUsd(capMicrocents)}) could not be applied to its ${named} output — its token cost still counts. Add one with \`relavium models pricing ${safeModel} --provider <p> ${flags}\`, or set ${strictSetting} to refuse it instead.`;
+    return `${safeModel} has no ${named} rate, so the cost cap (${capUsd(capMicrocents)}) could not be applied to its ${named} output — its token cost still counts. Add one with \`relavium models pricing ${shellArg(safeModel)} --provider <p> ${flags}\`, or set ${strictSetting} to refuse it instead.`;
   }
-  return `${safeModel} has no price, so the cost cap (${capUsd(capMicrocents)}) does not apply to it. Price it with \`relavium models pricing ${safeModel} --provider <p> --input <usd-per-mtok> --output <usd-per-mtok>\`, or set ${strictSetting} to refuse an unpriced model.`;
+  return `${safeModel} has no price, so the cost cap (${capUsd(capMicrocents)}) does not apply to it. Price it with \`relavium models pricing ${shellArg(safeModel)} --provider <p> --input <usd-per-mtok> --output <usd-per-mtok>\`, or set ${strictSetting} to refuse an unpriced model.`;
 }

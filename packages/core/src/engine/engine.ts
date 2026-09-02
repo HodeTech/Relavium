@@ -1648,6 +1648,16 @@ class RunExecution {
    * inline the same three lines, and the pin arm has to be the one that does NOT strand the run.
    */
   #failGateResume(nodeId: string, error: NodeFailure): void {
+    // Transition the vertex OUT of `paused` first, and unconditionally — the same move
+    // {@link #failNodeInternal} makes, for the same reason. By this point the gate is out of
+    // `#pendingGates` and its timer is disarmed, so a vertex left `paused` describes a wait that nothing is
+    // waiting on: the run reports its terminal while the in-memory state still says the node is parked at a
+    // gate. Unconditional because the correction is right even when an earlier cause already claimed
+    // `#failure` — the state should match the outcome either way.
+    const state = this.#states.get(nodeId);
+    if (state?.status === 'paused' || state?.status === 'running') {
+      state.status = 'failed';
+    }
     if (this.#failure === undefined && !this.#cancelling) {
       this.#failure = { nodeId, error };
       this.#abort.abort();

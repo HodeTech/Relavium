@@ -54,24 +54,30 @@ describe('per-model TOOL capability at load time (CR-51, ADR-0071 §12)', () => 
     // validation, or a gate-level notice), not a silent drop". This is that config-time validation. Without
     // it the only signal is a runtime pre-skip that emits no event — the quietest possible one — and on a
     // single-entry plan it surfaces partway through a run, after upstream nodes have spent real money.
-    expect(() => validateWorkflowWithCatalog(toolGrantingWorkflow('gpt-3.5-turbo'), noCatalog)).toThrow(
-      WorkflowValidationError,
-    );
-    expect(() => validateWorkflowWithCatalog(toolGrantingWorkflow('gpt-3.5-turbo'), noCatalog)).toThrow(
-      /does not accept tool definitions/,
-    );
+    expect(() =>
+      validateWorkflowWithCatalog(toolGrantingWorkflow('gpt-3.5-turbo'), noCatalog),
+    ).toThrow(WorkflowValidationError);
+    expect(() =>
+      validateWorkflowWithCatalog(toolGrantingWorkflow('gpt-3.5-turbo'), noCatalog),
+    ).toThrow(/does not accept tool definitions/);
   });
 
   it('names the NODE and the remedy, before any run id exists', () => {
+    // Captured, then asserted OUTSIDE any guard. Written as `catch { if (err instanceof X) { … } }` the
+    // whole test was hollow: `expect.unreachable` throws, the guard does not match it, and the catch
+    // swallows it — so a version that refused nothing at all still passed.
+    let thrown: unknown;
     try {
       validateWorkflowWithCatalog(toolGrantingWorkflow('gpt-3.5-turbo'), noCatalog);
-      expect.unreachable('a tool grant on a tool-incapable model must be refused at load');
     } catch (err) {
-      if (err instanceof WorkflowValidationError) {
-        expect(err.issues[0]?.field).toBe('node `n`.model');
-        expect(err.issues[0]?.message).toMatch(/pick a tool-capable model, add a tool-capable fallback_chain entry, or remove the grant/);
-      }
+      thrown = err;
     }
+    expect(thrown).toBeInstanceOf(WorkflowValidationError);
+    const issues = thrown instanceof WorkflowValidationError ? thrown.issues : [];
+    expect(issues[0]?.field).toBe('node `n`.model');
+    expect(issues[0]?.message).toMatch(
+      /pick a tool-capable model, add a tool-capable fallback_chain entry, or remove the grant/,
+    );
   });
 
   it('allows the same model when the node grants NO tools', () => {
@@ -138,7 +144,9 @@ describe('per-model TOOL capability at load time (CR-51, ADR-0071 §12)', () => 
       asked += 1;
       return undefined;
     };
-    expect(() => validateWorkflowWithCatalog(toolGrantingWorkflow('gpt-3.5-turbo'), counting)).toThrow();
+    expect(() =>
+      validateWorkflowWithCatalog(toolGrantingWorkflow('gpt-3.5-turbo'), counting),
+    ).toThrow();
     expect(asked).toBe(0); // refused before the host lookup was needed
   });
 });

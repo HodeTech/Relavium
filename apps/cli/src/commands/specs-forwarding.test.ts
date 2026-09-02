@@ -98,6 +98,31 @@ describe('commander action → executeCommand forwarding (S10)', () => {
     expect(input).toMatchObject({ positionals: [], options: { verify: true } });
   });
 
+  it('models pricing forwards the MEDIA rates too (the CR-55 media-only invocation)', () => {
+    // The three media flags were declared as Commander options but omitted from the action's forwarded
+    // payload, so a media-only invocation — the one a `strict_cost_cap` refusal tells the user to run —
+    // arrived at the dispatch with no rates and failed "missing required option --input". The existing
+    // test above said "all four options" and checked exactly four, so it could not see the gap.
+    const { id, input } = drive([
+      'models',
+      'pricing',
+      'my-model',
+      '--provider',
+      'openai',
+      '--image',
+      '0.04',
+      '--audio',
+      '0.002',
+      '--video',
+      '0.5',
+    ]);
+    expect(id).toBe('models.pricing');
+    expect(input).toMatchObject({
+      positionals: ['my-model'],
+      options: { provider: 'openai', image: '0.04', audio: '0.002', video: '0.5' },
+    });
+  });
+
   it('models pricing forwards the model positional + all four options', () => {
     const { id, input } = drive([
       'models',

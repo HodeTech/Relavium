@@ -13,6 +13,31 @@ import type { RunEventDraft } from './event-bus.js';
 import type { GateRequest } from './node-executor.js';
 
 /**
+ * POSIX single-quote a value about to appear INSIDE a command this message tells the user to run.
+ *
+ * A model id is not ours — it comes from the authored workflow or the live catalog — and these two remedies
+ * are written to be copied into a shell. A value carrying `;`, `$(…)` or a backtick would otherwise be
+ * pasted into a command the refusal itself vouched for. Pure string work, so the engine stays platform-free.
+ * The PROSE occurrence keeps its existing `'…'` quoting; only the command argument is escaped.
+ */
+function shellArg(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/**
+ * Deterministic, locale-independent alphabetical order for a modality list.
+ *
+ * `Array#sort()` with no comparator is well-defined for strings, but it says nothing about intent and it is
+ * one refactor away from being applied to something that is not one. An explicit comparator also keeps the
+ * order out of the host locale's hands — `localeCompare` would let a Turkish locale order these differently
+ * from an English one, and this string is asserted in tests and pasted into a command by users.
+ */
+function byName(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
+/**
  * Default per-call output-token estimate used by the pre-egress budget governor when neither the
  * node/session nor the host config supplies `max_tokens_estimate` (ADR-0028). The canonical value
  * is deliberately conservative: it is a safety rail, not a performance target.
@@ -462,7 +487,7 @@ export class BudgetGovernor {
               this.#cumulativeCostMicrocents,
               this.#budget.max_cost_microcents,
               undefined,
-              `model '${model}' has no price, so the ${this.#budget.max_cost_microcents}-micro-cent cap cannot be enforced on it (strict_cost_cap is on). Price it with \`relavium models pricing ${model}\`, or turn strict_cost_cap off.`,
+              `model '${model}' has no price, so the ${this.#budget.max_cost_microcents}-micro-cent cap cannot be enforced on it (strict_cost_cap is on). Price it with \`relavium models pricing ${shellArg(model)}\`, or turn strict_cost_cap off.`,
             ),
           },
         };
@@ -480,7 +505,7 @@ export class BudgetGovernor {
     // as though it were free — which is `CR-55`, and the reason the token path and the media path disagreed
     // about what a strict cap means.
     if (estimateResult.unpricedModalities.length > 0 && this.#budget.strict_cost_cap === true) {
-      const sorted = [...estimateResult.unpricedModalities].sort();
+      const sorted = [...estimateResult.unpricedModalities].sort(byName);
       const named = sorted.join(', ');
       // Canonical billed units (ADR-0044 §3): an image per image, audio and video per second.
       const flags = sorted
@@ -497,7 +522,7 @@ export class BudgetGovernor {
             // missing `--provider`, and the flags that actually add a media rate are `--image`/`--audio`/
             // `--video` — naming the bare command trains a user to give up and disable the cap instead, which
             // is the failure ADR-0089 §4(c) exists to prevent.
-            `model '${model}' has no ${named} rate, so the ${this.#budget.max_cost_microcents}-micro-cent cap cannot be enforced on this generation (strict_cost_cap is on). Add one with \`relavium models pricing ${model} --provider <p> ${flags}\`, or turn strict_cost_cap off.`,
+            `model '${model}' has no ${named} rate, so the ${this.#budget.max_cost_microcents}-micro-cent cap cannot be enforced on this generation (strict_cost_cap is on). Add one with \`relavium models pricing ${shellArg(model)} --provider <p> ${flags}\`, or turn strict_cost_cap off.`,
           ),
         },
       };

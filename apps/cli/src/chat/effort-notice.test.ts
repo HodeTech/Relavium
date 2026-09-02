@@ -147,7 +147,9 @@ describe('capUsd + unpricedModelNote — the cost-cap notice (ADR-0071 §K7)', (
     const chat = unpricedModelNote('my-local-model', 5_000_000, '[chat] strict_cost_cap');
     expect(chat).toContain('my-local-model');
     expect(chat).toContain('$0.05');
-    expect(chat).toContain('models pricing my-local-model');
+    // QUOTED in the command — the id is pasted into a shell, and it is not ours (it comes from the live
+    // catalog or a user's config). The prose occurrence above is unquoted; only the argument is escaped.
+    expect(chat).toContain("models pricing 'my-local-model'");
     expect(chat).toContain('[chat] strict_cost_cap'); // a chat user edits config.toml…
 
     const workflow = unpricedModelNote('my-local-model', 5_000_000, 'budget.strict_cost_cap');
@@ -181,6 +183,16 @@ describe('capUsd + unpricedModelNote — the cost-cap notice (ADR-0071 §K7)', (
     expect(unpricedModelNote('m', 1_000_000, 'budget.strict_cost_cap', [])).toContain(
       'has no price',
     );
+  });
+
+  it('SHELL-QUOTES the model id, so a hostile id cannot ride the pasted command', () => {
+    // `sanitizeInline` makes an id safe to PRINT; it says nothing about what happens when the surrounding
+    // line is copied into a shell — which is exactly what this message asks the user to do.
+    const note = unpricedModelNote('evil; rm -rf ~', 5_000_000, '[chat] strict_cost_cap');
+    expect(note).toContain("models pricing 'evil; rm -rf ~'");
+    // …and a literal quote in the id cannot close the quoting.
+    const quoted = unpricedModelNote("ev'il", 5_000_000, '[chat] strict_cost_cap');
+    expect(quoted).toContain("models pricing 'ev'\\''il'");
   });
 
   it('SANITIZES a hostile model id (the display boundary, like every sibling effort notice)', () => {

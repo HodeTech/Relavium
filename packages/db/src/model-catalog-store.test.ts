@@ -68,7 +68,12 @@ describe('createModelCatalogStore (2.S — media routing + load-check reader)', 
     expect(store.listAll().find((m) => m.modelId === 'media-only')?.tokenRatesStated).toBe(false);
 
     // …and a later media-only re-price does not demote a row that DID state them.
-    store.upsert({ providerId, modelId: 'stated-pair', source: 'user', mediaAudioCostMicrocents: 7 });
+    store.upsert({
+      providerId,
+      modelId: 'stated-pair',
+      source: 'user',
+      mediaAudioCostMicrocents: 7,
+    });
     expect(store.listAll().find((m) => m.modelId === 'stated-pair')?.tokenRatesStated).toBe(true);
   });
 
@@ -964,6 +969,44 @@ describe('createModelCatalogStore (2.5.G / ADR-0064 — live-discovery cache)', 
     expect(listing?.inputCostPerMtokMicrocents).toBe(1234);
     expect(listing?.outputCostPerMtokMicrocents).toBe(5678);
     expect(listing?.cachedInputCostPerMtokMicrocents).toBe(42);
+  });
+
+  it('clearUserPricing resets the MEDIA rates too — a cleared image price does not resurrect', () => {
+    // The same defect the cache-rate test below covers, on the columns `W5` added and the reset missed.
+    // A user who retires an override and later re-prices only TOKENS must not find their old image rate
+    // billing generation again.
+    const read = (): ModelCatalogListing | undefined =>
+      store.listByProvider(providerId).find((m) => m.modelId === 'media-clear-model');
+
+    store.upsert({
+      providerId,
+      modelId: 'media-clear-model',
+      displayName: 'Media Clear',
+      source: 'user',
+      inputCostPerMtokMicrocents: 1_000_000,
+      outputCostPerMtokMicrocents: 2_000_000,
+      mediaImageCostMicrocents: 4000,
+      mediaAudioCostMicrocents: 200,
+      mediaVideoCostMicrocents: 50_000,
+    });
+    expect(read()).toMatchObject({ mediaImageCostMicrocents: 4000 });
+
+    expect(store.clearUserPricing('media-clear-model', providerId)).toBe(true);
+
+    store.upsert({
+      providerId,
+      modelId: 'media-clear-model',
+      source: 'user',
+      inputCostPerMtokMicrocents: 3_000_000,
+      outputCostPerMtokMicrocents: 4_000_000,
+    });
+
+    const repriced = read();
+    expect(repriced?.inputCostPerMtokMicrocents).toBe(3_000_000);
+    // NULL, not 0 — these columns are nullable and null IS "unpriced", distinct from a stated free rate.
+    expect(repriced?.mediaImageCostMicrocents ?? null).toBeNull();
+    expect(repriced?.mediaAudioCostMicrocents ?? null).toBeNull();
+    expect(repriced?.mediaVideoCostMicrocents ?? null).toBeNull();
   });
 
   it('clearUserPricing resets the pricing columns, so a later partial re-price does not resurrect the cleared cache rate (review M3)', () => {

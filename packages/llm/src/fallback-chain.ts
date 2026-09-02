@@ -11,6 +11,7 @@ import {
 } from './attempt-deadline.js';
 import { isRetryable, LlmProviderError, makeLlmError } from './llm-error.js';
 import { verifyStreamGrammar } from './stream-grammar.js';
+import { ProviderIdSchema } from './types.js';
 import type {
   LlmError,
   LlmMessage,
@@ -1291,7 +1292,12 @@ class ChainRun {
     this.#req = req;
     this.#lastIssuer = seedLastIssuer;
     // Derived so `lastProvider` keeps its meaning for any consumer that only cares about the provider half.
-    this.#lastProvider = seedLastIssuer?.split('\u0000')[0] as ProviderId | undefined;
+    // PARSED, not asserted: the seed is a string this class folded back from a previous call, and an `as
+    // ProviderId` would silently accept a malformed one — then compare unequal to every real id and strip
+    // reasoning on every first attempt forever. A failed parse leaves it `undefined`, which is the same
+    // no-seed behaviour a first call has (CLAUDE.md rule 1).
+    const seededProvider = ProviderIdSchema.safeParse(seedLastIssuer?.split('\u0000')[0]);
+    this.#lastProvider = seededProvider.success ? seededProvider.data : undefined;
   }
 
   /** The `provider\0model` of the last attempted entry — folded back as the next call's seed. */

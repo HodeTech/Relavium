@@ -126,9 +126,7 @@ describe('build*Args (argv → typed core args)', () => {
     });
 
     it('still refuses a bare invocation with no price at all', () => {
-      expect(() => buildModelsPricingArgs(input(['m'], { provider: 'openai' }))).toThrow(
-        /--input/,
-      );
+      expect(() => buildModelsPricingArgs(input(['m'], { provider: 'openai' }))).toThrow(/--input/);
     });
 
     it('refuses a half-stated token pair — one rate alone writes a 0 nobody meant', () => {

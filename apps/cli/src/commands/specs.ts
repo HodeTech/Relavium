@@ -559,6 +559,13 @@ function registerModels(program: Command, ctx?: CommandContext): void {
         input?: string;
         output?: string;
         cached?: string;
+        // The media rates are DECLARED as options above and must be forwarded here. They were not, so
+        // `relavium models pricing <model> --provider p --image 0.04` reached the dispatch with no `image`
+        // and failed "missing required option --input" — the media-only invocation `CR-55` exists to make
+        // legal, and the exact command a `strict_cost_cap` refusal tells the user to run.
+        image?: string;
+        audio?: string;
+        video?: string;
         clear?: boolean;
       },
     ) => {
@@ -571,6 +578,9 @@ function registerModels(program: Command, ctx?: CommandContext): void {
             input: opts.input,
             output: opts.output,
             cached: opts.cached,
+            image: opts.image,
+            audio: opts.audio,
+            video: opts.video,
             clear: opts.clear,
           },
         },

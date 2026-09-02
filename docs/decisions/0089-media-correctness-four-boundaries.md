@@ -6,6 +6,7 @@
 
 
 > **Superseded in part 2026-09-02 by [ADR-0090](0090-a-continuation-token-rides-the-part-it-belongs-to.md): §3 only.** §1, §2 and §4 stand and remain authoritative. §3's per-request sidecar proved unbuildable — capture and replay happen in different adapter calls, and the adapter is stateless — and its stated objection to a field on `tool_call` was false, because `DurableContentPartSchema`'s separate `durableReasoningPartSchema` already makes exactly that guarantee structurally for `reasoning.signature`. Read §3 for the reasoning that was wrong and ADR-0090 for what replaces it.
+
 ## Context
 
 Wave `W5` of [phase 2.6.5](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md) closes six media

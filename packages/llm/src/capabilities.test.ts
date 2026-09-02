@@ -158,11 +158,17 @@ describe('per-MODEL capability gating (CR-51)', () => {
     const cases: { readonly label: string; readonly req: LlmRequest }[] = [
       { label: 'tools on an incapable model', req: { ...TOOL_REQ, model: TOOL_INCAPABLE } },
       { label: 'tools on a capable model', req: { ...TOOL_REQ, model: 'claude-opus-4-8' } },
-      { label: 'empty tools on an incapable model', req: { ...TEXT_REQ, model: TOOL_INCAPABLE, tools: [] } },
+      {
+        label: 'empty tools on an incapable model',
+        req: { ...TEXT_REQ, model: TOOL_INCAPABLE, tools: [] },
+      },
       { label: 'text on an incapable model', req: { ...TEXT_REQ, model: TOOL_INCAPABLE } },
       { label: 'media on an incapable model', req: mediaReq(ATTACHMENT_INCAPABLE) },
       { label: 'media on a capable model', req: mediaReq('claude-opus-4-8') },
-      { label: 'unknown model with tools', req: { ...TOOL_REQ, model: 'totally-unknown-model-2099' } },
+      {
+        label: 'unknown model with tools',
+        req: { ...TOOL_REQ, model: 'totally-unknown-model-2099' },
+      },
     ];
     for (const { label, req } of cases) {
       const skipped = !supportsRequest(ALL, req);
@@ -199,14 +205,18 @@ describe('per-MODEL capability gating (CR-51)', () => {
   it('labels an ATTACHMENT refusal as media, even when the request also carries tools', () => {
     // `o3-mini` accepts tools and rejects attachments. Choosing the label from `req.tools` named the one
     // capability that was fine — and `capability` is a typed discriminant callers narrow on.
+    // Captured, then asserted OUTSIDE any guard — `expect.unreachable` throws, and an `if (err instanceof
+    // X)` inside the catch swallows it, so the test passed even when nothing was refused.
+    let thrown: unknown;
     try {
       assertMediaCapabilities('openai', ALL, { ...mediaReq('o3-mini'), tools: TOOL_REQ.tools });
-      expect.unreachable('the attachment-incapable model must be refused');
     } catch (err) {
-      if (err instanceof UnsupportedCapabilityError) {
-        expect(err.capability).toBe('media');
-        expect(err.detail).toMatch(/attachments/);
-      }
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(UnsupportedCapabilityError);
+    if (thrown instanceof UnsupportedCapabilityError) {
+      expect(thrown.capability).toBe('media');
+      expect(thrown.detail).toMatch(/attachments/);
     }
   });
 });

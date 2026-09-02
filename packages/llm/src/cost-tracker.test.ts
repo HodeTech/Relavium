@@ -91,7 +91,9 @@ describe('priceModel', () => {
 describe('cost', () => {
   it('prices input + output in integer micro-cents (Opus 4.8)', () => {
     // 1000 in @ $5/MTok = 500_000µ¢; 500 out @ $25/MTok = 1_250_000µ¢
-    expect(cost('claude-opus-4-8', { inputTokens: 1000, outputTokens: 500 }).microcents).toBe(1_750_000);
+    expect(cost('claude-opus-4-8', { inputTokens: 1000, outputTokens: 500 }).microcents).toBe(
+      1_750_000,
+    );
   });
 
   it('prices each token class once, including cache read + write (Opus 4.8)', () => {
@@ -106,21 +108,25 @@ describe('cost', () => {
   });
 
   it('prices Sonnet 4.6 and DeepSeek from their own rows', () => {
-    expect(cost('claude-sonnet-4-6', { inputTokens: 1000, outputTokens: 500 }).microcents).toBe(1_050_000);
+    expect(cost('claude-sonnet-4-6', { inputTokens: 1000, outputTokens: 500 }).microcents).toBe(
+      1_050_000,
+    );
     // deepseek-chat: 1000 in @ $0.14/MTok = 14_000µ¢; 500 out @ $0.28/MTok = 14_000µ¢
     expect(cost('deepseek-chat', { inputTokens: 1000, outputTokens: 500 }).microcents).toBe(28_000);
   });
 
   it('ignores cache-write tokens for a provider with no cache-write price (gpt-5.5)', () => {
     // gpt-5.5 has no cacheWritePerMtokMicrocents → the 1000 cache-write tokens cost 0.
-    expect(cost('gpt-5.5', { inputTokens: 1000, outputTokens: 0, cacheWriteTokens: 1000 }).microcents).toBe(
-      500_000,
-    ); // 1000 in @ $5.00/MTok = 500_000
+    expect(
+      cost('gpt-5.5', { inputTokens: 1000, outputTokens: 0, cacheWriteTokens: 1000 }).microcents,
+    ).toBe(500_000); // 1000 in @ $5.00/MTok = 500_000
   });
 
   it('rounds the per-class micro-cent figure (half-up)', () => {
     // gpt-5.4-mini cached input $0.075/MTok = 7_500_000µ¢/MTok → 1 token = 7.5 → rounds to 8.
-    expect(cost('gpt-5.4-mini', { inputTokens: 0, outputTokens: 0, cacheReadTokens: 1 }).microcents).toBe(8);
+    expect(
+      cost('gpt-5.4-mini', { inputTokens: 0, outputTokens: 0, cacheReadTokens: 1 }).microcents,
+    ).toBe(8);
   });
 });
 
@@ -147,7 +153,10 @@ describe('CostTracker.record carries the pricing gap onto the CostUpdate (ADR-00
   });
 
   it('omits the key entirely on a fully-priced call — presence is the signal', () => {
-    const update = new CostTracker().record('claude-opus-4-8', { inputTokens: 10, outputTokens: 5 });
+    const update = new CostTracker().record('claude-opus-4-8', {
+      inputTokens: 10,
+      outputTokens: 5,
+    });
     expect(update).not.toHaveProperty('unpricedModalities');
   });
 
@@ -343,13 +352,15 @@ describe('user-pricing overlay (2.5.G S10, ADR-0065 §2)', () => {
 
   it('cost().microcents prices a user-priced unknown model via the overlay (the cost-cap gap is closed)', () => {
     // 1000 in @ $3/MTok = 300_000µ¢; 500 out @ $9/MTok = 450_000µ¢ → 750_000µ¢.
-    expect(cost('acme-custom-1', { inputTokens: 1000, outputTokens: 500 }, OVERLAY).microcents).toBe(750_000);
+    expect(
+      cost('acme-custom-1', { inputTokens: 1000, outputTokens: 500 }, OVERLAY).microcents,
+    ).toBe(750_000);
   });
 
   it('cost().microcents without an overlay still throws for the same unknown model (no silent zero)', () => {
-    expect(() => cost('acme-custom-1', { inputTokens: 1000, outputTokens: 500 }).microcents).toThrowError(
-      UnknownModelError,
-    );
+    expect(
+      () => cost('acme-custom-1', { inputTokens: 1000, outputTokens: 500 }).microcents,
+    ).toThrowError(UnknownModelError);
   });
 
   it('CostTracker records realized cost for a user-priced model when constructed with the overlay', () => {

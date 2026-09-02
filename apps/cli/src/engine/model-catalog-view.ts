@@ -68,11 +68,16 @@ function isProviderId(slug: string): slug is ProviderId {
  * A deprecation date is decoration; the catalog is not. Same guarded-parse discipline the limit columns get
  * from {@link statedLimit} a few lines down.
  */
-function spreadIfSet<K extends string, V>(
-  key: K,
-  value: V | undefined,
-): Record<K, V> | Record<string, never> {
-  return value === undefined ? {} : ({ [key]: value } as Record<K, V>);
+function spreadIfSet<K extends string, V>(key: K, value: V | undefined): Partial<Record<K, V>> {
+  // `Partial<Record<K, V>>` is the honest return type — the `undefined` branch yields `{}`, which
+  // `Record<K, V>` never describes — and building it by assignment rather than as a computed-key literal
+  // keeps it fully checked. A literal `{ [key]: value }` cannot be inferred against a generic `K`, which is
+  // what the previous `as Record<K, V>` was papering over (CLAUDE.md rule 1).
+  const out: Partial<Record<K, V>> = {};
+  if (value !== undefined) {
+    out[key] = value;
+  }
+  return out;
 }
 
 function isoDateOrUndefined(epochMs: number | undefined): string | undefined {
