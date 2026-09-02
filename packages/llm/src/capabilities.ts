@@ -142,6 +142,14 @@ function outputCombinationReason(
 }
 
 /**
+ * Whether the shipped catalog's per-model verdicts govern this provider's models. `catalogAuthoritative:
+ * false` for a custom `base_url` — see `LlmProvider.customEndpoint`.
+ */
+export interface CatalogAuthority {
+  readonly catalogAuthoritative?: boolean;
+}
+
+/**
  * Does this MODEL accept tool definitions (`CR-51`)? The catalog's `requestCapabilities.toolCall`, asked only
  * when the request actually carries tools.
  *
@@ -154,9 +162,9 @@ function outputCombinationReason(
  * `modelAccepts` degrades to *accepted* for a model the catalog cannot describe (a custom `base_url`, a
  * brand-new id), so missing metadata never withholds a capability a model actually has.
  */
-function toolCallReason(req: LlmRequest): string | null {
+function toolCallReason(req: LlmRequest, catalog: CatalogAuthority): string | null {
   if (req.tools === undefined || req.tools.length === 0) return null;
-  return modelAccepts(req.model, 'toolCall')
+  return modelAccepts(req.model, 'toolCall', catalog)
     ? null
     : `model '${req.model}' does not accept tool definitions`;
 }
@@ -170,7 +178,7 @@ function toolCallReason(req: LlmRequest): string | null {
  * the two predicates disagreeing about the same request — the model gate admitting what the provider gate
  * would refuse — which is a paid 400 on exactly the shape this exists to skip.
  */
-function attachmentReason(req: LlmRequest): string | null {
+function attachmentReason(req: LlmRequest, catalog: CatalogAuthority): string | null {
   const carriesMedia = req.messages.some((message) =>
     message.content.some(
       (part) =>
@@ -179,7 +187,7 @@ function attachmentReason(req: LlmRequest): string | null {
     ),
   );
   if (!carriesMedia) return null;
-  return modelAccepts(req.model, 'attachment')
+  return modelAccepts(req.model, 'attachment', catalog)
     ? null
     : `model '${req.model}' does not accept non-text input attachments`;
 }
@@ -190,13 +198,18 @@ function attachmentReason(req: LlmRequest): string | null {
  * ({@link supportsRequest}) and, through {@link assertSupported}, by the adapter entry — so the two verdicts
  * cannot disagree, which is the same no-admit-then-hard-fail property `mediaSupportReason` already carries.
  */
-export function requestSupportReason(supports: CapabilityFlags, req: LlmRequest): string | null {
+export function requestSupportReason(
+  supports: CapabilityFlags,
+  req: LlmRequest,
+  /** Absent ⇒ the official endpoint, where the shipped catalog IS authoritative. */
+  catalog: CatalogAuthority = {},
+): string | null {
   for (const capability of requiredCapabilities(req)) {
     if (!supports[capability]) return `'${capability}' capability not supported`;
   }
-  const toolReason = toolCallReason(req);
+  const toolReason = toolCallReason(req, catalog);
   if (toolReason !== null) return toolReason;
-  const attachment = attachmentReason(req);
+  const attachment = attachmentReason(req, catalog);
   if (attachment !== null) return attachment;
   return mediaSupportReason(supports, req);
 }
@@ -208,8 +221,12 @@ export function requestSupportReason(supports: CapabilityFlags, req: LlmRequest)
  * request's model id, so its verdict depends on module-global catalog state (the shipped snapshot plus any
  * installed refresh) as well as its arguments.
  */
-export function supportsRequest(supports: CapabilityFlags, req: LlmRequest): boolean {
-  return requestSupportReason(supports, req) === null;
+export function supportsRequest(
+  supports: CapabilityFlags,
+  req: LlmRequest,
+  catalog: CatalogAuthority = {},
+): boolean {
+  return requestSupportReason(supports, req, catalog) === null;
 }
 
 /**
@@ -225,6 +242,7 @@ export function assertSupported(
   providerId: ProviderId,
   supports: CapabilityFlags,
   req: LlmRequest,
+  catalog: CatalogAuthority = {},
 ): void {
   for (const capability of requiredCapabilities(req)) {
     if (!supports[capability]) {
@@ -239,7 +257,7 @@ export function assertSupported(
   // or an over-ceiling inline payload stays a `ZodError`. Scanning content here would preempt that and
   // reclassify a schema fault as a capability refusal. It lives in `assertMediaCapabilities` instead, after
   // the parse, which is also where the sibling per-modality gate already is.
-  const toolReason = toolCallReason(req);
+  const toolReason = toolCallReason(req, catalog);
   if (toolReason !== null) {
     throw new UnsupportedCapabilityError(providerId, 'tools', toolReason, req.model);
   }
@@ -251,8 +269,12 @@ export function assertSupported(
  * Exported for `assertMediaCapabilities` to call at the one place the parse has already run. Kept out of
  * {@link assertSupported} so the documented `ZodError`-first order survives — see that function's comment.
  */
-export function assertModelAcceptsAttachments(providerId: ProviderId, req: LlmRequest): void {
-  const reason = attachmentReason(req);
+export function assertModelAcceptsAttachments(
+  providerId: ProviderId,
+  req: LlmRequest,
+  catalog: CatalogAuthority = {},
+): void {
+  const reason = attachmentReason(req, catalog);
   if (reason !== null) {
     throw new UnsupportedCapabilityError(providerId, 'media', reason, req.model);
   }

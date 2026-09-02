@@ -1014,7 +1014,11 @@ export class FallbackChain {
     if (opts?.streaming === true && !entry.provider.supports.streaming) {
       return 'provider does not support streaming';
     }
-    const unsupported = requestSupportReason(entry.provider.supports, req);
+    // The catalog is authoritative only for the OFFICIAL endpoint: a custom `base_url` reusing a known
+    // model id must not inherit that id's verdicts (`LlmProvider.customEndpoint`).
+    const unsupported = requestSupportReason(entry.provider.supports, req, {
+      catalogAuthoritative: entry.provider.customEndpoint !== true,
+    });
     if (unsupported !== null) {
       // Per-modality (1.AF): an incapable provider is SKIPPED with the specific reason, never silently
       // flattened; the reason matches the adapter-entry `assertMediaCapabilities` throw (one predicate).

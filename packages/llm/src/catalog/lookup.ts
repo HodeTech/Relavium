@@ -116,7 +116,19 @@ export function catalogModelIds(): readonly string[] {
  * with no capability data is assumed to ACCEPT the parameter — the same degrade-to-supported default the rest of
  * the catalog uses, so we never withhold a parameter a model actually takes on the strength of missing metadata.
  */
-export function modelAccepts(modelId: string, param: keyof RequestCapabilities): boolean {
+export function modelAccepts(
+  modelId: string,
+  param: keyof RequestCapabilities,
+  opts?: { readonly catalogAuthoritative?: boolean },
+): boolean {
+  // A CUSTOM endpoint's models are not the catalog's models, even when they share an id. The snapshot is
+  // keyed by id alone, so `gpt-3.5-turbo` served by someone else's OpenAI-compatible service inherited
+  // OpenAI's verdicts — refused at load, skipped in the chain, for a capability it may well have. Falling
+  // back to ACCEPTED here is the same degrade this function already applies to an un-described model, for
+  // the same reason: missing (or foreign) metadata must not withhold a capability.
+  if (opts?.catalogAuthoritative === false) {
+    return true;
+  }
   return catalogModel(modelId)?.requestCapabilities?.[param] !== false;
 }
 

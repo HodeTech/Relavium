@@ -436,6 +436,15 @@ adapters):
   `tool_call` itself is NOT dropped — only its signature — because the call and its result are
   the conversation the next provider still needs. *(This paragraph previously described both
   strips as sharing one predicate; the code has always used two.)*
+- **`customEndpoint?`** on `LlmProvider` (`CR-51` review, 2026-09-02) — `true` when the adapter targets a
+  **non-official `base_url`**. The shipped model catalog is keyed by model id ALONE, so a custom
+  OpenAI-compatible service serving a tool-capable model under a well-known id inherited that id's verdicts
+  and was refused at load and skipped in the chain — breaking the custom-`base_url` feature outright.
+  Optional and absent-means-official, so every existing adapter and host is unchanged;
+  `createCustomOpenAiProvider` sets it. When set, the catalog stops governing this provider's models and they
+  fall back to the same degrade-to-ACCEPTED default an un-described model already gets, because missing (or
+  foreign) metadata must never withhold a capability a model actually has. The host tells the engine's
+  load-time check the same fact through `CatalogValidateOptions.customEndpoint`.
 - **`responseFormat`** on `LlmRequest` — `{ type: 'text' } | { type: 'json', schema, name?, strict? }`,
   one canonical JSON-Schema each adapter lowers to the provider's native
   structured-output mode (OpenAI `response_format`, Gemini `responseJsonSchema`,

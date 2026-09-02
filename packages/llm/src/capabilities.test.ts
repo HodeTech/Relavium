@@ -5,6 +5,7 @@ import {
   assertStreamable,
   assertSupported,
   isOutputCombinationSupported,
+  requestSupportReason,
   requiredCapabilities,
   supportsRequest,
 } from './capabilities.js';
@@ -319,5 +320,26 @@ describe('capability gating', () => {
   it('assertStreamable throws when the provider cannot stream', () => {
     expect(() => assertStreamable('gemini', NONE)).toThrowError(UnsupportedCapabilityError);
     expect(() => assertStreamable('anthropic', ALL)).not.toThrow();
+  });
+});
+
+describe('a CUSTOM endpoint is not governed by the shipped catalog (`CR-51` review)', () => {
+  // The shipped snapshot is keyed by model id ALONE. An OpenAI-compatible service that serves a
+  // tool-capable model under a well-known id inherited that id's OpenAI verdicts — refused at load and
+  // skipped in the chain — which breaks the custom-`base_url` feature outright.
+  const toolReq: LlmRequest = {
+    model: 'gpt-3.5-turbo', // a shipped id the snapshot describes as tool-INCAPABLE
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'go' }] }],
+    tools: [{ name: 'read_file', parameters: { type: 'object' } }],
+  };
+
+  it('refuses a tool request on the OFFICIAL endpoint (the catalog governs)', () => {
+    expect(requestSupportReason(ALL, toolReq)).toMatch(/does not accept tool definitions/);
+  });
+
+  it('…and ADMITS the same request when the endpoint is custom', () => {
+    // Degrades to accepted — the same default an un-described model already gets, because missing (or
+    // foreign) metadata must never withhold a capability a model actually has.
+    expect(requestSupportReason(ALL, toolReq, { catalogAuthoritative: false })).toBeNull();
   });
 });

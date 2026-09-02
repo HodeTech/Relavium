@@ -22,6 +22,17 @@ function isBilledModality(modality: OutputModality): modality is MediaBilledModa
  */
 export type WorkflowModelCatalog = (modelId: string) => CapabilityFlags | undefined;
 
+/**
+ * Host-supplied facts the load-check cannot derive from the workflow alone.
+ *
+ * `customEndpoint` answers "is this node's provider configured with a non-official `base_url`?" — the one
+ * thing that decides whether the shipped catalog's per-model verdicts apply at all. Absent ⇒ official, which
+ * is every host that configures none, so the behaviour is unchanged for them.
+ */
+export interface CatalogValidateOptions {
+  readonly customEndpoint?: (node: WorkflowDefinition['workflow']['nodes'][number]) => boolean;
+}
+
 type WorkflowNode = WorkflowDefinition['workflow']['nodes'][number];
 
 /**
@@ -114,10 +125,16 @@ function grantedToolCount(node: WorkflowNode, workflow: WorkflowDefinition): num
 function toolCapabilityIssue(
   node: WorkflowNode,
   workflow: WorkflowDefinition,
+  opts: CatalogValidateOptions | undefined,
 ): WorkflowIssue | undefined {
   if (grantedToolCount(node, workflow) === 0) return undefined;
   const candidates = candidateModels(node, workflow);
   if (candidates.length === 0) return undefined; // unresolvable — defer to the runtime pre-skip
+  // The catalog governs a model id only on the OFFICIAL endpoint. A host that has configured a custom
+  // `base_url` for this provider tells us so, and the check DEFERS — the shipped metadata describes a
+  // different service that merely shares the id, and refusing on its strength broke the custom-endpoint
+  // feature outright. Absent ⇒ official, which is every host that does not configure one.
+  if (opts?.customEndpoint?.(node) === true) return undefined;
   if (candidates.some((model) => modelAccepts(model, 'toolCall'))) return undefined;
   // Two phrasings, because "model 'x' does not accept…" is wrong for a multi-entry plan (each entry was
   // checked) and "no model in this node's plan…" is needlessly indirect when there is only one.
@@ -141,6 +158,7 @@ function nodeCatalogIssue(
   node: WorkflowNode,
   catalog: WorkflowModelCatalog,
   workflow: WorkflowDefinition,
+  opts: CatalogValidateOptions | undefined,
 ): WorkflowIssue | undefined {
   if (node.type !== 'agent') {
     return undefined; // not an agent — nothing to load-check
@@ -149,7 +167,7 @@ function nodeCatalogIssue(
   // (`node.model ?? agent.model`) because the common authored shape declares the model on the AGENT and
   // leaves the node's override absent. It is also independent of the host catalog — `modelAccepts` reads the
   // shipped snapshot directly — so the verdict is available even when the host cannot resolve capabilities.
-  const toolIssue = toolCapabilityIssue(node, workflow);
+  const toolIssue = toolCapabilityIssue(node, workflow, opts);
   if (toolIssue !== undefined) return toolIssue;
   if (node.model === undefined) {
     return undefined; // the modality checks below need an explicit node model
@@ -187,9 +205,10 @@ function nodeCatalogIssue(
 export function validateWorkflowWithCatalog(
   workflow: WorkflowDefinition,
   catalog: WorkflowModelCatalog,
+  opts?: CatalogValidateOptions,
 ): void {
   const issues = workflow.workflow.nodes
-    .map((node) => nodeCatalogIssue(node, catalog, workflow))
+    .map((node) => nodeCatalogIssue(node, catalog, workflow, opts))
     .filter((issue): issue is WorkflowIssue => issue !== undefined);
   if (issues.length > 0) {
     throw new WorkflowValidationError(issues);

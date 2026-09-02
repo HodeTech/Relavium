@@ -552,6 +552,20 @@ export interface EstimateTokensInput {
  */
 export interface LlmProvider {
   readonly id: ProviderId;
+  /**
+   * True when this adapter targets a NON-official `base_url` (`CR-51` review).
+   *
+   * The shipped model catalog is keyed by model id ALONE, so a custom OpenAI-compatible endpoint that
+   * reuses a well-known id inherits that id's verdicts. An endpoint that genuinely accepts tools, serving a
+   * model it calls `gpt-3.5-turbo`, was refused at load and skipped in the chain on the strength of OpenAI's
+   * metadata for a different service — which breaks the supported custom-`base_url` feature outright.
+   *
+   * Optional and absent-means-official, so every existing adapter and every host that builds one is
+   * unchanged. Set it and the catalog stops being authoritative for this provider's models: they fall back
+   * to the same degrade-to-ACCEPTED default an un-described model already gets, because missing metadata
+   * must never withhold a capability a model actually has.
+   */
+  readonly customEndpoint?: boolean;
   generate(req: LlmRequest, key: string): Promise<LlmResult>;
   stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk>;
   readonly supports: CapabilityFlags;
