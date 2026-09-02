@@ -1287,6 +1287,42 @@ describe('FallbackChain — backoff and cooldown', () => {
     await chain.generate(userReq); // call 3: primary retried again
     expect(primary.calls).toHaveLength(2);
   });
+
+  it('a chain exhausted purely by COOLDOWN is retryable, not a bad request', async () => {
+    // A cooldown says the request cannot be served RIGHT NOW; a capability mismatch says it cannot be
+    // served AS WRITTEN. Folding both into `bad_request` mapped a chain that was merely resting into the
+    // engine's non-retryable `validation` code — reporting "no provider could serve the request" for a
+    // request that was fine and would have succeeded on the next attempt.
+    let clock = 0;
+    const only = makeProvider({ id: 'anthropic', generate: rejects('anthropic', 'rate_limit') });
+    const { options } = makeOptions({ now: () => clock, cooldownMs: 1000 });
+    const chain = new FallbackChain([entry(only, 'claude-opus-4-8')], options);
+
+    await expect(chain.generate(userReq)).rejects.toThrow(); // call 1 rate-limits → parks the cooldown
+    clock = 500; // still inside it, so call 2 skips the only entry and exhausts
+    const err = await rejectedError(chain.generate(userReq));
+    expect(err.kind).toBe('rate_limit');
+    expect(err.retryable).toBe(true);
+    expect(err.message).toMatch(/cooldown/);
+  });
+
+  it('…while a chain exhausted by CAPABILITY stays a non-retryable bad request', async () => {
+    // The other arm, asserted beside it: nothing about waiting fixes a model that rejects attachments.
+    const toolReq: LlmRequest = {
+      ...userReq,
+      tools: [{ name: 'read_file', parameters: { type: 'object' } }],
+    };
+    const incapable = makeProvider({
+      id: 'openai',
+      supports: { tools: false },
+      generate: resolves('unused'),
+    });
+    const { options } = makeOptions();
+    const chain = new FallbackChain([entry(incapable, 'gpt-5.5')], options);
+    const err = await rejectedError(chain.generate(toolReq));
+    expect(err.kind).toBe('bad_request');
+    expect(err.retryable).toBe(false);
+  });
 });
 
 // --- capability skip -------------------------------------------------------------------------

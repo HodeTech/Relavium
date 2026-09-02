@@ -57,7 +57,9 @@ function byName(a: string, b: string): number {
  * unquoted — it is a sentence, not an argument.
  */
 function shellArg(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
+  // `String.raw` so the POSIX escape reads as the four characters it IS — `'\''` — rather than as a
+  // backslash-escaped string a reader has to decode before they can tell whether it is right.
+  return `'${value.replaceAll("'", String.raw`'\''`)}'`;
 }
 
 /** The model id, safe to write to a terminal — it comes from an authored YAML and is only `nonEmptyString` there. */
@@ -299,11 +301,13 @@ export function unpricedModelNote(
     const sorted = [...modalities].sort(byName);
     const named = sorted.join(', ');
     // The flags in their canonical BILLED units — an image is priced per image, audio and video per second
-    // (ADR-0044 §3). Printing `--audio <usd-per-mtok>` would send the user to a number a million times off.
+    // (ADR-0044 §3). Printing `--audio USD_PER_MTOK` would send the user to a number a million times off.
+    // Bare words, never `<angle brackets>`: `<` and `>` are shell redirections, so the pasted remedy would
+    // read from a file named `p` and CREATE one named `--image` rather than running.
     const flags = sorted
-      .map((m) => (m === 'image' ? '--image <usd-per-image>' : `--${m} <usd-per-second>`))
+      .map((m) => (m === 'image' ? '--image USD_PER_IMAGE' : `--${m} USD_PER_SECOND`))
       .join(' ');
-    return `${safeModel} has no ${named} rate, so the cost cap (${capUsd(capMicrocents)}) could not be applied to its ${named} output — its token cost still counts. Add one with \`relavium models pricing ${shellArg(safeModel)} --provider <p> ${flags}\`, or set ${strictSetting} to refuse it instead.`;
+    return `${safeModel} has no ${named} rate, so the cost cap (${capUsd(capMicrocents)}) could not be applied to its ${named} output — its token cost still counts. Add one with \`relavium models pricing ${shellArg(safeModel)} --provider PROVIDER_ID ${flags}\`, or set ${strictSetting} to refuse it instead.`;
   }
-  return `${safeModel} has no price, so the cost cap (${capUsd(capMicrocents)}) does not apply to it. Price it with \`relavium models pricing ${shellArg(safeModel)} --provider <p> --input <usd-per-mtok> --output <usd-per-mtok>\`, or set ${strictSetting} to refuse an unpriced model.`;
+  return `${safeModel} has no price, so the cost cap (${capUsd(capMicrocents)}) does not apply to it. Price it with \`relavium models pricing ${shellArg(safeModel)} --provider PROVIDER_ID --input USD_PER_MTOK --output USD_PER_MTOK\`, or set ${strictSetting} to refuse an unpriced model.`;
 }

@@ -348,6 +348,26 @@ function fromRow(row: ModelCatalogRow): ModelCatalogRecord {
   };
 }
 
+/**
+ * The `token_rates_stated` half of an upsert: an explicit value wins; otherwise supplying BOTH rates counts
+ * as stating them; otherwise the column is left alone.
+ *
+ * A standalone function rather than a nested ternary in the middle of a 30-field object literal — the three
+ * outcomes are a policy worth reading on its own, and the middle branch (both rates present) is the one a
+ * reader has to get right (ADR-0089 §4).
+ */
+function tokenRatesStatedPatch(input: ModelCatalogUpsert): { tokenRatesStated?: boolean } {
+  if (input.tokenRatesStated !== undefined) {
+    return { tokenRatesStated: input.tokenRatesStated };
+  }
+  const bothRates =
+    input.inputCostPerMtokMicrocents !== undefined &&
+    input.outputCostPerMtokMicrocents !== undefined;
+  // Omitting both leaves the flag untouched, which is what makes a media-only re-price preserve token rates
+  // the user stated earlier.
+  return bothRates ? { tokenRatesStated: true } : {};
+}
+
 /** Wire a {@link ModelCatalogStore} over a `@relavium/db` connection. */
 export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): ModelCatalogStore {
   // The authoritative active, non-deleted row for a (non-unique-alone) model id — `model_catalog` is unique on
@@ -574,12 +594,7 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
               // numbers a reader discards in favour of the catalog's. An explicit value still wins, so a caller
               // with a reason can say otherwise. Omitting both leaves the flag alone, which is what makes a
               // media-only re-price preserve token rates the user stated earlier.
-              ...(input.tokenRatesStated !== undefined
-                ? { tokenRatesStated: input.tokenRatesStated }
-                : input.inputCostPerMtokMicrocents !== undefined &&
-                    input.outputCostPerMtokMicrocents !== undefined
-                  ? { tokenRatesStated: true }
-                  : {}),
+              ...tokenRatesStatedPatch(input),
               cachedInputCostPerMtokMicrocents:
                 input.cachedInputCostPerMtokMicrocents ??
                 existing?.cachedInputCostPerMtokMicrocents ??

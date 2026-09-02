@@ -21,7 +21,9 @@ import type { GateRequest } from './node-executor.js';
  * The PROSE occurrence keeps its existing `'…'` quoting; only the command argument is escaped.
  */
 function shellArg(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
+  // `String.raw` so the POSIX escape reads as the four characters it IS — `'\''` — rather than as a
+  // backslash-escaped string a reader has to decode before they can tell whether it is right.
+  return `'${value.replaceAll("'", String.raw`'\''`)}'`;
 }
 
 /**
@@ -509,7 +511,7 @@ export class BudgetGovernor {
       const named = sorted.join(', ');
       // Canonical billed units (ADR-0044 §3): an image per image, audio and video per second.
       const flags = sorted
-        .map((m) => (m === 'image' ? '--image <usd-per-image>' : `--${m} <usd-per-second>`))
+        .map((m) => (m === 'image' ? '--image USD_PER_IMAGE' : `--${m} USD_PER_SECOND`))
         .join(' ');
       return {
         result: {
@@ -522,7 +524,7 @@ export class BudgetGovernor {
             // missing `--provider`, and the flags that actually add a media rate are `--image`/`--audio`/
             // `--video` — naming the bare command trains a user to give up and disable the cap instead, which
             // is the failure ADR-0089 §4(c) exists to prevent.
-            `model '${model}' has no ${named} rate, so the ${this.#budget.max_cost_microcents}-micro-cent cap cannot be enforced on this generation (strict_cost_cap is on). Add one with \`relavium models pricing ${shellArg(model)} --provider <p> ${flags}\`, or turn strict_cost_cap off.`,
+            `model '${model}' has no ${named} rate, so the ${this.#budget.max_cost_microcents}-micro-cent cap cannot be enforced on this generation (strict_cost_cap is on). Add one with \`relavium models pricing ${shellArg(model)} --provider PROVIDER_ID ${flags}\`, or turn strict_cost_cap off.`,
           ),
         },
       };

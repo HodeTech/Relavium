@@ -169,13 +169,13 @@ describe('capUsd + unpricedModelNote — the cost-cap notice (ADR-0071 §K7)', (
     // The cap DID apply to the token side, and saying so is what stops this reading as "the cap is off".
     expect(note).toContain('token cost still counts');
     // A runnable remedy, in the canonical BILLED unit (ADR-0044 §3) — not USD/Mtok.
-    expect(note).toContain('--provider <p> --image <usd-per-image>');
+    expect(note).toContain('--provider PROVIDER_ID --image USD_PER_IMAGE');
   });
 
   it('names every unrated modality, each with its own billed unit', () => {
     const note = unpricedModelNote('m', 1_000_000, 'budget.strict_cost_cap', ['video', 'audio']);
     expect(note).toContain('audio, video'); // sorted, so the sentence is stable
-    expect(note).toContain('--audio <usd-per-second> --video <usd-per-second>');
+    expect(note).toContain('--audio USD_PER_SECOND --video USD_PER_SECOND');
   });
 
   it('falls back to the model sentence when no modality is given (the ADR-0071 §K7 case)', () => {

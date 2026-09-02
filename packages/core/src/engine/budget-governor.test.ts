@@ -154,10 +154,25 @@ describe('BudgetGovernor', () => {
       });
       await expect(
         governor.checkPreEgress('claude-haiku-4-5', 0, [{ modality: 'image', units: 4 }]),
-      ).rejects.toThrow(/--provider <p> --image <usd-per-image>/);
+      ).rejects.toThrow(/--provider PROVIDER_ID --image USD_PER_IMAGE/);
       await expect(
         governor.checkPreEgress('claude-haiku-4-5', 0, [{ modality: 'audio', units: 4 }]),
-      ).rejects.toThrow(/--audio <usd-per-second>/);
+      ).rejects.toThrow(/--audio USD_PER_SECOND/);
+    });
+
+    it('uses BARE-WORD placeholders — an angle bracket would redirect when pasted', async () => {
+      // `<` and `>` are shell redirections. `--provider <p> --image <usd-per-image>` pasted into a shell
+      // reads stdin from a file named `p` and CREATES a file named `--image` in the user's cwd. A remedy
+      // that fails and leaves junk behind trains the user to disable the cap instead.
+      const { governor } = makeGovernor({
+        budget: { max_cost_microcents: 1_000_000, on_exceed: 'warn', strict_cost_cap: true },
+      });
+      const err = await governor
+        .checkPreEgress('claude-haiku-4-5', 0, [{ modality: 'image', units: 1 }])
+        .then(() => undefined)
+        .catch((e: unknown) => (e instanceof Error ? e.message : ''));
+      expect(err).toBeDefined();
+      expect(err ?? '').not.toMatch(/<[a-z-]+>/); // no angle-bracket placeholder anywhere in the remedy
     });
 
     it('quotes the model id in the command, so a hostile id cannot ride into the shell', async () => {

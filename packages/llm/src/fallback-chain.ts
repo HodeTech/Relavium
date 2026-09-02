@@ -1009,7 +1009,7 @@ export class FallbackChain {
   ): string | undefined {
     const cooldownUntil = this.#cooldownUntil.get(entry.provider.id);
     if (cooldownUntil !== undefined && this.#now() < cooldownUntil) {
-      return 'provider in rate-limit cooldown';
+      return COOLDOWN_SKIP_REASON;
     }
     if (opts?.streaming === true && !entry.provider.supports.streaming) {
       return 'provider does not support streaming';
@@ -1119,11 +1119,20 @@ export class FallbackChain {
    * unwritable test, which is worse than the invariant stated here.
    */
   #exhaustedError(reasons: readonly string[]): LlmError {
+    // **A cooldown skip is TRANSIENT, and classifying it `bad_request` told the user a lie they could not
+    // act on.** `#skipReason` produces three kinds: a capability mismatch and a missing-streaming arm, both
+    // of which mean the request cannot be served AS WRITTEN — and a rate-limit cooldown, which means it
+    // cannot be served RIGHT NOW. Folding all three into `bad_request` mapped a chain that was merely
+    // resting into the engine's non-retryable `validation` code, reporting "no provider could serve the
+    // request" for a request that was fine and would have succeeded on the next attempt.
+    //
+    // ANY cooldown makes it retryable, not only an all-cooldown set: a mixed plan of [cooled-down, incapable]
+    // still has an entry that will come back, so a retry has a real chance. The reverse default would be the
+    // damaging one — a permanent failure for a temporary condition.
+    const cooledDown = reasons.some((reason) => reason === COOLDOWN_SKIP_REASON);
     return makeLlmError({
       provider: this.#exhaustedProvider,
-      // The request cannot be served AS WRITTEN — an authoring/config fault, not an engine defect. It maps to
-      // the engine's `validation` code, which is what a user can actually act on.
-      kind: 'bad_request',
+      kind: cooledDown ? 'rate_limit' : 'bad_request',
       message: `fallback chain exhausted: no provider could serve the request (${[...new Set(reasons)].join('; ')})`,
     });
   }
@@ -1272,6 +1281,13 @@ interface FoldedUsage {
 interface StreamAttemptState {
   committed: boolean;
 }
+
+/**
+ * The one skip reason that is TRANSIENT rather than a statement about the request. Hoisted to a constant
+ * because `#exhaustedError` classifies on it: a string literal in two places is a latch waiting to drift,
+ * and the failure mode of drifting is a temporary condition reported as a permanent one.
+ */
+const COOLDOWN_SKIP_REASON = 'provider in rate-limit cooldown';
 
 /**
  * Per-call mutable state: the running (possibly reasoning-stripped) request, the per-provider strip

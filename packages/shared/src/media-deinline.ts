@@ -247,9 +247,13 @@ function mediaPartBytes(
   if (kind === 'url') {
     const url = source['url'];
     if (typeof url !== 'string') {
-      throw new Error(
-        'deInlineMedia cannot re-host a url media source — the engine media-egress step (1.AF, ADR-0043) must materialize it to a handle first',
-      );
+      // Same convention as the `data` guard above, which this branch was missed by: a `typeof` guard ⇒
+      // TypeError, and the message names the ACTUAL fault. The old text said the media-egress step "must
+      // materialize it to a handle first" — describing a url source arriving at all, which is no longer
+      // refused (ADR-0089 §2 re-hosts it through the streaming pair a few lines down). So it named a
+      // condition that is not this one, for a reader debugging a malformed part. Secret-free: the url is
+      // never interpolated (I3) — it can carry a signed query token.
+      throw new TypeError('deInlineMedia: url media source.url must be a string');
     }
     // A `url` IS the large-media path: unlike `base64` (bounded by INLINE_MEDIA_CEILING at the schema), its
     // size is unknown until it is fetched. So it takes the STREAMING pair, and a host that lacks either half
