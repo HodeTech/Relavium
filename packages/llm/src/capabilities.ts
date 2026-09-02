@@ -1,5 +1,6 @@
 import { mediaModalityOf } from '@relavium/shared';
 
+import { modelAccepts } from './catalog/lookup.js';
 import { UnsupportedCapabilityError } from './errors.js';
 import type { CapabilityFlags, LlmRequest, ProviderId } from './types.js';
 
@@ -141,13 +142,44 @@ function outputCombinationReason(
 }
 
 /**
- * The unified pre-skip reason — combines the flat-flag requirements + the per-modality media gate.
- * `null` ⇒ the provider can serve the request. Used by the `FallbackChain` skip and {@link supportsRequest}.
+ * The per-MODEL capability gate (`CR-51`) — the catalog's `requestCapabilities`, asked for the two parameters a
+ * request DEPENDS on rather than merely prefers.
+ *
+ * **Why these two and not all four.** `temperature` and `structuredOutput` are knobs: a model that rejects them
+ * is served correctly by WITHHOLDING the field, which is what the adapters do — a dropped preference, not a
+ * changed answer. `toolCall` and `attachment` are not knobs. Withholding tools from a turn that needs them, or
+ * dropping the image a question is about, produces a confidently wrong answer at full price; sending them
+ * produces a paid 400. Neither is acceptable, so they belong on the SKIP path with the provider-wide flags —
+ * the chain moves to a model that can serve the request, for free, before any egress.
+ *
+ * `modelAccepts` degrades to *accepted* for a model the catalog cannot describe (a custom `base_url`, a
+ * brand-new id), so missing metadata never withholds a capability a model actually has.
+ */
+function modelCapabilityReason(req: LlmRequest): string | null {
+  if (req.tools !== undefined && req.tools.length > 0 && !modelAccepts(req.model, 'toolCall')) {
+    return `model '${req.model}' does not accept tool definitions`;
+  }
+  const carriesMedia = req.messages.some((message) =>
+    message.content.some((part) => part.type === 'media'),
+  );
+  if (carriesMedia && !modelAccepts(req.model, 'attachment')) {
+    return `model '${req.model}' does not accept non-text input attachments`;
+  }
+  return null;
+}
+
+/**
+ * The unified pre-skip reason — the flat provider-wide flags, the per-MODEL catalog gate, and the per-modality
+ * media gate. `null` ⇒ this provider/model pair can serve the request. Used by the `FallbackChain` skip
+ * ({@link supportsRequest}) and, through {@link assertSupported}, by the adapter entry — so the two verdicts
+ * cannot disagree, which is the same no-admit-then-hard-fail property `mediaSupportReason` already carries.
  */
 export function requestSupportReason(supports: CapabilityFlags, req: LlmRequest): string | null {
   for (const capability of requiredCapabilities(req)) {
     if (!supports[capability]) return `'${capability}' capability not supported`;
   }
+  const modelReason = modelCapabilityReason(req);
+  if (modelReason !== null) return modelReason;
   return mediaSupportReason(supports, req);
 }
 
@@ -171,6 +203,18 @@ export function assertSupported(
     if (!supports[capability]) {
       throw new UnsupportedCapabilityError(providerId, capability);
     }
+  }
+  // The per-MODEL half (`CR-51`). It throws here as well as skipping in the chain, for the reason the media
+  // gate does: a direct seam consumer, or a chain whose last entry is the incapable model, must get a typed
+  // refusal rather than a provider 400 — and the two paths read the SAME predicate, so a model the pre-skip
+  // passed can never be refused here (and vice versa).
+  const modelReason = modelCapabilityReason(req);
+  if (modelReason !== null) {
+    throw new UnsupportedCapabilityError(
+      providerId,
+      req.tools !== undefined && req.tools.length > 0 ? 'tools' : 'media',
+      modelReason,
+    );
   }
 }
 

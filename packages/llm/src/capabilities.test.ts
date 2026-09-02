@@ -7,6 +7,7 @@ import {
   requiredCapabilities,
   supportsRequest,
 } from './capabilities.js';
+import { modelAccepts } from './catalog/lookup.js';
 import { UnsupportedCapabilityError } from './errors.js';
 import type { CapabilityFlags, LlmRequest } from './types.js';
 
@@ -44,6 +45,87 @@ const TOOL_REQ: LlmRequest = {
   ...TEXT_REQ,
   tools: [{ name: 'f', parameters: { type: 'object' } }],
 };
+
+describe('per-MODEL capability gating (CR-51)', () => {
+  // The provider-wide flags say what ANTHROPIC or OPENAI can do; `requestCapabilities` says what THIS MODEL
+  // does, and the two disagree constantly within one provider. Before this, a request carrying tools for
+  // `gpt-3.5-turbo` — which the catalog records as rejecting tool definitions — passed the pre-skip as
+  // "supported", so the chain spent a real call to earn a 400 instead of skipping to a model that works.
+  //
+  // These ids come from the shipped snapshot, so the tests fail loudly rather than vacuously if upstream ever
+  // changes what they support (asserted below).
+  const TOOL_INCAPABLE = 'gpt-3.5-turbo'; // requestCapabilities: { toolCall: false, … }
+  const ATTACHMENT_INCAPABLE = 'deepseek-v4-pro'; // requestCapabilities: { attachment: false }
+
+  const mediaReq = (model: string): LlmRequest => ({
+    model,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'media',
+            mimeType: 'image/png',
+            source: { kind: 'handle', ref: `media://sha256-${'a'.repeat(64)}` },
+          },
+        ],
+      },
+    ],
+  });
+
+  it('the premise: the catalog really records these models as incapable', () => {
+    expect(modelAccepts(TOOL_INCAPABLE, 'toolCall')).toBe(false);
+    expect(modelAccepts(ATTACHMENT_INCAPABLE, 'attachment')).toBe(false);
+  });
+
+  it('SKIPS a tool request on a model the catalog says rejects tool definitions', () => {
+    // The provider flags are fully capable — this is precisely the case a provider-wide boolean cannot express.
+    expect(supportsRequest(ALL, { ...TOOL_REQ, model: TOOL_INCAPABLE })).toBe(false);
+    expect(supportsRequest(ALL, { ...TOOL_REQ, model: 'claude-opus-4-8' })).toBe(true);
+  });
+
+  it('SKIPS a media request on a model the catalog says rejects attachments', () => {
+    expect(supportsRequest(ALL, mediaReq(ATTACHMENT_INCAPABLE))).toBe(false);
+    expect(supportsRequest(ALL, mediaReq('claude-opus-4-8'))).toBe(true);
+  });
+
+  it('does not gate a TEXT request on either flag — only a request that depends on the capability', () => {
+    // The gate must be about what the REQUEST needs. A text turn on a tool-incapable model is perfectly fine,
+    // and skipping it would strand the chain on a model that could have answered.
+    expect(supportsRequest(ALL, { ...TEXT_REQ, model: TOOL_INCAPABLE })).toBe(true);
+    expect(supportsRequest(ALL, { ...TEXT_REQ, model: ATTACHMENT_INCAPABLE })).toBe(true);
+  });
+
+  it('an EMPTY tools array is not a tool request', () => {
+    expect(supportsRequest(ALL, { ...TEXT_REQ, model: TOOL_INCAPABLE, tools: [] })).toBe(true);
+  });
+
+  it('degrades to SUPPORTED for a model the catalog cannot describe', () => {
+    // A custom `base_url` or a brand-new id has no metadata, and withholding a capability on the strength of
+    // missing data would break every self-hosted model. Absent ⇒ accepted, like the rest of the catalog.
+    expect(supportsRequest(ALL, { ...TOOL_REQ, model: 'totally-unknown-model-2099' })).toBe(true);
+    expect(supportsRequest(ALL, mediaReq('totally-unknown-model-2099'))).toBe(true);
+  });
+
+  it('the adapter entry REFUSES what the pre-skip would skip — the two read one predicate', () => {
+    // Defense in depth for a direct seam consumer, and for a chain whose LAST entry is the incapable model:
+    // without this the request reaches the provider and buys a 400. The property that matters is that the two
+    // cannot disagree, which is why both call the same function.
+    expect(() =>
+      assertSupported('openai', ALL, { ...TOOL_REQ, model: TOOL_INCAPABLE }),
+    ).toThrowError(UnsupportedCapabilityError);
+    expect(() => assertSupported('openai', ALL, { ...TOOL_REQ, model: 'claude-opus-4-8' })).not.toThrow();
+    expect(() => assertSupported('deepseek', ALL, mediaReq(ATTACHMENT_INCAPABLE))).toThrowError(
+      UnsupportedCapabilityError,
+    );
+  });
+
+  it('names the model in the refusal, so the reason is actionable', () => {
+    expect(() => assertSupported('openai', ALL, { ...TOOL_REQ, model: TOOL_INCAPABLE })).toThrow(
+      new RegExp(TOOL_INCAPABLE),
+    );
+  });
+});
 
 describe('capability gating', () => {
   it('derives the required capabilities from the request', () => {

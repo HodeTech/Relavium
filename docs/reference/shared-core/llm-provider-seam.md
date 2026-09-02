@@ -200,6 +200,23 @@ interface CapabilityFlags {
 }
 ```
 
+> **`CapabilityFlags` is per-PROVIDER; a second, per-MODEL axis sits beside it (`CR-51`,
+> [ADR-0071](../../decisions/0071-models-dev-as-the-model-metadata-source.md) amendment).** The catalog's
+> `RequestCapabilities` records what one MODEL accepts, which varies inside a single provider — OpenAI does
+> tools, `gpt-3.5-turbo` does not. Two of its four fields gate the request rather than a preference, and are
+> therefore checked by the same `requestSupportReason` predicate the provider flags go through, so the
+> `FallbackChain` pre-skip and the adapter-entry refusal cannot disagree:
+>
+> - **`toolCall`** — a request carrying `tools` on a model that rejects them.
+> - **`attachment`** — a request carrying a `media` input part on a model that rejects them.
+>
+> The other two (`temperature`, `structuredOutput`) are knobs the adapters simply **withhold** from the wire:
+> a dropped preference changes nothing about the answer. These two are not knobs — withholding tools from a
+> turn that needs them, or dropping the image the question is about, buys a confidently wrong answer at full
+> price, and sending them buys a 400. So the chain skips to a model that can serve the request, for free,
+> before any egress. A model the catalog cannot describe (a custom `base_url`, a new id) degrades to
+> **accepted**, so missing metadata never withholds a capability a model actually has.
+
 > **The `key` parameter is host-aware (its `string` *type* is unchanged).** On the
 > **Node-style surfaces** (CLI, VS Code extension host, Phase-2 Bun API) `key` is the
 > **resolved provider key**, read from the OS keychain at call time inside the one

@@ -530,6 +530,46 @@ describe('FallbackChain — ADR-0030 strip-on-failover', () => {
     expect(secondCallParts.some((p) => p.type === 'reasoning')).toBe(true); // not stripped
   });
 
+  it('skips a MODEL the catalog says rejects tools, for free, even on a tool-capable provider (CR-51)', async () => {
+    // The whole point of `CR-51`. The provider flags say OpenAI does tools — and it does; `gpt-3.5-turbo` does
+    // not, which is a fact only the per-model catalog carries. Before this the chain admitted the entry, spent a
+    // real call, and earned a 400: a free skip turned into a paid failure. The FIRST entry is the incapable one,
+    // so a passing test can only mean the chain skipped it before egress.
+    const toolReq: LlmRequest = {
+      ...userReq,
+      tools: [{ name: 'read_file', parameters: { type: 'object' } }],
+    };
+    const incapable = makeProvider({ id: 'openai', generate: resolves('should never run') });
+    const capable = makeProvider({ id: 'anthropic', generate: resolves('ok') });
+    const { options, trace } = makeOptions();
+    const chain = new FallbackChain(
+      [entry(incapable, 'gpt-3.5-turbo'), entry(capable, 'claude-opus-4-8')],
+      options,
+    );
+
+    const result = await chain.generate(toolReq);
+
+    expect(incapable.calls).toHaveLength(0); // no egress at all — this is the "free" in "free skip"
+    expect(result.content).toEqual([{ type: 'text', text: 'ok' }]);
+    // …and the skip is RECORDED with its reason, never silent: a chain that quietly drops an entry is a chain
+    // whose behaviour nobody can explain from the trace.
+    const skip = trace.find((r) => r.outcome === 'skipped');
+    expect(skip?.model).toBe('gpt-3.5-turbo');
+    expect(skip?.skipReason).toMatch(/does not accept tool definitions/);
+  });
+
+  it('does NOT skip that same model for a text-only request', async () => {
+    // The gate is about what the request needs. Skipping a tool-incapable model for a plain text turn would
+    // strand the chain on a model that could have answered — the opposite failure, equally real.
+    const incapable = makeProvider({ id: 'openai', generate: resolves('ok') });
+    const { options } = makeOptions();
+    const chain = new FallbackChain([entry(incapable, 'gpt-3.5-turbo')], options);
+
+    await chain.generate(userReq);
+
+    expect(incapable.calls).toHaveLength(1);
+  });
+
   it('keeps reasoning for a same-provider entry after an intervening provider is skipped', async () => {
     // [anthropic, openai(skipped, lacks tools), anthropic] — the skipped openai entry must NOT count
     // as a provider boundary, or the third (same-provider) entry would wrongly lose its reasoning.

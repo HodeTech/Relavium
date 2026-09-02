@@ -281,7 +281,7 @@ to correct.
 | `CR-41` | made 2026-08-31 (full pinning on `http`/`sse`; a **remote `websocket` is refused at admission**; a redirect is refused, not followed; the local opt-in is ONE bound policy) | [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §2–§4 | no | hostile MCP |
 | `CR-42` | made 2026-08-31 — **256** tools/server · **8 KiB** description · **1 MiB** discovery/server · **4 KiB** schema string · **256 B** property name · **1 MiB** result text · **4 MiB** per `http`/`sse` message. Transport-level (pre-parse, memory) and application-level (post-parse, admission) are separate guarantees; a local transport has only the second, and its bound is the consent gate | [ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §5–§6 | no | hostile MCP |
 | `CR-50` | made 2026-09-02 (complete it; handle-only tool + bytes on a marked synthesized `user` message over the media-input rail) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1 | yes | media bytes |
-| `CR-51` | made (gate on model-level capability) | — | no | — |
+| `CR-51` | made (gate on model-level capability — `toolCall`/`attachment` join `requestSupportReason`, so the chain pre-skips for free and the adapter refuses; `temperature`/`structuredOutput` stay withheld knobs) · ✅ closed 2026-09-02 | — | no | — |
 | `CR-52` | made (pull [ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md)'s deferral forward — a **per-request** sidecar, NOT a seam field) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §3 | no | — |
 | `CR-53` | made (bounded stream to the store — end-to-end: streaming fetch + `MediaStore.putStream?`, `put` narrowed to sub-ceiling) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §2 | no | media bytes |
 | `CR-54` | made (content-hashed handle at first resolution) | — | no | media bytes |
@@ -1618,7 +1618,7 @@ it for. No seam shape changes.
 The synthesized message asserts its engine-authored preamble (it must never present as the user's own words),
 and a test pins that the tool exposes no range parameters.
 
-### CR-51 — Model-level tool/attachment capability is not enforced · High
+### CR-51 — Model-level tool/attachment capability is not enforced · High · ✅ closed 2026-09-02
 The catalog carries `toolCall` and `attachment` metadata, but runtime gates on the provider-wide flags and the
 adapters attach tools unconditionally. A model the catalog marks as tool-incapable can still be sent tools, and
 the chain can treat it as capable instead of pre-skipping it — turning a free skip into a paid 400.
