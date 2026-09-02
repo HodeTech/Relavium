@@ -721,10 +721,18 @@ function safeToolName(name: string): string {
   return stripped.slice(0, 64) || 'tool';
 }
 
-function mediaAttachmentPreamble(toolNames: readonly string[], count: number): string {
+function mediaAttachmentPreamble(
+  toolNames: readonly string[],
+  callCount: number,
+  count: number,
+): string {
   const noun = count === 1 ? 'attachment' : 'attachments';
-  const named = toolNames.map((name) => `\`${safeToolName(name)}\``).join(', ');
-  const call = toolNames.length === 1 ? 'call' : 'calls';
+  const named = [...new Set(toolNames)].map((name) => `\`${safeToolName(name)}\``).join(', ');
+  // Pluralized on the number of CALLS, not on the number of distinct names. Keyed to the names it said
+  // "tool call" for the commit's own motivating case — two parallel `read_media` calls — because both
+  // calls share one name. `read_media` is the only media-producing tool, so that was the only path into
+  // the plural branch, and it always got it backwards.
+  const call = callCount === 1 ? 'call' : 'calls';
   return `${MEDIA_OPENING}\n\n${count} media ${noun} returned by the ${named} tool ${call}, delivered below.`;
 }
 
@@ -756,15 +764,16 @@ function synthesizedMediaMessage(pending: readonly PendingAttachment[]): LlmMess
     return undefined;
   }
   const media = pending.flatMap((entry) => [...unwrapUntrusted(entry.media)]);
-  // Distinct names, in call order — two `read_media` calls name the tool once, not twice.
-  const names = [...new Set(pending.map((entry) => entry.toolName))];
+  // Names are deduplicated for what is LISTED — two `read_media` calls name the tool once. The call COUNT
+  // is `pending.length`, and the two are deliberately separate values.
+  const names = pending.map((entry) => entry.toolName);
   // FENCED on both sides, mirroring the compaction summary (`turn-messages.ts`). An opening line alone
   // marks provenance; it does not tell the model what to do with a directive painted into the image. The
   // closing line is what stops the attachment from bleeding into whatever follows it in the turn.
   return {
     role: 'user',
     content: [
-      { type: 'text', text: mediaAttachmentPreamble(names, media.length) },
+      { type: 'text', text: mediaAttachmentPreamble(names, pending.length, media.length) },
       ...media,
       { type: 'text', text: MEDIA_CLOSING },
     ],

@@ -240,6 +240,10 @@ describe('read_media delivery reaches the model as media (`CR-50`, ADR-0089 §1)
     });
     await sendThroughChain(adapter, 'gpt-5.5');
     expect(containsImage(sent)).toBe(true);
+
+    // …and the PARALLEL shape, which is the one this provider rejects when the tool results are split.
+    await sendThroughChain(adapter, 'gpt-5.5', parallelReadMediaExchange());
+    expect(containsImage(sent)).toBe(true);
   });
 
   it('Gemini: the resolved image lands on the wire', async () => {
@@ -266,6 +270,11 @@ describe('read_media delivery reaches the model as media (`CR-50`, ADR-0089 §1)
       },
     });
     await sendThroughChain(adapter, 'gemini-3-pro');
+    expect(containsImage(sent)).toBe(true);
+
+    // …and the PARALLEL shape. Gemini requires the `functionResponse` count in a turn to match the
+    // `functionCall` count, so this is the arm that would break if the results were split apart again.
+    await sendThroughChain(adapter, 'gemini-3-pro', parallelReadMediaExchange());
     expect(containsImage(sent)).toBe(true);
   });
 });

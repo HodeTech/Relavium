@@ -1932,31 +1932,32 @@ describe('media attachments are delivered on a synthesized user message (`CR-50`
     expect(roles.slice(firstTool + 3)).toEqual([]);
     const synthesized = continuation.at(-1);
     expect(synthesized?.content.filter((p) => p.type === 'media')).toHaveLength(2);
+    // The preamble counts CALLS, not distinct names. Both calls are `read_media`, so keying the plural to
+    // the name set rendered "2 media attachments returned by the `read_media` tool call" — backwards, on
+    // the only path that reaches the plural branch at all.
+    const head = synthesized?.content[0];
+    expect(head?.type === 'text' ? head.text : '').toContain('tool calls');
   });
 
-  it('refuses a response whose tool calls produce more attachments than it will deliver', async () => {
+  it('refuses a response whose tool calls SUM to more attachments than it will deliver', async () => {
     // The only backstop used to be `MEDIA_MESSAGE_CAPS` at the adapter, POST-resolution: a `ZodError`
     // about the seam's limit, after every tool had already run. Refused here instead, with our message.
+    //
+    // Driven by MANY CALLS each returning ONE attachment, because that is the only way production reaches
+    // the ceiling: `read_media` always returns exactly one. A single call with a fat array exercises the
+    // arithmetic but not the accumulation across `pending`, which is the part that could actually be wrong.
     const over = ADMISSION_CEILINGS.mediaAttachmentsPerResponse + 1;
-    const many = Array.from({ length: over }, () => ATTACHMENT);
-    const { provider } = capturingProvider([toolTurn, [{ type: 'text_delta', text: 'x' }, STOP()]]);
-    const registry = stubRegistry((call) => ({
-      output: 'descriptor',
-      mediaAttachments: markUntrusted(many),
-      truncated: false,
-      toolResult: markUntrusted({
-        type: 'tool_result' as const,
-        toolCallId: call.id,
-        result: 'descriptor',
-      }),
-      events: {
-        call: { toolId: 'read_media', toolInput: {} },
-        result: { toolId: 'read_media', success: true, outputSummary: 'd', durationMs: 1 },
-      },
-    }));
-    await expect(runAgentTurn(baseParams(provider, { registry }))).rejects.toMatchObject({
-      code: 'turn_limit',
-    });
+    const calls = Array.from({ length: over }, (_, i) => [
+      { type: 'tool_call_start' as const, id: `m${i}`, name: 'read_media' },
+      { type: 'tool_call_end' as const, id: `m${i}` },
+    ]).flat();
+    const { provider } = capturingProvider([
+      [...calls, STOP('tool_use')],
+      [{ type: 'text_delta', text: 'x' }, STOP()],
+    ]);
+    await expect(
+      runAgentTurn(baseParams(provider, { registry: mediaRegistry() })),
+    ).rejects.toMatchObject({ code: 'turn_limit' });
   });
 
   it('synthesizes NOTHING for an ordinary tool — no empty message in the transcript', async () => {
