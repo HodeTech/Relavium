@@ -84,7 +84,10 @@ function fakeDeps(config: {
 }
 
 /** A body whose chunks are pulled lazily, counting how many the SOURCE actually produced. */
-function countingBody(chunks: readonly Uint8Array[], stats: { produced: number }): AsyncIterable<Uint8Array> {
+function countingBody(
+  chunks: readonly Uint8Array[],
+  stats: { produced: number },
+): AsyncIterable<Uint8Array> {
   return {
     [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
       let i = 0;
@@ -136,7 +139,10 @@ describe('streamMediaBytes (ADR-0089 §2 — the same policy, never fully buffer
     // by counting what the SOURCE produced, which is the only honest proxy for peak memory here.
     const stats = { produced: 0 };
     const chunks = Array.from({ length: 100 }, () => new Uint8Array(10));
-    const { deps } = fakeDeps({ resolve: { 'media.example': [PUBLIC_IP] }, hops: [{ status: 200 }] });
+    const { deps } = fakeDeps({
+      resolve: { 'media.example': [PUBLIC_IP] },
+      hops: [{ status: 200 }],
+    });
     const withCountingBody: MediaEgressDeps = {
       ...deps,
       openConnection: () =>
@@ -281,6 +287,48 @@ describe('streamMediaBytes (ADR-0089 §2 — the same policy, never fully buffer
     ]) {
       await expect(drain(streamMediaBytes(url, { maxBytes: 1000 }, deps))).rejects.toThrow();
     }
+  });
+
+  // --- the media-bytes security sitting, `CR-53` (phase clause 7) ------------------------------------
+  //
+  // "Same policy as the whole-buffer twin" is the claim that makes a SECOND egress function safe to add.
+  // The test above checks it for three refusals decided before any connection opens. These two check the
+  // one an attacker actually reaches for: a target that passes validation and then redirects inward. It is
+  // the classic SSRF bypass, and the streaming form is the newer, less-travelled path to it.
+
+  it('ADVERSARIAL: a public first hop that redirects to a private host is blocked on the STREAM path too', async () => {
+    const { deps, calls } = fakeDeps({
+      resolve: { 'a.example': [PUBLIC_IP], 'evil.example': ['169.254.169.254'] },
+      hops: [{ status: 307, location: 'https://evil.example/latest/meta-data/' }, { status: 200 }],
+    });
+    await expect(
+      drain(streamMediaBytes('https://a.example/a.png', { maxBytes: 1000 }, deps)),
+    ).rejects.toMatchObject({ code: 'blocked_host' });
+    // And it stops AT the redirect: the second hop is never dialled, so the metadata endpoint is not
+    // merely unread — it is never contacted.
+    expect(calls).toHaveLength(1);
+  });
+
+  it('ADVERSARIAL: a redirect to a non-HTTPS target is blocked on the STREAM path too', async () => {
+    const { deps } = fakeDeps({
+      resolve: { 'a.example': [PUBLIC_IP] },
+      hops: [{ status: 301, location: 'http://a.example/x' }],
+    });
+    await expect(
+      drain(streamMediaBytes('https://a.example/a.png', { maxBytes: 1000 }, deps)),
+    ).rejects.toMatchObject({ code: 'insecure_url' });
+  });
+
+  it('ADVERSARIAL: the connection is pinned to the VALIDATED ip, not re-resolved (no DNS rebind)', async () => {
+    // A rebinding attacker answers the validation lookup with a public address and the connect lookup with
+    // a private one. The pin is what defeats it: the dial must carry the address that was validated.
+    const { deps, calls } = fakeDeps({
+      resolve: { 'rebind.example': [PUBLIC_IP] },
+      hops: [{ status: 200, body: [new Uint8Array([1, 2, 3])] }],
+    });
+    await drain(streamMediaBytes('https://rebind.example/a.png', { maxBytes: 1000 }, deps));
+    expect(calls[0]?.pinnedIp).toBe(PUBLIC_IP); // dialled by the VALIDATED address (TOCTOU defense)
+    expect(calls[0]?.hostname).toBe('rebind.example'); // …with the hostname kept for SNI/Host
   });
 
   it('opens no connection until the consumer pulls', async () => {
