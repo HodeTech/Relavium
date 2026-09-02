@@ -84,6 +84,43 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
     expect(out).toContain('acme-custom-1');
   });
 
+  describe('media output rates (CR-55, ADR-0089 §4)', () => {
+    it('stores each media rate per BILLED UNIT, and leaves an unstated one NULL', () => {
+      const { code, out } = run({ ...baseArgs, imageUsdPerCount: 0.04, videoUsdPerSecond: 0.5 });
+      expect(code).toBe(EXIT_CODES.success);
+      const listing = catalog.listAll().find((m) => m.modelId === 'acme-custom-1');
+      expect(listing?.mediaImageCostMicrocents).toBe(4_000_000); // $0.04 × 1e8, per IMAGE (not per Mtok)
+      expect(listing?.mediaVideoCostMicrocents).toBe(50_000_000); // $0.50 × 1e8, per SECOND
+      // NULL, not 0 — the column's whole purpose is to hold "nobody said" distinctly from "free".
+      expect(listing?.mediaAudioCostMicrocents).toBeNull();
+      // Echoed in the billed unit; "$0.04/Mtok" would read as a price a million times off.
+      expect(out).toContain('image $0.04/image');
+      expect(out).toContain('video $0.5/s');
+    });
+
+    it('writes a stated ZERO as 0, never as NULL', () => {
+      run({ ...baseArgs, audioUsdPerSecond: 0 });
+      const listing = catalog.listAll().find((m) => m.modelId === 'acme-custom-1');
+      expect(listing?.mediaAudioCostMicrocents).toBe(0);
+    });
+
+    it('a re-price that omits the media flags PRESERVES the stored rates', () => {
+      // The `--cached` omission rule, applied to media: re-pricing tokens must not silently drop a media rate
+      // the user hand-entered earlier. Without this, `models pricing … --input 4 --output 12` would quietly
+      // return the model to unpriced-for-media and (under strict) start refusing generations again.
+      run({ ...baseArgs, imageUsdPerCount: 0.04 });
+      run({ ...baseArgs, inputUsdPerMtok: 4, outputUsdPerMtok: 12 });
+      const listing = catalog.listAll().find((m) => m.modelId === 'acme-custom-1');
+      expect(listing?.inputCostPerMtokMicrocents).toBe(400_000_000);
+      expect(listing?.mediaImageCostMicrocents).toBe(4_000_000);
+    });
+
+    it('refuses an implausible per-unit price before writing anything', () => {
+      expect(() => run({ ...baseArgs, imageUsdPerCount: 5_000 })).toThrow(/implausibly large/);
+      expect(catalog.listAll().find((m) => m.modelId === 'acme-custom-1')).toBeUndefined();
+    });
+  });
+
   it('rounds a fractional USD price correctly ($0.15/Mtok → 15_000_000µ¢)', () => {
     run({ ...baseArgs, inputUsdPerMtok: 0.15, outputUsdPerMtok: 0.6 });
     const listing = catalog.listAll().find((m) => m.modelId === 'acme-custom-1');

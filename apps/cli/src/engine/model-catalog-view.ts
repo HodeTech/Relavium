@@ -11,7 +11,7 @@ import {
   type PricingOverlay,
   type ProviderId,
 } from '@relavium/llm';
-import { LLM_PROVIDERS } from '@relavium/shared';
+import { LLM_PROVIDERS, type MediaBilledModality } from '@relavium/shared';
 
 /**
  * The host projection that turns the durable `model_catalog` cache rows into the merged, display-ready catalog the
@@ -68,11 +68,11 @@ function isProviderId(slug: string): slug is ProviderId {
  * A deprecation date is decoration; the catalog is not. Same guarded-parse discipline the limit columns get
  * from {@link statedLimit} a few lines down.
  */
-function spreadIfSet<K extends string>(
+function spreadIfSet<K extends string, V>(
   key: K,
-  value: string | undefined,
-): Record<K, string> | Record<string, never> {
-  return value === undefined ? {} : ({ [key]: value } as Record<K, string>);
+  value: V | undefined,
+): Record<K, V> | Record<string, never> {
+  return value === undefined ? {} : ({ [key]: value } as Record<K, V>);
 }
 
 function isoDateOrUndefined(epochMs: number | undefined): string | undefined {
@@ -181,6 +181,38 @@ function scaledTiers(
  * `--cached 0` cannot be told apart from an omitted `--cached`: one column, one sentinel. Treating an explicit zero
  * as "not stated" is the safe reading of the ambiguity — the alternative bills a whole class of tokens at nothing.
  */
+/**
+ * The per-modality media-output rates for a user row, under the same partial-override rule as every other
+ * dimension ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4): the user
+ * outranks the catalog per MODALITY, and a modality they said nothing about inherits the catalog's.
+ *
+ * The `null`/`0` distinction is load-bearing and is what these NULLABLE columns buy over the token side's
+ * `NOT NULL DEFAULT 0` + `…Stated` flag. `null` ⇒ not stated ⇒ fall through to the catalog, and if the catalog
+ * has none either the modality stays ABSENT — which is what makes it *unpriced* rather than free, the whole
+ * point of `CR-55`. A stated `0` is believed: someone said this modality is free, and the cap should treat it
+ * as priced at nothing rather than as a hole it cannot see.
+ *
+ * Returns `undefined` when no modality resolves, so the key is omitted entirely rather than set to an empty
+ * object — `mediaOutputRates: {}` and an absent `mediaOutputRates` mean the same thing to `mediaCost`, and one
+ * of them allocates.
+ */
+function mediaRates(
+  row: ModelCatalogListing,
+  base: ModelPricing | undefined,
+): Partial<Record<MediaBilledModality, number>> | undefined {
+  const stated: [MediaBilledModality, number | null][] = [
+    ['image', row.mediaImageCostMicrocents],
+    ['audio', row.mediaAudioCostMicrocents],
+    ['video', row.mediaVideoCostMicrocents],
+  ];
+  const rates: Partial<Record<MediaBilledModality, number>> = {};
+  for (const [modality, userRate] of stated) {
+    const resolved = userRate ?? base?.mediaOutputRates?.[modality];
+    if (resolved !== undefined) rates[modality] = resolved;
+  }
+  return Object.keys(rates).length === 0 ? undefined : rates;
+}
+
 function rowToUserPricing(row: ModelCatalogListing, provider: ProviderId): ModelPricing {
   const base = catalogPricing(row.modelId); // undefined for a model the catalog has never heard of
   const input = row.inputCostPerMtokMicrocents;
@@ -205,6 +237,7 @@ function rowToUserPricing(row: ModelCatalogListing, provider: ProviderId): Model
     ...(base?.cacheWritePerMtokMicrocents === undefined
       ? {}
       : { cacheWritePerMtokMicrocents: base.cacheWritePerMtokMicrocents }),
+    ...spreadIfSet('mediaOutputRates', mediaRates(row, base)),
     ...(tiers === undefined ? {} : { contextTiers: tiers }),
     ...spreadIfSet('deprecatedAt', isoDateOrUndefined(row.deprecationDate)),
   };

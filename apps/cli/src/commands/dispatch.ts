@@ -228,6 +228,22 @@ function parseUsdPerMtok(raw: string, flag: string): number {
   return value;
 }
 
+/** Parse one USD-per-billed-unit option string → a finite number ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md)
+ *  §4). Shape only, like its per-Mtok sibling; the command core owns the non-negative + ceiling rules. It is a
+ *  separate function purely so the error sentence names the right denominator — a user told "USD per million
+ *  tokens" while pricing one image would reasonably enter a millionth of the right number. */
+function parseUsdPerUnit(raw: string, flag: string): number {
+  const trimmed = raw.trim();
+  const value = Number(trimmed);
+  if (trimmed === '' || !Number.isFinite(value)) {
+    throw new CliError(
+      'invalid_invocation',
+      `${flag} must be a finite number of USD per billed unit (per image, or per second).`,
+    );
+  }
+  return value;
+}
+
 export function buildModelsPricingArgs(input: CommandInput): ModelsPricingCommandArgs {
   const provider = optString(input.options['provider']);
   if (provider === undefined) {
@@ -238,7 +254,9 @@ export function buildModelsPricingArgs(input: CommandInput): ModelsPricingComman
   // by mistake was stuck with their own number for good. It takes no price flags, and rejects them rather than
   // quietly ignoring half an invocation.
   if (input.options['clear'] === true) {
-    for (const flag of ['input', 'output', 'cached'] as const) {
+    // The media flags join the refusal list for the same reason the token ones are on it: `--clear` retires the
+    // WHOLE override row, so accepting a price alongside it would silently discard half the invocation.
+    for (const flag of ['input', 'output', 'cached', 'image', 'audio', 'video'] as const) {
       if (optString(input.options[flag]) !== undefined) {
         throw new CliError(
           'invalid_invocation',
@@ -257,6 +275,12 @@ export function buildModelsPricingArgs(input: CommandInput): ModelsPricingComman
     throw new CliError('invalid_invocation', 'missing required option --output <usd-per-mtok>.');
   }
   const rawCached = optString(input.options['cached']);
+  // Per BILLED UNIT, not per Mtok (ADR-0089 §4) — `parseUsdPerUnit` exists so the two denominators cannot be
+  // confused at the parse boundary either. Each is independently optional: a user pricing only image output
+  // should not have to invent an audio rate.
+  const rawImage = optString(input.options['image']);
+  const rawAudio = optString(input.options['audio']);
+  const rawVideo = optString(input.options['video']);
   return {
     model: reqPositional(input, 0, 'model'),
     provider,
@@ -265,6 +289,9 @@ export function buildModelsPricingArgs(input: CommandInput): ModelsPricingComman
     ...(rawCached === undefined
       ? {}
       : { cachedInputUsdPerMtok: parseUsdPerMtok(rawCached, '--cached') }),
+    ...(rawImage === undefined ? {} : { imageUsdPerCount: parseUsdPerUnit(rawImage, '--image') }),
+    ...(rawAudio === undefined ? {} : { audioUsdPerSecond: parseUsdPerUnit(rawAudio, '--audio') }),
+    ...(rawVideo === undefined ? {} : { videoUsdPerSecond: parseUsdPerUnit(rawVideo, '--video') }),
   };
 }
 

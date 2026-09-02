@@ -517,6 +517,9 @@ function registerModels(program: Command, ctx?: CommandContext): void {
       '--cached <usd-per-mtok>',
       "cache-read price, USD per million tokens; omitted ⇒ the catalog's cache discount, applied to your input rate",
     )
+    .option('--image <usd-per-image>', 'image-output price, USD per image')
+    .option('--audio <usd-per-second>', 'audio-output price, USD per second')
+    .option('--video <usd-per-second>', 'video-output price, USD per second')
     .option('--clear', "remove your price for this model — it falls back to the catalog's");
 
   if (ctx === undefined) {

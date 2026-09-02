@@ -105,6 +105,20 @@ export interface ModelCatalogListing {
   readonly cachedInputCostPerMtokMicrocents: number;
   /** `true` ⇒ the number above is the user's own; `false` ⇒ they never said, so a reader derives it (ADR-0071 §10). */
   readonly cachedInputStated: boolean;
+  /**
+   * Per-modality media-OUTPUT rates in integer µ¢ per billed unit — per image, per audio-second, per
+   * video-second ([ADR-0089](../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4).
+   *
+   * **`null` and `0` are different answers, and no `…Stated` flag is needed to tell them apart.** Unlike the
+   * token columns (`NOT NULL DEFAULT 0`, which is why `cachedInputStated` exists), these are NULLABLE: `null`
+   * is "nobody has priced this modality" and `0` is "it is free, and someone said so". A reader that collapses
+   * them re-creates `CR-55` one layer down — a cap that cannot be enforced would look like a call that costs
+   * nothing. They were on the ROW since 1.AF and never on this projection, which is why the cost path could
+   * not see a rate even once one existed.
+   */
+  readonly mediaImageCostMicrocents: number | null;
+  readonly mediaAudioCostMicrocents: number | null;
+  readonly mediaVideoCostMicrocents: number | null;
   /** Live-discovered deprecation epoch-ms (ADR-0064 §7); `undefined` when none. */
   readonly deprecationDate?: number;
   /** Provenance, validated at the read boundary (a foreign value degrades to `'static'`). */
@@ -255,6 +269,10 @@ function toListing(row: ModelCatalogRow): ModelCatalogListing {
     outputCostPerMtokMicrocents: row.outputCostPerMtokMicrocents,
     cachedInputCostPerMtokMicrocents: row.cachedInputCostPerMtokMicrocents,
     cachedInputStated: row.cachedInputStated,
+    // Carried verbatim, `null` included — the projection must not decide what a missing rate means (ADR-0089 §4).
+    mediaImageCostMicrocents: row.mediaImageCostMicrocents,
+    mediaAudioCostMicrocents: row.mediaAudioCostMicrocents,
+    mediaVideoCostMicrocents: row.mediaVideoCostMicrocents,
     ...(row.deprecationDate === null ? {} : { deprecationDate: row.deprecationDate }),
     source: coerceModelCatalogSource(row.source),
     ...(row.lastRefreshedAt === null ? {} : { lastRefreshedAt: row.lastRefreshedAt }),

@@ -50,6 +50,40 @@ function usdToMicrocents(usdPerMtok: number, flag: string): number {
 }
 
 /**
+ * A single media unit's price is orders of magnitude larger than a token's, so it gets its own ceiling: an
+ * image or a second of video at $1000 is already absurd, while $1000/Mtok is merely expensive.
+ */
+const MAX_USD_PER_MEDIA_UNIT = 1_000;
+
+/**
+ * USD per BILLED MEDIA UNIT → integer µ¢ ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4).
+ *
+ * The scalar is the same USD→µ¢ conversion {@link usdToMicrocents} uses — what differs is the *denominator*,
+ * and that is the whole reason this is a separate function rather than a flag on that one. A token rate is per
+ * MILLION tokens; a media rate is per ONE image / ONE second (ADR-0044 §3's canonical billed units). Routing a
+ * per-image price through the per-Mtok validator would accept `--image 0.04` and store a rate a million times
+ * too small, which is a silent under-bill — the failure class this whole wave is about.
+ *
+ * `0` is accepted and meaningful: it records "this modality is free, and I am telling you so", which the
+ * NULLABLE column can hold distinctly from "nobody has said" (see `mediaRates` in `model-catalog-view.ts`).
+ */
+function usdPerUnitToMicrocents(usdPerUnit: number, flag: string): number {
+  if (!Number.isFinite(usdPerUnit) || usdPerUnit < 0) {
+    throw new CliError(
+      'invalid_invocation',
+      `${flag} must be a finite, non-negative number of USD per billed unit`,
+    );
+  }
+  if (usdPerUnit > MAX_USD_PER_MEDIA_UNIT) {
+    throw new CliError(
+      'invalid_invocation',
+      `${flag} ($${usdPerUnit}) is implausibly large — the maximum is $${MAX_USD_PER_MEDIA_UNIT} per unit`,
+    );
+  }
+  return Math.round(usdPerUnit * USD_PER_MTOK_TO_MICROCENTS);
+}
+
+/**
  * SET a price, or CLEAR one — a discriminated union, so a `--clear` invocation cannot carry a price and a set
  * invocation cannot forget one. The two are different acts, and typing them as one optional-riddled shape is how a
  * half-applied invocation gets written.
@@ -75,6 +109,22 @@ export interface SetPricingArgs {
    * is what lets a stored `0` mean "free" rather than "nobody said".
    */
   readonly cachedInputUsdPerMtok?: number;
+  /**
+   * Per-modality media-OUTPUT prices in USD per **billed unit** — image per IMAGE, audio and video per SECOND
+   * (ADR-0044 §3's canonical units; ADR-0089 §4).
+   *
+   * These exist so a `strict_cost_cap` refusal has an answer. Under strict mode a generation whose modality the
+   * catalog cannot price is refused pre-egress — correctly, since the cap cannot bound a charge it cannot see —
+   * and until these flags existed the only thing a user could do about it was turn the cap off. No shipped
+   * catalog row carries a media rate, so for now this is the ONLY way to price one.
+   *
+   * Omitted ⇒ the column is left alone and the store preserves whatever is there (the `--cached` rule). An
+   * explicit `0` is written and believed: the NULLABLE column distinguishes "free, stated" from "never stated",
+   * so unlike `--cached` no separate `…Stated` flag is needed.
+   */
+  readonly imageUsdPerCount?: number;
+  readonly audioUsdPerSecond?: number;
+  readonly videoUsdPerSecond?: number;
 }
 
 /** `models pricing <model> --provider <p> --clear` — retire the override; the model falls back to the catalog. */
@@ -157,6 +207,22 @@ export function modelsPricingCommand(
     args.cachedInputUsdPerMtok === undefined
       ? undefined
       : usdToMicrocents(args.cachedInputUsdPerMtok, '--cached');
+  // Media rates follow the `--cached` OMISSION rule (omitted ⇒ leave the column alone) but NOT its ambiguity: the
+  // columns are NULLABLE, so a stated `0` and an unstated rate are already distinct on disk and no `…Stated`
+  // companion flag is needed. Converted here, before the write, so an implausible `--image` cannot leave a row
+  // half-applied — the same reason the token conversions happen above the upsert.
+  const mediaImageCostMicrocents =
+    args.imageUsdPerCount === undefined
+      ? undefined
+      : usdPerUnitToMicrocents(args.imageUsdPerCount, '--image');
+  const mediaAudioCostMicrocents =
+    args.audioUsdPerSecond === undefined
+      ? undefined
+      : usdPerUnitToMicrocents(args.audioUsdPerSecond, '--audio');
+  const mediaVideoCostMicrocents =
+    args.videoUsdPerSecond === undefined
+      ? undefined
+      : usdPerUnitToMicrocents(args.videoUsdPerSecond, '--video');
 
   // A pricing-ONLY upsert: omit display name + limits (and every media/capability column) so the store PRESERVES
   // whatever an existing row carries — including a soft-deactivated live row the active-only reader cannot see, so
@@ -174,6 +240,9 @@ export function modelsPricingCommand(
     ...(cachedInputCostPerMtokMicrocents === undefined
       ? {}
       : { cachedInputCostPerMtokMicrocents, cachedInputStated: true }),
+    ...(mediaImageCostMicrocents === undefined ? {} : { mediaImageCostMicrocents }),
+    ...(mediaAudioCostMicrocents === undefined ? {} : { mediaAudioCostMicrocents }),
+    ...(mediaVideoCostMicrocents === undefined ? {} : { mediaVideoCostMicrocents }),
   });
 
   if (deps.global.json) {
@@ -208,6 +277,15 @@ export function modelsPricingCommand(
 
   const cachedNote =
     args.cachedInputUsdPerMtok === undefined ? '' : `, cached $${args.cachedInputUsdPerMtok}/Mtok`;
+  // Echoed in the canonical BILLED unit, not USD/Mtok — a user reading back "image $0.04/Mtok" would have every
+  // reason to think they had priced it wrong.
+  const mediaNote = [
+    args.imageUsdPerCount === undefined ? undefined : `image $${args.imageUsdPerCount}/image`,
+    args.audioUsdPerSecond === undefined ? undefined : `audio $${args.audioUsdPerSecond}/s`,
+    args.videoUsdPerSecond === undefined ? undefined : `video $${args.videoUsdPerSecond}/s`,
+  ]
+    .filter((part): part is string => part !== undefined)
+    .join(', ');
   // THE DIVERGENCE IS LOUD (ADR-0071 §5) — and it is the condition on which the "a user can never misprice a
   // shipped model" guard was removed. The user outranks the catalog now; they get what they asked for. What they do
   // NOT get is to do it in silence, so when their number disagrees with the one we shipped, we say both.
@@ -222,7 +300,7 @@ export function modelsPricingCommand(
   // (see security-review.md). The provider is a validated (kebab) ProviderId, and the prices are numbers —
   // both already safe.
   deps.io.writeOut(
-    `Set user pricing for ${stripTerminalControls(args.model)} (${args.provider}): input $${args.inputUsdPerMtok}/Mtok, output $${args.outputUsdPerMtok}/Mtok${cachedNote}. It applies to your next run/chat and survives \`models refresh\`.${divergence}\n`,
+    `Set user pricing for ${stripTerminalControls(args.model)} (${args.provider}): input $${args.inputUsdPerMtok}/Mtok, output $${args.outputUsdPerMtok}/Mtok${cachedNote}${mediaNote === '' ? '' : `, ${mediaNote}`}. It applies to your next run/chat and survives \`models refresh\`.${divergence}\n`,
   );
   return EXIT_CODES.success;
 }

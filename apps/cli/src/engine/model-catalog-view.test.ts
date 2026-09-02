@@ -38,6 +38,9 @@ function row(
     outputCostPerMtokMicrocents: 0,
     cachedInputCostPerMtokMicrocents: 0,
     cachedInputStated: false,
+    mediaImageCostMicrocents: null,
+    mediaAudioCostMicrocents: null,
+    mediaVideoCostMicrocents: null,
     isActive: true,
     visible: true,
     ...partial,
@@ -255,6 +258,9 @@ describe('buildUserPricing (2.5.G S10, ADR-0065 §2)', () => {
           outputCostPerMtokMicrocents: 900_000_000,
           cachedInputCostPerMtokMicrocents: 12_345,
           cachedInputStated: true,
+          mediaImageCostMicrocents: null,
+          mediaAudioCostMicrocents: null,
+          mediaVideoCostMicrocents: null,
           contextWindowTokens: 32_000,
           maxOutputTokens: 4_000,
         }),
@@ -356,6 +362,102 @@ describe('buildUserPricing (2.5.G S10, ADR-0065 §2)', () => {
  * catalog's limits, its cache rate and its context tiers; a cache hit could cost FIVE TIMES a cache miss; and a row
  * whose provider contradicted the catalog was billed by the cost path while the picker showed the catalog's price.
  */
+describe('media output rates reach the cost path (CR-55, ADR-0089 §4)', () => {
+  // These columns have been on the `model_catalog` ROW since 1.AF and were never on the LISTING, so even a rate
+  // someone had entered could not reach `ModelPricing` — the cost path saw an unpriced modality no matter what
+  // the database said. That is the half of `CR-55` a strict refusal is useless without: with no route from a
+  // stated rate to the governor, `strict_cost_cap` + media refuses every generation and the user has no remedy
+  // but to turn the cap off.
+
+  it('projects a stated per-modality rate onto ModelPricing.mediaOutputRates', () => {
+    const overlay = buildUserPricing({
+      rows: [
+        row({
+          modelId: 'acme-image-1',
+          providerId: 'p-openai',
+          source: 'user',
+          inputCostPerMtokMicrocents: 1,
+          outputCostPerMtokMicrocents: 1,
+          mediaImageCostMicrocents: 4_000_000, // $0.04 per image
+          mediaVideoCostMicrocents: 50_000_000, // $0.50 per second
+        }),
+      ],
+      providerSlug: slugResolver({ 'p-openai': 'openai' }),
+    });
+    expect(overlay.get('acme-image-1')?.mediaOutputRates).toEqual({
+      image: 4_000_000,
+      video: 50_000_000,
+    });
+  });
+
+  it('believes a stated ZERO — "free, and someone said so" is not "nobody said"', () => {
+    // The distinction the NULLABLE columns buy over the token side's NOT-NULL + `…Stated` flag. Collapsing the
+    // two would re-create `CR-55` one layer down: a modality the user declared free would read as a cap hole.
+    const overlay = buildUserPricing({
+      rows: [
+        row({
+          modelId: 'acme-free-audio',
+          providerId: 'p-openai',
+          source: 'user',
+          inputCostPerMtokMicrocents: 1,
+          outputCostPerMtokMicrocents: 1,
+          mediaAudioCostMicrocents: 0,
+        }),
+      ],
+      providerSlug: slugResolver({ 'p-openai': 'openai' }),
+    });
+    expect(overlay.get('acme-free-audio')?.mediaOutputRates).toEqual({ audio: 0 });
+  });
+
+  it('omits mediaOutputRates entirely when no modality resolves — absent is what "unpriced" is made of', () => {
+    const overlay = buildUserPricing({
+      rows: [
+        row({
+          modelId: 'acme-text-only',
+          providerId: 'p-openai',
+          source: 'user',
+          inputCostPerMtokMicrocents: 1,
+          outputCostPerMtokMicrocents: 1,
+        }),
+      ],
+      providerSlug: slugResolver({ 'p-openai': 'openai' }),
+    });
+    const priced = overlay.get('acme-text-only');
+    expect(priced).toBeDefined();
+    // NOT `{}` — an empty object and an absent key mean the same thing to `mediaCost`, and one of them allocates.
+    expect(priced).not.toHaveProperty('mediaOutputRates');
+  });
+
+  it('a partial media override stays partial: an unstated modality inherits the catalog', () => {
+    // The media analogue of the context-window rule the sibling describe block pins. A user pricing only image
+    // output must not silently erase a catalog audio rate — the same class of bug as reading a NOT-NULL `0`
+    // context window as a value.
+    const { id, provider } = firstSnapshotModel();
+    const overlay = buildUserPricing({
+      rows: [
+        row({
+          modelId: id,
+          providerId: `p-${provider}`,
+          source: 'user',
+          inputCostPerMtokMicrocents: 1,
+          outputCostPerMtokMicrocents: 1,
+          mediaImageCostMicrocents: 7_777,
+        }),
+      ],
+      providerSlug: slugResolver({ [`p-${provider}`]: provider }),
+    });
+    const rates = overlay.get(id)?.mediaOutputRates;
+    expect(rates?.image).toBe(7_777);
+    // `catalogPricing`, not the raw `CATALOG_SNAPSHOT` entry: `mediaOutputRates` is a `ModelPricing` field, and
+    // reading it off the snapshot's `CatalogModel` would be a type error rather than a check.
+    //
+    // No shipped row carries a media rate today, so the inherited half is legitimately absent — asserted
+    // explicitly so this test fails loudly, rather than passing vacuously, on the day the snapshot ships one.
+    expect(catalogPricing(id)?.mediaOutputRates).toBeUndefined();
+    expect(rates?.audio).toBe(catalogPricing(id)?.mediaOutputRates?.audio);
+  });
+});
+
 describe('a user override of a CATALOG model — a partial override must stay partial', () => {
   const OPENAI = 'uuid-openai';
   const slugs = slugResolver({ [OPENAI]: 'openai' });
@@ -415,7 +517,10 @@ describe('a user override of a CATALOG model — a partial override must stay pa
           inputCostPerMtokMicrocents: 10_000_000,
           outputCostPerMtokMicrocents: 100_000_000,
           cachedInputCostPerMtokMicrocents: 0,
-          cachedInputStated: true, // they typed `--cached 0`
+          cachedInputStated: true,
+          mediaImageCostMicrocents: null,
+          mediaAudioCostMicrocents: null,
+          mediaVideoCostMicrocents: null, // they typed `--cached 0`
         }),
       ],
       providerSlug: slugs,
