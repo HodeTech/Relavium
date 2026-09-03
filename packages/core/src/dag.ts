@@ -187,11 +187,30 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
   // should see all of it at once. Skipped when the order is short, i.e. a cycle: `ancestors` would be
   // built from a truncated order and every closure below the cut would be wrong, so a cycle would produce
   // a page of confident, invented "not ordered after" findings on top of the real problem.
-  const ancestors =
-    order.length === spec.nodes.length
-      ? computeAncestors(order, dependencies)
-      : new Map<string, readonly string[]>();
-  if (order.length === spec.nodes.length) {
+  //
+  // **Gated on the CEILINGS too, not only on the cycle.** The closure fold is Θ(V²) in the worst case —
+  // a chain of N nodes retains N²/2 ids — and an over-ceiling file already has its `ceiling_exceeded`
+  // issue sitting in `issues` at this point, waiting to be thrown two lines below. Computing the closure
+  // first meant a 15 000-node file (30× the 500-node ceiling) did the whole fold before being told it was
+  // rejected: measured 4.8 s at n=10 000 and an OOM of the host process above that. A rejection must not
+  // be more expensive than an acceptance.
+  //
+  // **And gated on every `agent_ref` having RESOLVED.** A resolved agent's `system_prompt` wires data
+  // edges (`wireDataEdges`), so the closure — and therefore this refusal's answer — is smaller when the
+  // host builds without a registry, which `BuildRunPlanOptions.agents` documents as a supported way to
+  // call this. The difference points the wrong way: without the registry a read that IS ordered would be
+  // refused. The same file must not build in one host and be rejected in another, so the check stands
+  // down rather than answer from a partial graph — the conservatism `validateAgentNode` already applies
+  // to its own dangling check.
+  const everyAgentResolved = spec.nodes.every(
+    (n) => n.type !== 'agent' || agentsById.has(n.agent_ref),
+  );
+  const closureIsSound =
+    order.length === spec.nodes.length && !issues.some((i) => i.kind === 'ceiling_exceeded');
+  const ancestors = closureIsSound
+    ? computeAncestors(order, dependencies)
+    : new Map<string, readonly string[]>();
+  if (closureIsSound && everyAgentResolved) {
     collectUnorderedReadIssues(spec, ancestors, issues);
   }
 
@@ -934,10 +953,16 @@ function computeAncestors(
  * together and why this one has to be loud.
  *
  * **Deliberately incomplete, and its incompleteness is silent.** Only a literal access naming a node that
- * EXISTS in the workflow is refused. A computed key, an aliased binding, or a read of a node that is not
- * in the workflow at all says nothing here — the first two because the scan cannot see them, the third
- * because a dangling reference is the runtime resolver's job and inventing a second, disagreeing opinion
- * about it is how the two drift apart.
+ * EXISTS in the workflow is refused. A computed key, a rebound `run`, or any text the masker cannot
+ * confidently lex says nothing here, because the scan cannot see them.
+ *
+ * **A read of a node that is not in the workflow is reported by NOTHING, ever, and that is a residue
+ * rather than a hand-off.** An earlier version of this comment said it was "the runtime resolver's job" —
+ * it is not: `unresolved_reference` covers TEMPLATE fields, and run-plan.md §data edges states plainly
+ * that expression fields are not templates and never produce it. There is no second opinion to avoid
+ * disagreeing with. It is left alone here for a narrower reason — refusing an unknown id would make every
+ * bracket key in a mis-anchored match refusable, which is the false-refusal direction — and it is recorded
+ * in deferred-tasks.md rather than implied closed.
  */
 function collectUnorderedReadIssues(
   spec: WorkflowSpec,
@@ -951,7 +976,12 @@ function collectUnorderedReadIssues(
         ? [{ field: 'expression', text: node.expression }]
         : node.type === 'transform'
           ? [{ field: 'transform', text: node.transform }]
-          : node.type === 'merge' && node.merge_fn !== undefined
+          : // Only a `custom` merge EVALUATES its `merge_fn` (fan-in.ts switches on `mergeStrategy`), and
+            // the schema does not reject a `merge_fn` on the other strategies. Scanning one the engine
+            // never runs would refuse a workflow over an expression that has no effect. Whether such a
+            // `merge_fn` should itself be refused is a separate decision and must not ride in here as a
+            // side effect of this scan.
+            node.type === 'merge' && node.merge_strategy === 'custom' && node.merge_fn !== undefined
             ? [{ field: 'merge_fn', text: node.merge_fn }]
             : [];
     const visible = new Set(ancestors.get(node.id) ?? []);
@@ -971,7 +1001,12 @@ function collectUnorderedReadIssues(
           message:
             read.id === node.id
               ? `this expression reads \`run.outputs\` of its own node \`${node.id}\`, which cannot have produced an output yet`
-              : `this expression reads \`run.outputs\` of node \`${read.id}\`, which node \`${node.id}\` is not ordered after — add an edge, or reference it from a template field so the builder orders them`,
+              : // Only ONE remedy is named, because only one exists here. An earlier wording also offered
+                // "reference it from a template field so the builder orders them" — but `nodeReferenceSites`
+                // returns template sites for `agent` and `human_gate` nodes only, and a `condition`,
+                // `transform` or `merge` has no template field at all. A remedy the author cannot perform
+                // is worse than no remedy: it sends them looking for a field that does not exist.
+                `this expression reads \`run.outputs\` of node \`${read.id}\`, which node \`${node.id}\` is not ordered after — add an edge from \`${read.id}\` so the builder orders them`,
         });
       }
     }

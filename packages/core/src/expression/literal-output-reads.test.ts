@@ -81,11 +81,36 @@ describe('literalOutputReads — where it deliberately says NOTHING', () => {
     expect(maskLiterals('"unterminated')).toBeUndefined();
   });
 
-  it('mis-lexes a regex containing a quote — and fails toward silence, never a false find', () => {
-    // The scan is not a JS lexer. Here the quote inside the regex opens a "string" that swallows the
-    // real access, so the read is MISSED. That is the acceptable direction: the narrowed scope is still
-    // the backstop, and no valid workflow is refused.
+  it('abandons the scan at any `/` it cannot classify as a comment', () => {
+    // Regex-vs-division is the one genuinely hard part of lexing JS, and guessing wrong is NOT silence: a
+    // regex with an odd number of quotes shifts every later string boundary by one, so a real string's
+    // contents become code — and a second odd-quoted regex restores parity, so the mask terminates
+    // cleanly and a FABRICATED read survives. Both shapes below go silent instead.
     expect(ids('/["]/.test(x) && run.outputs["a"]')).toEqual([]);
+    expect(ids('/["]/ .test(a) + /["]/ .test(b) + "x run.outputs[\'ghost\'] y"')).toEqual([]);
+    // The cost, stated rather than hidden: an expression containing division is never scanned.
+    expect(ids('run.outputs["a"] / 2')).toEqual([]);
+  });
+
+  it('abandons the scan on a nested template literal', () => {
+    // `${` inside a template opens CODE that may contain another template. Pairing backticks flat leaves
+    // the inner template's TEXT marked as code — a false-find shape, not a missed read.
+    expect(ids('`a ${ `run.outputs["ghost"]` } b`')).toEqual([]);
+    expect(ids('`${x}` + run.outputs["a"]')).toEqual([]);
+  });
+
+  it('abandons the scan on an HTML-like comment (Annex B, which QuickJS accepts)', () => {
+    expect(ids('<!-- run.outputs["ghost"]')).toEqual([]);
+    expect(ids('x\n--> run.outputs["ghost"]')).toEqual([]);
+  });
+
+  it('says nothing when `run` is REBOUND — the shadow is not the scope', () => {
+    // `((run) => run.outputs["total"])(inputs.alias)` evaluates against something else entirely; naming
+    // `total` would be a false refusal. A use of the scope's `run` is always `run.`/`run?.`, so any other
+    // occurrence is treated as possibly a binding and the whole expression goes unscanned.
+    expect(ids('((run) => run.outputs["total"])(inputs.alias)')).toEqual([]);
+    expect(ids('(({ run }) => run.outputs["total"])(inputs)')).toEqual([]);
+    expect(ids('typeof run === "object" ? run.outputs["a"] : 0')).toEqual([]);
   });
 });
 

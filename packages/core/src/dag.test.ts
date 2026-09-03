@@ -1270,6 +1270,38 @@ ${edges}
     expect(r.ok).toBe(true);
   });
 
+  it('does not scan a `merge_fn` the engine never evaluates', () => {
+    // `fan-in.ts` switches on `mergeStrategy` and runs `merge_fn` only for `custom`; the schema does not
+    // reject one on the other strategies. Refusing a workflow over an expression that has no effect would
+    // be a false refusal in a different costume.
+    const r = build(
+      wf(
+        `    - { id: other, type: transform, transform: '"A"' }
+    - { id: b, type: transform, transform: '"B"' }
+    - { id: j, type: merge, merge_strategy: concat, merge_fn: 'run.outputs["other"]' }`,
+        `    - { from: start, to: other }
+    - { from: start, to: b }
+    - { from: b, to: j }`,
+      ),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('names only a remedy the author can actually perform', () => {
+    const r = build(
+      wf(
+        `    - { id: other, type: transform, transform: '"A"' }
+    - { id: t, type: transform, transform: 'run.outputs["other"]' }`,
+        `    - { from: start, to: other }
+    - { from: start, to: t }`,
+      ),
+    );
+    // A `transform` has no template field, so "reference it from a template field" — the wording this
+    // replaced — sent the author looking for something that does not exist on their node type.
+    expect(r.message).toContain('add an edge');
+    expect(r.message).not.toContain('template field');
+  });
+
   it('says nothing about a read of a node that is not in the workflow', () => {
     // A dangling reference is the runtime resolver's job; a second, disagreeing opinion here is how two
     // checks drift apart.

@@ -102,3 +102,47 @@ value that does not exist yet is a wrong answer that looks like a right one.
   worked), but a file that carried it stops loading until the field is removed.
 - The closure computation adds work to plan build and a scope projection per expression evaluation. Both are
   plan-derived and cacheable; the cost is bounded by graph size, not by run length.
+
+## Amendment — 2026-09-03: what the scan actually refuses, and what it cannot see
+
+The review of the implementing commit found **five separate mechanisms by which the scan produced a FALSE
+REFUSAL** — the one failure mode §2's whole argument rests on not having. §2 says "where it cannot tell, it
+says nothing — it never guesses", and that sentence was true of the design and false of the code. It was
+asserted in three places at once (this ADR, the module docblock, the commit message) and pinned by no test
+that could fail. The claim is now made true rather than softened.
+
+Each mechanism is closed by **abandoning the scan**, never by lexing harder:
+
+| shape | why it produced a false find | now |
+| --- | --- | --- |
+| `foo.run.outputs["x"]` | `\b` matches after `.`, so a `run` property on any other object read as the scope's | anchored with a lookbehind |
+| `((run) => run.outputs["x"])(…)` | a parameter/destructure named `run` shadows the scope | any `run` not followed by `.`/`?.` ⇒ whole expression unscanned |
+| `` `a ${ `run.outputs["x"]` } b` `` | backticks paired FLAT, so a nested template's text stayed "code" | a `${` inside a template ⇒ abandon |
+| `/["]/` twice | a regex with an odd quote count shifts every later string boundary; a second restores parity, so the mask terminates cleanly around fabricated code | any `/` that is not `//` or `/*` ⇒ abandon |
+| `<!-- …` | Annex B HTML-like comments, which QuickJS accepts, were treated as code | ⇒ abandon |
+
+The cost is stated rather than hidden: **an expression containing division is never scanned**, and neither
+is one that mentions `run` in any non-member position. Both are silence, which the narrowed scope backstops.
+
+**Three further corrections to what the documents claimed:**
+
+1. **The residue is larger than "a computed or aliased read".** Several statically literal spellings are
+   also missed. That phrasing appears here, in `run-plan.md`, and in `expression-sandbox-spec.md`; it
+   should be read as *"a read the scan cannot confidently resolve"*, which is a wider set.
+2. **The Negative section's "still reads `undefined` and still compares silently false" understates a
+   run-time behaviour change.** The word *still* claims nothing changed. It did: an uncaught read of a
+   non-ancestor that **had already completed** used to see its real value and now sees `undefined`, so a
+   run that took one branch before this change can take the other after it — at run time, with no load
+   error and no event. Only load-time failures were listed.
+3. **`edges[].condition` was described by three DESCRIPTIONS across two documents**, not three documents
+   (`workflow-yaml-spec.md` twice, `node-types.md` once). A live instruction in
+   `phase-3-desktop.md` also told the desktop implementer to build the field — not a canonical home, but
+   the one document that would have caused it to be re-created.
+
+**Correction to alternative (b)'s recorded cost.** (b) — observing reads inside the VM — was rejected partly
+because it "requires amending ADR-0027 §3 (JSON-only marshaling)". For accessors defined **VM-side**, inside
+the generated program after `JSON.parse`, that objection does not apply: no live host object, getter, or
+function crosses the boundary, marshaling stays JSON-only, and `Proxy` stays off. The real cost is the other
+one already recorded — it can only fail **after** the run has started, which forfeits the before-money-is-spent
+property `W6` exists for. Left as the follow-up, with its cost stated accurately.
+

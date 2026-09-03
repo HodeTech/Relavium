@@ -291,8 +291,11 @@ The app's centerpiece: the visual workflow editor with all node types from
   serialized to YAML, since v1.0 exposes no `loop`/`subworkflow` YAML `type` and the
   Phase-1 engine has no handler for them (see
   [node-types.md](../../reference/shared-core/node-types.md)).
-- Implement custom edges (label, optional condition, branch handles referenced as
-  `nodeId:handleName`, optional `data_mapping`).
+- Implement custom edges (label, branch handles referenced as `nodeId:handleName`). An edge `condition`
+  is **rejected at parse** ([ADR-0093](../../decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md)
+  §3) — a canvas control that serialized one would emit YAML the parser refuses; branch on a `condition`
+  node instead. `data_mapping` is **reserved and not authorable** in v1.0
+  ([workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md#edges)).
 - Build the right-hand **side panel** for node configuration (never modal dialogs),
   driven by the per-type engine config blocks in
   [node-types.md](../../reference/shared-core/node-types.md).

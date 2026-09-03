@@ -39,8 +39,12 @@ export const EdgeSchema = z
      * Keeping the key in the shape is what lets the refusal below name it and say what to use instead.
      * Removing it would leave `.strict()` to report a bare "unrecognized key", which tells an author that
      * they typed something wrong but not that the thing they meant has a different home.
+     *
+     * Typed `unknown`, not `string`, so PRESENCE alone reaches the refusal. As `z.string()` it rejected a
+     * non-string first — `condition: true` produced "expected string, received boolean", a message that
+     * confirms the field exists and merely needs quoting, which is the opposite of what happens next.
      */
-    condition: z.string().optional(),
+    condition: z.unknown().optional(),
   })
   .strict() // authored YAML: an unknown/typo'd key is rejected, not silently stripped (ADR-0023)
   .superRefine((edge, ctx) => {

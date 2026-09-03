@@ -28,6 +28,15 @@ describe('EdgeSchema', () => {
     // …and it is refused even when it would have been trivially true, because the point is that nothing
     // evaluates it at all — not that this particular expression is unsupported.
     expect(accepts({ from: 'a', to: 'b', condition: 'true' })).toBe(false);
+    // Refused whatever the VALUE's type: as `z.string()` a non-string was rejected first, and
+    // "expected string, received boolean" tells an author the field exists and merely needs quoting.
+    for (const value of [true, 1, null, ['x'], { a: 1 }, '']) {
+      expect(accepts({ from: 'a', to: 'b', condition: value })).toBe(false);
+    }
+    const bad = EdgeSchema.safeParse({ from: 'a', to: 'b', condition: true });
+    expect(bad.success ? [] : bad.error.issues.map((i) => i.message).join()).toContain(
+      `\`condition\` node`,
+    );
     const issue = EdgeSchema.safeParse({ from: 'a', to: 'b', condition: 'x > 1' });
     expect(issue.success).toBe(false);
     if (!issue.success) {

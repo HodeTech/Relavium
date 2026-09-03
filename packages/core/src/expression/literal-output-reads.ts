@@ -68,6 +68,20 @@ export function maskLiterals(text: string): string | undefined {
       i = close + 2;
       continue;
     }
+    // **Any other `/` abandons the scan.** Telling a regex literal from division is the one genuinely hard
+    // part of lexing JavaScript, and getting it wrong in the "thought it was division" direction is not
+    // silence: a regex holding an ODD number of quotes shifts every later string boundary by one, so a real
+    // string's opening quote is consumed and its CONTENTS become code — and a second odd-quoted regex
+    // restores parity, so the mask terminates normally and a fabricated read survives. The cost of bailing
+    // is that an expression containing division is never scanned, which is silence, which is safe.
+    if (ch === '/') {
+      return undefined;
+    }
+    // Annex B B.1.3 HTML-like comments. QuickJS accepts them; treating their contents as code would make
+    // a commented-out access refusable. Abandoned rather than lexed — the same trade as `/`.
+    if (text.startsWith('<!--', i) || text.startsWith('-->', i)) {
+      return undefined;
+    }
     if (ch === "'" || ch === '"' || ch === '`') {
       let j = i + 1;
       let closed = false;
@@ -75,6 +89,12 @@ export function maskLiterals(text: string): string | undefined {
         if (text[j] === '\\') {
           j += 2;
           continue;
+        }
+        // A `${` inside a template opens CODE, and that code can itself contain a nested template. Pairing
+        // backticks flat leaves the inner template's text marked as code, which is a false-find shape.
+        // Tracking the nesting is the lexer this deliberately is not, so it abandons instead.
+        if (ch === '`' && text[j] === '$' && text[j + 1] === '{') {
+          return undefined;
         }
         if (text[j] === ch) {
           closed = true;
@@ -93,6 +113,30 @@ export function maskLiterals(text: string): string | undefined {
     i += 1;
   }
   return out;
+}
+
+/**
+ * Does this code REBIND the identifier `run`? A parameter, a destructure, or a declaration named `run`
+ * shadows the sandbox global, and `((run) => run.outputs["x"])(inputs.alias)` then reads something else
+ * entirely — reporting it is a false refusal.
+ *
+ * The test is deliberately crude and errs toward silence: a *use* of the scope's `run` is always written
+ * `run.` or `run?.`, so any `run` token followed by anything else is treated as possibly a binding and the
+ * whole expression goes unscanned. That catches `(run) =>`, `const run =`, `{ run }` and `function(run)`
+ * alike without knowing which is which — and it also silences innocent uses like `typeof run`, which costs
+ * only coverage.
+ */
+function rebindsRun(code: string): boolean {
+  const token = /(?<![\w$])run(?![\w$])/g;
+  let match = token.exec(code);
+  while (match !== null) {
+    const rest = code.slice(match.index + 3);
+    if (!/^\s*\??\./.test(rest)) {
+      return true;
+    }
+    match = token.exec(code);
+  }
+  return false;
 }
 
 /**
@@ -123,7 +167,7 @@ const DOT_ACCESS = /(?<![.?\w$])run\s*\??\.\s*outputs\s*\??\.\s*([A-Za-z_$][A-Za
  */
 export function literalOutputReads(expression: string): readonly LiteralOutputRead[] {
   const mask = maskLiterals(expression);
-  if (mask === undefined) {
+  if (mask === undefined || rebindsRun(mask)) {
     return [];
   }
   const seen = new Set<string>();

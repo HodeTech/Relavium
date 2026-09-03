@@ -447,6 +447,36 @@ Severity is the review's verified rating. Check an item off in the PR that resol
       run — so this is a delivery artefact, not a durability breach.
       *(low · packages/core/src/engine/engine.ts; ADR-0036, ADR-0085)*
 
+## Phase 2.6.5 `W6` residuals — `CR-62` ([ADR-0093](../decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md), 2026-09-03)
+
+`CR-62` narrowed an expression's `run.outputs` to the reading node's transitive closure and refuses a
+**literal** out-of-closure read at parse. ADR-0093 says in its Decision and its Negative section that this
+closes the common case and **explicitly does not close the class**. These are what it left, written out
+here so the residue sits on a backlog rather than only inside an ADR's Negative section.
+
+- [ ] **The non-literal read is still a silent `false`.** A computed key (`run.outputs[k]`), a rebound
+  `run`, or any expression the masker cannot confidently lex is passed over. The read then resolves to
+  `undefined` in the VM and a `condition` comparing it takes the false branch with no error — the original
+  defect, at a smaller surface. The only exhaustive detector is ADR-0093's alternative (b), VM-side
+  accessors; note its recorded cost was **overstated** and is corrected in the ADR's 2026-09-03 amendment
+  (a VM-side accessor needs no ADR-0027 §3 amendment; the real cost is that it can only fail after the run
+  has started). *(M · packages/core/src/expression/)*
+- [ ] **The scan is silent on more spellings than the documents say.** Every home describes the blind spot
+  as "a computed key, an aliased binding, or a value flowing through a variable"; in fact the scan also
+  abandons on any `/` it cannot classify as a comment (so any expression containing DIVISION is unscanned),
+  on a nested template literal, on an HTML-like comment, and on any `run` token not written as a member
+  access. Each is a deliberate bail toward silence — the alternative was a false refusal — but "computed or
+  aliased" understates it. Either widen the coverage or make every home say *"a read the scan cannot
+  confidently resolve"*. *(S · docs + packages/core/src/expression/literal-output-reads.ts)*
+- [ ] **A read of a node that is not in the workflow is reported by nothing, ever.** Not a hand-off to the
+  runtime resolver — that covers template fields and never fires for an expression. Refusing it here is
+  only safe once the scan's anchoring is beyond doubt, since a mis-anchored match would then make every
+  bracket key refusable. *(S · packages/core/src/dag.ts)*
+- [ ] **Decide whether an edge locator should name its endpoints.** A `WorkflowGraphError` on an edge reads
+  `edge #1` — a 0-based positional index — while `nodes`/`agents`/`inputs`/`context` all resolve to an
+  authored name. Pre-existing, but `CR-62`'s edge-`condition` refusal makes it the locator authors meet
+  most often. Endpoints are kebab ids and would pass `SAFE_ID_LABEL`. *(S · packages/core/src/parser.ts)*
+
 ## Phase 2.6.5 `W6` residuals — `CR-64` ([ADR-0094](../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md), 2026-09-02)
 
 > The plan-build narrowing check covers an INLINE agent completely. Two halves of the surface do not exist
