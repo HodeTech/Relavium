@@ -23,6 +23,22 @@ describe('literalOutputReads — what it SEES', () => {
     expect(ids('run . outputs [ "a" ] > 0')).toEqual(['a']);
   });
 
+  it('accepts optional chaining — the same literal access, written another way', () => {
+    expect(ids('run?.outputs["a"]')).toEqual(['a']);
+    expect(ids('run?.outputs?.["a"]')).toEqual(['a']);
+    expect(ids('run?.outputs?.gate')).toEqual(['gate']);
+  });
+
+  it('does NOT match `run.outputs` on another object — the one false-refusal shape', () => {
+    // `\brun` matched the `run` in `foo.run.outputs["x"]`, and an author can reach such an object through
+    // `inputs` or `ctx`. Refusing it would break a workflow for a read that is not there — precisely the
+    // failure ADR-0093 §2 forbids, and the reason the pattern uses a lookbehind rather than a boundary.
+    expect(ids('foo.run.outputs["x"]')).toEqual([]);
+    expect(ids('inputs.run.outputs["x"]')).toEqual([]);
+    expect(ids('ctx?.run?.outputs?.["x"]')).toEqual([]);
+    expect(ids('myrun.outputs["x"]')).toEqual([]);
+  });
+
   it('de-duplicates and keeps first-appearance order', () => {
     expect(ids('run.outputs["b"] + run.outputs["a"] + run.outputs["b"]')).toEqual(['b', 'a']);
   });

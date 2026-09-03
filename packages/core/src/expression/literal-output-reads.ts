@@ -99,14 +99,20 @@ export function maskLiterals(text: string): string | undefined {
  * `run.outputs["id"]` / `run.outputs['id']`. The key must be a whole single- or double-quoted literal: a
  * template key (`run.outputs[`${x}`]`) or a computed one (`run.outputs[k]`) matches nothing, which is the
  * point — those are the cases the scan deliberately cannot tell about.
+ *
+ * **The `(?<![.?\w$])` lookbehind is load-bearing, not tidiness.** A plain `\brun` matches the `run` in
+ * `foo.run.outputs["x"]` — a member expression on some OTHER object, which an author can reach through
+ * `inputs`/`ctx` — and refusing that is a FALSE REFUSAL, the one failure mode this scan must not have.
+ * Optional chaining (`run?.outputs?.["x"]`) is accepted because it is the same literal access written
+ * another way; not accepting it would be a silent gap in enforcement rather than an unsafe guess.
  */
-const BRACKET_ACCESS = /\brun\s*\.\s*outputs\s*\[\s*(['"])([^'"\\]*)\1\s*\]/g;
+const BRACKET_ACCESS = /(?<![.?\w$])run\s*\??\.\s*outputs\s*\??\.?\s*\[\s*(['"])([^'"\\]*)\1\s*\]/g;
 
 /**
  * `run.outputs.id`. Only matches an identifier, so a kebab-case node id — the common shape — is
  * unreachable this way in JavaScript anyway (`run.outputs.my-node` is a subtraction, not an access).
  */
-const DOT_ACCESS = /\brun\s*\.\s*outputs\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)/g;
+const DOT_ACCESS = /(?<![.?\w$])run\s*\??\.\s*outputs\s*\??\.\s*([A-Za-z_$][A-Za-z0-9_$]*)/g;
 
 /**
  * Every literal `run.outputs` access in `expression`, de-duplicated, in first-appearance order.
