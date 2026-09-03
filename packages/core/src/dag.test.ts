@@ -117,7 +117,7 @@ describe('buildRunPlan — valid topological orders', () => {
     expect(join?.type).toBe('fan_in');
     expect(join?.config).toMatchObject({
       kind: 'fan_in',
-      joinStrategy: 'wait_all',
+      requestedJoinStrategy: 'wait_all',
       mergeStrategy: 'concat',
     });
   });
@@ -175,7 +175,7 @@ describe('buildRunPlan — valid topological orders', () => {
     );
     expect(p.vertices.get('join')?.config).toMatchObject({
       kind: 'fan_in',
-      joinStrategy: 'wait_all',
+      requestedJoinStrategy: 'wait_all',
       mergeStrategy: 'custom',
       mergeFn: 'branches',
     });
@@ -195,7 +195,7 @@ describe('buildRunPlan — valid topological orders', () => {
     );
     expect(p.vertices.get('join')?.config).toMatchObject({
       kind: 'fan_in',
-      joinStrategy: 'wait_first',
+      requestedJoinStrategy: 'wait_first',
       mergeStrategy: 'first',
     });
   });

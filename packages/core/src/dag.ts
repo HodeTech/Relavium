@@ -790,12 +790,12 @@ function buildConfig(
     case 'parallel':
       return { kind: 'fan_out', node, branchNodeIds: node.parallel_of };
     case 'merge': {
-      const joinStrategy: JoinStrategy =
+      const requestedJoinStrategy: JoinStrategy =
         node.merge_strategy === 'first' ? 'wait_first' : 'wait_all';
       return {
         kind: 'fan_in',
         node,
-        joinStrategy,
+        requestedJoinStrategy,
         mergeStrategy: node.merge_strategy,
         branchNodeIds: mergeBranchOrder.get(node.id) ?? [],
         ...(node.merge_fn === undefined ? {} : { mergeFn: node.merge_fn }),

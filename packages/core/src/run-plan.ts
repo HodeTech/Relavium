@@ -61,8 +61,18 @@ export interface FanOutPlanConfig {
 export interface FanInPlanConfig {
   readonly kind: 'fan_in';
   readonly node: MergeNode;
-  /** *When* the join fires — `wait_first` for `merge_strategy: first`, else `wait_all`. */
-  readonly joinStrategy: JoinStrategy;
+  /**
+   * What the authored `merge_strategy` ASKED the join to do — `wait_first` for `first`, else `wait_all`.
+   *
+   * **Named `requested…` because nothing reads it, and the engine does not do it**
+   * ([ADR-0091](../../../docs/decisions/0091-first-means-first-declared-not-first-to-finish.md)). The run
+   * loop dispatches a `fan_in` once EVERY branch has settled, always; `wait_first` early-cancel is a future
+   * capability with a precondition (durably pinning the winner so a replay picks the same one). It was
+   * called `joinStrategy` and documented as controlling *when* the join fires, which is a false runtime
+   * contract: the next consumer to read it and schedule on it would be wrong, and a comment does not stop
+   * that. Kept rather than deleted so the distinction stays legible — renamed so it cannot mislead.
+   */
+  readonly requestedJoinStrategy: JoinStrategy;
   /** *How* the branches combine — the authored `merge_strategy`, carried verbatim. */
   readonly mergeStrategy: MergeStrategy;
   /**
@@ -78,7 +88,7 @@ export interface FanInPlanConfig {
    * The authored `merge_fn` JS expression, lifted onto the config — present only for
    * `merge_strategy: 'custom'`. The `fan_in` handler (1.P) evaluates it in the expression sandbox with
    * `ExpressionScope.branches` in {@link branchNodeIds} order. (The builder always also carries it on
-   * `node.merge_fn`; lifted here so the handler reads one config shape, mirroring `joinStrategy`.)
+   * `node.merge_fn`; lifted here so the handler reads one config shape, mirroring `requestedJoinStrategy`.)
    */
   readonly mergeFn?: string;
 }

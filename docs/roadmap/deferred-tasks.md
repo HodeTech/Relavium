@@ -895,7 +895,17 @@ so directly: these "should remain visible rather than disappear behind the green
   first settles) needs an **engine-owned per-branch cancellation primitive** — the current single run-wide
   `AbortSignal` cannot cancel one branch without cancelling the run, and a handler cannot cancel sibling
   vertices. The engine authors already flagged this as a "1.P refinement" (engine.ts:26-28). Promote to a
-  scoped 1.N/engine change (possibly an ADR) only when a real workflow needs it. *(low · packages/core/src/engine/engine.ts, packages/core/src/engine/node-handlers/fan-in.ts; run-plan.md §fan-in)*
+  scoped 1.N/engine change (possibly an ADR) only when a real workflow needs it.
+
+  **Precondition, added 2026-09-03 with [ADR-0091](../decisions/0091-first-means-first-declared-not-first-to-finish.md).**
+  A future ADR that wants race semantics owes one thing this deferral does not yet answer: how the WINNING
+  BRANCH ID is durably pinned at the moment it is selected. Without that, a replay from a checkpoint can pick
+  a different winner and produce a different run from the same snapshot. (An earlier draft of ADR-0091 said
+  race semantics were *forbidden* by ADR-0027 — they are not; §4 is about expression purity and §7 pins
+  `branches` order for a `custom` `merge_fn`, whose input `first` never uses. The constraint is real but it
+  is a precondition, not a veto.) The COST of the current behaviour is now pinned by an engine test: the join
+  waits for a genuinely still-pending loser, and a failing loser fails the run even when the winner is
+  already done. *(low · packages/core/src/engine/engine.ts, packages/core/src/engine/node-handlers/fan-in.ts; run-plan.md §fan-in)*
 - [x] **`secret`-typed input flowing into an agent prompt (1.O parallel to the 1.P fix)** — the AgentRunner
   resolves `{{ inputs.<name> }}` in a `prompt_template` against the **raw** `RunScope` (agent-runner.ts), so a
   `secret`-typed input interpolates raw into a USER message sent to the provider. This is provider **egress**

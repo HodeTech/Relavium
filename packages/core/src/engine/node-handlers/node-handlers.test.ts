@@ -332,7 +332,7 @@ function fanInConfig(
       merge_strategy: mergeStrategy,
       ...(mergeFn === undefined ? {} : { merge_fn: mergeFn }),
     },
-    joinStrategy: mergeStrategy === 'first' ? 'wait_first' : 'wait_all',
+    requestedJoinStrategy: mergeStrategy === 'first' ? 'wait_first' : 'wait_all',
     mergeStrategy,
     branchNodeIds,
     ...(mergeFn === undefined ? {} : { mergeFn }),
@@ -498,7 +498,7 @@ describe('fan_in handler (1.P)', () => {
     const v = makeVertex({
       kind: 'fan_in',
       node: { id: 'm', type: 'merge', merge_strategy: 'custom' },
-      joinStrategy: 'wait_all',
+      requestedJoinStrategy: 'wait_all',
       mergeStrategy: 'custom',
       branchNodeIds: ['a'],
     });
