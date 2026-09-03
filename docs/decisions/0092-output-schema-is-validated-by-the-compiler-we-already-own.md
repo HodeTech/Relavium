@@ -129,3 +129,40 @@ rejected outright: it is the worst of both, spending the model call before refus
 - `@relavium/shared` grows a compiler. It is the right home — it already owns the schemas every package
   validates against — but `shared` is imported by everything, so its surface deserves the scrutiny this
   records.
+
+## Amendment — 2026-09-03: §2's ReDoS reasoning is half an argument
+
+§2 justifies compiling an authored `pattern` like this: *"An authored `pattern` is ours, not an untrusted
+server's, so the ReDoS reasoning that justifies skipping it at the MCP boundary does not apply."*
+
+**That is true of the pattern and false of the input.** Catastrophic backtracking needs a vulnerable regex
+*and* a hostile string, and the string here is **model output** — the least trusted value in the run, and
+one an indirect prompt injection can steer. The MCP boundary's reasoning was never only about who wrote the
+regex.
+
+Measured on `^(a+)+$` against `"a"×n + "!"`:
+
+| input length | match time |
+| --- | --- |
+| 19 | 9.6 ms |
+| 23 | 18.1 ms |
+| 27 | 286 ms |
+| ~40 | minutes (exponential) |
+
+**And the blast radius is the process, not the node.** Backtracking is synchronous, so
+[ADR-0085](0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md)'s node deadline cannot fire —
+the timer never gets a turn. A run cannot be cancelled out of it either. That also puts it against this
+project's own precedent: [ADR-0027](0027-expression-sandbox.md) resource-caps an author's *code* precisely
+so an authored construct cannot hang the engine, and this would be an authored construct evaluated in the
+host with no cap at all.
+
+**The decision stands for now, deliberately, and the reasoning is recorded rather than the conclusion
+quietly changed.** The alternatives were weighed on 2026-09-03: a static refusal of nested-quantifier shapes
+is a heuristic that both misses cases and can refuse a valid pattern (the exact failure class `CR-62` hit
+seven times in one wave); refusing `pattern` outright is what §2's alternative (a1) already rejected, and
+would push an author back to an unvalidated schema; a linear-time matcher (RE2 or similar) solves it
+completely but is a new runtime dependency and needs its own ADR under CLAUDE.md rule 2.
+
+Recorded in [deferred-tasks.md](../roadmap/deferred-tasks.md) with the measurement, so the next person
+decides from numbers rather than rediscovering them.
+

@@ -55,6 +55,7 @@ import {
   UnknownModelError,
 } from '@relavium/llm';
 
+import { outputSchemaMiss } from '../output-schema.js';
 import { resolveTemplate } from '../interpolation/resolve.js';
 import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
 import type { AgentPlanConfig } from '../run-plan.js';
@@ -456,7 +457,7 @@ async function executeAgent(
     return turnOutcomeForError(err);
   }
 
-  return buildChatTurnOutcome(node, result, outputSchema !== undefined);
+  return buildChatTurnOutcome(node, result, outputSchema);
 }
 
 /**
@@ -472,7 +473,9 @@ async function executeAgent(
 function buildChatTurnOutcome(
   node: AgentNode,
   result: AgentTurnResult,
-  hasOutputSchema: boolean,
+  // The SCHEMA, not a `hasOutputSchema` boolean: the conformance check below needs the object, and a
+  // boolean beside it would be a second truth about the same thing that could drift from the first.
+  outputSchema: object | undefined,
 ): NodeOutcome {
   const tokensUsed = {
     input: result.usage.input,
@@ -492,7 +495,7 @@ function buildChatTurnOutcome(
       false,
     );
   }
-  if (!hasOutputSchema) {
+  if (outputSchema === undefined) {
     return { kind: 'completed', output: result.text, tokensUsed };
   }
   const parsed = tryParseJson(result.text);
@@ -500,6 +503,19 @@ function buildChatTurnOutcome(
     return failed(
       'validation',
       `agent node '${node.id}': output_schema is set but the model output was not valid JSON`,
+      false,
+    );
+  }
+  // **Parse-as-JSON was only the first half** ([ADR-0092](../../../docs/decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md)
+  // §4). ADR-0038 required the response to be validated AGAINST the schema because no adapter does it; what
+  // shipped stopped at "is it JSON", so `{ required: ['status'] }` admitted `{}` and the next node read
+  // `undefined` from a field the author had marked required. The message names nothing — not the failing
+  // property, not any part of the output — because a property name is authored and the output is the least
+  // trusted value in the run (ADR-0092 §5).
+  if (outputSchemaMiss(outputSchema, parsed) !== undefined) {
+    return failed(
+      'validation',
+      `agent node '${node.id}': the model output did not conform to output_schema`,
       false,
     );
   }

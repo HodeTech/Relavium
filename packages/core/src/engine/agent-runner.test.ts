@@ -347,6 +347,44 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
     if (outcome.kind === 'completed') expect(outcome.output).toEqual({ n: 2 });
   });
 
+  it('fails when the output PARSES but does not conform (ADR-0038 asked for this; ADR-0092 delivers it)', async () => {
+    // The gap ADR-0092 §4 closes. `parse-as-JSON` was only the first half: a response that parsed but did
+    // not conform was accepted, so a schema declaring `required: ['status']` admitted `{}` and the next
+    // node read `undefined` from a field the author had marked required.
+    const exec = createAgentNodeExecutor(
+      deps(provider([{ type: 'text_delta', text: '{"other":1}' }, STOP])),
+    );
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ output_schema: { type: 'object', required: ['status'] } }),
+        resolvedAgent: AGENT,
+      }),
+    );
+    const outcome = await exec.execute(ctx);
+    expect(outcome).toMatchObject({
+      kind: 'failed',
+      error: { code: 'validation', retryable: false },
+    });
+    // Names neither the failing property nor any part of the model output (ADR-0092 §5).
+    expect(outcome.kind === 'failed' && outcome.error.message).not.toContain('status');
+    expect(outcome.kind === 'failed' && outcome.error.message).not.toContain('other');
+  });
+
+  it('completes when the output conforms', async () => {
+    const exec = createAgentNodeExecutor(
+      deps(provider([{ type: 'text_delta', text: '{"status":"ok"}' }, STOP])),
+    );
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ output_schema: { type: 'object', required: ['status'] } }),
+        resolvedAgent: AGENT,
+      }),
+    );
+    expect((await exec.execute(ctx)).kind).toBe('completed');
+  });
+
   it('fails with validation when output_schema is set but the output is not JSON', async () => {
     const exec = createAgentNodeExecutor(
       deps(provider([{ type: 'text_delta', text: 'not json' }, STOP])),

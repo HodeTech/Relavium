@@ -1386,3 +1386,68 @@ ${edges}
     expect(r.kinds).toContain('unknown_edge_target');
   });
 });
+
+// --- `output_schema` is compiled at parse (CR-61, ADR-0092 §3) ---------------------------------
+
+describe('buildRunPlan — an unsupported `output_schema` is refused at parse', () => {
+  const build = (
+    yaml: string,
+  ): { ok: boolean; kinds: readonly string[]; message: string; fields: readonly string[] } => {
+    try {
+      buildRunPlan(parseWorkflow(yaml));
+      return { ok: true, kinds: [], message: '', fields: [] };
+    } catch (err) {
+      const issues = err instanceof WorkflowGraphError ? err.issues : [];
+      return {
+        ok: false,
+        kinds: issues.map((i) => i.kind),
+        // The node id lives in the issue's `field` locator, not in its message — asserting on the joined
+        // messages would have passed for the wrong reason had the locator ever been dropped.
+        message: issues.map((i) => i.message).join(' | '),
+        fields: issues.map((i) => i.field),
+      };
+    }
+  };
+  const wf = (schema: string): string => `schema_version: '1.0'
+workflow:
+  id: os
+  nodes:
+    - { id: start, type: input }
+    - { id: t, type: transform, transform: '({ a: 1 })', output_schema: ${schema} }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: t }
+    - { from: t, to: out }
+`;
+
+  it('accepts a schema inside the supported subset', () => {
+    expect(
+      build(wf('{ type: object, required: [a], properties: { a: { type: number } } }')).ok,
+    ).toBe(true);
+  });
+
+  it('refuses a keyword nobody implemented — before a run id exists', () => {
+    // The point of compiling at parse: an author who writes `oneOf` learns it is unsupported now, rather
+    // than getting a validator that quietly ignored it and a run that spent money to be told nothing.
+    const r = build(wf('{ type: object, oneOf: [{ type: string }] }'));
+    expect(r.ok).toBe(false);
+    expect(r.kinds).toContain('invalid_output_schema');
+    expect(r.fields.join(' ')).toContain('`t`.output_schema');
+    expect(r.message).toContain('oneOf');
+  });
+
+  it('refuses a malformed value for a supported keyword', () => {
+    expect(build(wf("{ type: string, minLength: 'five' }")).ok).toBe(false);
+  });
+
+  it('refuses an unsupported `format` rather than accepting it unchecked', () => {
+    expect(build(wf('{ type: string, format: hostname }')).ok).toBe(false);
+    expect(build(wf('{ type: string, format: email }')).ok).toBe(true);
+  });
+
+  it('never echoes an authored key', () => {
+    const r = build(wf("{ type: string, 'sk-live-abcdef': 1 }"));
+    expect(r.ok).toBe(false);
+    expect(r.message).not.toContain('sk-live');
+  });
+});

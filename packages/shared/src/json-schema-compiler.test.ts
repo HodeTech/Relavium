@@ -22,12 +22,23 @@ const accepts = (schema: unknown, value: unknown): boolean => {
 };
 
 describe('strict mode — the allowlist', () => {
-  it('refuses a keyword nobody implemented, naming it', () => {
+  it('refuses a keyword nobody implemented', () => {
     // The substance of ADR-0092 §2. Under the denylist an unknown keyword was IGNORED, so a schema could
     // declare a constraint and be told it was "validated" while nothing checked it.
-    const r = strict({ type: 'string', writeOnlyOnTuesdays: true });
-    expect(r.ok).toBe(false);
-    expect(r.ok === false && r.reason).toContain('writeOnlyOnTuesdays');
+    expect(strict({ type: 'string', writeOnlyOnTuesdays: true }).ok).toBe(false);
+    expect(strict({ type: 'object', propertyNames: { type: 'string' } }).ok).toBe(false);
+  });
+
+  it('names a PUBLISHED keyword, and never echoes an authored one', () => {
+    // A refusal that will not say which keyword is nearly useless — but an unrecognised key is authored
+    // text, and an author can put anything there, including something secret-shaped. The JSON-Schema
+    // vocabulary is fixed and published, so naming a member of it leaks nothing.
+    const known = strict({ type: 'object', propertyNames: { type: 'string' } });
+    expect(known.ok === false && known.reason).toContain('propertyNames');
+
+    const authored = strict({ type: 'string', 'sk-live-abcdef': 1 });
+    expect(authored.ok).toBe(false);
+    expect(authored.ok === false && authored.reason).not.toContain('sk-live');
   });
 
   it('accepts annotations, which carry no validation semantics', () => {

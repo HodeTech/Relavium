@@ -135,6 +135,43 @@ const STRICT_ALLOWED_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Every keyword the JSON-Schema vocabulary defines that this compiler might meet — the set it is SAFE to
+ * name in a refusal, because it is published and fixed rather than authored. A key outside it is text the
+ * author typed and is never echoed.
+ */
+const JSON_SCHEMA_VOCABULARY: ReadonlySet<string> = new Set([
+  ...STRICT_ALLOWED_KEYS,
+  '$ref',
+  '$defs',
+  '$anchor',
+  '$dynamicRef',
+  '$dynamicAnchor',
+  '$vocabulary',
+  'definitions',
+  'oneOf',
+  'anyOf',
+  'allOf',
+  'not',
+  'if',
+  'then',
+  'else',
+  'patternProperties',
+  'propertyNames',
+  'dependencies',
+  'dependentSchemas',
+  'dependentRequired',
+  'unevaluatedProperties',
+  'unevaluatedItems',
+  'prefixItems',
+  'contains',
+  'minContains',
+  'maxContains',
+  'contentEncoding',
+  'contentMediaType',
+  'contentSchema',
+]);
+
+/**
  * The `format` values `strict` mode enforces. An UNKNOWN format is refused rather than ignored: silently
  * accepting `format: "ipv6"` and not checking it is precisely the accepted-but-not-enforced shape ADR-0092
  * exists to remove, and it would be invisible to the author.
@@ -255,10 +292,15 @@ function compileNode(node: unknown, budget: Budget, depth: number): z.ZodTypeAny
   if (budget.mode === 'strict') {
     for (const key of Object.keys(node)) {
       if (!STRICT_ALLOWED_KEYS.has(key)) {
-        // The keyword is NAMED, because the author wrote it and needs to know which one to remove. It is a
-        // JSON-Schema keyword, never an authored value, so naming it leaks nothing (errors.ts's rule).
+        // **Named only when it is a real JSON-Schema keyword.** A refusal that will not say which keyword
+        // is nearly useless, but an unrecognised key is AUTHORED TEXT — an author can write anything
+        // there, including something secret-shaped, and a message never carries an authored value. The
+        // vocabulary is a fixed, published list, so naming a member of it leaks nothing; anything else
+        // stays positional and the author finds it by removing what the subset does not list.
         throw new UnsupportedSchemaError(
-          `unsupported keyword "${key}" — an \`output_schema\` may only use the documented subset (json-schema-subset.md)`,
+          JSON_SCHEMA_VOCABULARY.has(key)
+            ? `unsupported keyword "${key}" — an authored schema may only use the documented subset (json-schema-subset.md)`
+            : 'the schema declares a key outside the documented subset (json-schema-subset.md)',
         );
       }
     }

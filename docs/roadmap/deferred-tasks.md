@@ -447,6 +447,23 @@ Severity is the review's verified rating. Check an item off in the PR that resol
       run — so this is a delivery artefact, not a durability breach.
       *(low · packages/core/src/engine/engine.ts; ADR-0036, ADR-0085)*
 
+## Phase 2.6.5 `W6` residuals — `CR-61` ([ADR-0092](../decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md), 2026-09-03)
+
+- [ ] **An authored `pattern` can hang the whole engine process, and no deadline can interrupt it.**
+  ADR-0092 §2 enforces an authored `pattern` in `strict` mode, reasoning that the ReDoS concern belongs to
+  an untrusted *server's* regex. Half an argument: catastrophic backtracking needs a vulnerable regex AND a
+  hostile string, and the string is **model output**, which an indirect prompt injection can steer.
+  Measured on `^(a+)+$` against `"a"×n + "!"` — 19 chars 9.6 ms, 23 chars 18.1 ms, 27 chars 286 ms, ~40
+  chars minutes. Backtracking is **synchronous**, so ADR-0085's node deadline never gets a turn and a
+  cancel cannot land either: the failure is the whole process, not one node. It also sits against
+  ADR-0027's precedent that an author's *code* is resource-capped precisely so an authored construct cannot
+  hang the engine.
+  **Maintainer ruling 2026-09-03: record, do not mitigate yet.** The three candidate mitigations each have
+  a real cost — a nested-quantifier heuristic both misses cases and can falsely refuse a valid pattern
+  (`CR-62` hit that class seven times in one wave); refusing `pattern` is ADR-0092's already-rejected (a1)
+  and pushes authors back to unvalidated schemas; a linear-time matcher is a new runtime dependency needing
+  its own ADR. *(M · packages/shared/src/json-schema-compiler.ts)*
+
 ## Phase 2.6.5 `W6` residuals — `CR-62` ([ADR-0093](../decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md), 2026-09-03)
 
 `CR-62` narrowed an expression's `run.outputs` to the reading node's transitive closure and refuses a

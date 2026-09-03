@@ -33,6 +33,7 @@ import {
 import { analyzeResolvedAgentTaint } from './interpolation/analyze.js';
 import { nodeReferenceSites } from './interpolation/collect.js';
 import { literalOutputReads } from './expression/literal-output-reads.js';
+import { compileOutputSchema } from './output-schema.js';
 import { templateReferences } from './interpolation/references.js';
 import { byId, collectAgentCeilingIssues, collectWorkflowCeilingIssues } from './limits.js';
 import type { JoinStrategy, PlanConfig, PlanVertex, RunPlan } from './run-plan.js';
@@ -221,6 +222,7 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
   if (closureIsSound) {
     collectUnorderedReadIssues(spec, ancestors, issues, unresolvedAgentIds);
   }
+  collectOutputSchemaIssues(spec, agentsById, issues);
 
   if (issues.length > 0) {
     throw new WorkflowGraphError(issues, sourceOpt);
@@ -1024,6 +1026,51 @@ function collectUnorderedReadIssues(
                 `this expression reads \`run.outputs\` of node \`${read.id}\`, which node \`${node.id}\` is not ordered after — add an edge from \`${read.id}\` so the builder orders them`,
         });
       }
+    }
+  }
+}
+
+/**
+ * Compile every authored `output_schema` in `strict` mode, turning a refusal into an authoring error
+ * ([ADR-0092](../../../docs/decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md)
+ * §3) — before a run id exists, and before a model call is paid for.
+ *
+ * The compile is memoized on the schema object, so the validator the run later enforces is the very one
+ * checked here: a schema cannot be accepted at parse and then fail to build at dispatch.
+ */
+function collectOutputSchemaIssues(
+  spec: WorkflowSpec,
+  agentsById: ReadonlyMap<string, Agent>,
+  issues: GraphIssue[],
+): void {
+  const check = (schema: unknown, field: string): void => {
+    if (schema === undefined || typeof schema !== 'object' || schema === null) {
+      return;
+    }
+    const compiled = compileOutputSchema(schema);
+    if (!compiled.ok) {
+      issues.push({
+        kind: 'invalid_output_schema',
+        field,
+        // `reason` names a PUBLISHED JSON-Schema keyword or nothing at all — the compiler decides that,
+        // and never echoes an authored key or value (errors.ts's rule).
+        message: `this \`output_schema\` is outside the supported subset: ${compiled.reason}`,
+      });
+    }
+  };
+  for (const node of spec.nodes) {
+    if (node.type === 'agent') {
+      check(node.output_schema, `node \`${node.id}\`.output_schema`);
+      // The resolved agent's OWN schema is what applies when the node declares none (agent-runner.ts), so
+      // it is checked under the node that would use it rather than left to whoever supplied the registry.
+      if (node.output_schema === undefined) {
+        check(
+          agentsById.get(node.agent_ref)?.output_schema,
+          `node \`${node.id}\`.agent output_schema`,
+        );
+      }
+    } else if (node.type === 'transform') {
+      check(node.output_schema, `node \`${node.id}\`.output_schema`);
     }
   }
 }

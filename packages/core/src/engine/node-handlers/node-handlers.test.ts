@@ -289,6 +289,39 @@ describe('transform handler (1.P)', () => {
     expect(out).toEqual({ kind: 'completed', output: 'a,z' });
   });
 
+  it('fails the node when the result does not CONFORM to output_schema (ADR-0092 §4)', async () => {
+    // The handler used to say deep validation needed a new runtime dependency. It did not — the project
+    // already owned a JSON-Schema→Zod compiler one package away, and the deferral outlived its reason.
+    const exec = createTransformNodeExecutor({ sandbox });
+    const v = makeVertex({
+      kind: 'transform',
+      node: {
+        id: 't',
+        type: 'transform',
+        transform: '({ other: 1 })',
+        output_schema: { type: 'object', required: ['status'] },
+      },
+    });
+    const out = await exec.execute(makeCtx(v));
+    expect(out).toMatchObject({ kind: 'failed', error: { code: 'validation', retryable: false } });
+    // Names nothing: a property name is authored and a value is untrusted (ADR-0092 §5).
+    expect(out.kind === 'failed' && out.error.message).not.toContain('status');
+  });
+
+  it('completes when the result DOES conform', async () => {
+    const exec = createTransformNodeExecutor({ sandbox });
+    const v = makeVertex({
+      kind: 'transform',
+      node: {
+        id: 't',
+        type: 'transform',
+        transform: "({ status: 'ok' })",
+        output_schema: { type: 'object', required: ['status'] },
+      },
+    });
+    expect(await exec.execute(v ? makeCtx(v) : makeCtx(v))).toMatchObject({ kind: 'completed' });
+  });
+
   it('run.outputs is the CLOSURE — a completed non-ancestor is not visible (ADR-0093 §1)', async () => {
     const exec = createTransformNodeExecutor({ sandbox });
     const v = makeVertex(
