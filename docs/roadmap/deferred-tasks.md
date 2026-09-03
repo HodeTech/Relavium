@@ -888,14 +888,18 @@ so directly: these "should remain visible rather than disappear behind the green
   replay one model's signed thinking to another. Pre-existing, out of `CR-52`'s scope, and narrowing an
   Accepted decision belongs in its own ADR rather than a fold.
   *(low · packages/llm/src/fallback-chain.ts; ADR-0039)*
-- [ ] **`output_schema` deep JSON-Schema conformance** — 1.O validates an `agent` node's `output_schema`
-  node-side but **parse-as-JSON only** (the seam's `responseFormat` is a request hint; a
-  schema-violating-but-valid JSON output, e.g. `{"wrong":true}` for a `{ n: number }` schema, currently
-  passes as `completed`). **1.P shares this gap for the `transform` node's optional `output_schema`** — the
-  sandbox guarantees the result is JSON-serializable but does **not** check it against the declared schema.
-  Deep conformance needs a JSON-Schema validator (Zod cannot consume an arbitrary JSON-Schema), which is a new
-  runtime dependency requiring an ADR. *(medium · packages/core/src/engine/agent-runner.ts,
-  packages/core/src/engine/node-handlers/transform.ts; error-handling.md)*
+- [x] **`output_schema` deep JSON-Schema conformance** — ✅ **DONE (2026-09-03, `CR-61`,
+  [ADR-0092](../decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md)).** An
+  `agent` node's `output_schema` was validated **parse-as-JSON only**, so `{"wrong":true}` passed for a
+  `{ n: number }` schema; `transform` shared the gap and did not check its schema at all. Both now compile
+  the schema at PARSE in `strict` mode and enforce conformance at run time, a miss failing `validation`
+  (`retryable: false`).
+  **The premise this entry rested on was false, and that is the part worth keeping:** it said deep
+  conformance "needs a JSON-Schema validator … a new runtime dependency requiring an ADR". The project
+  already owned a dependency-free JSON-Schema→Zod compiler at the MCP boundary, one package away. The
+  deferral outlived its own reason by three phases because nobody re-checked the sentence that created it.
+  *(packages/core/src/engine/agent-runner.ts, packages/core/src/engine/node-handlers/transform.ts,
+  packages/shared/src/json-schema-compiler.ts; docs/reference/shared-core/json-schema-subset.md)*
 - [ ] **Per-attempt model attribution for `agent:token` / `agent:reasoning`** — `cost:updated` is always
   per-attempt-accurate, but the two mid-stream events `agent:token.model` and `agent:reasoning.model` (EA6, 2.5.H)
   use `activeModel` (updated from the *succeeding* attempt record, which fires after the stream), so a

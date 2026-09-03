@@ -1,9 +1,9 @@
 # The JSON-Schema subset
 
 **Canonical home** for what a JSON Schema may contain in Relavium, what is enforced, and what is refused.
-Both callers of the shared compiler cite this file rather than restating it: an authored `output_schema`
+It has two callers: an authored `output_schema`
 ([agent-yaml-spec.md](../contracts/agent-yaml-spec.md), [node-types.md](node-types.md)) and an MCP server's
-tool `inputSchema` ([mcp-integration.md](mcp-integration.md)).
+tool `inputSchema` ([mcp-integration.md](mcp-integration.md)). Both are governed by the matrix below.
 
 Decisions: [ADR-0052](../../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §4 (the
 compiler) and [ADR-0092](../../decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md)
@@ -22,7 +22,8 @@ resolution, so a schema is always self-contained.
 | used for | an MCP server's `inputSchema` | an authored `output_schema` |
 | the schema is | a possibly-hostile stranger's | the author's own |
 | unknown keyword | **ignored** | **refused** |
-| malformed value for a known keyword (`minLength: "5"`) | ignored | **refused** |
+| malformed **bound** (`minLength: "5"`) | ignored | **refused** |
+| malformed `type` / `required` / `properties` / `enum` / `const` / `items` | **fails closed** | **fails closed** |
 | `pattern` / `format` | accepted, **never compiled** | **enforced** |
 | when it is checked | at tool discovery | at **parse**, before a run id exists |
 
@@ -53,7 +54,7 @@ the author is told their schema is "validated".
 | `pattern` | – | ✓ | see the warning below |
 | `format` | – | ✓ | only the listed values; **an unknown format is refused**, never ignored |
 | `minimum` / `maximum` | ✓ | ✓ | |
-| `exclusiveMinimum` / `exclusiveMaximum` | – | ✓ | a **number**, per draft 2020-12. The draft-04 spelling (`exclusiveMinimum: true` beside a `minimum`) is **refused** in `strict` — loudly, rather than read as a bound of `1`. In `lenient` an exclusive bound silently became an **inclusive** one |
+| `exclusiveMinimum` / `exclusiveMaximum` | – | ✓ | a **number**, per draft 2020-12. The draft-04 spelling (`exclusiveMinimum: true` beside a `minimum`) is **refused** in `strict` — loudly, rather than read as a bound of `1`. In `lenient` the keyword is **ignored outright**: a schema declaring `exclusiveMinimum: 5` accepts `4` |
 | `multipleOf` | – | ✓ | must be > 0 |
 | `$schema` `$id` `$comment` `title` `description` `default` `examples` `deprecated` `readOnly` `writeOnly` | – | – | annotations; no validation semantics |
 | `$ref` `$dynamicRef` `oneOf` `anyOf` `allOf` `not` `if`/`then`/`else` `patternProperties` `dependencies` `dependentSchemas` `dependentRequired` `unevaluatedProperties` | ✗ | ✗ | |
@@ -66,8 +67,15 @@ the author is told their schema is "validated".
 > `strict` compiles an authored `pattern` and enforces it. Catastrophic backtracking needs a vulnerable
 > regex *and* a hostile input, and the input here is the least trusted value in a run. Measured on
 > `^(a+)+$`: 27 characters takes 286 ms, ~40 takes minutes. Backtracking is **synchronous**, so a node
-> deadline cannot interrupt it — the failure is the whole engine process. Prefer an anchored pattern with
-> no nested quantifier, and a `maxLength` beside it. Tracked in
+> deadline cannot interrupt it — the failure is the whole engine process.
+>
+> **Declare a `maxLength` beside every `pattern`.** The length bound GATES the regex: an over-long input is
+> rejected without the pattern ever running. Measured on the same `^(a+)+$` with `maxLength: 8` against a
+> 29-character input — 8010 ms when the two are merely chained, **0.1 ms** when the length gates first,
+> which is how the compiler builds it. Without a `maxLength` the pattern runs on an input of any size and
+> nothing bounds it. An anchored pattern with no nested quantifier is the other half.
+>
+> The residual — a `pattern` with no `maxLength` — is tracked in
 > [deferred-tasks.md](../../roadmap/deferred-tasks.md) with the measurement.
 
 ## Bounds
@@ -87,10 +95,12 @@ validator that silently accepts the wrong value.
 The authored side is tighter on shape and looser on nothing: an author who needs 500 properties in one node
 output has a design problem the compiler should surface rather than absorb.
 
-## Errors name nothing an author or a model wrote
+## Errors never echo an authored value or a model output
 
 A parse-time refusal names the offending keyword **only when it is a member of the published JSON-Schema
-vocabulary**; an unrecognised key is text the author typed and is never echoed. A run-time conformance
+vocabulary**; an unrecognised key is text the author typed and is never echoed. Where the offending thing is
+a **value** — an unsupported `type`, an unsupported `format` — the refusal lists what IS allowed instead of
+quoting what was written, which is safe and also the more actionable half. A run-time conformance
 failure names **neither the failing property nor any part of the output** — a property name is authored, and
 model output is the least trusted value in a run, so a message quoting either would be the one place a
 secret could ride out of a node failure into an event payload and a log. The cost is a terse failure; it is

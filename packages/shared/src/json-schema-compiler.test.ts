@@ -67,6 +67,50 @@ describe('strict mode — what it now genuinely ENFORCES', () => {
     expect(accepts({ type: 'string', pattern: '^[a-z]+$' }, 'ABC')).toBe(false);
   });
 
+  it('a `maxLength` actually GATES the pattern — the ordering, not just the advice', () => {
+    // The mitigation json-schema-subset.md tells authors to use. Chaining does not provide it: Zod runs
+    // every string check and collects issues, so `.max(8)` did not stop the `.regex` after it and a
+    // 29-character input still reached the backtracking engine. Measured 8010 ms chained, 0.1 ms piped.
+    const r = strict({ type: 'string', pattern: '^(a+)+$', maxLength: 8 });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const started = Date.now();
+    expect(r.schema.safeParse('a'.repeat(28) + '!').success).toBe(false);
+    // Two orders of magnitude of headroom over the piped cost, and three under the chained one — a bound
+    // loose enough not to flake on a slow machine and tight enough that only the defect can breach it.
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  it('accepts an ECMA-262 pattern that unicode mode alone would refuse', () => {
+    // JSON Schema defines `pattern` as ECMA-262. `a\-b` — an identity escape outside a character class —
+    // is legal there and a syntax error under the `u` flag, so compiling with `u` only refused ordinary
+    // patterns while claiming they were invalid.
+    expect(strict({ type: 'string', pattern: 'a\\-b' }).ok).toBe(true);
+    // …and unicode-only syntax still works, because `u` is tried first.
+    expect(accepts({ type: 'string', pattern: '^\\p{L}+$' }, 'héllo')).toBe(true);
+  });
+
+  it('refuses a malformed `nullable` in strict, like every other keyword', () => {
+    // `=== true` treated `'yes'` as absent, so the author got a non-nullable schema and no indication
+    // their modifier had been dropped — the one keyword that escaped the mode's own promise.
+    expect(strict({ type: 'string', nullable: 'yes' }).ok).toBe(false);
+    expect(strict({ type: 'string', nullable: false }).ok).toBe(true);
+    expect(lenient({ type: 'string', nullable: 'yes' }).ok).toBe(true); // lenient still ignores it
+  });
+
+  it('never echoes an authored `type` or `format` value', () => {
+    for (const schema of [
+      { type: 'sk-live-abcdef' },
+      { type: 'string', format: 'sk-live-abcdef' },
+    ]) {
+      const r = strict(schema);
+      expect(r.ok).toBe(false);
+      expect(r.ok === false && r.reason).not.toContain('sk-live');
+      // …and still says what IS allowed, which is the actionable half.
+      expect(r.ok === false && r.reason).toContain('must be one of');
+    }
+  });
+
   it('refuses a pattern that is not a valid regular expression, without echoing it', () => {
     const r = strict({ type: 'string', pattern: '([' });
     expect(r.ok).toBe(false);
@@ -81,7 +125,11 @@ describe('strict mode — what it now genuinely ENFORCES', () => {
     expect(strict({ type: 'string', format: 'hostname' }).ok).toBe(false);
   });
 
-  it('exclusiveMinimum / exclusiveMaximum — which used to become INCLUSIVE bounds', () => {
+  it('exclusiveMinimum / exclusiveMaximum — which `lenient` ignores outright', () => {
+    // Not "became inclusive": ignored. `lenient` accepts 4 for `exclusiveMinimum: 5`, where an inclusive
+    // bound would have rejected it — asserted here so the claim has a test rather than three restatements.
+    const l = lenient({ type: 'number', exclusiveMinimum: 5 });
+    expect(l.ok === true && l.schema.safeParse(4).success).toBe(true);
     expect(accepts({ type: 'number', exclusiveMinimum: 0 }, 0)).toBe(false);
     expect(accepts({ type: 'number', exclusiveMinimum: 0 }, 0.1)).toBe(true);
     expect(accepts({ type: 'number', exclusiveMaximum: 10 }, 10)).toBe(false);

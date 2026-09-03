@@ -372,7 +372,14 @@ function readTypes(
   budget: Budget,
 ): { types: string[]; nullableFlag: boolean } {
   const raw = node['type'];
-  const nullableFlag = node['nullable'] === true;
+  const nullable = node['nullable'];
+  if (budget.mode === 'strict' && nullable !== undefined && typeof nullable !== 'boolean') {
+    // `strict` promises that a malformed value for a supported keyword is refused, and `nullable` was the
+    // one keyword that quietly dropped it — `=== true` treats `'yes'` as absent, so an author who wrote a
+    // string got a non-nullable schema and no indication their modifier had been ignored.
+    throw new UnsupportedSchemaError('`nullable` must be a boolean');
+  }
+  const nullableFlag = nullable === true;
   if (raw === undefined) {
     return { types: [], nullableFlag };
   }
@@ -414,7 +421,12 @@ function compileTyped(
     case 'array':
       return arraySchema(node, budget, depth);
     default:
-      throw new UnsupportedSchemaError(`unsupported JSON-Schema type: "${type}"`);
+      // The VALUE is not echoed — `type` is authored text and can be anything, including something
+      // secret-shaped. The valid set is published and short, so listing it is both safe and more
+      // actionable than quoting back what the author typed.
+      throw new UnsupportedSchemaError(
+        'unsupported JSON-Schema type — must be one of object, array, string, number, integer, boolean, null',
+      );
   }
 }
 
@@ -436,21 +448,7 @@ function stringSchema(node: Record<string, unknown>, budget: Budget): z.ZodTypeA
   if (budget.mode !== 'strict') {
     return schema;
   }
-  const pattern = node['pattern'];
-  if (pattern !== undefined) {
-    if (typeof pattern !== 'string') {
-      throw new UnsupportedSchemaError('`pattern` must be a string');
-    }
-    rejectOverSizedString(pattern, 'a `pattern`', budget.bounds.maxStringBytes);
-    let compiled: RegExp;
-    try {
-      compiled = new RegExp(pattern, 'u');
-    } catch {
-      // The pattern text is NOT echoed — it is an authored value, and a message never carries one.
-      throw new UnsupportedSchemaError('`pattern` is not a valid regular expression');
-    }
-    schema = schema.regex(compiled);
-  }
+  // `format` first: it returns a `ZodString`, and the `pattern` branch below ends the chain with a pipe.
   const format = node['format'];
   if (format !== undefined) {
     if (typeof format !== 'string') {
@@ -459,11 +457,56 @@ function stringSchema(node: Record<string, unknown>, budget: Budget): z.ZodTypeA
     if (!STRICT_FORMATS.has(format)) {
       // Refused, not ignored. Accepting `format: "ipv6"` and never checking it is the accepted-but-not-
       // enforced shape this mode exists to remove, and the author would never see that it did nothing.
-      throw new UnsupportedSchemaError(`unsupported \`format\`: "${format}"`);
+      // The VALUE is not echoed — it is authored text — so the allowed set is listed instead, which is
+      // more actionable than quoting back what they typed.
+      throw new UnsupportedSchemaError(
+        `unsupported \`format\` — must be one of ${[...STRICT_FORMATS].join(', ')}`,
+      );
     }
     schema = applyFormat(schema, format);
   }
+  const pattern = node['pattern'];
+  if (pattern !== undefined) {
+    if (typeof pattern !== 'string') {
+      throw new UnsupportedSchemaError('`pattern` must be a string');
+    }
+    rejectOverSizedString(pattern, 'a `pattern`', budget.bounds.maxStringBytes);
+    const compiled = compilePattern(pattern);
+    // **`.pipe`, not `.regex`** — the ordering is the only ReDoS mitigation this contract honestly offers,
+    // and chaining does not provide it. Zod runs every string check and COLLECTS issues: `.max(8)` does not
+    // stop the `.regex` after it, so a 29-character input still reaches the backtracking engine. Measured
+    // on `^(a+)+$` with `maxLength: 8` — 8010 ms chained, 0.1 ms piped, because a pipeline returns INVALID
+    // without running its second schema. `packages/shared/src/workflow.ts` already orders length before
+    // pattern for exactly this reason; this path did not inherit it.
+    //
+    // It only helps when the author declared a `maxLength`. That is why json-schema-subset.md tells them
+    // to, and why the advice had to become true rather than be deleted.
+    return schema.pipe(z.string().regex(compiled));
+  }
   return schema;
+}
+
+/**
+ * Compile an authored `pattern`. JSON Schema 2020-12 defines it as an **ECMA-262** regex, and the two
+ * dialects genuinely differ: `\p{L}` needs the `u` flag, while an identity escape like `a\-b` outside a
+ * character class is legal ECMA-262 but a syntax error UNDER `u`. Compiling with `u` only therefore
+ * refused ordinary valid patterns while telling the author theirs "is not a valid regular expression",
+ * which was both wrong and unactionable.
+ *
+ * Unicode mode is preferred when it compiles — better semantics for anything non-ASCII — and the plain
+ * form is the fallback, so the accepted surface is the union rather than one dialect's half.
+ */
+function compilePattern(pattern: string): RegExp {
+  try {
+    return new RegExp(pattern, 'u');
+  } catch {
+    try {
+      return new RegExp(pattern);
+    } catch {
+      // Neither dialect accepts it. The pattern text is NOT echoed — it is an authored value.
+      throw new UnsupportedSchemaError('`pattern` is not a valid regular expression');
+    }
+  }
 }
 
 /** Apply one of {@link STRICT_FORMATS}. Every member is handled; the `never` arm makes that a compile error
@@ -490,7 +533,9 @@ function applyFormat(schema: z.ZodString, format: string): z.ZodString {
     case 'ipv6':
       return schema.ip({ version: 'v6' });
     default:
-      throw new UnsupportedSchemaError(`unsupported \`format\`: "${format}"`);
+      throw new UnsupportedSchemaError(
+        `unsupported \`format\` — must be one of ${[...STRICT_FORMATS].join(', ')}`,
+      );
   }
 }
 
@@ -527,8 +572,10 @@ function readBound(
 
 /**
  * A number/integer. `minimum`/`maximum` are honored in both modes; `exclusiveMinimum`/`exclusiveMaximum`
- * and `multipleOf` are enforced in `strict` only — they were accepted and ignored, so a schema declaring
- * an exclusive bound got an INCLUSIVE one and never said so.
+ * and `multipleOf` are enforced in `strict` only. In `lenient` they are IGNORED OUTRIGHT — not read as
+ * their inclusive cousins, which an earlier version of this comment claimed: a `lenient` schema declaring
+ * `exclusiveMinimum: 5` accepts `4`, where an inclusive bound would have rejected it. The real behaviour
+ * is the worse one, which is the more useful thing to write down.
  */
 function numberSchema(
   node: Record<string, unknown>,
