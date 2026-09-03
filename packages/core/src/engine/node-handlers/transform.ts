@@ -45,12 +45,9 @@ function runTransform(ctx: NodeExecContext, deps: TransformNodeExecutorDeps): No
   // The schema was compiled and accepted at PARSE, so a miss here is the transform's result failing the
   // author's own contract, not a bad schema. The message names nothing (ADR-0092 §5).
   const { output_schema: outputSchema } = config.node;
-  if (outputSchema !== undefined && outputSchemaMiss(outputSchema, value) !== undefined) {
-    return failed(
-      'validation',
-      `transform node '${config.node.id}': the result did not conform to output_schema`,
-      false,
-    );
+  const miss = outputSchema === undefined ? undefined : outputSchemaMiss(outputSchema, value);
+  if (miss !== undefined) {
+    return failed(miss.code, `transform node '${config.node.id}': ${miss.message}`, false);
   }
   return { kind: 'completed', output: value };
 }

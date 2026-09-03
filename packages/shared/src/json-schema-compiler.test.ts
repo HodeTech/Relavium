@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import { compileJsonSchemaToZod, type SchemaBounds } from './json-schema-compiler.js';
 
@@ -196,6 +197,73 @@ describe('strict mode — what it now genuinely ENFORCES', () => {
 
   it('refuses a non-boolean, non-schema additionalProperties', () => {
     expect(strict({ type: 'object', additionalProperties: 'yes' }).ok).toBe(false);
+  });
+});
+
+describe('strict enforces a constraint that has no `type` beside it', () => {
+  // JSON Schema applies a constraint to values of the kind it belongs to and leaves other kinds alone:
+  // `{ pattern: '^a+$' }` says nothing about a number and everything about a string. The compiler used to
+  // return `z.unknown()` for ANY typeless node, so all eleven constraint keywords were silently dropped
+  // without a `type` — the allowlist called them accepted and nothing checked them.
+  const rows: ReadonlyArray<readonly [string, unknown, unknown, boolean]> = [
+    ['pattern rejects a bad string', { pattern: '^a+$' }, 'zzz', false],
+    ['pattern accepts a good one', { pattern: '^a+$' }, 'aaa', true],
+    ['pattern leaves a NUMBER alone', { pattern: '^a+$' }, 42, true],
+    ['minLength', { minLength: 5 }, 'ab', false],
+    ['format', { format: 'email' }, 'nope', false],
+    ['minimum', { minimum: 10 }, 1, false],
+    ['minimum leaves a STRING alone', { minimum: 10 }, 'x', true],
+    ['multipleOf', { multipleOf: 5 }, 7, false],
+    ['uniqueItems', { uniqueItems: true }, [1, 1], false],
+    ['minItems', { minItems: 3 }, [], false],
+    ['required', { required: ['a'] }, {}, false],
+    ['required satisfied', { required: ['a'] }, { a: 1 }, true],
+    ['minProperties', { minProperties: 2 }, {}, false],
+    ['properties', { properties: { a: { type: 'number' } } }, { a: 'x' }, false],
+    ['additionalProperties: false', { additionalProperties: false }, { x: 1 }, false],
+    ['a bare {} still accepts anything', {}, { anything: true }, true],
+    ['null is unconstrained', { minLength: 5 }, null, true],
+  ];
+  for (const [name, schema, value, want] of rows) {
+    it(name, () => {
+      expect(accepts(schema, value)).toBe(want);
+    });
+  }
+
+  it('lenient keeps the old behaviour — a typeless schema constrains nothing', () => {
+    const r = lenient({ pattern: '^a+$', minLength: 5 });
+    expect(r.ok === true && r.schema.safeParse('zzz').success).toBe(true);
+  });
+});
+
+describe('uniqueItems walks MODEL OUTPUT, so the walk is bounded', () => {
+  const nest = (n: number): unknown => {
+    let deep: unknown = 1;
+    for (let i = 0; i < n; i += 1) deep = [deep];
+    return deep;
+  };
+  const uniqueArray = (): z.ZodTypeAny => {
+    const r = strict({ type: 'array', uniqueItems: true });
+    if (!r.ok) throw new Error(r.reason);
+    return r.schema;
+  };
+
+  it('refuses a value past the CAP, well before any stack limit', () => {
+    // The discriminating case. Depth 20 is far under V8's limit, so nothing throws on its own — only the
+    // explicit cap (`maxDepth`, 16) rejects it. A first version of this test used depth 5000 and could
+    // not tell the cap from the `catch` beside it: at that depth the unbounded walk throws RangeError and
+    // the catch produces the identical issue, so removing the cap reddened nothing.
+    const parsed = uniqueArray().safeParse([nest(20)]);
+    expect(parsed.success).toBe(false);
+    expect(parsed.success === false && parsed.error.issues[0]?.message).toContain(
+      'nests deeper than',
+    );
+  });
+
+  it('and survives a value that would overflow the stack outright', () => {
+    // The belt behind the cap. Measured: an unbounded walk over depth 5000 (~10 KiB of `[[[[…]]]]`)
+    // throws RangeError — inside a `safeParse`, that is a crash rather than a validation failure.
+    expect(() => uniqueArray().safeParse([nest(5000)])).not.toThrow();
   });
 });
 

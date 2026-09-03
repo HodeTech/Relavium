@@ -62,17 +62,26 @@ export function compileOutputSchema(schema: object): CompileResult {
  * conformance message that quoted either would be the one place a secret could ride out of a node failure
  * into an event payload and a log. The cost is a terse failure, and it is the deliberate trade.
  *
- * A schema that fails to COMPILE here returns undefined rather than failing the node: parse already
- * refused every such schema, so reaching this with an uncompilable one means the node was dispatched
- * without going through the builder. Failing the node on it would turn a caller's wiring mistake into a
- * run failure that looks like the model's fault.
+ * A schema that fails to COMPILE fails the node too, as `internal` rather than `validation`. Parse refuses
+ * every such schema, so reaching here with an uncompilable one means the node was dispatched without going
+ * through the builder — a wiring mistake. An earlier version returned `undefined` (= conforms) so as not to
+ * blame the model for it, and that was the wrong trade: it completed the node with an output nothing had
+ * checked, which is the silent-acceptance this whole change exists to remove. The distinct code is what
+ * keeps it from looking like the model's fault.
  */
-export function outputSchemaMiss(schema: object, value: unknown): string | undefined {
+export function outputSchemaMiss(
+  schema: object,
+  value: unknown,
+): { readonly code: 'validation' | 'internal'; readonly message: string } | undefined {
   const compiled = compileOutputSchema(schema);
   if (!compiled.ok) {
-    return undefined;
+    return {
+      code: 'internal',
+      message:
+        'the output_schema could not be compiled — the node was dispatched without a built plan',
+    };
   }
   return compiled.schema.safeParse(value).success
     ? undefined
-    : 'the output did not conform to output_schema';
+    : { code: 'validation', message: 'the output did not conform to output_schema' };
 }

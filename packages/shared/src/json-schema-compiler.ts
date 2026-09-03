@@ -324,9 +324,13 @@ function compileNode(node: unknown, budget: Budget, depth: number): z.ZodTypeAny
   } else if (types.length > 0) {
     base = buildTypeUnion(types, node, budget, depth);
   } else {
-    // No `type`/`const`/`enum`: an unconstrained schema (`{}` / description-only) — accept any value (the
-    // gate is *shape*, not exhaustive constraint; MCP servers emit `{}` for a no-arg tool).
-    base = z.unknown();
+    // No `type`/`const`/`enum`. In `lenient` that is an unconstrained schema (`{}` / description-only) —
+    // accept any value; the gate is *shape*, not exhaustive constraint, and MCP servers emit `{}` for a
+    // no-arg tool. In `strict` the node may still carry constraints, which JSON Schema applies to values
+    // of the kind each belongs to, so they are enforced rather than dropped.
+    base =
+      (budget.mode === 'strict' ? typelessConstrained(node, budget, depth) : undefined) ??
+      z.unknown();
   }
   return nullableFlag ? base.nullable() : base;
 }
@@ -397,6 +401,74 @@ function readTypes(
     types.push(entry);
   }
   return { types, nullableFlag };
+}
+
+/** The constraint keywords each JSON-Schema type owns — used to decide what a TYPELESS schema constrains. */
+const STRING_CONSTRAINTS = ['minLength', 'maxLength', 'pattern', 'format'] as const;
+const NUMBER_CONSTRAINTS = [
+  'minimum',
+  'maximum',
+  'exclusiveMinimum',
+  'exclusiveMaximum',
+  'multipleOf',
+] as const;
+const ARRAY_CONSTRAINTS = ['items', 'minItems', 'maxItems', 'uniqueItems'] as const;
+const OBJECT_CONSTRAINTS = [
+  'properties',
+  'required',
+  'additionalProperties',
+  'minProperties',
+  'maxProperties',
+] as const;
+
+/**
+ * A schema with **no `type`** but with constraints on it.
+ *
+ * JSON Schema applies a constraint to values of the kind it belongs to and leaves every other kind
+ * unconstrained: `{ "pattern": "^a+$" }` says nothing about a number and everything about a string. The
+ * compiler used to return `z.unknown()` for any typeless node, so ALL of it was dropped — measured, every
+ * one of the eleven constraint keywords was silently unenforced without a `type` beside it. That is the
+ * defect ADR-0092 exists to remove, re-entering through the allowlist: the keyword was on the allowlist,
+ * so it was "accepted", and nothing checked it.
+ *
+ * `strict` only. `lenient` is the MCP boundary's contract and keeps its behaviour exactly.
+ */
+function typelessConstrained(
+  node: Record<string, unknown>,
+  budget: Budget,
+  depth: number,
+): z.ZodTypeAny | undefined {
+  const has = (keys: readonly string[]): boolean => keys.some((k) => k in node);
+  const str = has(STRING_CONSTRAINTS) ? stringSchema(node, budget) : undefined;
+  const num = has(NUMBER_CONSTRAINTS) ? numberSchema(node, false, budget) : undefined;
+  const arr = has(ARRAY_CONSTRAINTS) ? arraySchema(node, budget, depth) : undefined;
+  const obj = has(OBJECT_CONSTRAINTS) ? objectSchema(node, budget, depth) : undefined;
+  if (str === undefined && num === undefined && arr === undefined && obj === undefined) {
+    return undefined;
+  }
+  // Dispatched on the VALUE's kind rather than compiled as a union: a union would accept the value on any
+  // arm that passes, and a catch-all arm for the unconstrained kinds would then swallow a real violation.
+  return z.unknown().superRefine((value, ctx) => {
+    const applicable =
+      typeof value === 'string'
+        ? str
+        : typeof value === 'number'
+          ? num
+          : Array.isArray(value)
+            ? arr
+            : value !== null && typeof value === 'object'
+              ? obj
+              : undefined;
+    if (applicable === undefined) {
+      return; // this kind carries no constraint here — unconstrained, per JSON Schema
+    }
+    const result = applicable.safeParse(value);
+    if (!result.success) {
+      for (const issue of result.error.issues) {
+        ctx.addIssue(issue);
+      }
+    }
+  });
 }
 
 function compileTyped(
@@ -790,10 +862,25 @@ function arraySchema(node: Record<string, unknown>, budget: Budget, depth: numbe
   // Structural equality by canonical JSON: JSON-Schema uniqueness is by VALUE, so `[{a:1},{a:1}]` is a
   // duplicate while a `Set` of references would call it unique. Object key order is normalised so
   // `{a:1,b:2}` and `{b:2,a:1}` are the same member, which is what the spec means by equal.
+  const maxValueDepth = budget.bounds.maxDepth;
   return schema.superRefine((items, ctx) => {
     const seen = new Set<string>();
     items.forEach((item, index) => {
-      const key = canonicalJson(item);
+      // **Bounded, because this walks MODEL OUTPUT, not the schema.** Every other recursion in this file
+      // descends an authored schema under `maxDepth`; this one descends the VALUE being validated, which
+      // is the least trusted thing in a run. `[[[[…]]]]` nested ten thousand deep is a few kilobytes and
+      // would have overflowed the stack inside a `safeParse`, turning a validation into a crash.
+      let key: string;
+      try {
+        key = canonicalJson(item, 0, maxValueDepth);
+      } catch {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `item at index ${index} nests deeper than ${maxValueDepth}, so \`uniqueItems\` cannot be decided`,
+          path: [index],
+        });
+        return;
+      }
       if (seen.has(key)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -807,18 +894,27 @@ function arraySchema(node: Record<string, unknown>, budget: Budget, depth: numbe
   });
 }
 
-/** A value's canonical JSON form — object keys sorted — so structural equality is a string comparison. */
-function canonicalJson(value: unknown): string {
+/**
+ * A value's canonical JSON form — object keys sorted — so structural equality is a string comparison.
+ * Depth-bounded: the input is model output, and an unbounded descent over it is a stack overflow waiting
+ * for a nested-enough array. Throws past the bound; the caller turns that into a validation issue.
+ */
+function canonicalJson(value: unknown, depth: number, max: number): string {
+  if (depth > max) {
+    throw new UnsupportedSchemaError('value nests too deeply to compare');
+  }
   if (value === null || typeof value !== 'object') {
     return JSON.stringify(value) ?? 'undefined';
   }
   if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(',')}]`;
+    return `[${value.map((v) => canonicalJson(v, depth + 1, max)).join(',')}]`;
   }
   const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
     a < b ? -1 : a > b ? 1 : 0,
   );
-  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+  return `{${entries
+    .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v, depth + 1, max)}`)
+    .join(',')}}`;
 }
 
 function literalSchema(value: unknown, bounds: SchemaBounds): z.ZodTypeAny {

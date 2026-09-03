@@ -512,12 +512,9 @@ function buildChatTurnOutcome(
   // `undefined` from a field the author had marked required. The message names nothing — not the failing
   // property, not any part of the output — because a property name is authored and the output is the least
   // trusted value in the run (ADR-0092 §5).
-  if (outputSchemaMiss(outputSchema, parsed) !== undefined) {
-    return failed(
-      'validation',
-      `agent node '${node.id}': the model output did not conform to output_schema`,
-      false,
-    );
+  const miss = outputSchemaMiss(outputSchema, parsed);
+  if (miss !== undefined) {
+    return failed(miss.code, `agent node '${node.id}': ${miss.message}`, false);
   }
   return { kind: 'completed', output: parsed, tokensUsed };
 }

@@ -308,6 +308,25 @@ describe('transform handler (1.P)', () => {
     expect(out.kind === 'failed' && out.error.message).not.toContain('status');
   });
 
+  it('fails INTERNAL, not validation, when the schema could not be compiled', async () => {
+    // Parse refuses every uncompilable schema, so reaching the handler with one means the node was
+    // dispatched without a built plan — a wiring mistake. An earlier version returned "conforms" so as
+    // not to blame the model, and that completed the node with an output nothing had checked: the silent
+    // acceptance this whole change exists to remove. The distinct code is what keeps the blame straight.
+    const exec = createTransformNodeExecutor({ sandbox });
+    const v = makeVertex({
+      kind: 'transform',
+      node: {
+        id: 't',
+        type: 'transform',
+        transform: '({ a: 1 })',
+        output_schema: { oneOf: [{ type: 'string' }] },
+      },
+    });
+    const out = await exec.execute(makeCtx(v));
+    expect(out).toMatchObject({ kind: 'failed', error: { code: 'internal', retryable: false } });
+  });
+
   it('completes when the result DOES conform', async () => {
     const exec = createTransformNodeExecutor({ sandbox });
     const v = makeVertex({
