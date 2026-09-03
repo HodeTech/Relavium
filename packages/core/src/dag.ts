@@ -32,6 +32,7 @@ import {
 } from './errors.js';
 import { analyzeResolvedAgentTaint } from './interpolation/analyze.js';
 import { nodeReferenceSites } from './interpolation/collect.js';
+import { literalOutputReads } from './expression/literal-output-reads.js';
 import { templateReferences } from './interpolation/references.js';
 import { byId, collectAgentCeilingIssues, collectWorkflowCeilingIssues } from './limits.js';
 import type { JoinStrategy, PlanConfig, PlanVertex, RunPlan } from './run-plan.js';
@@ -181,6 +182,19 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
     });
   }
 
+  // 4b. The out-of-closure literal read (ADR-0093 §2). Computed here rather than after the throw because
+  // it is an AUTHORING error and must ride the same report as every other one — an author fixing a graph
+  // should see all of it at once. Skipped when the order is short, i.e. a cycle: `ancestors` would be
+  // built from a truncated order and every closure below the cut would be wrong, so a cycle would produce
+  // a page of confident, invented "not ordered after" findings on top of the real problem.
+  const ancestors =
+    order.length === spec.nodes.length
+      ? computeAncestors(order, dependencies)
+      : new Map<string, readonly string[]>();
+  if (order.length === spec.nodes.length) {
+    collectUnorderedReadIssues(spec, ancestors, issues);
+  }
+
   if (issues.length > 0) {
     throw new WorkflowGraphError(issues, sourceOpt);
   }
@@ -197,6 +211,7 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
       type: engineType(node),
       dependencies: [...(dependencies.get(node.id) ?? [])].sort(byAuthored),
       dependents: [...(dependents.get(node.id) ?? [])].sort(byAuthored),
+      ancestors: ancestors.get(node.id) ?? [],
       inputSites: nodeReferenceSites(node),
       config: buildConfig(node, agentsById, mergeBranchOrder, outputFeeders),
     });
@@ -862,6 +877,105 @@ function computeMergeBranchOrder(
     order.set(node.id, ordered.filter(producing));
   }
   return order;
+}
+
+/**
+ * Each vertex's **transitive dependency closure** — every vertex it is ordered after — keyed by id, in
+ * deterministic code-unit order.
+ *
+ * This is the scope a `condition` / `transform` / `merge_fn` may read ([ADR-0093](../../../docs/decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md)
+ * §1). Before it, an expression's `run.outputs` held EVERY completed node, so a `condition` could read a
+ * node it is not ordered after and compare against whatever that node happened to hold — or, more often,
+ * against `undefined`, because the producer had not run yet. `undefined === 'approved'` is `false`, so the
+ * run took the false branch and continued as though the author's rule had been evaluated. It had not.
+ *
+ * Computed by one pass over the Kahn order, which is already complete here (a cycle throws above), so each
+ * dependency's own closure is final before it is folded in: O(V + E) unions rather than a walk per vertex.
+ *
+ * **Narrowing alone fixes nothing** — a property the host omits is simply absent in the VM, and an absent
+ * id still compares silently false (ADR-0027 §3 makes marshaling JSON-only, so there is no getter to throw
+ * from). It is the boundary the parse-time scan then enforces; the two ship together, and ADR-0093's
+ * Negative section records what neither closes.
+ */
+function computeAncestors(
+  order: readonly string[],
+  dependencies: ReadonlyMap<string, ReadonlySet<string>>,
+): Map<string, readonly string[]> {
+  const sets = new Map<string, Set<string>>();
+  for (const id of order) {
+    const acc = new Set<string>();
+    for (const dep of dependencies.get(id) ?? []) {
+      acc.add(dep);
+      // Final by construction: `dep` precedes `id` in a topological order.
+      for (const inherited of sets.get(dep) ?? []) {
+        acc.add(inherited);
+      }
+    }
+    sets.set(id, acc);
+  }
+  const ancestors = new Map<string, readonly string[]>();
+  for (const [id, set] of sets) {
+    // Code-unit order (the default string sort), matching the scope record's key-order contract — a
+    // resumed run in another environment must build the same object (expression-sandbox-spec.md).
+    ancestors.set(id, [...set].sort());
+  }
+  return ancestors;
+}
+
+/**
+ * Refuse a `condition` / `transform` / `merge_fn` that LITERALLY reads the output of a node it is not
+ * ordered after ([ADR-0093](../../../docs/decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md)
+ * §2) — before a run id exists, which is the property `W6` is about.
+ *
+ * The scope narrowing alone cannot do this. Marshaling is JSON-only (ADR-0027 §3) and `Proxy` is never
+ * created, so an out-of-closure id is just absent in the VM: `undefined === 'approved'` is `false`, the
+ * `condition` takes the false branch, and the run continues as though the author's rule had been
+ * evaluated. Narrowing actually makes that MORE frequent — more ids absent — which is why the two ship
+ * together and why this one has to be loud.
+ *
+ * **Deliberately incomplete, and its incompleteness is silent.** Only a literal access naming a node that
+ * EXISTS in the workflow is refused. A computed key, an aliased binding, or a read of a node that is not
+ * in the workflow at all says nothing here — the first two because the scan cannot see them, the third
+ * because a dangling reference is the runtime resolver's job and inventing a second, disagreeing opinion
+ * about it is how the two drift apart.
+ */
+function collectUnorderedReadIssues(
+  spec: WorkflowSpec,
+  ancestors: ReadonlyMap<string, readonly string[]>,
+  issues: GraphIssue[],
+): void {
+  const nodeIds = new Set(spec.nodes.map((n) => n.id));
+  for (const node of spec.nodes) {
+    const sites: ReadonlyArray<{ readonly field: string; readonly text: string }> =
+      node.type === 'condition'
+        ? [{ field: 'expression', text: node.expression }]
+        : node.type === 'transform'
+          ? [{ field: 'transform', text: node.transform }]
+          : node.type === 'merge' && node.merge_fn !== undefined
+            ? [{ field: 'merge_fn', text: node.merge_fn }]
+            : [];
+    const visible = new Set(ancestors.get(node.id) ?? []);
+    for (const site of sites) {
+      for (const read of literalOutputReads(site.text)) {
+        // Not a node of this workflow: left to the runtime resolver, deliberately (see the docblock).
+        if (!nodeIds.has(read.id) || visible.has(read.id)) {
+          continue;
+        }
+        // A node's OWN id is a self-read, which the cycle check cannot see because no edge exists. It is
+        // still an out-of-closure read and is reported by the same rule rather than a special case.
+        issues.push({
+          kind: 'unordered_output_read',
+          field: `node \`${node.id}\`.${site.field}`,
+          // Both names are node IDS, never authored values — the invariant in errors.ts. The expression
+          // TEXT is never echoed: it is authored, and an author can put anything in it.
+          message:
+            read.id === node.id
+              ? `this expression reads \`run.outputs\` of its own node \`${node.id}\`, which cannot have produced an output yet`
+              : `this expression reads \`run.outputs\` of node \`${read.id}\`, which node \`${node.id}\` is not ordered after — add an edge, or reference it from a template field so the builder orders them`,
+        });
+      }
+    }
+  }
 }
 
 /**

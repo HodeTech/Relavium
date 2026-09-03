@@ -1132,3 +1132,168 @@ ${edges}
     });
   }
 });
+
+// --- an expression sees only what it is ordered after (CR-62, ADR-0093) ------------------------
+
+describe('buildRunPlan — a literal out-of-closure `run.outputs` read is refused at parse', () => {
+  const wf = (nodes: string, edges: string): string => `schema_version: '1.0'
+workflow:
+  id: closure
+  nodes:
+    - { id: start, type: input }
+${nodes}
+    - { id: out, type: output }
+  edges:
+${edges}
+`;
+  const build = (yaml: string): { ok: boolean; message: string; kinds: readonly string[] } => {
+    try {
+      buildRunPlan(parseWorkflow(yaml));
+      return { ok: true, message: '', kinds: [] };
+    } catch (err) {
+      // The rendered `message` summarises ("… (and N more issue)"), so a multi-issue assertion has to
+      // read the structured issues — asserting on the summary would silently pass for the wrong reason.
+      const issues = err instanceof WorkflowGraphError ? err.issues : [];
+      return {
+        ok: false,
+        message: [
+          err instanceof Error ? err.message : String(err),
+          ...issues.map((i) => i.message),
+        ].join(' | '),
+        kinds: issues.map((i) => i.kind),
+      };
+    }
+  };
+
+  it('refuses a `condition` reading a node it is not ordered after', () => {
+    // The defect in one graph: `gate` and `other` are siblings, so `gate` has no ordering against
+    // `other` at all. Before this, the read returned `undefined`, `undefined === 'approved'` was
+    // `false`, and the run took the false branch as though the rule had been evaluated.
+    const r = build(
+      wf(
+        `    - { id: other, type: transform, transform: '"approved"' }
+    - id: gate
+      type: condition
+      expression: 'run.outputs["other"] === "approved"'
+      branches: [{ when: true, target_node: out }]`,
+        `    - { from: start, to: other }
+    - { from: start, to: gate }`,
+      ),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('not ordered after');
+    expect(r.message).toContain('`other`');
+    // The authored expression text is never echoed (errors.ts: a finding names, never quotes).
+    expect(r.message).not.toContain('approved');
+  });
+
+  it('ACCEPTS the same read once an edge orders the two', () => {
+    const r = build(
+      wf(
+        `    - { id: other, type: transform, transform: '"approved"' }
+    - id: gate
+      type: condition
+      expression: 'run.outputs["other"] === "approved"'
+      branches: [{ when: true, target_node: out }]`,
+        `    - { from: start, to: other }
+    - { from: other, to: gate }`,
+      ),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('follows the TRANSITIVE closure, not just direct dependencies', () => {
+    // `gate` depends on `mid`, `mid` on `first`. Reading `first` is legal: `gate` is ordered after it.
+    // This is the case a direct-`dependencies` check would wrongly refuse — the reason the plan carries
+    // `ancestors` as a separate, larger set.
+    const r = build(
+      wf(
+        `    - { id: first, type: transform, transform: '"A"' }
+    - { id: mid, type: transform, transform: '"B"' }
+    - id: gate
+      type: condition
+      expression: 'run.outputs["first"] === "A"'
+      branches: [{ when: true, target_node: out }]`,
+        `    - { from: start, to: first }
+    - { from: first, to: mid }
+    - { from: mid, to: gate }`,
+      ),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('refuses a `transform` and a `merge_fn` on the same rule', () => {
+    const t = build(
+      wf(
+        `    - { id: other, type: transform, transform: '"A"' }
+    - { id: t, type: transform, transform: 'run.outputs["other"]' }`,
+        `    - { from: start, to: other }
+    - { from: start, to: t }`,
+      ),
+    );
+    expect(t.ok).toBe(false);
+    const m = build(
+      wf(
+        `    - { id: other, type: transform, transform: '"A"' }
+    - { id: b, type: transform, transform: '"B"' }
+    - { id: j, type: merge, merge_strategy: custom, merge_fn: 'run.outputs["other"]' }`,
+        `    - { from: start, to: other }
+    - { from: start, to: b }
+    - { from: b, to: j }`,
+      ),
+    );
+    expect(m.ok).toBe(false);
+  });
+
+  it('refuses a self-read, which no edge check can see', () => {
+    const r = build(
+      wf(
+        `    - { id: t, type: transform, transform: 'run.outputs["t"]' }`,
+        `    - { from: start, to: t }`,
+      ),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('its own node');
+  });
+
+  it('says NOTHING about a computed key — silence is the contract, not an oversight', () => {
+    // ADR-0093 §2: the scan only ever refuses, so incompleteness is safe while guessing would refuse a
+    // valid workflow. This read IS out of closure and IS wrong; it is left to the narrowed scope.
+    const r = build(
+      wf(
+        `    - { id: other, type: transform, transform: '"A"' }
+    - { id: t, type: transform, transform: 'run.outputs[["oth","er"].join("")]' }`,
+        `    - { from: start, to: other }
+    - { from: start, to: t }`,
+      ),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('says nothing about a read of a node that is not in the workflow', () => {
+    // A dangling reference is the runtime resolver's job; a second, disagreeing opinion here is how two
+    // checks drift apart.
+    const r = build(
+      wf(
+        `    - { id: t, type: transform, transform: 'run.outputs["ghost"]' }`,
+        `    - { from: start, to: t }`,
+      ),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('reports the read alongside other graph problems, not instead of them', () => {
+    const r = build(
+      wf(
+        `    - { id: other, type: transform, transform: '"A"' }
+    - { id: t, type: transform, transform: 'run.outputs["other"]' }`,
+        `    - { from: start, to: other }
+    - { from: start, to: t }
+    - { from: t, to: ghost }`,
+      ),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.kinds).toContain('unordered_output_read');
+    expect(r.kinds).toContain('unknown_edge_target');
+  });
+});

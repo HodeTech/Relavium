@@ -34,6 +34,7 @@ function gateVertex(node: Partial<GateNode> & Pick<GateNode, 'gate_type'>): Plan
     type: 'human_in_the_loop',
     dependencies: [],
     dependents: [],
+    ancestors: [],
     inputSites: [],
     config: { kind: 'human_in_the_loop', node: full },
   };
@@ -172,6 +173,7 @@ describe('createHumanGateNodeExecutor', () => {
       type: 'output',
       dependencies: [],
       dependents: [],
+      ancestors: [],
       inputSites: [],
       config: { kind: 'output', node: { id: 'x', type: 'output' }, feederNodeIds: [] },
     };

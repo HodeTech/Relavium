@@ -113,7 +113,15 @@ function agentNode(overrides: Partial<AgentNodeT> = {}): AgentNodeT {
 }
 
 function vertexFor(config: AgentPlanConfig): PlanVertex {
-  return { id: 'n1', type: 'agent', dependencies: [], dependents: [], inputSites: [], config };
+  return {
+    id: 'n1',
+    type: 'agent',
+    dependencies: [],
+    dependents: [],
+    ancestors: [],
+    inputSites: [],
+    config,
+  };
 }
 
 /** The common vertex: a resolved agent + a prompt referencing `{{inputs.text}}`. */

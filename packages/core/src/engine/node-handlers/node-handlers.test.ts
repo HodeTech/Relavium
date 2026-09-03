@@ -56,13 +56,23 @@ function recordOutput(out: NodeOutcome): Record<string, unknown> {
 
 function makeVertex(
   config: PlanConfig,
-  graph: { id?: string; dependencies?: readonly string[]; dependents?: readonly string[] } = {},
+  graph: {
+    id?: string;
+    dependencies?: readonly string[];
+    dependents?: readonly string[];
+    ancestors?: readonly string[];
+  } = {},
 ): PlanVertex {
   return {
     id: graph.id ?? 'node',
     type: config.kind,
     dependencies: graph.dependencies ?? [],
     dependents: graph.dependents ?? [],
+    // These fixtures are one-hop graphs, so the closure IS the direct dependencies — but it defaults from
+    // `dependencies` rather than to `[]` on purpose: an empty default would silently hand every expression
+    // an empty `run.outputs` and make a scope-narrowing test pass for the wrong reason. Override it to
+    // model a deeper graph.
+    ancestors: graph.ancestors ?? graph.dependencies ?? [],
     inputSites: [],
     config,
   };
@@ -260,10 +270,16 @@ describe('transform handler (1.P)', () => {
 
   it('reads run.outputs keys in canonical (sorted) order for resume determinism (Trap 7)', async () => {
     const exec = createTransformNodeExecutor({ sandbox });
-    const v = makeVertex({
-      kind: 'transform',
-      node: { id: 't', type: 'transform', transform: 'Object.keys(run.outputs).join(",")' },
-    });
+    const v = makeVertex(
+      {
+        kind: 'transform',
+        node: { id: 't', type: 'transform', transform: 'Object.keys(run.outputs).join(",")' },
+      },
+      // The closure must be declared now that `run.outputs` is projected through it (ADR-0093 §1); a
+      // vertex with no ancestors correctly sees an EMPTY scope. Declared z-before-a as well, so the
+      // canonical order is proven against an unsorted closure AND an unsorted map, not just one of them.
+      { dependencies: ['z', 'a'] },
+    );
     // Inserted z-before-a; the handler must surface a canonical (sorted) key order regardless.
     const runOutputs = new Map<string, unknown>([
       ['z', 1],
@@ -271,6 +287,26 @@ describe('transform handler (1.P)', () => {
     ]);
     const out = await exec.execute(makeCtx(v, { runOutputs }));
     expect(out).toEqual({ kind: 'completed', output: 'a,z' });
+  });
+
+  it('run.outputs is the CLOSURE — a completed non-ancestor is not visible (ADR-0093 §1)', async () => {
+    const exec = createTransformNodeExecutor({ sandbox });
+    const v = makeVertex(
+      {
+        kind: 'transform',
+        node: { id: 't', type: 'transform', transform: 'Object.keys(run.outputs).join(",")' },
+      },
+      { dependencies: ['upstream'] },
+    );
+    // `stranger` has COMPLETED and is in the run's output map — it is simply not something `t` is
+    // ordered after. Before the narrowing an expression here could read it and compare against whatever
+    // it held, or against `undefined` if it had not run yet, with no error either way.
+    const runOutputs = new Map<string, unknown>([
+      ['upstream', 1],
+      ['stranger', 2],
+    ]);
+    const out = await exec.execute(makeCtx(v, { runOutputs }));
+    expect(out).toEqual({ kind: 'completed', output: 'upstream' });
   });
 
   it('cannot mutate the frozen scope — a write throws sandbox_error and leaves ctx.inputs intact (Trap 4)', async () => {

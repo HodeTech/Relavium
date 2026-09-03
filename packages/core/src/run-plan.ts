@@ -177,6 +177,18 @@ export interface PlanVertex {
   /** Vertex ids that depend on this one (its out-edges) — drives skip-propagation. */
   readonly dependents: readonly string[];
   /**
+   * The **transitive dependency closure** — every vertex this one is ordered after, in code-unit order.
+   *
+   * This is the exact set a `condition` / `transform` / `merge_fn` may read as `run.outputs`
+   * ([ADR-0093](../../../docs/decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md) §1).
+   * `dependencies` is the DIRECT in-edges and answers "what must settle before this dispatches";
+   * `ancestors` answers "what this node is ordered after", which is the larger set and the one an
+   * expression's visibility is defined by. They are deliberately different — do not unify them.
+   *
+   * A static property of the plan, so it is identical across a checkpoint/resume replay by construction.
+   */
+  readonly ancestors: readonly string[];
+  /**
    * The un-evaluated `{{ … }}` template sites on this vertex's own authored fields (an agent's
    * `prompt_template`, a gate's `assignee`/`message_template`), resolved at dispatch by 1.N/1.O —
    * never evaluated here. Empty for nodes with no template fields. NOTE: `system_prompt_append` is
