@@ -92,3 +92,67 @@ contract.
 - Renaming a plan field is a (small) breaking change for any out-of-tree consumer of `RunPlan`. Accepted:
   the field is derived, unread in this repo, and its current name asserts scheduling behaviour the engine
   does not implement — which is the more expensive thing to leave standing.
+
+## Amendment — 2026-09-03: a `condition` is not a branch
+
+**This ADR's opening line — "The document moves; the code does not" — was wrong, and a review of the
+commit that implemented it found the counterexample.** The code has a second, unrelated defect in the
+same selection, and no amount of documentation fixes it.
+
+### What was found
+
+A `merge`'s branch list is its graph predecessors. A `condition` whose `branches[].target_node` or
+`default` names the merge **is** such a predecessor — and `dag.ts` deliberately rejects a *plain* edge out
+of a condition ("route via `branches[].target_node` or the `<id>:<when>` handle form"), so naming the merge
+that way is the **only sanctioned** way to author it, and it parses clean.
+
+But a `condition` produces no output. It returns `{ kind: 'branch', selected }`; the engine still marks it
+`completed`, so `#completedOutputs()` stores it with the value `undefined` and `branchOutputs`'s
+`runOutputs.has(id)` guard is satisfied. It becomes a **phantom branch**:
+
+| strategy | result |
+| --- | --- |
+| `first` | returns the phantom and **discards the real branch's output** — run completes, exit 0 |
+| `concat` | a phantom leading element |
+| `custom` | every authored `branches[i]` index shifted by one |
+| `object_merge` | fails loudly (`validation`: every branch output must be a JSON object) |
+
+Three strategies corrupt silently and one fails loudly; that asymmetry is why it survived. Reproduced
+end-to-end against the real handlers: with the condition authored **before** the working branch the
+workflow's output is `null`; move two lines in the YAML and the same graph returns the real answer.
+**Authoring order alone decides whether the run is correct**, and nothing warns.
+
+`parallel` is the only other non-producing vertex kind (its handler returns `output: null`), and it cannot
+reach here — an edge from a `parallel` to a node outside its `parallel_of` is already refused at parse.
+So `condition` is the entire class.
+
+### The decision
+
+**A merge's branches are its OUTPUT-PRODUCING predecessors. A `condition` predecessor is a control edge:
+it still gates the join — the merge waits for it, and skip-propagation still applies — but it contributes
+no branch value.** `computeMergeBranchOrder` drops `condition` predecessors when it builds
+`branchNodeIds`, which fixes `first`, `concat` and `custom` at their single shared origin and leaves
+`object_merge`'s loud failure intact.
+
+This is a **refinement of §1, not a reversal**: §1 already says `first` takes the first *surviving branch*,
+and a vertex that produced no value was never a branch. The code did not implement §1 for this graph.
+
+*Considered:* **(a)** refuse a `condition` whose `target_node`/`default` names a `merge`, at parse —
+rejected: routing to the join on the taken path is a reasonable thing to author, the author's intent
+(gate the join) is exactly what the filter delivers, and refusing it removes a capability to fix a
+mis-interpretation. **(b)** give the condition a real output (e.g. the matched `when` value) so it
+becomes a legitimate branch — rejected: it invents authored semantics nobody asked for, and it would put
+a routing token into `concat`/`merge_fn` results. **(c)** leave it and document that a condition must not
+target a merge — rejected: it is a silent wrong answer with an exit code of 0, which is the exact defect
+class `W6` exists to remove; a sentence in a spec does not stop a graph from being built.
+
+### Consequences
+
+- A merge whose *only* predecessors are conditions now has **zero** branches: `first` → `null`,
+  `concat` → `[]`, `custom` → `branches: []`. Previously it produced a same-length array of `undefined`s.
+  Not refused at parse — such a merge runs today, and refusing it would break a loading workflow to
+  improve a value that was meaningless in both readings.
+- **A workflow whose output today comes from the phantom will change its output.** That is the point;
+  every such run was already returning a value the author did not ask for.
+- `branchNodeIds` is no longer "the merge's predecessors", so the canonical description in
+  [run-plan.md](../reference/shared-core/run-plan.md) §fan-in branch order gains the producer rule.

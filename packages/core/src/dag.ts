@@ -738,6 +738,18 @@ function engineType(node: WorkflowNode): EngineNodeType {
  * branches of one parallel (the common authored shape), else the merge's incoming branches in authored
  * order. A merge's `dependencies` are authored-index-sorted, which is NOT `parallel_of` order, so the
  * run loop / sandbox cannot reconstruct it from the vertex — the builder pins it here.
+ *
+ * **A `condition` predecessor is a CONTROL edge, not a branch** (ADR-0091, amended 2026-09-03). A
+ * condition returns `{ kind: 'branch' }` and no output, yet the engine marks it `completed`, so it lands
+ * in the completed-output map with the value `undefined` and satisfies the fan-in handler's
+ * `runOutputs.has(id)` guard — a PHANTOM branch. Measured: with a condition authored before the working
+ * branch, `first` returned that phantom and threw the real answer away, and the run exited 0; moving two
+ * lines in the YAML changed the workflow's output. `concat` gained a leading `undefined` and a `custom`
+ * `merge_fn` saw every authored index shifted by one. (`object_merge` alone failed loudly, which is why
+ * this survived.) Filtering here fixes all three at their single shared origin. The condition still gates
+ * the join — it stays in `dependencies`, so the merge waits for it and skip-propagation is unaffected;
+ * it just contributes no value. `parallel` is the only other non-producing kind and cannot reach here:
+ * an edge from a `parallel` outside its own `parallel_of` is already refused at parse.
  */
 function computeMergeBranchOrder(
   spec: WorkflowSpec,
@@ -747,17 +759,21 @@ function computeMergeBranchOrder(
   const byAuthored = (a: string, b: string): number =>
     (authoredIndex.get(a) ?? 0) - (authoredIndex.get(b) ?? 0);
   const parallels = spec.nodes.filter((n): n is ParallelNode => n.type === 'parallel');
+  const typeById = new Map(spec.nodes.map((n) => [n.id, n.type]));
   const order = new Map<string, readonly string[]>();
   for (const node of spec.nodes) {
     if (node.type !== 'merge') {
       continue;
     }
-    const preds = dependencies.get(node.id) ?? new Set<string>();
+    const preds = [...(dependencies.get(node.id) ?? new Set<string>())].filter(
+      (id) => typeById.get(id) !== 'condition',
+    );
     // The paired parallel: the authored-first parallel ALL of whose `parallel_of` members feed this
     // merge directly. Then branches follow `parallel_of` order, with any extra (non-parallel) incoming
     // branches appended in authored order; with no unique pairing, fall back to authored order.
+    const predSet = new Set(preds);
     const paired = parallels.find(
-      (p) => p.parallel_of.length > 0 && p.parallel_of.every((m) => preds.has(m)),
+      (p) => p.parallel_of.length > 0 && p.parallel_of.every((m) => predSet.has(m)),
     );
     if (paired === undefined) {
       order.set(node.id, [...preds].sort(byAuthored));

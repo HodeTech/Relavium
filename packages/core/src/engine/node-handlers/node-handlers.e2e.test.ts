@@ -118,3 +118,81 @@ describe('node-type handlers end-to-end through the WorkflowEngine (1.P)', () =>
     });
   });
 });
+
+// --- a `condition` routed into a merge is a CONTROL edge, not a branch (ADR-0091 amendment) ----
+
+/**
+ * The graph the amendment was written for. `cond` names `join` as a `branches[].target_node`, which is
+ * the ONLY sanctioned way to author it (a plain edge out of a condition is refused), and `work` is the
+ * merge's real branch. Both node orders are exercised because authoring order was the whole defect:
+ * before the fix, `condFirst: true` returned `null` and `condFirst: false` returned `"WORK"` — the same
+ * graph, two answers, both exit 0.
+ */
+const CONTROL_EDGE = (condFirst: boolean): string => {
+  const cond = `    - id: cond
+      type: condition
+      expression: 'inputs.take'
+      branches:
+        - { when: true, target_node: join }
+        - { when: false, target_node: fallback }`;
+  const work = `    - id: work
+      type: transform
+      transform: '"WORK"'`;
+  return `schema_version: '1.0'
+workflow:
+  id: control-edge
+  inputs:
+    - { name: take, type: boolean }
+  nodes:
+    - id: start
+      type: input
+${condFirst ? `${cond}\n${work}` : `${work}\n${cond}`}
+    - id: fallback
+      type: transform
+      transform: '"FALLBACK"'
+    - id: join
+      type: merge
+      merge_strategy: first
+    - id: out
+      type: output
+  edges:
+    - { from: start, to: cond }
+    - { from: start, to: work }
+    - { from: work, to: join }
+    - { from: join, to: out }
+`;
+};
+
+function runControlEdge(condFirst: boolean): Promise<RunEvent[]> {
+  const engine = new WorkflowEngine({
+    host: createInMemoryHost(),
+    executor: createStandardNodeExecutor({ sandbox }),
+  });
+  return drain(
+    engine.start({ workflow: parseWorkflow(CONTROL_EDGE(condFirst)), inputs: { take: true } }),
+  );
+}
+
+describe('a `condition` targeting a merge gates the join without becoming a branch', () => {
+  for (const condFirst of [true, false] as const) {
+    it(`\`first\` returns the real branch regardless of authoring order (cond first: ${String(condFirst)})`, async () => {
+      const events = await runControlEdge(condFirst);
+      const completed = events.find((e) => e.type === 'run:completed');
+      // Before the fix this was `null` for condFirst=true and `"WORK"` for condFirst=false: the
+      // condition landed in the completed-output map with `undefined`, satisfied the fan-in's
+      // `runOutputs.has(id)` guard, and became branch #0 whenever it was authored first.
+      expect(completed?.type === 'run:completed' && completed.outputs).toEqual({ out: 'WORK' });
+    });
+  }
+
+  it('the merge still WAITS for the condition — it is a dependency, only not a branch', async () => {
+    const events = await runControlEdge(true);
+    const order = events
+      .filter((e) => e.type === 'node:completed')
+      .map((e) => (e.type === 'node:completed' ? e.nodeId : ''));
+    // Both settle, and the join is after the condition: dropping it from `branchNodeIds` must not
+    // drop it from `dependencies`, or the join would fire early on a path that had not been decided.
+    expect(order).toContain('cond');
+    expect(order.indexOf('join')).toBeGreaterThan(order.indexOf('cond'));
+  });
+});
