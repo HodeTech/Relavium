@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` merged 2026-09-02 (PR #88) behind ADR-0089 + ADR-0090 — a systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed before it merged; **`W6` (authoring correctness) is next** (38 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28)
+- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` merged 2026-09-02 (PR #88) behind ADR-0089 + ADR-0090 — a systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed before it merged. **`W6` (authoring correctness) is complete on `development` and awaiting review** — `CR-60`–`CR-64` behind [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md), 27 commits, seven review rounds. **The pattern of the wave is that most of what the rounds found were defects in the FIXES, not in the code they repaired** — the branch-order search was wrong three times, the expression scan's central soundness claim was false in seven ways, and one stand-down gate silently removed the check it was added to protect. Every one is recorded as a dated correction in its ADR rather than tidied away (43 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28)
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -119,7 +119,7 @@ shape.
 > | `CR-02` | 2026-08-11 | A failed turn flush no longer leaves the turn counter incremented, and the unclassified terminal reports real usage |
 > | `CR-03` | 2026-08-11 | The `--json` machine-output floor — five serializer paths, fenced by an ESLint selector |
 >
-> `CR-64` was **added** in the same batch (from the YAML/git-native review triage); it is open.
+> `CR-64` was **added** in the same batch (from the YAML/git-native review triage); it shipped 2026-09-02 with `W6`.
 >
 > **Next after Batch 1 was the durability spine**, `CR-10` → `CR-11` → `CR-92` → `CR-12` — a dependency
 > chain, recorded here as the history of why that order was chosen. Batch 2 below is the whole of `W1`: those
@@ -286,11 +286,11 @@ to correct.
 | `CR-53` | made · ✅ INGEST closed 2026-09-02 (`MediaUrlStream` + `MediaStore.putStream?` + an idle-deadlined, cancellable body; a url with no streaming hook REFUSED). The adapter-side base64 and the `resolveForEgress` delivery half are recorded residuals | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §2 | no | media bytes |
 | `CR-54` | made · ✅ closed 2026-09-02 for the two paths that produce one — the node OUTPUT and the human-gate resume PAYLOAD are pinned at first resolution, bounded, and classified on failure. ADR-0043 §3's INGEST half (an `AgentSession` message, an MCP tool result) is a recorded residual | [ADR-0043](../../decisions/0043-media-egress-failover-rematerialization-ssrf.md) §3 | no | media bytes |
 | `CR-55` | made · ✅ closed 2026-09-02 (missing rate ⇒ unpriced, on both cost paths; strict refuses; the rate path + CLI fields land with it) | [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §4 | yes | — |
-| `CR-60` | made 2026-09-02 — the DOC moves: `first` = first surviving by declaration order; `joinStrategy` renamed `requestedJoinStrategy`. Implementation open | [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md) | no | — |
-| `CR-61` | made 2026-09-02 — deep validation via an ALLOWLIST-STRICT mode on the in-house compiler, promoted to `@relavium/shared`. **No new dependency** — the phase text's premise was false. Implementation open | [ADR-0092](../../decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md) | no | — |
-| `CR-62` | made 2026-09-02 — narrow the scope to the transitive closure **and** refuse a literal non-ancestor read at parse via a conservative text scan (the engine cannot observe reads: marshaling is JSON-only). Implementation open | [ADR-0093](../../decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md) | no | — |
-| `CR-63` | made (verify the docs; no runtime change) | — | no | — |
-| `CR-64` | made (enforce at parse / `$ref` resolution) | [ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md) | no | — |
+| `CR-60` | ✅ **shipped 2026-09-03** — the DOC moved (`first` = first surviving by declaration order) AND four correctness defects behind it were fixed: a phantom branch from a non-producing predecessor, two mirror-image reorderings, and a `parallel_of` duplicate | [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md) | no | — |
+| `CR-61` | ✅ **shipped 2026-09-03** — deep validation via an ALLOWLIST-STRICT mode on the in-house compiler, promoted to `@relavium/shared`. **No new dependency** — the deferral's premise was false; the compiler already existed one package away | [ADR-0092](../../decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md) | no | — |
+| `CR-62` | ✅ **shipped 2026-09-03** — scope narrowed to the transitive closure, a literal non-ancestor read refused at parse, `edges[].condition` refused. The scan's no-false-refusal claim was false in **seven** ways and now has a sandbox-paired test | [ADR-0093](../../decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md) | no | — |
+| `CR-63` | ✅ **closed 2026-09-03** — verified: nothing reads an agent `input_schema`, so the spec's claim is true and no change was needed. The check found three fabricated `human_in_the_loop_config` fields | — | no | — |
+| `CR-64` | ✅ **shipped 2026-09-02** — a widened tool grant is refused when the plan is built | [ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md) | no | — |
 | `CR-70` | **open** — persist bounded tool pairs, or narrow the spec | — | no | — |
 | `CR-71` | with `CR-70` | with `CR-70`'s | no | — |
 | `CR-72` | **open** — implement, or reject at parse | — | no | — |
@@ -1746,14 +1746,28 @@ an outage, not a cap. Break-verify by restoring the zero fallback.
 
 ## W6 — Authoring correctness
 
-### CR-60 — `merge_strategy: first` is not implemented as specified · High · **decision open**
-The canonical table says the first resolved branch wins and the others are ignored. The engine waits for every
-branch to settle and the handler takes the first surviving output in declaration order. A slow loser adds
-latency and cost; a failing loser can fail the run even when the winner is ready.
-**Open decision.** Implement race semantics, or rename the strategy and correct the canonical table. The name
-and the behaviour must agree; which one moves is a maintainer call.
-**Fix + acceptance.** Whichever is chosen, a test pins latency and cost behaviour — a slow loser must not extend
-the run's wall clock if race semantics are chosen, and must be documented as doing so if they are not.
+### CR-60 — `merge_strategy: first` is not implemented as specified · High · ✅ **closed 2026-09-03**
+The canonical table said the first *resolved* branch wins. The engine waits for every branch to settle and the
+handler takes the first surviving output in declaration order.
+**Ruling ([ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md)): the DOCUMENT
+moves.** Renaming the enum would break authored files in the wild to fix a documentation error. The plan field
+`joinStrategy` was renamed `requestedJoinStrategy` — a field asserting `wait_first` while the engine does
+`wait_all` is a false runtime contract a scheduler could read, and a comment does not stop that.
+**The ADR opened with "the code does not [move]", and that was wrong.** Three review rounds found four
+correctness defects behind it, each a silent wrong answer at exit 0:
+- a `condition` or `parallel` reaching a merge became a **phantom branch** with no output, so `first` returned
+  it and discarded the real answer — moving two YAML lines changed the workflow's result;
+- the fix for that **reordered real branches**, and the fix for THAT reordered them through the opposite door;
+- a `parallel_of` **duplicate** put one branch into `concat` twice and shifted every `merge_fn` index;
+- the same phantom existed in the `output` handler, turning a documented verbatim capture into a keyed wrapper.
+The pairing search now ranks candidates by the value they supply instead of taking the first structural match,
+which also repairs a pre-existing weakness neither fix caused. ADR-0091 carries three dated corrections; the
+shape of each error is recorded, not just its remedy.
+**Acceptance.** Latency and cost are pinned (the join waits for a genuinely still-pending loser; a failing loser
+fails the run even when the winner is done), plus a branch-SET invariant the three corrections are all instances
+of. **Residual:** whether a merge with zero value-producing branches should be a parse error is a maintainer
+ruling in [deferred-tasks.md](../deferred-tasks.md) — `object_merge` was the one strategy that refused a phantom
+loudly and now returns `{}` quietly.
 
 ### CR-61 — Agent and transform `output_schema` do not deep-validate · Medium · **needs a dependency ADR**
 An agent's `output_schema` becomes a response-format hint and is then only `JSON.parse`d; the transform node's
@@ -1766,28 +1780,65 @@ gate**, "never silently deferred". What shipped is
 deep JSON-Schema conformance is a deferred follow-up **because it needs a JSON-Schema validator dependency
 behind an ADR** — Zod cannot consume an arbitrary JSON Schema. So the two documents disagree about what was
 required, and the narrowing was never recorded as a decision.
-**Fix + acceptance.** Either land deep validation (which requires a new-dependency ADR under CLAUDE.md rule 2,
-and that ADR is the gate), or record the narrowed contract as a decision that supersedes ADR-0038's clause.
-Silence is not an option. A typed `validation` failure on a schema-violating but valid-JSON output is the test
-either way — passing if validation lands, documented-as-absent if the narrowing is chosen.
+**Ruling ([ADR-0092](../../decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md)):
+deep validation landed, and the premise of the deferral was false.** It did not need a new dependency — the
+project already owned a dependency-free JSON-Schema→Zod compiler at the MCP boundary, one package away. The
+deferral outlived its own reason by three phases because nobody re-checked the sentence that created it.
+The compiler moved to `@relavium/shared` (`packages/mcp` depends on `packages/core`, so core could not import
+it), parameterized on its bounds so the MCP boundary keeps its hostile-ingress limits. A second `strict` mode
+replaces the denylist with an **allowlist**: `pattern`, `format`, `exclusiveMinimum`/`Maximum`, `multipleOf`,
+`uniqueItems`, `min`/`maxProperties` and `additionalProperties`-as-a-schema are genuinely enforced, everything
+else is refused, and a malformed value for a supported keyword is refused rather than silently dropped. An
+authored `output_schema` is compiled at PARSE and enforced at run time.
+**Two holes were found in `strict` itself and are worth recording**, because both were the original defect
+re-entering through its own remedy: a constraint with no `type` beside it was accepted by the allowlist and
+enforced by nothing (eleven keywords, measured), and the same was true alongside `enum`/`const`.
+**Residuals:** an authored `pattern` runs against MODEL OUTPUT and backtracking is synchronous, so a
+catastrophic regex hangs the process past any node deadline — maintainer-ruled *record, do not mitigate*, with
+the measurement; and an `AgentSession` (`relavium chat`, `agent run`) does not read `output_schema` at all, so
+the same agent behaves differently by entry point. Both in [deferred-tasks.md](../deferred-tasks.md).
+**Acceptance.** A schema-violating but valid-JSON output fails `validation` (`retryable: false`) on both the
+agent and transform paths; an unsupported schema is refused at parse on all three declaration sites.
 
 ### CR-62 — Expression dependencies are invisible, so silent mis-routing is possible · High · **decision open**
 The DAG derives edges from template references only and deliberately does not order JS-expression reads of run
 outputs. A condition that runs before its producer compares `undefined` and silently takes the false branch — a
 test currently pins that silence.
-**Open decision.** Extract dependencies from expressions, or fail loudly when an expression reads an unresolved
-output. Not a silent false, either way.
-**Fix + acceptance.** The pinning test is rewritten to the chosen rule and keeps a note recording the reasoning
-for the behaviour it replaces.
+**Ruling ([ADR-0093](../../decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md)): both, in
+order.** `run.outputs` is narrowed to the reading node's transitive closure, and a LITERAL out-of-closure read
+is refused at parse. Narrowing alone fixes nothing — marshaling is JSON-only and `Proxy` is never created, so an
+absent id still compares silently false; it draws the boundary the scan enforces. `edges[].condition` — accepted
+by the schema, read by nothing, described by three descriptions across two documents as gating its edge — is
+refused at parse, and its pinning test is rewritten rather than deleted.
+**The scan's soundness claim was asserted in three places and false in seven ways.** ADR-0093 §2 justifies a
+regex scan over a parser on one property: it never produces a FALSE REFUSAL. Two rounds found seven shapes that
+did — a `run` property on another object, the same separated by whitespace or a comment, a shadowing binding, a
+nested template literal, an odd-quoted regex shifting string parity, an HTML-like comment, and a Unicode
+identifier ending in `run`. Each is closed by ABANDONING the scan rather than lexing harder, and the claim now
+has a test that can fail: every "says nothing" case is paired with an evaluation in the REAL sandbox proving the
+read is absent, because a false refusal is a disagreement between scanner and sandbox, not a property of either.
+**One stand-down gate removed the check it was protecting** — standing down for any unresolved `agent_ref` was
+sound and far too broad, since no caller supplies a registry and an unresolved `$ref` raises no issue, so such a
+workflow built clean and silently lost all of CR-62's coverage. Per-node now.
+**Acceptance.** The pinning test is rewritten with its reasoning; the residue (a non-literal read is still a
+silent `false`) is written into [deferred-tasks.md](../deferred-tasks.md) rather than left inside an ADR's
+Negative section.
 
 ### CR-63 — Agent `input_schema` runtime enforcement: verify the docs, do not implement · Low *(plan review)*
 Split out of `CR-61` because it is a different contract with a different answer.
 [agent-yaml-spec.md](../../reference/contracts/agent-yaml-spec.md) states that `input_schema` is *"purely
 additive metadata — it drives type-safe node chaining and editor (VS Code) completion; it does not change
 run-time execution"*. Under that spec, the absence of runtime enforcement is **correct**, not a defect.
-**Fix + acceptance.** No runtime change. Grep every canonical document and the product surface for a claim that
-an agent's `input_schema` is validated at run time; if one exists, correct it to match the spec. If none exists,
-close the item with that finding recorded — do not implement enforcement to satisfy a claim nobody made.
+**Closed 2026-09-03 with the finding recorded, and no runtime change.** A repo-wide grep across `packages/core`,
+`packages/llm` and `apps/cli` finds no reader of an agent's `input_schema`; the only hits are Anthropic's *tool*
+wire field, which is a different thing. The spec's claim — "purely additive metadata, the engine never reads it"
+— is TRUE, so the absence of enforcement is correct and nothing needed to change.
+**The same check found a node type that could not be authored.** `node-types.md`'s `human_in_the_loop_config`
+row listed `prompt_template`, `on_timeout` and `input_schema`; the real schema has `message_template` and
+`timeout_action`, no `input_schema` at all, and the row omitted the required `gate_type` and `assignee`.
+`HumanGateNodeSchema` is `.strict()`, so an author following the canonical row hit an immediate parse rejection
+AND was not told the names of the two fields they needed. Corrected, closing the still-open half of a
+phase-2.5.5 register item.
 
 ### CR-64 — Node-`tools` narrowing is enforced at RUN time, and two ADRs say "parser-enforced" · Medium
 

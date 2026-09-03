@@ -87,7 +87,17 @@ the network into the store under a size ceiling, an idle deadline and the run si
 to a content-addressed handle at first resolution; and a missing media rate is unpriced rather than a price of
 zero. A systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed
 before it merged. Two items closed one half of a two-part obligation and say so; every residual is written out
-rather than left inside a checked box. **`W6` (authoring correctness) is next.**
+rather than left inside a checked box. **`W6` (authoring correctness) is COMPLETE on `development` and awaiting
+review** behind [ADR-0091](docs/decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](docs/decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md):
+`merge_strategy: first` means first DECLARED and the plan field no longer claims otherwise; a widened tool grant
+is refused when the plan is BUILT rather than mid-run; an expression sees only its transitive dependency closure
+and a literal out-of-closure `run.outputs` read is refused at parse (as is `edges[].condition`, which nothing
+ever read); and an authored `output_schema` is compiled at parse in an allowlist-strict mode and enforced at run
+time — with **no new dependency**, because the JSON-Schema→Zod compiler the deferral claimed we needed already
+existed in `packages/mcp` and simply moved to `@relavium/shared`. Seven review rounds found that **most defects
+were in the FIXES rather than the code they repaired** — the branch-order search was wrong three times, the
+expression scan's no-false-refusal claim was false in seven ways, and a stand-down gate silently removed the
+check it was added to protect; each is a dated correction inside its own ADR.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);

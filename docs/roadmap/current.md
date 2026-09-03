@@ -91,7 +91,7 @@ flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
     LEDGER["#W15-1 — realized-cost ledger ✅<br/>ADR-0076 + ADR-0077"]
-    P265["Phase 2.6.5 — Core reliability<br/>48 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090 (38 of 48) · W6 next"]
+    P265["Phase 2.6.5 — Core reliability<br/>48 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 complete, in review — authoring correctness, ADR-0091–0094 (43 of 48)"]
     W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
@@ -472,7 +472,7 @@ the exit rule and the execution order, and added two items (`CR-17` resume ident
 docs-only); `CR-64` came from the Batch 1 triage, `CR-21b` from ADR-0082 §10 and `CR-21c` from the `W2`
 document review on 2026-08-25, which is why the total has moved since the list was first written.
 
-> **Live status — 38 of 48 closed. `W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with one reproduced BLOCKER and nine verified findings open — see the `W3` residuals in [deferred-tasks.md](deferred-tasks.md). `W4` MERGED 2026-09-01 (PR #87) behind [ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md): a systematic review of the branch found five merge blockers — an orphaned MCP child on a signal, an optional validated `fetch`, a bypassable transport byte bound, discovery paging past its budget, and two cloud-metadata endpoints reachable through the local opt-in — all reproduced and fixed before it merged. `W5` MERGED 2026-09-02 (PR #88) behind
+> **Live status — 43 of 48 closed. `W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with one reproduced BLOCKER and nine verified findings open — see the `W3` residuals in [deferred-tasks.md](deferred-tasks.md). `W4` MERGED 2026-09-01 (PR #87) behind [ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md): a systematic review of the branch found five merge blockers — an orphaned MCP child on a signal, an optional validated `fetch`, a bypassable transport byte bound, discovery paging past its budget, and two cloud-metadata endpoints reachable through the local opt-in — all reproduced and fixed before it merged. `W5` MERGED 2026-09-02 (PR #88) behind
 > [ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) +
 > [ADR-0090](../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md): all six of
 > `CR-50`–`CR-55` closed, two of them for one half of a two-part obligation and saying so in their own
@@ -480,7 +480,24 @@ document review on 2026-08-25, which is why the total has moved since the list w
 > media-job result bypassing the first-resolution pin, a run-scoped re-host ceiling that reset on resume, a
 > capability gate keyed on the model id alone (breaking custom `base_url`), a negative DB media rate buying
 > strict-cap headroom, a load-bearing migration backfill with no upgrade test, and a drifted canonical
-> AgentRunner spec — all reproduced and fixed before it merged. **`W6` (authoring correctness) is next.**
+> AgentRunner spec — all reproduced and fixed before it merged.
+>
+> **`W6` (authoring correctness) is COMPLETE on `development` and awaiting review** — `CR-60`–`CR-64` behind
+> [ADR-0091](../decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md),
+> 27 commits over seven review rounds: `first` means first DECLARED and the plan stops claiming otherwise; a
+> tool grant is refused when the plan is built rather than mid-run; an expression sees only its transitive
+> closure and a literal out-of-closure read is refused at parse; an `output_schema` is compiled at parse in an
+> allowlist-strict mode and enforced at run time — with **no new dependency**, because the compiler the
+> deferral said we needed already existed one package away.
+>
+> **What the wave is actually worth recording for is that most of what the review rounds found were defects in
+> the FIXES, not in the code they repaired.** The branch-order search was wrong three times in three rounds,
+> each time in the mirror of the previous error. The expression scan's central soundness claim — that it never
+> produces a false refusal, which is the entire justification for a regex over a parser — was asserted in three
+> documents and false in seven distinct ways. One stand-down gate, added to prevent a false refusal, silently
+> removed the whole check it was protecting. Every one is a dated correction inside its own ADR rather than a
+> quiet rewrite, because the shape of the error is the reusable part. Five residuals are recorded in
+> [deferred-tasks.md](deferred-tasks.md), two of them awaiting a maintainer ruling.
 >
 > **The `W4`-waits-for-the-`W3`-blocker gate was lifted deliberately on 2026-09-01, by the maintainer, and it is recorded here rather than left to be inferred from the commit order.** The reasoning: the blocker is a `BoundedEventStream` drop on a stream nobody iterates, its fix is ADR-0087 §1 — a decision that is still **Proposed** and unapproved — and `W4` touches a disjoint surface (the MCP boundary). Blocking a whole wave on an unapproved ADR would have stalled the phase rather than protected it. **The blocker stays open and stays first in the `W3` residuals**; nothing here closes it or reduces its severity.
 >
