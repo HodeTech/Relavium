@@ -270,6 +270,29 @@ describe('strict enforces a constraint that has no `type` beside it', () => {
     });
   }
 
+  it('and applies alongside `enum` / `const`, which must BOTH hold', () => {
+    // The same hole one branch over: with a value-constraint present and no `type`, only the enum/const
+    // arm was built and every loose constraint was dropped. `{ enum: ['aa'], minLength: 5 }` accepted a
+    // two-character string. JSON Schema requires both.
+    expect(accepts({ enum: ['aa'], minLength: 5 }, 'aa')).toBe(false);
+    expect(accepts({ enum: ['aaaaa'], minLength: 5 }, 'aaaaa')).toBe(true);
+    expect(accepts({ const: 'zzz', pattern: '^a+$' }, 'zzz')).toBe(false);
+    expect(accepts({ const: 'aaa', pattern: '^a+$' }, 'aaa')).toBe(true);
+    // …and the arms that already worked are unchanged.
+    expect(accepts({ enum: ['a', 'b'] }, 'c')).toBe(false);
+    expect(accepts({ type: 'string', enum: ['a'] }, 'a')).toBe(true);
+  });
+
+  it('routes by the VALUE kind, not by `typeof` alone', () => {
+    // `typeof null === 'object'` and `typeof [] === 'object'`, so a naive dispatch sends both to the
+    // object arm and reports a missing property on a null.
+    expect(accepts({ required: ['a'] }, null)).toBe(true);
+    expect(accepts({ required: ['a'] }, [1, 2])).toBe(true);
+    expect(accepts({ minItems: 3 }, [1])).toBe(false);
+    expect(accepts({ minItems: 3 }, { a: 1 })).toBe(true);
+    expect(accepts({ minLength: 5 }, true)).toBe(true);
+  });
+
   it('lenient keeps the old behaviour — a typeless schema constrains nothing', () => {
     const r = lenient({ pattern: '^a+$', minLength: 5 });
     expect(r.ok === true && r.schema.safeParse('zzz').success).toBe(true);

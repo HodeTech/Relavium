@@ -317,10 +317,17 @@ function compileNode(node: unknown, budget: Budget, depth: number): z.ZodTypeAny
 
   let base: z.ZodTypeAny;
   if (constOrEnum !== undefined) {
-    base =
+    // A value-constraint and a shape-constraint must BOTH hold, so they intersect. With no `type`, the
+    // shape half is whatever the loose constraints describe — and it was dropped: `{ enum: ['aa'],
+    // minLength: 5 }` accepted `'aa'`, which is two characters, because only the enum arm was built. The
+    // same hole `typelessConstrained` exists to close, one branch over.
+    const shape =
       types.length === 0
-        ? constOrEnum
-        : z.intersection(constOrEnum, buildTypeUnion(types, node, budget, depth));
+        ? budget.mode === 'strict'
+          ? typelessConstrained(node, budget, depth)
+          : undefined
+        : buildTypeUnion(types, node, budget, depth);
+    base = shape === undefined ? constOrEnum : z.intersection(constOrEnum, shape);
   } else if (types.length > 0) {
     base = buildTypeUnion(types, node, budget, depth);
   } else {
