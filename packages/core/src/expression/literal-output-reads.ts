@@ -127,7 +127,7 @@ export function maskLiterals(text: string): string | undefined {
  * only coverage.
  */
 function rebindsRun(code: string): boolean {
-  const token = /(?<![\w$])run(?![\w$])/g;
+  const token = /(?<![\p{ID_Continue}$])run(?![\p{ID_Continue}$])/gu;
   let match = token.exec(code);
   while (match !== null) {
     const rest = code.slice(match.index + 3);
@@ -182,9 +182,15 @@ function isFreeRunReference(mask: string, index: number): boolean {
       i -= 1;
       continue;
     }
-    // `.` / `?` mean this is a property access; a word char or `$` means `run` is part of a longer
-    // identifier that the `\b` should have excluded but a masked neighbour could confuse.
-    return !(ch === '.' || ch === '?' || /[\w$]/.test(ch));
+    // `.` / `?` mean this is a property access; an identifier character means `run` is the TAIL of a longer
+    // identifier.
+    //
+    // **`\p{ID_Continue}`, not `\w`.** `\w` is `[A-Za-z0-9_]` — ASCII only, with or without the `u` flag —
+    // while a JavaScript identifier may contain any Unicode ID_Continue character. So `x.çrun.outputs["g"]`
+    // passed every ASCII guard: `ç` is not `.`, `?`, or `\w`, so the walk called it a free `run` and named
+    // `g`. Verified against the real sandbox: that expression reads a self-contained object literal and
+    // never touches the scope, so refusing it was a false refusal.
+    return !(ch === '.' || ch === '?' || /[\p{ID_Continue}$]/u.test(ch));
   }
   return true;
 }

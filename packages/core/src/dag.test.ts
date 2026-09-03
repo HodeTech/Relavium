@@ -1302,6 +1302,63 @@ ${edges}
     expect(r.message).not.toContain('template field');
   });
 
+  it('keeps the check for a node NOT downstream of an unresolved agent', () => {
+    // The gate is per-node. A first version stood the WHOLE check down whenever any `agent_ref` was
+    // unresolved — and since no production caller supplies a registry, and an unresolved `$ref` raises no
+    // issue at all, such a workflow built clean AND silently lost the entire check. `t` here is a sibling
+    // of the agent, not downstream of it, so its closure is complete and it is still refused.
+    const r = build(
+      wf(
+        `    - { id: a, type: agent, agent_ref: nowhere }
+    - { id: other, type: transform, transform: '"A"' }
+    - { id: t, type: transform, transform: 'run.outputs["other"]' }`,
+        `    - { from: start, to: a }
+    - { from: start, to: other }
+    - { from: start, to: t }`,
+      ),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.kinds).toContain('unordered_output_read');
+  });
+
+  it('stands the check down for a node DOWNSTREAM of an unresolved agent', () => {
+    // That agent's `system_prompt` would have wired producer edges this build never saw, so `t`'s closure
+    // is a subset of the real one — and refusing from a subset is the false-refusal direction.
+    const r = build(
+      wf(
+        `    - { id: a, type: agent, agent_ref: nowhere }
+    - { id: other, type: transform, transform: '"A"' }
+    - { id: t, type: transform, transform: 'run.outputs["other"]' }`,
+        `    - { from: start, to: a }
+    - { from: start, to: other }
+    - { from: a, to: t }`,
+      ),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('stands down entirely on an over-ceiling graph — a rejection must not cost more than a build', () => {
+    // Behavioural, not timed: an over-ceiling file reports ONLY the ceiling, never a read finding, which
+    // is what proves the Θ(V²) closure never ran. The cost this guards was measured at 8000 nodes —
+    // 2358ms without the gate, 13ms with it, and an outright host OOM above ~10k — but a timing assertion
+    // would be flaky, and the observable consequence pins the same thing.
+    const n = 600; // ADMISSION_CEILINGS.nodes is 500
+    const nodes = Array.from(
+      { length: n },
+      (_, i) => `    - { id: n${i}, type: transform, transform: 'run.outputs["n${n - 1}"]' }`,
+    ).join('\n');
+    const edges = Array.from(
+      { length: n - 1 },
+      (_, i) => `    - { from: n${i}, to: n${i + 1} }`,
+    ).join('\n');
+    const r = build(
+      `schema_version: '1.0'\nworkflow:\n  id: over\n  nodes:\n${nodes}\n  edges:\n${edges}\n`,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.kinds).toContain('ceiling_exceeded');
+    expect(r.kinds).not.toContain('unordered_output_read');
+  });
+
   it('says nothing about a read of a node that is not in the workflow', () => {
     // A dangling reference is the runtime resolver's job; a second, disagreeing opinion here is how two
     // checks drift apart.

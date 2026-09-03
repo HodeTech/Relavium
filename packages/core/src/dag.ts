@@ -195,23 +195,31 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
   // rejected: measured 4.8 s at n=10 000 and an OOM of the host process above that. A rejection must not
   // be more expensive than an acceptance.
   //
-  // **And gated on every `agent_ref` having RESOLVED.** A resolved agent's `system_prompt` wires data
-  // edges (`wireDataEdges`), so the closure — and therefore this refusal's answer — is smaller when the
-  // host builds without a registry, which `BuildRunPlanOptions.agents` documents as a supported way to
-  // call this. The difference points the wrong way: without the registry a read that IS ordered would be
-  // refused. The same file must not build in one host and be rejected in another, so the check stands
-  // down rather than answer from a partial graph — the conservatism `validateAgentNode` already applies
-  // to its own dangling check.
-  const everyAgentResolved = spec.nodes.every(
-    (n) => n.type !== 'agent' || agentsById.has(n.agent_ref),
+  // **Per-node, not whole-graph, for the unresolved-agent case.** A resolved agent's `system_prompt` wires
+  // data edges (`wireDataEdges`), so building without the optional registry — which
+  // `BuildRunPlanOptions.agents` documents as supported, and which is what EVERY current caller does —
+  // yields a SMALLER closure, and a refusal computed from a smaller closure points the wrong way: a read
+  // that is genuinely ordered would be refused.
+  //
+  // A first version stood the whole check down whenever any `agent_ref` was unresolved. That was sound and
+  // far too broad: an unresolved `$ref` produces no issue at all when no registry is supplied (resolution
+  // is deliberately deferred), so such a workflow built clean AND silently lost the entire `CR-62` check.
+  // Unlike the cycle and ceiling gates, which always ride an issue that throws, this one turned coverage
+  // off in production and said nothing.
+  //
+  // The missing edges all run PRODUCER → AGENT, so they can only add ancestors to nodes DOWNSTREAM of that
+  // agent. A reading node whose closure contains no unresolved agent is therefore unaffected, and keeps
+  // its check.
+  const unresolvedAgentIds = new Set(
+    spec.nodes.flatMap((n) => (n.type === 'agent' && !agentsById.has(n.agent_ref) ? [n.id] : [])),
   );
   const closureIsSound =
     order.length === spec.nodes.length && !issues.some((i) => i.kind === 'ceiling_exceeded');
   const ancestors = closureIsSound
     ? computeAncestors(order, dependencies)
     : new Map<string, readonly string[]>();
-  if (closureIsSound && everyAgentResolved) {
-    collectUnorderedReadIssues(spec, ancestors, issues);
+  if (closureIsSound) {
+    collectUnorderedReadIssues(spec, ancestors, issues, unresolvedAgentIds);
   }
 
   if (issues.length > 0) {
@@ -968,6 +976,7 @@ function collectUnorderedReadIssues(
   spec: WorkflowSpec,
   ancestors: ReadonlyMap<string, readonly string[]>,
   issues: GraphIssue[],
+  unresolvedAgentIds: ReadonlySet<string>,
 ): void {
   const nodeIds = new Set(spec.nodes.map((n) => n.id));
   for (const node of spec.nodes) {
@@ -985,6 +994,12 @@ function collectUnorderedReadIssues(
             ? [{ field: 'merge_fn', text: node.merge_fn }]
             : [];
     const visible = new Set(ancestors.get(node.id) ?? []);
+    // An unresolved agent among this node's ancestors means the closure below it is incomplete — that
+    // agent's `system_prompt` would have wired producer edges this build never saw. Only THIS node stands
+    // down; every reading node not downstream of one keeps its check.
+    if (unresolvedAgentIds.size > 0 && [...visible].some((id) => unresolvedAgentIds.has(id))) {
+      continue;
+    }
     for (const site of sites) {
       for (const read of literalOutputReads(site.text)) {
         // Not a node of this workflow: left to the runtime resolver, deliberately (see the docblock).

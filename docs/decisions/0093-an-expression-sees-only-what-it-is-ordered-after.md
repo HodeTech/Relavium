@@ -106,7 +106,7 @@ value that does not exist yet is a wrong answer that looks like a right one.
 ## Amendment — 2026-09-03: what the scan actually refuses, and what it cannot see
 
 The review of the implementing commit found **five separate mechanisms by which the scan produced a FALSE
-REFUSAL**, and probing the fix for those five turned up a sixth of the same kind — the one failure mode §2's whole argument rests on not having. §2 says "where it cannot tell, it
+REFUSAL**, and each round of fixing turned up another of the same kind — seven in total — the one failure mode §2's whole argument rests on not having. §2 says "where it cannot tell, it
 says nothing — it never guesses", and that sentence was true of the design and false of the code. It was
 asserted in three places at once (this ADR, the module docblock, the commit message) and pinned by no test
 that could fail. The claim is now made true rather than softened.
@@ -121,6 +121,7 @@ Each mechanism is closed by **abandoning the scan**, never by lexing harder:
 | `` `a ${ `run.outputs["x"]` } b` `` | backticks paired FLAT, so a nested template's text stayed "code" | a `${` inside a template ⇒ abandon |
 | `/["]/` twice | a regex with an odd quote count shifts every later string boundary; a second restores parity, so the mask terminates cleanly around fabricated code | any `/` that is not `//` or `/*` ⇒ abandon |
 | `<!-- …` | Annex B HTML-like comments, which QuickJS accepts, were treated as code | ⇒ abandon |
+| `x.çrun.outputs["g"]` | the identifier guard used `\w`, which is ASCII-only, while a JavaScript identifier may contain any Unicode `ID_Continue` character — so an unrelated identifier ENDING in `run` read as the scope's | `\p{ID_Continue}` with the `u` flag |
 
 The cost is stated rather than hidden: **an expression containing division is never scanned**, and neither
 is one that mentions `run` in any non-member position. Both are silence, which the narrowed scope backstops.
@@ -146,4 +147,21 @@ the generated program after `JSON.parse`, that objection does not apply: no live
 function crosses the boundary, marshaling stays JSON-only, and `Proxy` stays off. The real cost is the other
 one already recorded — it can only fail **after** the run has started, which forfeits the before-money-is-spent
 property `W6` exists for. Left as the follow-up, with its cost stated accurately.
+
+**The stand-down gates, corrected.** The check does not run when the closure would be computed from a
+partial graph. Two of those gates ride an issue that always throws (a cycle, an admission ceiling), so
+standing down can never let a broken workflow through quietly. The third — an unresolved `agent_ref` —
+does not: resolution is deliberately deferred when no registry is supplied, no issue is raised, and **no
+current caller supplies one**. Standing the whole check down for it therefore built the workflow clean and
+silently removed all of `CR-62`'s coverage, which is a worse failure than the false refusal it was avoiding.
+
+It is now per-node. The edges a resolved agent's `system_prompt` would have wired all run PRODUCER → AGENT,
+so they can only add ancestors to nodes **downstream** of that agent; a reading node whose closure contains
+no unresolved agent is unaffected and keeps its check.
+
+**The soundness claim now has a test that can fail.** `scan-soundness.test.ts` pairs every "the scan says
+nothing about this" case with an evaluation of the same expression in the REAL sandbox against an EMPTY
+`run.outputs`. A false refusal is a DISAGREEMENT between the scanner and the sandbox, so a scanner-only
+assertion just restates the scanner's behaviour back to itself — which is how the claim survived being
+false in three documents at once.
 

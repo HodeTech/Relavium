@@ -53,6 +53,12 @@ describe('literalOutputReads — what it SEES', () => {
     expect(ids('inputs.run.outputs["x"]')).toEqual([]);
     expect(ids('ctx?.run?.outputs?.["x"]')).toEqual([]);
     expect(ids('myrun.outputs["x"]')).toEqual([]);
+    // `\w` is ASCII-only, but a JavaScript identifier may contain any Unicode ID_Continue character, so
+    // `çrun` is an unrelated identifier that every ASCII guard let through. The expression below is a
+    // self-contained object literal that never touches the scope — verified in the real sandbox.
+    expect(ids('{["çrun"]: {outputs: {ghost: 1}}}.çrun.outputs["ghost"]')).toEqual([]);
+    expect(ids('x.çrun.outputs.gate')).toEqual([]);
+    expect(ids('日本語run.outputs["x"]')).toEqual([]);
   });
 
   it('de-duplicates and keeps first-appearance order', () => {
