@@ -1024,3 +1024,111 @@ describe('buildRunPlan — error hygiene', () => {
     }
   });
 });
+
+// --- the branch-set invariant (ADR-0091, three corrections) -----------------------------------
+
+/**
+ * `computeMergeBranchOrder` was wrong three times in three review rounds — a phantom branch, then a
+ * reordering, then the reordering's mirror — and each was defended with an argument and shipped without
+ * the test that refuted it. Each fix earned its own targeted case; this asserts the INVARIANT those cases
+ * are instances of, across every shape that has bitten it:
+ *
+ *   `branchNodeIds` is exactly the merge's value-producing predecessors, as a SET.
+ *
+ * Order is pinned separately, per shape, because it depends on which parallel pairs. Membership depends
+ * on nothing, and it is where two of the three defects showed up — always an extra phantom, never a
+ * missing branch, which is why they were invisible.
+ */
+describe('buildRunPlan — a merge branch set is exactly its value-producing predecessors', () => {
+  const wrap = (body: string, edges: string): string => `schema_version: '1.0'
+workflow:
+  id: invariant
+  nodes:
+    - { id: start, type: input }
+${body}
+    - { id: join, type: merge, merge_strategy: concat }
+    - { id: out, type: output }
+  edges:
+${edges}
+    - { from: join, to: out }`;
+
+  const shapes: ReadonlyArray<{
+    readonly name: string;
+    readonly yaml: string;
+    readonly expected: readonly string[];
+  }> = [
+    {
+      name: 'a condition routed into the merge',
+      expected: ['work'],
+      yaml: wrap(
+        `    - { id: cond, type: condition, expression: 'true', branches: [{ when: true, target_node: join }] }
+    - { id: work, type: transform, transform: '"W"' }`,
+        `    - { from: start, to: cond }
+    - { from: start, to: work }
+    - { from: work, to: join }`,
+      ),
+    },
+    {
+      name: 'a parallel naming the merge in parallel_of',
+      expected: ['work'],
+      yaml: wrap(
+        `    - { id: fan, type: parallel, parallel_of: [join, work] }
+    - { id: work, type: transform, transform: '"W"' }`,
+        `    - { from: start, to: fan }
+    - { from: work, to: join }`,
+      ),
+    },
+    {
+      name: 'a paired parallel plus a non-parallel extra branch',
+      expected: ['a', 'b', 'extra'],
+      yaml: wrap(
+        `    - { id: fan, type: parallel, parallel_of: [a, b] }
+    - { id: a, type: transform, transform: '"A"' }
+    - { id: b, type: transform, transform: '"B"' }
+    - { id: extra, type: transform, transform: '"E"' }`,
+        `    - { from: start, to: fan }
+    - { from: start, to: extra }
+    - { from: a, to: join }
+    - { from: b, to: join }
+    - { from: extra, to: join }`,
+      ),
+    },
+    {
+      name: 'two parallels, one supplying no value',
+      expected: ['b', 'c'],
+      yaml: wrap(
+        `    - { id: gate, type: parallel, parallel_of: [g1] }
+    - { id: g1, type: condition, expression: 'true', branches: [{ when: true, target_node: join }] }
+    - { id: work-fan, type: parallel, parallel_of: [c, b] }
+    - { id: b, type: transform, transform: '"B"' }
+    - { id: c, type: transform, transform: '"C"' }`,
+        `    - { from: start, to: gate }
+    - { from: start, to: work-fan }
+    - { from: b, to: join }
+    - { from: c, to: join }`,
+      ),
+    },
+    {
+      name: 'a merge fed by another merge',
+      expected: ['a', 'inner'],
+      yaml: wrap(
+        `    - { id: a, type: transform, transform: '"A"' }
+    - { id: x, type: transform, transform: '"X"' }
+    - { id: inner, type: merge, merge_strategy: concat }`,
+        `    - { from: start, to: a }
+    - { from: start, to: x }
+    - { from: x, to: inner }
+    - { from: a, to: join }
+    - { from: inner, to: join }`,
+      ),
+    },
+  ];
+
+  for (const shape of shapes) {
+    it(`holds for: ${shape.name}`, () => {
+      const cfg = buildRunPlan(parseWorkflow(shape.yaml)).vertices.get('join')?.config;
+      const branches = cfg?.kind === 'fan_in' ? [...cfg.branchNodeIds].sort() : [];
+      expect(branches).toEqual([...shape.expected].sort());
+    });
+  }
+});
