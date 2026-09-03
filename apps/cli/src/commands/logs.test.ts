@@ -74,6 +74,21 @@ describe('logsCommand', () => {
     expect(out()).toContain('run:failed — internal'); // detailOf surfaces the error code
   });
 
+  it('renders the skip detail line with its reason (the node:skipped branch)', async () => {
+    // The persisted-run twin of the plain renderer's `skip` line. Without the reason this row reports
+    // that a node did not run and not why — the same gap the live surface had.
+    const { io, out } = captureIo();
+    await seedRun(db, {
+      slug: 'demo',
+      runId: 'skipped-1',
+      state: 'completed',
+      skipped: { nodeId: 'lo', reason: 'branch_not_taken' },
+    });
+
+    expect(logsCommand({ runId: 'skipped-1' }, deps(io))).toBe(EXIT_CODES.success);
+    expect(out()).toContain('node:skipped lo — branch_not_taken');
+  });
+
   it('reports rows written by a NEWER binary on stderr, keeping stdout`s contract intact (ADR-0074 §5)', async () => {
     // A dropped row (§5) makes the count below and the `[seq]` column describe a log that is short and has a hole
     // in its sequence — which `sse-event-schema.md` §Transport tells consumers to read as data loss. So it is

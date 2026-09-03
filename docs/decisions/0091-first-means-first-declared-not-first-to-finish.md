@@ -122,9 +122,7 @@ end-to-end against the real handlers: with the condition authored **before** the
 workflow's output is `null`; move two lines in the YAML and the same graph returns the real answer.
 **Authoring order alone decides whether the run is correct**, and nothing warns.
 
-`parallel` is the only other non-producing vertex kind (its handler returns `output: null`), and it cannot
-reach here — an edge from a `parallel` to a node outside its `parallel_of` is already refused at parse.
-So `condition` is the entire class.
+`parallel` is the only other non-producing vertex kind — its handler returns a control `output: null`.
 
 ### The decision
 
@@ -148,11 +146,57 @@ class `W6` exists to remove; a sentence in a spec does not stop a graph from bei
 
 ### Consequences
 
-- A merge whose *only* predecessors are conditions now has **zero** branches: `first` → `null`,
-  `concat` → `[]`, `custom` → `branches: []`. Previously it produced a same-length array of `undefined`s.
-  Not refused at parse — such a merge runs today, and refusing it would break a loading workflow to
-  improve a value that was meaningless in both readings.
+- A merge whose *only* predecessors are non-producing now has **zero** branches:
+
+  | strategy | zero-branch result | before |
+  | --- | --- | --- |
+  | `first` | `null` | a phantom `undefined` |
+  | `concat` | `[]` | `[undefined, …]` |
+  | `custom` | `branches: []` | every index shifted |
+  | `object_merge` | `{}` | **a loud `validation` failure** |
+
+  **`object_merge` is the one that gets quieter, and it is called out rather than buried.** It was the
+  only strategy that refused a phantom, and a zero-branch merge now succeeds with `{}` where it used to
+  fail. Not refused at parse: such a merge loads today, and a parse rejection would stop a workflow from
+  loading to improve a value that is meaningless under either reading. Whether a zero-branch merge should
+  instead be a parse error is recorded as an open question in
+  [deferred-tasks.md](../roadmap/deferred-tasks.md) rather than decided here.
 - **A workflow whose output today comes from the phantom will change its output.** That is the point;
   every such run was already returning a value the author did not ask for.
 - `branchNodeIds` is no longer "the merge's predecessors", so the canonical description in
   [run-plan.md](../reference/shared-core/run-plan.md) §fan-in branch order gains the producer rule.
+
+### Correction — 2026-09-03 (same day, after the review of the implementing commit)
+
+**Two claims in the amendment above were wrong, and the fix that shipped with it was incomplete in one
+direction and a regression in another.** Recorded here rather than silently rewritten, because the shape
+of the error is the point: each was a confident statement with a plausible argument and no test behind it.
+
+1. **"`condition` is the entire class" was false**, and it was false because the wrong graph was tested.
+   An *explicit edge* from a `parallel` to a node outside its `parallel_of` is indeed refused at parse —
+   that much was checked. But `parallel_of: [work, join]` names the merge **inside** `parallel_of`, and
+   the builder materializes that fan-out edge itself, so it never reaches that validator. A `parallel`
+   completes with a control `null`, so `first` returned `null` and discarded the real branch, exit 0 —
+   the exact corruption the amendment claimed to have closed, through the path it declared impossible.
+   The rule is now a **positive list** (`producesValue`) with a `never` exhaustiveness guard: a ninth node
+   type cannot reopen this in silence the way a `!== 'condition'` denylist could.
+
+2. **Filtering before the paired-parallel search reordered branches unrelated to the defect.** A
+   `parallel_of` listing a condition alongside real branches no longer satisfied
+   `every(m => predSet.has(m))`, so the pairing was lost and the survivors fell back from `parallel_of`
+   order to authored order. Measured on `parallel_of: [cond, c, b]`: survivors came out `[b, c]` where the
+   author declared `[c, b]` — a wrong `concat` result and a wrong `merge_fn` index produced by the fix
+   rather than by the bug. Pairing is a question about the authored **graph**; producer-ness is a separate
+   question about the **result**. The filter now runs after the ordering decision.
+
+3. **The `output` handler had the identical defect and was not touched.** `runOutput` derived its feeders
+   from `dependencies` filtered by `runOutputs.has(id)`, which a completed `condition` satisfies with the
+   value `undefined`. A condition routed straight at an `output` therefore counted as a second feeder and
+   flipped the documented single-feeder **verbatim** capture into a keyed wrapper — `{ work: 'WORK' }`
+   instead of `'WORK'`, with a phantom `cond: undefined` that `JSON.stringify` dropped without a trace, so
+   the wrapper looked deliberate. The builder now pins `OutputPlanConfig.feederNodeIds` exactly as it pins
+   a merge's `branchNodeIds`, from the same `producesValue` rule — one rule, two consumers.
+
+Each of the three is pinned by a test that was break-verified against the specific mutation it exists to
+catch, and a fourth pins that the condition stays a **dependency** — dropped from the value list, not from
+the graph — because over-correcting here would let a join fire on a path that had not been decided.

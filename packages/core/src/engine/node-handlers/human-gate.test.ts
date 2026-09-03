@@ -173,7 +173,7 @@ describe('createHumanGateNodeExecutor', () => {
       dependencies: [],
       dependents: [],
       inputSites: [],
-      config: { kind: 'output', node: { id: 'x', type: 'output' } },
+      config: { kind: 'output', node: { id: 'x', type: 'output' }, feederNodeIds: [] },
     };
     const out = await handler.execute(ctxFor(wrong));
     expect(out.kind).toBe('failed');

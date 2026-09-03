@@ -531,7 +531,7 @@ describe('fan_out / input / output handlers (1.P)', () => {
   it('output captures its single feeder verbatim', async () => {
     const exec = createOutputNodeExecutor();
     const v = makeVertex(
-      { kind: 'output', node: { id: 'out', type: 'output' } },
+      { kind: 'output', node: { id: 'out', type: 'output' }, feederNodeIds: ['report'] },
       { dependencies: ['report'] },
     );
     const runOutputs = new Map<string, unknown>([['report', { md: '# done' }]]);
@@ -542,7 +542,7 @@ describe('fan_out / input / output handlers (1.P)', () => {
   it('output captures a deterministic per-feeder record when fed by several nodes', async () => {
     const exec = createOutputNodeExecutor();
     const v = makeVertex(
-      { kind: 'output', node: { id: 'out', type: 'output' } },
+      { kind: 'output', node: { id: 'out', type: 'output' }, feederNodeIds: ['a', 'b'] },
       { dependencies: ['b', 'a'] },
     );
     const runOutputs = new Map<string, unknown>([
@@ -560,7 +560,7 @@ describe('fan_out / input / output handlers (1.P)', () => {
   it('output is null when it has no settled feeder', async () => {
     const exec = createOutputNodeExecutor();
     const v = makeVertex(
-      { kind: 'output', node: { id: 'out', type: 'output' } },
+      { kind: 'output', node: { id: 'out', type: 'output' }, feederNodeIds: ['gone'] },
       { dependencies: ['gone'] },
     );
     const out = await exec.execute(makeCtx(v)); // 'gone' absent
@@ -570,7 +570,7 @@ describe('fan_out / input / output handlers (1.P)', () => {
   it('a multi-declared-feeder output captures the single LIVE feeder verbatim (condition branches converge)', async () => {
     const exec = createOutputNodeExecutor();
     const v = makeVertex(
-      { kind: 'output', node: { id: 'out', type: 'output' } },
+      { kind: 'output', node: { id: 'out', type: 'output' }, feederNodeIds: ['hi', 'lo'] },
       { dependencies: ['hi', 'lo'] }, // two mutually-exclusive condition branches feed here
     );
     const runOutputs = new Map<string, unknown>([['lo', { label: 'low' }]]); // only 'lo' is live
@@ -604,7 +604,10 @@ describe('fan_out / input / output handlers (1.P)', () => {
     ).toMatchObject({ kind: 'failed', error: { code: 'cancelled' } });
     expect(
       await output.execute(
-        makeCtx(makeVertex({ kind: 'output', node: { id: 'o', type: 'output' } }), aborted),
+        makeCtx(
+          makeVertex({ kind: 'output', node: { id: 'o', type: 'output' }, feederNodeIds: [] }),
+          aborted,
+        ),
       ),
     ).toMatchObject({ kind: 'failed', error: { code: 'cancelled' } });
   });
@@ -776,7 +779,10 @@ describe('dispatching executor (1.P)', () => {
     expect(input).toEqual({ kind: 'completed', output: { a: 1 } });
     const output = await exec.execute(
       makeCtx(
-        makeVertex({ kind: 'output', node: { id: 'o', type: 'output' } }, { dependencies: ['u'] }),
+        makeVertex(
+          { kind: 'output', node: { id: 'o', type: 'output' }, feederNodeIds: ['u'] },
+          { dependencies: ['u'] },
+        ),
         {
           runOutputs: new Map([['u', 'cap']]),
         },

@@ -139,6 +139,20 @@ export interface InputPlanConfig {
 export interface OutputPlanConfig {
   readonly kind: 'output';
   readonly node: OutputNode;
+  /**
+   * The **value-producing** dependencies this vertex may capture, in deterministic (code-unit) order —
+   * the `output` twin of {@link FanInPlanConfig.branchNodeIds}, and pinned here for the same reason: the
+   * handler sees only `vertex.dependencies` (ids), so it cannot tell which of them carry a value.
+   *
+   * A `condition` that names this node as a `branches[].target_node` — or a `parallel` that names it in
+   * `parallel_of` — IS a dependency but produces no output, and the handler's old
+   * `runOutputs.has(id)` guard was satisfied by it (a completed condition sits in the map with the value
+   * `undefined`). That turned the canonical single-feeder shape into a keyed wrapper: a workflow whose
+   * only real feeder was `work` captured `{ work: 'WORK' }` instead of `'WORK'`, with a phantom
+   * `cond: undefined` alongside it that `JSON.stringify` then dropped without a trace. See ADR-0091's
+   * 2026-09-03 amendment — the same defect as the merge's, one handler over.
+   */
+  readonly feederNodeIds: readonly string[];
 }
 
 /** The per-type config block on a {@link PlanVertex}, discriminated on `kind` (the engine vertex type). */

@@ -95,6 +95,10 @@ function detailOf(event: RunEvent): string {
       return ` — ${event.error.code}`;
     case 'node:retrying':
       return ` — ${event.error.code} (attempt ${event.attemptNumber ?? 1})`;
+    // The persisted-run twin of the plain renderer's `skip` line. Without the reason this row says a node
+    // did not run and not why, which is the same "silent skip" gap the live surface had.
+    case 'node:skipped':
+      return ` — ${event.reason}`;
     case 'budget:estimate_committed':
       // ADR-0074 §1 — an ESTIMATE, said in those words. `logs` was the only human surface that showed the event
       // existed at all, and it showed no amount.

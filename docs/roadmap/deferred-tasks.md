@@ -900,6 +900,18 @@ so directly: these "should remain visible rather than disappear behind the green
   no line number: the previous one, `engine.ts:26-28`, quoted a "1.P refinement" phrase that ADR-0091's
   wording fix then deleted — a citation that decays the moment the thing it cites is corrected.)*
 
+- [ ] **Should a merge with ZERO value-producing branches be refused at parse?** — opened 2026-09-03 by
+  [ADR-0091](../decisions/0091-first-means-first-declared-not-first-to-finish.md)'s amendment. Now that a
+  `condition`/`parallel` predecessor is a control edge rather than a branch, a merge whose only
+  predecessors are control edges combines nothing: `first` → `null`, `concat` → `[]`, `custom` →
+  `branches: []`, `object_merge` → `{}`. **`object_merge` is the reason this is a question rather than a
+  shrug**: it is the one strategy that previously refused a phantom loudly, and it now succeeds quietly.
+  The amendment deliberately did NOT add a parse rejection — such a merge loads today, and refusing it
+  would stop a workflow from loading to improve a value that is meaningless under either reading — but a
+  merge that combines nothing is an authoring mistake in every case anyone has been able to name, and
+  refusing it is exactly the "found before money is spent" property `W6` exists for. Needs a maintainer
+  ruling, not more analysis. *(S · packages/core/src/dag.ts, docs/reference/shared-core/node-types.md)*
+
   **Precondition, added 2026-09-03 with [ADR-0091](../decisions/0091-first-means-first-declared-not-first-to-finish.md).**
   A future ADR that wants race semantics owes one thing this deferral does not yet answer: how the WINNING
   BRANCH ID is durably pinned at the moment it is selected. Without that, a replay from a checkpoint can pick

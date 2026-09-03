@@ -190,6 +190,7 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
   const byAuthored = (a: string, b: string): number =>
     (authoredIndex.get(a) ?? 0) - (authoredIndex.get(b) ?? 0);
   const mergeBranchOrder = computeMergeBranchOrder(spec, dependencies, authoredIndex);
+  const outputFeeders = computeOutputFeeders(spec, dependencies);
   for (const node of spec.nodes) {
     vertices.set(node.id, {
       id: node.id,
@@ -197,7 +198,7 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
       dependencies: [...(dependencies.get(node.id) ?? [])].sort(byAuthored),
       dependents: [...(dependents.get(node.id) ?? [])].sort(byAuthored),
       inputSites: nodeReferenceSites(node),
-      config: buildConfig(node, agentsById, mergeBranchOrder),
+      config: buildConfig(node, agentsById, mergeBranchOrder, outputFeeders),
     });
   }
 
@@ -733,23 +734,59 @@ function engineType(node: WorkflowNode): EngineNodeType {
 }
 
 /**
+ * Does a vertex of this authored type produce a value a downstream aggregation can consume?
+ *
+ * **A positive list with an exhaustiveness guard, deliberately — not a `!== 'condition'` denylist.** The
+ * first version of this rule was a denylist naming `condition`, justified by a claim that `parallel` could
+ * not reach a merge. That claim was false (see the ADR-0091 amendment's 2026-09-03 correction), and a
+ * denylist is exactly the shape that lets the next non-producing node type reopen the defect in silence.
+ * Adding a ninth `WorkflowNode` type now fails to compile here until someone decides which side it is on.
+ *
+ * `condition` returns `{ kind: 'branch' }` with no output; `parallel` (fan_out) completes with a control
+ * `null`. Both are still real dependencies — they gate their dependents and take part in skip-propagation —
+ * they just carry no value.
+ */
+function producesValue(type: WorkflowNode['type']): boolean {
+  switch (type) {
+    case 'condition':
+    case 'parallel':
+      return false;
+    case 'input':
+    case 'output':
+    case 'transform':
+    case 'agent':
+    case 'merge':
+    case 'human_gate':
+      return true;
+    default: {
+      const exhaustive: never = type;
+      throw new Error(`producesValue: unclassified node type '${String(exhaustive)}'`);
+    }
+  }
+}
+
+/**
  * The stable branch order a `fan_in` (merge) vertex exposes to a `custom` `merge_fn` and `concat`.
  * Order = the paired `parallel`'s `parallel_of` declaration order when this merge joins exactly the
  * branches of one parallel (the common authored shape), else the merge's incoming branches in authored
  * order. A merge's `dependencies` are authored-index-sorted, which is NOT `parallel_of` order, so the
  * run loop / sandbox cannot reconstruct it from the vertex — the builder pins it here.
  *
- * **A `condition` predecessor is a CONTROL edge, not a branch** (ADR-0091, amended 2026-09-03). A
- * condition returns `{ kind: 'branch' }` and no output, yet the engine marks it `completed`, so it lands
- * in the completed-output map with the value `undefined` and satisfies the fan-in handler's
- * `runOutputs.has(id)` guard — a PHANTOM branch. Measured: with a condition authored before the working
- * branch, `first` returned that phantom and threw the real answer away, and the run exited 0; moving two
- * lines in the YAML changed the workflow's output. `concat` gained a leading `undefined` and a `custom`
- * `merge_fn` saw every authored index shifted by one. (`object_merge` alone failed loudly, which is why
- * this survived.) Filtering here fixes all three at their single shared origin. The condition still gates
- * the join — it stays in `dependencies`, so the merge waits for it and skip-propagation is unaffected;
- * it just contributes no value. `parallel` is the only other non-producing kind and cannot reach here:
- * an edge from a `parallel` outside its own `parallel_of` is already refused at parse.
+ * **A non-producing predecessor is a CONTROL edge, not a branch** ({@link producesValue}; ADR-0091,
+ * amended 2026-09-03). A `condition` returns `{ kind: 'branch' }` and no output and a `parallel` completes
+ * with a control `null`, yet the engine marks both `completed`, so each lands in the completed-output map
+ * and satisfies the fan-in handler's `runOutputs.has(id)` guard — a PHANTOM branch. Measured: with a
+ * condition authored before the working branch, `first` returned that phantom and threw the real answer
+ * away, and the run exited 0; moving two lines in the YAML changed the workflow's output. `concat` gained
+ * a leading `undefined` and a `custom` `merge_fn` saw every authored index shifted by one. (`object_merge`
+ * alone failed loudly, which is why this survived.) They stay in `dependencies` — the merge still waits for
+ * them and skip-propagation is unaffected — they just contribute no value.
+ *
+ * **A `parallel` reaches a merge through `parallel_of`, not through an edge.** An earlier version of this
+ * comment said a parallel could not get here because an edge from a `parallel` to a node outside its own
+ * `parallel_of` is refused at parse. True, and irrelevant: `parallel_of: [work, join]` names the merge
+ * INSIDE `parallel_of`, so the builder materializes the fan-out edge itself and it never meets that
+ * validator. Reproduced: `first` returned `null` and discarded the real branch, exit 0.
  */
 function computeMergeBranchOrder(
   spec: WorkflowSpec,
@@ -765,25 +802,78 @@ function computeMergeBranchOrder(
     if (node.type !== 'merge') {
       continue;
     }
-    const preds = [...(dependencies.get(node.id) ?? new Set<string>())].filter(
-      (id) => typeById.get(id) !== 'condition',
-    );
+    const preds = dependencies.get(node.id) ?? new Set<string>();
     // The paired parallel: the authored-first parallel ALL of whose `parallel_of` members feed this
     // merge directly. Then branches follow `parallel_of` order, with any extra (non-parallel) incoming
     // branches appended in authored order; with no unique pairing, fall back to authored order.
-    const predSet = new Set(preds);
+    //
+    // **Paired against the UNFILTERED predecessors, and the value filter applied AFTER.** Filtering first
+    // is what the first version of this fix did, and it silently reordered branches that had nothing to do
+    // with the defect: a `parallel_of` listing a condition alongside real branches no longer satisfied
+    // `every(m => predSet.has(m))`, so the pairing was LOST and the surviving real branches fell back from
+    // `parallel_of` order to authored order. Measured on `parallel_of: [cond, c, b]`: the survivors came
+    // out `[b, c]` where the author declared `[c, b]` — a wrong `concat` result and a wrong `merge_fn`
+    // index, produced by the fix rather than by the bug. Pairing is a question about the authored GRAPH;
+    // which predecessors carry a value is a separate question about the RESULT.
     const paired = parallels.find(
-      (p) => p.parallel_of.length > 0 && p.parallel_of.every((m) => predSet.has(m)),
+      (p) => p.parallel_of.length > 0 && p.parallel_of.every((m) => preds.has(m)),
     );
+    let ordered: readonly string[];
     if (paired === undefined) {
-      order.set(node.id, [...preds].sort(byAuthored));
+      ordered = [...preds].sort(byAuthored);
     } else {
       const members = new Set(paired.parallel_of);
       const extras = [...preds].filter((m) => !members.has(m)).sort(byAuthored);
-      order.set(node.id, [...paired.parallel_of, ...extras]);
+      ordered = [...paired.parallel_of, ...extras];
     }
+    order.set(
+      node.id,
+      ordered.filter((id) => {
+        const type = typeById.get(id);
+        // An id with no node is unreachable — `preds` come from edges the validator already resolved —
+        // so KEEP it rather than silently dropping a branch on a lookup miss. A phantom branch is a wrong
+        // answer; a dropped real branch is also a wrong answer, and this arm must not invent one.
+        return type === undefined || producesValue(type);
+      }),
+    );
   }
   return order;
+}
+
+/**
+ * The value-producing dependencies of each `output` vertex, in deterministic code-unit order — the
+ * `output` twin of {@link computeMergeBranchOrder}, sharing its {@link producesValue} rule.
+ *
+ * The handler used to derive this itself from `vertex.dependencies` filtered by `runOutputs.has(id)`,
+ * which cannot distinguish "produced nothing" from "produced `undefined`". A `condition` routed straight
+ * at an `output` (its sanctioned routing form) therefore counted as a second feeder and flipped the
+ * canonical single-feeder capture — documented as capturing its one live feeder VERBATIM — into a keyed
+ * wrapper object. Deciding it here, where the node types are known, is the same move the merge's
+ * `branchNodeIds` already makes.
+ */
+function computeOutputFeeders(
+  spec: WorkflowSpec,
+  dependencies: ReadonlyMap<string, ReadonlySet<string>>,
+): Map<string, readonly string[]> {
+  const typeById = new Map(spec.nodes.map((n) => [n.id, n.type]));
+  const feeders = new Map<string, readonly string[]>();
+  for (const node of spec.nodes) {
+    if (node.type !== 'output') {
+      continue;
+    }
+    feeders.set(
+      node.id,
+      [...(dependencies.get(node.id) ?? [])]
+        .filter((id) => {
+          const type = typeById.get(id);
+          return type === undefined || producesValue(type);
+        })
+        // Code-unit order (the default string sort), NOT `localeCompare` — the captured record's key
+        // order must be identical across environments for a checkpoint replay to reproduce it.
+        .sort(),
+    );
+  }
+  return feeders;
 }
 
 /** Build the per-type config block for a vertex, deriving engine-only fields (join strategy, fallback). */
@@ -791,12 +881,13 @@ function buildConfig(
   node: WorkflowNode,
   agentsById: ReadonlyMap<string, Agent>,
   mergeBranchOrder: ReadonlyMap<string, readonly string[]>,
+  outputFeeders: ReadonlyMap<string, readonly string[]>,
 ): PlanConfig {
   switch (node.type) {
     case 'input':
       return { kind: 'input', node };
     case 'output':
-      return { kind: 'output', node };
+      return { kind: 'output', node, feederNodeIds: outputFeeders.get(node.id) ?? [] };
     case 'transform':
       return { kind: 'transform', node };
     case 'condition':

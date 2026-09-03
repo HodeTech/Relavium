@@ -41,9 +41,16 @@ function runOutput(ctx: NodeExecContext): NodeOutcome {
   // captured VERBATIM; several live feeders become a record keyed by feeder id; no live feeder is null.
   // (The shape follows the live count, not the declared count, precisely so a condition→output pattern
   // surfaces the taken branch's value, not a one-key wrapper.)
-  const feeders = [...ctx.vertex.dependencies]
-    .sort(byCodeUnit)
-    .filter((id) => ctx.runOutputs.has(id));
+  //
+  // **`config.feederNodeIds`, NOT `vertex.dependencies`.** `runOutputs.has(id)` cannot tell "produced
+  // nothing" from "produced `undefined`", and a `condition` that routes straight at this node — or a
+  // `parallel` naming it in `parallel_of` — is a dependency that completes without an output. Counting
+  // one as a feeder is what broke the verbatim guarantee three lines above: an output whose only real
+  // feeder was `work` captured `{ work: 'WORK' }` instead of `'WORK'`, with a phantom `cond: undefined`
+  // beside it that `JSON.stringify` silently dropped, so the wrapper looked deliberate. The builder
+  // decides producer-ness where the node types are known (dag.ts `computeOutputFeeders`), exactly as it
+  // already does for a merge's `branchNodeIds`. ADR-0091, amended 2026-09-03.
+  const feeders = [...config.feederNodeIds].sort(byCodeUnit).filter((id) => ctx.runOutputs.has(id));
   if (feeders.length === 0) {
     return { kind: 'completed', output: null };
   }
