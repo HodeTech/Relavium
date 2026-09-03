@@ -1577,9 +1577,23 @@ describe('WorkflowEngine — `merge_strategy: first` waits for every branch', ()
 
     // Let the scheduler run everything it can while `slow` is blocked. If the join fired on the first
     // settled branch, `join` would complete here — with `quick` done and `slow` still pending.
-    for (let i = 0; i < 200; i += 1) await Promise.resolve();
+    //
+    // **Bounded on the WRONG BEHAVIOUR, not on a tick count — and that is not a style preference.** A
+    // fixed `for (i < N)` drain has a silent vacuity band: it must exceed the tick at which the BUG
+    // becomes visible (measured 87), not merely the tick at which this test's own premise holds
+    // (measured 55/67) — and only the second threshold is legible from the assertions below. At N=70
+    // this test passes under the correct engine AND under a `fan_in` mutated to fire on the first
+    // settled dependency; that is, the exact hollowness the first version of this test had. Spinning
+    // until `joinFired()` removes the band: the loop exits the instant the defect appears, so the cap
+    // only has to EXCEED the bug's tick rather than sit inside a window nobody wrote down.
+    const joinFired = (): boolean =>
+      events.some((e) => e.type === 'node:completed' && e.nodeId === 'join');
+    for (let i = 0; i < 5000 && !joinFired(); i += 1) await Promise.resolve();
+    // The premise, asserted rather than assumed: `quick` really has settled while `slow` is still
+    // pending. Without this the `joinFired()` assertion below would be vacuously true in a run where
+    // nothing had been scheduled at all.
     expect(settled).toEqual(['quick']);
-    expect(events.some((e) => e.type === 'node:completed' && e.nodeId === 'join')).toBe(false);
+    expect(joinFired()).toBe(false);
 
     releaseSlow();
     await consume;
@@ -3245,7 +3259,12 @@ ${line
     // …and NOW the abandoned executor wakes and tries to spend.
     costEmit?.(999_999);
     releaseNode?.({ kind: 'completed', output: 'too late' });
-    for (let i = 0; i < 200; i += 1) await Promise.resolve();
+    // Bounded on the symptom, not on a tick count: a straggler APPENDING is what this test forbids, so
+    // spin until one does and let the cap merely exceed the tick it would arrive at. A fixed drain here
+    // asserts "nothing more happened" from a number nobody measured — see the `merge_strategy: first`
+    // latency test above, where exactly that shape passed green against a deliberately broken engine.
+    const strayAppeared = (): boolean => seen.length > terminalIndex + 1;
+    for (let i = 0; i < 5000 && !strayAppeared(); i += 1) await Promise.resolve();
 
     // Nothing after the terminal, and certainly not that number.
     expect(seen.slice(terminalIndex + 1)).toEqual([]);

@@ -181,7 +181,7 @@ describe('buildRunPlan — valid topological orders', () => {
     });
   });
 
-  it('derives join_strategy wait_first for merge_strategy first', () => {
+  it('derives requestedJoinStrategy wait_first for merge_strategy first', () => {
     const p = plan(
       doc(`  id: first
   nodes:

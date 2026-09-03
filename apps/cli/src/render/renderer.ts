@@ -98,6 +98,15 @@ function describe(event: RunEvent): string | undefined {
     }
     case 'node:failed':
       return `  FAIL ${sanitizeInline(event.nodeId)}: ${sanitizeInline(event.error.code)}`;
+    // A skip and a retry are the two ways a run legitimately says nothing for a while, and the plain/CI
+    // projection dropped both — so a workflow whose `condition` routed away from every branch printed a
+    // clean `done: run completed` with empty outputs and no hint that anything had been skipped, and a
+    // retrying node read as an unexplained multi-second stall. The TUI models both statuses; only this
+    // surface — the one CI reads — was blind to them.
+    case 'node:skipped':
+      return `  skip ${sanitizeInline(event.nodeId)} (${sanitizeInline(event.reason)})`;
+    case 'node:retrying':
+      return `  retry ${sanitizeInline(event.nodeId)} attempt ${String(event.attemptNumber)} in ${String(event.delayMs)}ms (${sanitizeInline(event.error.code)})`;
     case 'human_gate:paused':
       return `  paused at gate ${sanitizeInline(event.gateId)} (${sanitizeInline(event.gateType)})`;
     case 'run:completed':

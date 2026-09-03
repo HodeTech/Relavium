@@ -43,9 +43,13 @@ type OutputNode = Extract<WorkflowNode, { type: 'output' }>;
 export type MergeStrategy = MergeNode['merge_strategy'];
 
 /**
- * The `fan_in` *join* axis — *when* the join fires, orthogonal to `merge_strategy`'s *how to combine*
- * (node-types.md §Per-type engine config). `wait_n` is a reserved engine slot with no v1.0 authored
- * surface; the builder only ever derives `wait_all` / `wait_first`.
+ * What a `merge_strategy` ASKED the join to do — **not** what the engine does. `wait_all` / `wait_first`
+ * are derived from the authored strategy and read by nothing; the run loop dispatches a `fan_in` once
+ * EVERY branch has settled, in every case ([ADR-0091](../../../docs/decisions/0091-first-means-first-declared-not-first-to-finish.md);
+ * node-types.md §Merge-strategy reconciliation). An earlier version of this docblock called it the join
+ * *axis* that controls *when* the join fires — the same false runtime contract that got
+ * `FanInPlanConfig.joinStrategy` renamed, restated one hop away on the type the field is declared with,
+ * where an IDE hover still served it. `wait_n` is a reserved slot the builder never produces.
  */
 export type JoinStrategy = 'wait_all' | 'wait_first' | 'wait_n';
 

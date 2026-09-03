@@ -894,8 +894,11 @@ so directly: these "should remain visible rather than disappear behind the green
   by `branchNodeIds` order. Genuine early-cancel (abort the still-running sibling branches the moment the
   first settles) needs an **engine-owned per-branch cancellation primitive** — the current single run-wide
   `AbortSignal` cannot cancel one branch without cancelling the run, and a handler cannot cancel sibling
-  vertices. The engine authors already flagged this as a "1.P refinement" (engine.ts:26-28). Promote to a
-  scoped 1.N/engine change (possibly an ADR) only when a real workflow needs it.
+  vertices. The engine's own run-loop docblock (`packages/core/src/engine/engine.ts`, the header comment)
+  records it as a future capability rather than a wiring the executor already reads. Promote to a scoped
+  1.N/engine change (possibly an ADR) only when a real workflow needs it. *(This pointer deliberately names
+  no line number: the previous one, `engine.ts:26-28`, quoted a "1.P refinement" phrase that ADR-0091's
+  wording fix then deleted — a citation that decays the moment the thing it cites is corrected.)*
 
   **Precondition, added 2026-09-03 with [ADR-0091](../decisions/0091-first-means-first-declared-not-first-to-finish.md).**
   A future ADR that wants race semantics owes one thing this deferral does not yet answer: how the WINNING
