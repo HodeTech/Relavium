@@ -245,6 +245,32 @@ describe('WorkflowSchema', () => {
     ).toBe(false);
   });
 
+  it('rejects a duplicate `parallel_of` member', () => {
+    // Not an ergonomics nit: the DAG builder copies `parallel_of` verbatim into a merge's
+    // `branchNodeIds`, so the branch's output lands TWICE in a `concat` array and shifts every
+    // `merge_fn` index after it, while the dependency graph de-duplicates and the node runs once —
+    // so nothing else disagrees and the wrong answer is silent.
+    expect(
+      accepts(
+        withWorkflow({
+          // The duplicate is APPENDED, so every explicit fan-out edge still targets a listed member
+          // and the pre-existing edge-vs-`parallel_of` agreement check has nothing to say. A first
+          // version of this test REPLACED a member instead, which broke that other rule — so it went
+          // red for a reason that had nothing to do with the duplicate, and stayed green with this
+          // check deleted.
+          nodes: base.workflow.nodes.map((n) =>
+            n.id === 'fan-out'
+              ? {
+                  ...n,
+                  parallel_of: ['security-scan-node', 'style-review-node', 'style-review-node'],
+                }
+              : n,
+          ),
+        }),
+      ),
+    ).toBe(false);
+  });
+
   it('rejects a trigger type whose required payload is absent', () => {
     expect(accepts(withWorkflow({ trigger: { type: 'webhook' } }))).toBe(false);
     expect(accepts(withWorkflow({ trigger: { type: 'file_change' } }))).toBe(false);

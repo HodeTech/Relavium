@@ -265,6 +265,124 @@ workflow:
     expect(cfg?.kind === 'fan_in' && cfg.branchNodeIds).toEqual(['c', 'b']);
   });
 
+  it('a value-less parallel does not STEAL the pairing from the one that supplies the branches', () => {
+    // The mirror of the reorder regression, and the second version of this fix reintroduced it through
+    // the opposite door. Two parallels feed one merge: `gate` fans out guard conditions (supplying no
+    // value), `work-fan` fans out the real work as `parallel_of: [c, b]`. Searching the UNFILTERED
+    // predecessors let `gate` match first, which pushed every real branch into `extras` — authored order
+    // — so `concat` returned ["B","C"] where the author declared [c, b]. Pairing is now ranked by how
+    // much VALUE a candidate covers, so a candidate covering nothing can never win.
+    const WF = `schema_version: '1.0'
+workflow:
+  id: two-parallels
+  inputs:
+    - { name: t, type: boolean }
+  nodes:
+    - { id: start, type: input }
+    - { id: gate, type: parallel, parallel_of: [g1, g2] }
+    - id: g1
+      type: condition
+      expression: 'inputs.t'
+      branches: [{ when: true, target_node: join }, { when: false, target_node: join }]
+    - id: g2
+      type: condition
+      expression: 'inputs.t'
+      branches: [{ when: true, target_node: join }, { when: false, target_node: join }]
+    - { id: work-fan, type: parallel, parallel_of: [c, b] }
+    - { id: b, type: transform, transform: '"B"' }
+    - { id: c, type: transform, transform: '"C"' }
+    - { id: join, type: merge, merge_strategy: concat }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: gate }
+    - { from: start, to: work-fan }
+    - { from: b, to: join }
+    - { from: c, to: join }
+    - { from: join, to: out }
+`;
+    const cfg = buildRunPlan(parseWorkflow(WF)).vertices.get('join')?.config;
+    expect(cfg?.kind === 'fan_in' && cfg.branchNodeIds).toEqual(['c', 'b']);
+  });
+
+  it('a `parallel_of` naming the merge itself still pairs — the merge is not a branch of itself', () => {
+    // `parallel_of: [c, b, join]` is the shape the earlier correction newly established as reachable.
+    // The membership test `every(m => preds.has(m))` can never hold for it — a merge is not its own
+    // predecessor — so the pairing was lost and two real branches fell to authored order. The merge's
+    // own id is now exempt from the test and dropped from the ordered list explicitly, because
+    // `producesValue('merge')` is true and the value filter would otherwise keep it.
+    const WF = `schema_version: '1.0'
+workflow:
+  id: self-named
+  nodes:
+    - { id: start, type: input }
+    - { id: fan, type: parallel, parallel_of: [c, b, join] }
+    - { id: b, type: transform, transform: '"B"' }
+    - { id: c, type: transform, transform: '"C"' }
+    - { id: join, type: merge, merge_strategy: concat }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: fan }
+    - { from: b, to: join }
+    - { from: c, to: join }
+    - { from: join, to: out }
+`;
+    const cfg = buildRunPlan(parseWorkflow(WF)).vertices.get('join')?.config;
+    expect(cfg?.kind === 'fan_in' && cfg.branchNodeIds).toEqual(['c', 'b']);
+  });
+
+  it('an exact-match parallel outranks a SUBSET parallel authored before it', () => {
+    // Pre-existing, caused by neither earlier version, and repaired for free by ranking on coverage:
+    // `narrow: [b]` is authored first and its members are all predecessors, so under a first-match
+    // search it won and the exact match's declared order `[c, b]` was discarded.
+    const WF = `schema_version: '1.0'
+workflow:
+  id: subset
+  nodes:
+    - { id: start, type: input }
+    - { id: narrow, type: parallel, parallel_of: [b] }
+    - { id: wide, type: parallel, parallel_of: [c, b] }
+    - { id: b, type: transform, transform: '"B"' }
+    - { id: c, type: transform, transform: '"C"' }
+    - { id: join, type: merge, merge_strategy: concat }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: narrow }
+    - { from: start, to: wide }
+    - { from: b, to: join }
+    - { from: c, to: join }
+    - { from: join, to: out }
+`;
+    const cfg = buildRunPlan(parseWorkflow(WF)).vertices.get('join')?.config;
+    expect(cfg?.kind === 'fan_in' && cfg.branchNodeIds).toEqual(['c', 'b']);
+  });
+
+  it('a `parallel` naming an OUTPUT in `parallel_of` is filtered from its feeders too', async () => {
+    // The `producesValue` rule has two consumers; only the merge side was pinned. This is the output
+    // twin — asserted on the plan AND end-to-end, because the visible symptom is a shape change
+    // (`{ work: 'WORK' }` instead of `'WORK'`) that `JSON.stringify` makes look deliberate.
+    const WF = `schema_version: '1.0'
+workflow:
+  id: parallel-out
+  nodes:
+    - { id: start, type: input }
+    - { id: fan, type: parallel, parallel_of: [out, work] }
+    - { id: work, type: transform, transform: '"WORK"' }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: fan }
+    - { from: work, to: out }
+`;
+    const cfg = buildRunPlan(parseWorkflow(WF)).vertices.get('out')?.config;
+    expect(cfg?.kind === 'output' && cfg.feederNodeIds).toEqual(['work']);
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      executor: createStandardNodeExecutor({ sandbox }),
+    });
+    const events = await drain(engine.start({ workflow: parseWorkflow(WF) }));
+    const completed = events.find((e) => e.type === 'run:completed');
+    expect(completed?.type === 'run:completed' && completed.outputs).toEqual({ out: 'WORK' });
+  });
+
   it('an `output` fed by a condition captures its one real feeder VERBATIM, not a wrapper', async () => {
     // The same phantom, one handler over, and entirely untouched by the merge fix: `runOutput` derived
     // its feeders from `dependencies` filtered by `runOutputs.has(id)`, which a completed condition

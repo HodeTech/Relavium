@@ -803,39 +803,63 @@ function computeMergeBranchOrder(
       continue;
     }
     const preds = dependencies.get(node.id) ?? new Set<string>();
-    // The paired parallel: the authored-first parallel ALL of whose `parallel_of` members feed this
-    // merge directly. Then branches follow `parallel_of` order, with any extra (non-parallel) incoming
-    // branches appended in authored order; with no unique pairing, fall back to authored order.
+    // **The paired parallel: the one that SUPPLIES the most of this merge's value-producing branches**,
+    // ties broken by authored order. Branches then follow its `parallel_of` order, with any extra
+    // incoming branches appended in authored order; with no pairing, fall back to authored order.
     //
-    // **Paired against the UNFILTERED predecessors, and the value filter applied AFTER.** Filtering first
-    // is what the first version of this fix did, and it silently reordered branches that had nothing to do
-    // with the defect: a `parallel_of` listing a condition alongside real branches no longer satisfied
-    // `every(m => predSet.has(m))`, so the pairing was LOST and the surviving real branches fell back from
-    // `parallel_of` order to authored order. Measured on `parallel_of: [cond, c, b]`: the survivors came
-    // out `[b, c]` where the author declared `[c, b]` — a wrong `concat` result and a wrong `merge_fn`
-    // index, produced by the fix rather than by the bug. Pairing is a question about the authored GRAPH;
-    // which predecessors carry a value is a separate question about the RESULT.
-    const paired = parallels.find(
-      (p) => p.parallel_of.length > 0 && p.parallel_of.every((m) => preds.has(m)),
-    );
+    // Two earlier shapes of this search were wrong in OPPOSITE directions, which is why it now ranks
+    // rather than taking the first structural match:
+    //
+    //   - Filtering the predecessors BEFORE the search meant a `parallel_of` listing a condition
+    //     alongside real branches no longer satisfied `every(...)`, so the pairing was LOST and the
+    //     survivors fell back from `parallel_of` order to authored order. Measured on
+    //     `parallel_of: [cond, c, b]`: survivors came out `[b, c]` where the author declared `[c, b]`.
+    //   - Searching the UNFILTERED predecessors let a parallel that supplies NO value win the pairing:
+    //     two parallels feeding one merge, one fanning out guard conditions and one the real work — the
+    //     guard parallel matched first, every real branch fell into `extras`, and the same authored-order
+    //     reordering came back through the opposite door.
+    //
+    // Ranking by coverage subsumes both, and repairs a pre-existing weakness neither caused: a parallel
+    // whose `parallel_of` is a strict SUBSET of another's used to out-rank the exact match purely by
+    // being authored first, discarding the exact match's declared order.
+    const producing = (id: string): boolean => {
+      const type = typeById.get(id);
+      // An id with no node is unreachable — `preds` come from edges the validator already resolved — so
+      // treat it as producing rather than silently dropping a branch on a lookup miss. A phantom branch
+      // is a wrong answer; a dropped real branch is also one, and this must not invent one.
+      return type === undefined || producesValue(type);
+    };
+    let paired: ParallelNode | undefined;
+    let bestCover = 0;
+    for (const p of parallels) {
+      // `parallel_of` may name the MERGE ITSELF — the builder materializes that fan-out edge from
+      // `parallel_of`, so it never meets the explicit-edge validator — and a merge is never its own
+      // predecessor, so without this exemption that reachable, sanctioned shape could never pair.
+      if (
+        p.parallel_of.length === 0 ||
+        !p.parallel_of.every((m) => m === node.id || preds.has(m))
+      ) {
+        continue;
+      }
+      const cover = p.parallel_of.filter((m) => m !== node.id && producing(m)).length;
+      // Strictly greater, so the authored-FIRST parallel still wins a tie (the previous behaviour). A
+      // candidate that covers nothing never pairs at all: `bestCover` starts at 0.
+      if (cover > bestCover) {
+        paired = p;
+        bestCover = cover;
+      }
+    }
     let ordered: readonly string[];
     if (paired === undefined) {
       ordered = [...preds].sort(byAuthored);
     } else {
       const members = new Set(paired.parallel_of);
       const extras = [...preds].filter((m) => !members.has(m)).sort(byAuthored);
-      ordered = [...paired.parallel_of, ...extras];
+      // The merge's own id is dropped EXPLICITLY, not by the value filter: `producesValue('merge')` is
+      // true, so a merge listed in its own driving `parallel_of` would otherwise be a branch of itself.
+      ordered = [...paired.parallel_of.filter((m) => m !== node.id), ...extras];
     }
-    order.set(
-      node.id,
-      ordered.filter((id) => {
-        const type = typeById.get(id);
-        // An id with no node is unreachable — `preds` come from edges the validator already resolved —
-        // so KEEP it rather than silently dropping a branch on a lookup miss. A phantom branch is a wrong
-        // answer; a dropped real branch is also a wrong answer, and this arm must not invent one.
-        return type === undefined || producesValue(type);
-      }),
-    );
+    order.set(node.id, ordered.filter(producing));
   }
   return order;
 }

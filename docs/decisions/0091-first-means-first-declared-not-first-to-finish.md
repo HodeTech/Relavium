@@ -200,3 +200,33 @@ of the error is the point: each was a confident statement with a plausible argum
 Each of the three is pinned by a test that was break-verified against the specific mutation it exists to
 catch, and a fourth pins that the condition stays a **dependency** — dropped from the value list, not from
 the graph — because over-correcting here would let a join fire on a path that had not been decided.
+
+### Correction — 2026-09-03 (third pass): the pairing search, ranked rather than first-match
+
+The round that reviewed the correction above found that **the fix for §2 reintroduced §2's defect through
+the opposite door**, and the pair of failures is more instructive than either alone.
+
+- §2's fix moved the pairing search onto the **unfiltered** predecessors. That let a `parallel` supplying
+  **no value** win the pairing — two parallels feeding one merge, one fanning out guard `condition`s and
+  one the real work: the guard parallel matched first, every real branch fell into `extras`, and the
+  survivors came out in authored order again. Measured: `concat` returned `["B","C"]` where the author
+  declared `[c, b]`, exit 0.
+- Separately, `p.parallel_of.every(m => preds.has(m))` can **never** hold when `parallel_of` names the
+  merge itself — a merge is not its own predecessor — so the very shape the previous correction
+  established as reachable lost its pairing and fell to authored order too.
+
+Taking the first structural match was the common cause: it answers a question about the authored **graph**
+while the ordering it produces is applied to the **value** list. The search now **ranks candidates by how
+many value-producing predecessors they cover**, ties broken by authored order (so the previous
+authored-first behaviour is preserved wherever coverage is equal), a candidate covering nothing can never
+pair, and the merge's own id is exempt from the membership test and dropped from the ordered list
+explicitly — `producesValue('merge')` is true, so the value filter would otherwise make a merge a branch
+of itself. Ranking also repairs a pre-existing weakness neither version caused: a `parallel_of` that is a
+strict **subset** of another's used to out-rank the exact match purely by being authored first.
+
+**One further silent wrong answer, adjacent and now closed.** `parallel_of` had no uniqueness constraint,
+and the builder copies it verbatim into `branchNodeIds` — so a duplicated member put the branch's output
+into a `concat` array **twice** and shifted every `merge_fn` index after it, while the dependency graph
+de-duplicated and the node ran once, so nothing else disagreed. Refused at parse alongside the other
+authored-duplicate checks; `parallel_of: [a, a]` has no reading that means anything.
+
