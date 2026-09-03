@@ -53,7 +53,7 @@ the author is told their schema is "validated".
 | `pattern` | – | ✓ | see the warning below |
 | `format` | – | ✓ | only the listed values; **an unknown format is refused**, never ignored |
 | `minimum` / `maximum` | ✓ | ✓ | |
-| `exclusiveMinimum` / `exclusiveMaximum` | – | ✓ | in `lenient` an exclusive bound silently became an **inclusive** one |
+| `exclusiveMinimum` / `exclusiveMaximum` | – | ✓ | a **number**, per draft 2020-12. The draft-04 spelling (`exclusiveMinimum: true` beside a `minimum`) is **refused** in `strict` — loudly, rather than read as a bound of `1`. In `lenient` an exclusive bound silently became an **inclusive** one |
 | `multipleOf` | – | ✓ | must be > 0 |
 | `$schema` `$id` `$comment` `title` `description` `default` `examples` `deprecated` `readOnly` `writeOnly` | – | – | annotations; no validation semantics |
 | `$ref` `$dynamicRef` `oneOf` `anyOf` `allOf` `not` `if`/`then`/`else` `patternProperties` `dependencies` `dependentSchemas` `dependentRequired` `unevaluatedProperties` | ✗ | ✗ | |
