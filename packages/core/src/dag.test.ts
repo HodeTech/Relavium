@@ -1403,7 +1403,13 @@ describe('buildRunPlan — an unsupported `output_schema` is refused at parse', 
         kinds: issues.map((i) => i.kind),
         // The node id lives in the issue's `field` locator, not in its message — asserting on the joined
         // messages would have passed for the wrong reason had the locator ever been dropped.
-        message: issues.map((i) => i.message).join(' | '),
+        // The RAW error is included, not just the issue messages: a fixture that fails to PARSE throws a
+        // different error class with no issues, and a test asserting only on issue text then reports an
+        // empty array with no clue why. That cost me three wrong diagnoses on this very block.
+        message: [
+          err instanceof Error ? err.message : String(err),
+          ...issues.map((i) => i.message),
+        ].join(' | '),
         fields: issues.map((i) => i.field),
       };
     }
@@ -1443,6 +1449,60 @@ workflow:
   it('refuses an unsupported `format` rather than accepting it unchecked', () => {
     expect(build(wf('{ type: string, format: hostname }')).ok).toBe(false);
     expect(build(wf('{ type: string, format: email }')).ok).toBe(true);
+  });
+
+  it('all THREE declaration sites are reached — node, transform, and the resolved agent', () => {
+    // `outputSchemaMiss` completes the node when a schema did not compile, on the invariant that parse
+    // already refused every such schema. Nothing exercised the third site, so the invariant rested on
+    // reading the code. Each site gets the same unsupported schema and each must refuse.
+    // A malformed VALUE rather than a nested list: same refusal, and it keeps the inline-agent YAML in
+    // simple flow style so the fixture cannot fail for a reason unrelated to the schema.
+    const bad = "{ type: object, minProperties: 'two' }";
+    const transform = build(wf(bad));
+    expect(transform.ok).toBe(false);
+    expect(transform.kinds).toContain('invalid_output_schema');
+
+    const agentNode = `schema_version: '1.0'
+workflow:
+  id: os-agent
+  agents:
+    - { id: a1, model: m, provider: anthropic, system_prompt: 'x' }
+  nodes:
+    - { id: start, type: input }
+    - { id: n, type: agent, agent_ref: a1, output_schema: ${bad} }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: n }
+    - { from: n, to: out }
+`;
+    const onNode = build(agentNode);
+    expect(onNode.ok).toBe(false);
+    expect(onNode.kinds).toContain('invalid_output_schema');
+
+    // The agent's OWN schema, used when the node declares none — checked under the node that would use it.
+    const onAgent = `schema_version: '1.0'
+workflow:
+  id: os-inline
+  agents:
+    - id: a1
+      model: m
+      provider: anthropic
+      system_prompt: 'x'
+      output_schema:
+        type: object
+        minProperties: 'two'
+  nodes:
+    - { id: start, type: input }
+    - { id: n, type: agent, agent_ref: a1 }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: n }
+    - { from: n, to: out }
+`;
+    const viaAgent = build(onAgent);
+    expect(viaAgent.ok).toBe(false);
+    expect(viaAgent.kinds).toContain('invalid_output_schema');
+    expect(viaAgent.fields.join(' ')).toContain('agent output_schema');
   });
 
   it('never echoes an authored key', () => {

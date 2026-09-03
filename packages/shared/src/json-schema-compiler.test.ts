@@ -195,6 +195,46 @@ describe('strict mode — what it now genuinely ENFORCES', () => {
     expect(accepts(schema, { a: 'x', b: 'not-a-number' })).toBe(false);
   });
 
+  it('a `required` name with no `properties` entry obeys `additionalProperties`', () => {
+    // Adding such a name to the shape promotes it to a DECLARED property, which is how it escaped both
+    // forms: `.strict()` admitted it as known, and `.catchall(schema)` never typed it.
+    //
+    // With a SCHEMA, the name is typed by it.
+    const typed = { type: 'object', required: ['x'], additionalProperties: { type: 'number' } };
+    expect(accepts(typed, { x: 1 })).toBe(true);
+    expect(accepts(typed, { x: 'not-a-number' })).toBe(false);
+    // With `false`, JSON Schema makes the schema unsatisfiable — refused at parse rather than compiled
+    // into a validator no value can pass.
+    const impossible = strict({ type: 'object', required: ['x'], additionalProperties: false });
+    expect(impossible.ok).toBe(false);
+    expect(impossible.ok === false && impossible.reason).toContain('no value can satisfy');
+    expect(impossible.ok === false && impossible.reason).not.toContain('"x"');
+    // A DECLARED required name is unaffected.
+    expect(
+      accepts(
+        {
+          type: 'object',
+          properties: { x: { type: 'number' } },
+          required: ['x'],
+          additionalProperties: false,
+        },
+        { x: 1 },
+      ),
+    ).toBe(true);
+  });
+
+  it('lenient keeps its own behaviour for the same shapes', () => {
+    // The MCP boundary's contract is unchanged: a required-only name stays `z.unknown()` and neither
+    // form of `additionalProperties` reaches it.
+    expect(lenient({ type: 'object', required: ['x'], additionalProperties: false }).ok).toBe(true);
+    const r = lenient({
+      type: 'object',
+      required: ['x'],
+      additionalProperties: { type: 'number' },
+    });
+    expect(r.ok === true && r.schema.safeParse({ x: 'not-a-number' }).success).toBe(true);
+  });
+
   it('refuses a non-boolean, non-schema additionalProperties', () => {
     expect(strict({ type: 'object', additionalProperties: 'yes' }).ok).toBe(false);
   });

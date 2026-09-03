@@ -447,6 +447,17 @@ Severity is the review's verified rating. Check an item off in the PR that resol
       run — so this is a delivery artefact, not a durability breach.
       *(low · packages/core/src/engine/engine.ts; ADR-0036, ADR-0085)*
 
+## Phase 2.6.5 `W6` residuals — `CR-61` (`AgentSession`, 2026-09-03)
+
+- [ ] **An agent's `output_schema` is honoured on a workflow node and ignored by `AgentSession`.** `CR-61`
+  wired lowering-plus-enforcement on the `agent` node path (ADR-0092 §3/§4), but
+  `packages/core/src/engine/agent-session.ts` does not read `output_schema` at all — verified by grep, zero
+  occurrences — so `relavium chat` and `relavium agent run` neither lower it to `responseFormat` nor
+  validate the response. The **same agent definition therefore behaves differently depending on which
+  first-class entry point runs it**, which is the property [ADR-0024](../decisions/0024-agent-first-entry-point-agentsession.md)
+  exists to deny. Not widened here because wiring it is new behaviour on a shipping surface, not a doc fix.
+  *(M · packages/core/src/engine/agent-session.ts; agent-yaml-spec.md, agent-session-spec.md)*
+
 ## Phase 2.6.5 `W6` residuals — `CR-61` ([ADR-0092](../decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md), 2026-09-03)
 
 - [ ] **An authored `pattern` can hang the whole engine process, and no deadline can interrupt it.**

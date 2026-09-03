@@ -691,12 +691,27 @@ function rejectProtoKey(name: string): void {
 function addUntypedRequired(
   shape: Record<string, z.ZodTypeAny>,
   required: ReadonlySet<string>,
+  additional: AdditionalProps,
+  budget: Budget,
 ): string[] {
   const untyped: string[] = [];
   for (const name of required) {
     if (Object.hasOwn(shape, name)) continue;
     rejectProtoKey(name);
-    shape[name] = z.unknown();
+    // **What `additionalProperties` says about this name.** Adding it to the shape promotes it to a
+    // DECLARED property, which is how it used to escape both forms: `.strict()` then admitted it as known,
+    // and `.catchall(schema)` never applied the authored schema to it. Only `strict` mode changes here —
+    // `lenient` is the MCP boundary's contract.
+    if (budget.mode === 'strict' && additional.kind === 'strict') {
+      // JSON Schema makes this unsatisfiable: the name must be present, and `additionalProperties: false`
+      // forbids any property `properties` does not declare. Refused at parse rather than compiled into a
+      // validator no value can pass. The NAME is not echoed — it is authored text.
+      throw new UnsupportedSchemaError(
+        'a `required` name is not declared in `properties`, and `additionalProperties: false` forbids it — no value can satisfy this schema',
+      );
+    }
+    shape[name] =
+      budget.mode === 'strict' && additional.kind === 'schema' ? additional.schema : z.unknown();
     untyped.push(name);
   }
   return untyped;
@@ -716,6 +731,9 @@ function objectSchema(node: Record<string, unknown>, budget: Budget, depth: numb
     );
   }
   const required = readRequired(node, budget);
+  // Resolved BEFORE the shape is filled: a `required` name with no `properties` entry has to know what
+  // `additionalProperties` says about it, and deciding that afterwards is why it used to escape both forms.
+  const additional = additionalPropsMode(node, budget, depth);
   const shape: Record<string, z.ZodTypeAny> = {};
   for (const [name, propSchema] of propEntries) {
     rejectProtoKey(name);
@@ -727,10 +745,9 @@ function objectSchema(node: Record<string, unknown>, budget: Budget, depth: numb
   }
   // A `required` name not declared in `properties` (or any `required` when `properties` is omitted) is still
   // present-enforced per the JSON-Schema spec — added to the shape as `z.unknown()` here, presence enforced below.
-  const untypedRequired = addUntypedRequired(shape, required);
+  const untypedRequired = addUntypedRequired(shape, required, additional, budget);
   // Honor `additionalProperties`: `false` ⇒ reject unknown keys (`.strict()`); otherwise pass them through
   // (default JSON-Schema semantics) so the model may include extra keys the server's own schema permits.
-  const additional = additionalPropsMode(node, budget, depth);
   let built: z.ZodTypeAny;
   if (additional.kind === 'strict') {
     built = z.object(shape).strict();
@@ -793,11 +810,16 @@ function objectSchema(node: Record<string, unknown>, budget: Budget, depth: numb
  * (`strict` mode only — `lenient` deliberately never compiles a stranger's sub-schema for keys it is not
  * gating); anything else ⇒ pass them through, the default JSON-Schema semantics.
  */
+type AdditionalProps =
+  | { kind: 'strict' }
+  | { kind: 'passthrough' }
+  | { kind: 'schema'; schema: z.ZodTypeAny };
+
 function additionalPropsMode(
   node: Record<string, unknown>,
   budget: Budget,
   depth: number,
-): { kind: 'strict' } | { kind: 'passthrough' } | { kind: 'schema'; schema: z.ZodTypeAny } {
+): AdditionalProps {
   const additional = node['additionalProperties'];
   if (additional === false) return { kind: 'strict' };
   if (budget.mode === 'strict' && isPlainObject(additional)) {
