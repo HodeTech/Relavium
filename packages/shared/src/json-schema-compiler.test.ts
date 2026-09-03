@@ -283,6 +283,25 @@ describe('strict enforces a constraint that has no `type` beside it', () => {
     expect(accepts({ type: 'string', enum: ['a'] }, 'a')).toBe(true);
   });
 
+  it('costs the same budget as the `type`-array form expressing the same constraints', () => {
+    // `compileNode` charges one node for the node; this path builds up to FOUR sub-schemas from it, which
+    // is the work a `type: [a,b,c,d]` array does and `readTypes` charges `list.length` for. Left at one,
+    // the two paths disagreed about the same schema — the typeless form compiled under a bound that
+    // refused its typed twin.
+    const tiny: SchemaBounds = { ...BOUNDS, maxNodes: 3 };
+    const constraints = { minLength: 1, minimum: 1, minItems: 1, minProperties: 1 };
+    const typed = compileJsonSchemaToZod(
+      { type: ['string', 'number', 'array', 'object'], ...constraints },
+      tiny,
+      'strict',
+    );
+    const typeless = compileJsonSchemaToZod(constraints, tiny, 'strict');
+    expect(typed.ok).toBe(false);
+    expect(typeless.ok).toBe(false);
+    // …and one kind still fits, so the charge is proportional rather than a flat rejection.
+    expect(compileJsonSchemaToZod({ minLength: 1 }, tiny, 'strict').ok).toBe(true);
+  });
+
   it('routes by the VALUE kind, not by `typeof` alone', () => {
     // `typeof null === 'object'` and `typeof [] === 'object'`, so a naive dispatch sends both to the
     // object arm and reports a missing property on a null.

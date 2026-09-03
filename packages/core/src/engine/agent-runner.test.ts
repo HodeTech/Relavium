@@ -371,6 +371,26 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
     expect(outcome.kind === 'failed' && outcome.error.message).not.toContain('other');
   });
 
+  it('fails INTERNAL, not validation, when the schema could not be compiled', async () => {
+    // The agent twin of the transform case. Both call sites were changed identically to propagate
+    // `miss.code`, and only the transform one got a test — so a refactor that re-hardcoded `'validation'`
+    // here would have been caught on one path and not the other.
+    const exec = createAgentNodeExecutor(
+      deps(provider([{ type: 'text_delta', text: '{"status":"ok"}' }, STOP])),
+    );
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ output_schema: { oneOf: [{ type: 'string' }] } }),
+        resolvedAgent: AGENT,
+      }),
+    );
+    expect(await exec.execute(ctx)).toMatchObject({
+      kind: 'failed',
+      error: { code: 'internal', retryable: false },
+    });
+  });
+
   it('completes when the output conforms', async () => {
     const exec = createAgentNodeExecutor(
       deps(provider([{ type: 'text_delta', text: '{"status":"ok"}' }, STOP])),

@@ -446,13 +446,31 @@ function typelessConstrained(
   depth: number,
 ): z.ZodTypeAny | undefined {
   const has = (keys: readonly string[]): boolean => keys.some((k) => k in node);
+  // **Charged per KIND, before the work.** `compileNode` charges one node for this node, but this builds up
+  // to FOUR sub-schemas from it — the same multi-schema work a `type: [a, b, c, d]` array does, and
+  // `readTypes` charges `list.length` for that. Leaving it at one made the two paths disagree about the
+  // same schema: at `maxNodes: 3`, `{ type: ['string','number','array','object'], minLength, minimum,
+  // minItems, minProperties }` was refused while the typeless form expressing the identical constraint set
+  // compiled. Bounded (a flat ≤4×, since nested `items`/`properties` still recurse through `compileNode`
+  // and are charged there) — but a budget that two paths compute differently is not a budget.
+  const kinds = [
+    has(STRING_CONSTRAINTS),
+    has(NUMBER_CONSTRAINTS),
+    has(ARRAY_CONSTRAINTS),
+    has(OBJECT_CONSTRAINTS),
+  ].filter(Boolean).length;
+  if (kinds === 0) {
+    return undefined;
+  }
+  if ((budget.nodes += kinds) > budget.bounds.maxNodes) {
+    throw new UnsupportedSchemaError(
+      `schema exceeds the maximum of ${budget.bounds.maxNodes} nodes`,
+    );
+  }
   const str = has(STRING_CONSTRAINTS) ? stringSchema(node, budget) : undefined;
   const num = has(NUMBER_CONSTRAINTS) ? numberSchema(node, false, budget) : undefined;
   const arr = has(ARRAY_CONSTRAINTS) ? arraySchema(node, budget, depth) : undefined;
   const obj = has(OBJECT_CONSTRAINTS) ? objectSchema(node, budget, depth) : undefined;
-  if (str === undefined && num === undefined && arr === undefined && obj === undefined) {
-    return undefined;
-  }
   // Dispatched on the VALUE's kind rather than compiled as a union: a union would accept the value on any
   // arm that passes, and a catch-all arm for the unconstrained kinds would then swallow a real violation.
   return z.unknown().superRefine((value, ctx) => {
