@@ -81,6 +81,30 @@ describe('strict mode — what it now genuinely ENFORCES', () => {
     expect(Date.now() - started).toBeLessThan(500);
   });
 
+  it('the pipe composes with everything a pattern can sit inside', () => {
+    // `.pipe()` was added to make `maxLength` gate the regex, and it changes the compiled TYPE from a
+    // `ZodString` to a `ZodPipeline` — so every wrapper applied AFTER it (`.nullable()`, a union arm, an
+    // object property, an array element, an intersection with `enum`) is a place it could stop working.
+    // One test asserting the timing said nothing about any of them.
+    const P = { type: 'string', pattern: '^a+$' };
+    const cases: ReadonlyArray<readonly [unknown, unknown, boolean]> = [
+      [{ ...P, maxLength: 8 }, 'aaa', true],
+      [{ ...P, maxLength: 8 }, 'bbb', false],
+      [{ ...P, nullable: true }, null, true],
+      [{ ...P, nullable: true }, 'zzz', false],
+      [{ type: ['string', 'null'], pattern: '^a+$' }, null, true],
+      [{ type: ['string', 'null'], pattern: '^a+$' }, 'zzz', false],
+      [{ type: 'object', properties: { a: P }, required: ['a'] }, { a: 'aa' }, true],
+      [{ type: 'object', properties: { a: P }, required: ['a'] }, { a: 'zz' }, false],
+      [{ type: 'array', items: P }, ['zz'], false],
+      [{ ...P, enum: ['aa', 'bb'] }, 'bb', false],
+      [{ ...P, minLength: 2 }, 'a', false],
+    ];
+    for (const [schema, value, want] of cases) {
+      expect({ schema, value, ok: accepts(schema, value) }).toEqual({ schema, value, ok: want });
+    }
+  });
+
   it('accepts an ECMA-262 pattern that unicode mode alone would refuse', () => {
     // JSON Schema defines `pattern` as ECMA-262. `a\-b` — an identity escape outside a character class —
     // is legal there and a syntax error under the `u` flag, so compiling with `u` only refused ordinary
