@@ -69,6 +69,89 @@ function rejectOverSizedString(value: string, what: string, limit: number): void
   }
 }
 
+/**
+ * Which contract the schema is compiled under.
+ *
+ * - `lenient` — the **denylist** the MCP boundary has always used. A construct on {@link UNSUPPORTED_KEYS}
+ *   fails the schema closed; anything else unrecognised is ignored, and `pattern`/`format` are accepted but
+ *   **not enforced** (no untrusted regex is ever compiled — the ReDoS surface stays zero, and the server
+ *   validates server-side anyway).
+ * - `strict` — the **allowlist** for AUTHORED schemas
+ *   ([ADR-0092](../../../docs/decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md) §2).
+ *   Every validation-affecting keyword is either genuinely enforced or refused at parse, so a construct
+ *   nobody implemented can never be silently ignored again. A malformed value for a supported keyword is
+ *   refused too: `minLength: "5"` fails rather than passing unenforced.
+ *
+ * The difference is not a strictness dial, it is *whose* schema it is. `lenient` describes something a
+ * hostile stranger sent us and we are gating; `strict` describes something the author wrote and expects to
+ * mean what it says. Calling `output_schema` "validated" while quietly ignoring its `pattern` was false for
+ * exactly the schemas an author writes to be precise.
+ */
+export type CompileMode = 'lenient' | 'strict';
+
+/**
+ * Keywords `strict` mode accepts. Anything outside this list is REFUSED — that is the whole point of the
+ * mode, and the reason it is a list rather than a set of `if`s scattered through the walk.
+ *
+ * The annotation group carries no validation semantics and is accepted-and-ignored; every other entry is
+ * genuinely enforced somewhere below. Adding a keyword here without implementing it would silently
+ * reintroduce the defect this mode exists to remove.
+ */
+const STRICT_ALLOWED_KEYS: ReadonlySet<string> = new Set([
+  // Annotations — no validation semantics.
+  '$schema',
+  '$id',
+  '$comment',
+  'title',
+  'description',
+  'default',
+  'examples',
+  'deprecated',
+  'readOnly',
+  'writeOnly',
+  // Shape and value constraints, all enforced.
+  'type',
+  'nullable',
+  'enum',
+  'const',
+  'properties',
+  'required',
+  'additionalProperties',
+  'minProperties',
+  'maxProperties',
+  'items',
+  'minItems',
+  'maxItems',
+  'uniqueItems',
+  'minLength',
+  'maxLength',
+  'pattern',
+  'format',
+  'minimum',
+  'maximum',
+  'exclusiveMinimum',
+  'exclusiveMaximum',
+  'multipleOf',
+]);
+
+/**
+ * The `format` values `strict` mode enforces. An UNKNOWN format is refused rather than ignored: silently
+ * accepting `format: "ipv6"` and not checking it is precisely the accepted-but-not-enforced shape ADR-0092
+ * exists to remove, and it would be invisible to the author.
+ */
+const STRICT_FORMATS: ReadonlySet<string> = new Set([
+  'email',
+  'uuid',
+  'uri',
+  'url',
+  'date-time',
+  'date',
+  'time',
+  'duration',
+  'ipv4',
+  'ipv6',
+]);
+
 /** The result of compiling a JSON Schema: a usable Zod validator, or a fail-closed reason. */
 export type CompileResult =
   | { readonly ok: true; readonly schema: z.ZodTypeAny }
@@ -85,6 +168,7 @@ class UnsupportedSchemaError extends Error {}
 interface Budget {
   nodes: number;
   readonly bounds: SchemaBounds;
+  readonly mode: CompileMode;
 }
 
 /** Constructs that are out of the supported subset; their presence fails the whole schema closed. */
@@ -126,8 +210,12 @@ function isJsonScalar(value: unknown): value is JsonScalar {
  * malformed shape, or budget overrun returns `{ ok: false, reason }` so the caller drops the tool at
  * discovery rather than admitting it unvalidated.
  */
-export function compileJsonSchemaToZod(input: unknown, bounds: SchemaBounds): CompileResult {
-  const budget: Budget = { nodes: 0, bounds };
+export function compileJsonSchemaToZod(
+  input: unknown,
+  bounds: SchemaBounds,
+  mode: CompileMode = 'lenient',
+): CompileResult {
+  const budget: Budget = { nodes: 0, bounds, mode };
   try {
     return { ok: true, schema: compileNode(input, budget, 0) };
   } catch (err) {
@@ -162,6 +250,17 @@ function compileNode(node: unknown, budget: Budget, depth: number): z.ZodTypeAny
   for (const key of UNSUPPORTED_KEYS) {
     if (key in node) {
       throw new UnsupportedSchemaError(`unsupported JSON-Schema construct: "${key}"`);
+    }
+  }
+  if (budget.mode === 'strict') {
+    for (const key of Object.keys(node)) {
+      if (!STRICT_ALLOWED_KEYS.has(key)) {
+        // The keyword is NAMED, because the author wrote it and needs to know which one to remove. It is a
+        // JSON-Schema keyword, never an authored value, so naming it leaks nothing (errors.ts's rule).
+        throw new UnsupportedSchemaError(
+          `unsupported keyword "${key}" — an \`output_schema\` may only use the documented subset (json-schema-subset.md)`,
+        );
+      }
     }
   }
 
@@ -259,11 +358,11 @@ function compileTyped(
 ): z.ZodTypeAny {
   switch (type) {
     case 'string':
-      return stringSchema(node);
+      return stringSchema(node, budget);
     case 'integer':
-      return numberSchema(node, true);
+      return numberSchema(node, true, budget);
     case 'number':
-      return numberSchema(node, false);
+      return numberSchema(node, false, budget);
     case 'boolean':
       return z.boolean();
     case 'null':
@@ -277,24 +376,137 @@ function compileTyped(
   }
 }
 
-/** A string. `minLength`/`maxLength` (safe integers) are honored; `pattern`/`format` are deliberately NOT
- *  compiled (no untrusted-regex ReDoS surface) — the value is accepted and the server validates it. */
-function stringSchema(node: Record<string, unknown>): z.ZodTypeAny {
+/**
+ * A string. `minLength`/`maxLength` are honored in both modes.
+ *
+ * `pattern`/`format` split on the mode, and the split is the threat model rather than a preference. In
+ * `lenient` they are accepted and NOT compiled — the schema came from a possibly-hostile server, so
+ * compiling its regex would hand it a ReDoS lever, and the server validates its own input anyway. In
+ * `strict` they are ENFORCED: an authored pattern is the author's own, and accepting it while quietly not
+ * checking it made "validated" false for exactly the schemas someone writes to be precise.
+ */
+function stringSchema(node: Record<string, unknown>, budget: Budget): z.ZodTypeAny {
   let schema = z.string();
-  const min = node['minLength'];
-  const max = node['maxLength'];
-  if (typeof min === 'number' && Number.isInteger(min) && min >= 0) schema = schema.min(min);
-  if (typeof max === 'number' && Number.isInteger(max) && max >= 0) schema = schema.max(max);
+  const min = readBound(node, 'minLength', budget, { integer: true, nonNegative: true });
+  const max = readBound(node, 'maxLength', budget, { integer: true, nonNegative: true });
+  if (min !== undefined) schema = schema.min(min);
+  if (max !== undefined) schema = schema.max(max);
+  if (budget.mode !== 'strict') {
+    return schema;
+  }
+  const pattern = node['pattern'];
+  if (pattern !== undefined) {
+    if (typeof pattern !== 'string') {
+      throw new UnsupportedSchemaError('`pattern` must be a string');
+    }
+    rejectOverSizedString(pattern, 'a `pattern`', budget.bounds.maxStringBytes);
+    let compiled: RegExp;
+    try {
+      compiled = new RegExp(pattern, 'u');
+    } catch {
+      // The pattern text is NOT echoed — it is an authored value, and a message never carries one.
+      throw new UnsupportedSchemaError('`pattern` is not a valid regular expression');
+    }
+    schema = schema.regex(compiled);
+  }
+  const format = node['format'];
+  if (format !== undefined) {
+    if (typeof format !== 'string') {
+      throw new UnsupportedSchemaError('`format` must be a string');
+    }
+    if (!STRICT_FORMATS.has(format)) {
+      // Refused, not ignored. Accepting `format: "ipv6"` and never checking it is the accepted-but-not-
+      // enforced shape this mode exists to remove, and the author would never see that it did nothing.
+      throw new UnsupportedSchemaError(`unsupported \`format\`: "${format}"`);
+    }
+    schema = applyFormat(schema, format);
+  }
   return schema;
 }
 
-/** A number/integer. `minimum`/`maximum` (finite numbers) are honored. */
-function numberSchema(node: Record<string, unknown>, integer: boolean): z.ZodTypeAny {
+/** Apply one of {@link STRICT_FORMATS}. Every member is handled; the `never` arm makes that a compile error
+ *  if a value is added to the set without an implementation here. */
+function applyFormat(schema: z.ZodString, format: string): z.ZodString {
+  switch (format) {
+    case 'email':
+      return schema.email();
+    case 'uuid':
+      return schema.uuid();
+    case 'uri':
+    case 'url':
+      return schema.url();
+    case 'date-time':
+      return schema.datetime({ offset: true });
+    case 'date':
+      return schema.date();
+    case 'time':
+      return schema.time();
+    case 'duration':
+      return schema.duration();
+    case 'ipv4':
+      return schema.ip({ version: 'v4' });
+    case 'ipv6':
+      return schema.ip({ version: 'v6' });
+    default:
+      throw new UnsupportedSchemaError(`unsupported \`format\`: "${format}"`);
+  }
+}
+
+/**
+ * Read a numeric keyword, honoring the mode's contract about a MALFORMED value.
+ *
+ * In `lenient` a wrong-typed bound is ignored, which is what the MCP boundary has always done — the schema
+ * is a stranger's and the constraint is theirs to enforce. In `strict` it is REFUSED: `minLength: "5"` was
+ * silently unenforced, so an author who mistyped a bound got a validator that did not check it and no
+ * indication anywhere that their constraint had been dropped.
+ */
+function readBound(
+  node: Record<string, unknown>,
+  key: string,
+  budget: Budget,
+  rules: { integer?: boolean; nonNegative?: boolean; positive?: boolean } = {},
+): number | undefined {
+  const raw = node[key];
+  if (raw === undefined) return undefined;
+  const bad =
+    typeof raw !== 'number' ||
+    !Number.isFinite(raw) ||
+    (rules.integer === true && !Number.isInteger(raw)) ||
+    (rules.nonNegative === true && raw < 0) ||
+    (rules.positive === true && raw <= 0);
+  if (!bad) return raw;
+  if (budget.mode === 'strict') {
+    throw new UnsupportedSchemaError(
+      `\`${key}\` must be a ${rules.integer === true ? 'non-negative integer' : 'finite number'}`,
+    );
+  }
+  return undefined;
+}
+
+/**
+ * A number/integer. `minimum`/`maximum` are honored in both modes; `exclusiveMinimum`/`exclusiveMaximum`
+ * and `multipleOf` are enforced in `strict` only — they were accepted and ignored, so a schema declaring
+ * an exclusive bound got an INCLUSIVE one and never said so.
+ */
+function numberSchema(
+  node: Record<string, unknown>,
+  integer: boolean,
+  budget: Budget,
+): z.ZodTypeAny {
   let schema = integer ? z.number().int() : z.number();
-  const min = node['minimum'];
-  const max = node['maximum'];
-  if (typeof min === 'number' && Number.isFinite(min)) schema = schema.min(min);
-  if (typeof max === 'number' && Number.isFinite(max)) schema = schema.max(max);
+  const min = readBound(node, 'minimum', budget);
+  const max = readBound(node, 'maximum', budget);
+  if (min !== undefined) schema = schema.min(min);
+  if (max !== undefined) schema = schema.max(max);
+  if (budget.mode !== 'strict') {
+    return schema;
+  }
+  const exclusiveMin = readBound(node, 'exclusiveMinimum', budget);
+  const exclusiveMax = readBound(node, 'exclusiveMaximum', budget);
+  if (exclusiveMin !== undefined) schema = schema.gt(exclusiveMin);
+  if (exclusiveMax !== undefined) schema = schema.lt(exclusiveMax);
+  const multipleOf = readBound(node, 'multipleOf', budget, { positive: true });
+  if (multipleOf !== undefined) schema = schema.multipleOf(multipleOf);
   return schema;
 }
 
@@ -357,15 +569,23 @@ function objectSchema(node: Record<string, unknown>, budget: Budget, depth: numb
   const untypedRequired = addUntypedRequired(shape, required);
   // Honor `additionalProperties`: `false` ⇒ reject unknown keys (`.strict()`); otherwise pass them through
   // (default JSON-Schema semantics) so the model may include extra keys the server's own schema permits.
-  const built =
-    additionalPropsMode(node) === 'strict'
-      ? z.object(shape).strict()
-      : z.object(shape).passthrough();
-  if (untypedRequired.length === 0) {
-    return built;
+  const additional = additionalPropsMode(node, budget, depth);
+  let built: z.ZodTypeAny;
+  if (additional.kind === 'strict') {
+    built = z.object(shape).strict();
+  } else if (additional.kind === 'schema') {
+    // `additionalProperties: <schema>` TYPES the extra values. In `lenient` this was treated as merely
+    // "allowed" and passed through untyped — accepted, not enforced — so a schema that constrained its
+    // extra values got no constraint at all.
+    built = z.object(shape).catchall(additional.schema);
+  } else {
+    built = z.object(shape).passthrough();
   }
-  return built.superRefine((value, ctx) => {
-    for (const name of untypedRequired) {
+  const minProps = readBound(node, 'minProperties', budget, { integer: true, nonNegative: true });
+  const maxProps = readBound(node, 'maxProperties', budget, { integer: true, nonNegative: true });
+  const checks: Array<(value: Record<string, unknown>, ctx: z.RefinementCtx) => void> = [];
+  for (const name of untypedRequired) {
+    checks.push((value, ctx) => {
       if (!Object.hasOwn(value, name)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -373,15 +593,59 @@ function objectSchema(node: Record<string, unknown>, budget: Budget, depth: numb
           path: [name],
         });
       }
+    });
+  }
+  if (budget.mode === 'strict' && minProps !== undefined) {
+    checks.push((value, ctx) => {
+      const count = Object.keys(value).length;
+      if (count < minProps) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `object has ${count} properties, below the minimum of ${minProps}`,
+        });
+      }
+    });
+  }
+  if (budget.mode === 'strict' && maxProps !== undefined) {
+    checks.push((value, ctx) => {
+      const count = Object.keys(value).length;
+      if (count > maxProps) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `object has ${count} properties, above the maximum of ${maxProps}`,
+        });
+      }
+    });
+  }
+  if (checks.length === 0) {
+    return built;
+  }
+  return built.superRefine((value: Record<string, unknown>, ctx) => {
+    for (const check of checks) {
+      check(value, ctx);
     }
   });
 }
 
-function additionalPropsMode(node: Record<string, unknown>): 'strict' | 'passthrough' {
+/**
+ * How `additionalProperties` is realised. `false` ⇒ reject unknown keys; a SCHEMA ⇒ type the extra values
+ * (`strict` mode only — `lenient` deliberately never compiles a stranger's sub-schema for keys it is not
+ * gating); anything else ⇒ pass them through, the default JSON-Schema semantics.
+ */
+function additionalPropsMode(
+  node: Record<string, unknown>,
+  budget: Budget,
+  depth: number,
+): { kind: 'strict' } | { kind: 'passthrough' } | { kind: 'schema'; schema: z.ZodTypeAny } {
   const additional = node['additionalProperties'];
-  // A *schema* for additionalProperties (an object) is treated as "allowed" (passthrough) — we do not type
-  // the extra values, but we never reject them. Only an explicit `false` strictens.
-  return additional === false ? 'strict' : 'passthrough';
+  if (additional === false) return { kind: 'strict' };
+  if (budget.mode === 'strict' && isPlainObject(additional)) {
+    return { kind: 'schema', schema: compileNode(additional, budget, depth + 1) };
+  }
+  if (budget.mode === 'strict' && additional !== undefined && additional !== true) {
+    throw new UnsupportedSchemaError('`additionalProperties` must be a boolean or a schema object');
+  }
+  return { kind: 'passthrough' };
 }
 
 function readRequired(node: Record<string, unknown>, budget: Budget): Set<string> {
@@ -420,11 +684,52 @@ function arraySchema(node: Record<string, unknown>, budget: Budget, depth: numbe
     element = compileNode(items, budget, depth + 1);
   }
   let schema = z.array(element);
-  const min = node['minItems'];
-  const max = node['maxItems'];
-  if (typeof min === 'number' && Number.isInteger(min) && min >= 0) schema = schema.min(min);
-  if (typeof max === 'number' && Number.isInteger(max) && max >= 0) schema = schema.max(max);
-  return schema;
+  const min = readBound(node, 'minItems', budget, { integer: true, nonNegative: true });
+  const max = readBound(node, 'maxItems', budget, { integer: true, nonNegative: true });
+  if (min !== undefined) schema = schema.min(min);
+  if (max !== undefined) schema = schema.max(max);
+  if (budget.mode !== 'strict') {
+    return schema;
+  }
+  const unique = node['uniqueItems'];
+  if (unique !== undefined && typeof unique !== 'boolean') {
+    throw new UnsupportedSchemaError('`uniqueItems` must be a boolean');
+  }
+  if (unique !== true) {
+    return schema;
+  }
+  // Structural equality by canonical JSON: JSON-Schema uniqueness is by VALUE, so `[{a:1},{a:1}]` is a
+  // duplicate while a `Set` of references would call it unique. Object key order is normalised so
+  // `{a:1,b:2}` and `{b:2,a:1}` are the same member, which is what the spec means by equal.
+  return schema.superRefine((items, ctx) => {
+    const seen = new Set<string>();
+    items.forEach((item, index) => {
+      const key = canonicalJson(item);
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `duplicate item at index ${index} — \`uniqueItems\` is true`,
+          path: [index],
+        });
+        return;
+      }
+      seen.add(key);
+    });
+  });
+}
+
+/** A value's canonical JSON form — object keys sorted — so structural equality is a string comparison. */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value) ?? 'undefined';
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(',')}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
 }
 
 function literalSchema(value: unknown, bounds: SchemaBounds): z.ZodTypeAny {
