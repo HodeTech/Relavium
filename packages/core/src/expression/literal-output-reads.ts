@@ -144,11 +144,10 @@ function rebindsRun(code: string): boolean {
  * template key (`run.outputs[`${x}`]`) or a computed one (`run.outputs[k]`) matches nothing, which is the
  * point — those are the cases the scan deliberately cannot tell about.
  *
- * **The `(?<![.?\w$])` lookbehind is load-bearing, not tidiness.** A plain `\brun` matches the `run` in
- * `foo.run.outputs["x"]` — a member expression on some OTHER object, which an author can reach through
- * `inputs`/`ctx` — and refusing that is a FALSE REFUSAL, the one failure mode this scan must not have.
- * Optional chaining (`run?.outputs?.["x"]`) is accepted because it is the same literal access written
- * another way; not accepting it would be a silent gap in enforcement rather than an unsafe guess.
+ * The base must be a FREE `run`, not a property of something else — see {@link isFreeRunReference}, which
+ * decides that rather than the pattern. Optional chaining (`run?.outputs?.["x"]`) is accepted because it
+ * is the same literal access written another way; not accepting it would be a silent gap in enforcement
+ * rather than an unsafe guess.
  */
 const BRACKET_ACCESS = /(?<![.?\w$])run\s*\??\.\s*outputs\s*\??\.?\s*\[\s*(['"])([^'"\\]*)\1\s*\]/g;
 
@@ -157,6 +156,38 @@ const BRACKET_ACCESS = /(?<![.?\w$])run\s*\??\.\s*outputs\s*\??\.?\s*\[\s*(['"])
  * unreachable this way in JavaScript anyway (`run.outputs.my-node` is a subtraction, not an access).
  */
 const DOT_ACCESS = /(?<![.?\w$])run\s*\??\.\s*outputs\s*\??\.\s*([A-Za-z_$][A-Za-z0-9_$]*)/g;
+
+/**
+ * Is the `run` at `index` a FREE reference to the sandbox global, rather than a property of some other
+ * object? `foo.run.outputs["x"]` reads a nested field of foreign data — naming it is a false refusal.
+ *
+ * **A backward walk, not a lookbehind, because JavaScript allows whitespace and comments between the `.`
+ * and the property name.** A single-character lookbehind saw only what sits immediately before `run`, so
+ * `a . run.outputs["x"]`, `a ?. run.outputs["x"]`, `a./*c*&#47;run.outputs["x"]`, `a["k"] . run…` and
+ * `this . run…` all slipped through as scope reads — five shapes, all valid member accesses on something
+ * else. Skipping masked characters is what covers the comment case: the comment is already NUL here, and
+ * skipping it lands the walk on the `.` that must reject.
+ *
+ * Whitespace-only or a leading position means a free reference, which is the accepting answer.
+ */
+function isFreeRunReference(mask: string, index: number): boolean {
+  let i = index - 1;
+  while (i >= 0) {
+    const ch = mask[i];
+    if (ch === undefined) {
+      return true;
+    }
+    // NUL is a masked literal or comment; whitespace is whitespace. Neither ends the member expression.
+    if (ch === NUL || /\s/.test(ch)) {
+      i -= 1;
+      continue;
+    }
+    // `.` / `?` mean this is a property access; a word char or `$` means `run` is part of a longer
+    // identifier that the `\b` should have excluded but a masked neighbour could confuse.
+    return !(ch === '.' || ch === '?' || /[\w$]/.test(ch));
+  }
+  return true;
+}
 
 /**
  * Every literal `run.outputs` access in `expression`, de-duplicated, in first-appearance order.
@@ -180,7 +211,13 @@ export function literalOutputReads(expression: string): readonly LiteralOutputRe
     let match = pattern.exec(expression);
     while (match !== null) {
       const id = match[group];
-      if (id !== undefined && id !== '' && mask[match.index] !== NUL && !seen.has(id)) {
+      if (
+        id !== undefined &&
+        id !== '' &&
+        mask[match.index] !== NUL &&
+        isFreeRunReference(mask, match.index) &&
+        !seen.has(id)
+      ) {
         seen.add(id);
         reads.push({ id, form });
       }

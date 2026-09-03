@@ -29,6 +29,22 @@ describe('literalOutputReads — what it SEES', () => {
     expect(ids('run?.outputs?.gate')).toEqual(['gate']);
   });
 
+  it('does NOT match a member access separated by whitespace or a comment', () => {
+    // A single-character lookbehind saw only what sits immediately before `run`, and JavaScript allows
+    // whitespace and comments between the `.` and the property name. Five valid member accesses on
+    // OTHER objects slipped through as scope reads. The anchoring is a backward walk now.
+    expect(ids('a . run.outputs["x"]')).toEqual([]);
+    expect(ids('a ?. run.outputs["x"]')).toEqual([]);
+    expect(ids('a./*c*/run.outputs["x"]')).toEqual([]);
+    expect(ids('a["k"] . run.outputs["x"]')).toEqual([]);
+    expect(ids('this . run.outputs["x"]')).toEqual([]);
+    expect(ids('a\n . run.outputs["x"]')).toEqual([]);
+    // …while a genuine read separated from an operator by the same whitespace is still found.
+    expect(ids('1 + run.outputs["ok"]')).toEqual(['ok']);
+    expect(ids('"s" + run.outputs["ok"]')).toEqual(['ok']);
+    expect(ids('  run.outputs["ok"]')).toEqual(['ok']);
+  });
+
   it('does NOT match `run.outputs` on another object — the one false-refusal shape', () => {
     // `\brun` matched the `run` in `foo.run.outputs["x"]`, and an author can reach such an object through
     // `inputs` or `ctx`. Refusing it would break a workflow for a read that is not there — precisely the

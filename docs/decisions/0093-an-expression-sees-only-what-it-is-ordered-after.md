@@ -106,7 +106,7 @@ value that does not exist yet is a wrong answer that looks like a right one.
 ## Amendment — 2026-09-03: what the scan actually refuses, and what it cannot see
 
 The review of the implementing commit found **five separate mechanisms by which the scan produced a FALSE
-REFUSAL** — the one failure mode §2's whole argument rests on not having. §2 says "where it cannot tell, it
+REFUSAL**, and probing the fix for those five turned up a sixth of the same kind — the one failure mode §2's whole argument rests on not having. §2 says "where it cannot tell, it
 says nothing — it never guesses", and that sentence was true of the design and false of the code. It was
 asserted in three places at once (this ADR, the module docblock, the commit message) and pinned by no test
 that could fail. The claim is now made true rather than softened.
@@ -115,7 +115,8 @@ Each mechanism is closed by **abandoning the scan**, never by lexing harder:
 
 | shape | why it produced a false find | now |
 | --- | --- | --- |
-| `foo.run.outputs["x"]` | `\b` matches after `.`, so a `run` property on any other object read as the scope's | anchored with a lookbehind |
+| `foo.run.outputs["x"]` | `\b` matches after `.`, so a `run` property on any other object read as the scope's | anchored (see the row below) |
+| `a . run.outputs["x"]`, `a ?. run…`, `a./*c*/run…`, `a["k"] . run…`, `this . run…` | the anchor was a single-character lookbehind, and JavaScript allows whitespace and comments between the `.` and the property name — five more valid member accesses on other objects | anchored by a BACKWARD WALK over whitespace and masked characters |
 | `((run) => run.outputs["x"])(…)` | a parameter/destructure named `run` shadows the scope | any `run` not followed by `.`/`?.` ⇒ whole expression unscanned |
 | `` `a ${ `run.outputs["x"]` } b` `` | backticks paired FLAT, so a nested template's text stayed "code" | a `${` inside a template ⇒ abandon |
 | `/["]/` twice | a regex with an odd quote count shifts every later string boundary; a second restores parity, so the mask terminates cleanly around fabricated code | any `/` that is not `//` or `/*` ⇒ abandon |
