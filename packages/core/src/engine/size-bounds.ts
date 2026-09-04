@@ -1,6 +1,10 @@
 /**
  * Size bounds at the durable boundary (`CR-32`,
- * [ADR-0086](../../../../docs/decisions/0086-absolute-admission-ceilings-on-authored-values.md)).
+ * [ADR-0087](../../../../docs/decisions/0087-consumed-streams-size-bounds-and-run-retention.md) §2).
+ *
+ * **The ADR is 0087, not 0086.** This file was written before its decision was recorded and pointed at the
+ * ceilings ADR it merged beside; ADR-0086 governs ADMISSION ceilings on authored values and says nothing
+ * about these three runtime bounds. Corrected 2026-09-04, when ADR-0087 was accepted.
  *
  * Three quantities were unbounded, and each fails differently when it grows: a single node's output (held in
  * memory for the whole run and re-serialised into every downstream template), the SUM of every node's output
@@ -17,7 +21,7 @@
  * ceiling here ([ADR-0036](../../../../docs/decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)),
  * and [ADR-0078](../../../../docs/decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §6 already
  * narrows `#emitDurable`'s totality to the terminal arm for the same reason. A terminal event is therefore
- * measured but never refused — see {@link measureDraft}.
+ * **exempt** — see {@link measureDraft}.
  */
 
 import { utf8ByteLength } from '../tools/bounding.js';
@@ -70,10 +74,15 @@ export function serialisedByteLength(value: unknown): number | undefined {
  * **This is the difference between bounding the durable boundary and bounding something that never reaches
  * it**, and getting it wrong broke every media-producing node. A node that generates an image returns
  * `{ kind: 'base64', data }` in flight; `deInlineMedia` replaces that with a `media://sha256-…` handle of
- * about a hundred bytes before anything is persisted or delivered, and `state.output` keeps the raw form only
- * because the de-inline is non-mutating. Measuring the raw form therefore failed a 200 KiB image against a
+ * about a hundred bytes before anything is persisted or delivered. Measuring the raw form therefore failed a 200 KiB image against a
  * 256 KiB "durable event" bound whose real payload was ~100 bytes — with a `validation` error the author
  * could not act on, because they cannot make a model return fewer bytes.
+ *
+ * **`state.output` no longer keeps the raw form**, and this comment said it did for two waves. Since `W5`'s
+ * `CR-54` the pin runs at the dispatch boundary and `#settleCompleted` writes the PINNED value into `#states`,
+ * so state, downstream templates and the durable event all hold the handle (ADR-0087 §3, Correction 7). The
+ * replacer still earns its place: it measures a value that has not been through the pin — a run with no
+ * `MediaStore`, where the emit choke point makes the refusal one step later.
  *
  * The substitute is a fixed-length stand-in rather than the real digest: the handle's length is constant
  * (`media://` + a hex sha256), the value is not known until the store writes it, and a size estimate does not
@@ -172,8 +181,11 @@ export function measureWorkflowState(totalBytes: number): SizeBreach | undefined
 /**
  * Measure one durable event against {@link SIZE_BOUNDS.durableEventBytes}.
  *
- * **A terminal draft is measured and never refused**, and that is not a softening — it is the invariant every
- * other rule here defers to. A run that cannot publish its terminal is worse in every way than one that wrote
+ * **A terminal draft is EXEMPT: not measured, and never refused.** That is not a softening — it is the
+ * invariant every other rule here defers to. (This doc and ADR-0087 §2 both said "measured and never refused"
+ * until 2026-09-04. The function returns before it measures, so nothing was measured and nothing reported;
+ * `exempt` is the word that matches the code. See ADR-0087's Correction 4.) A run that cannot publish its
+ * terminal is worse in every way than one that wrote
  * an oversized final event: the stream never closes, the lease is never released, and no surface can tell
  * whether the run finished. ADR-0078 §6 draws the same line for a store fault, for the same reason.
  *

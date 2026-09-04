@@ -4318,10 +4318,14 @@ export class WorkflowEngine {
   readonly #runs = new Map<string, RunExecution>();
   /**
    * Settled run ids in settle order — `CR-33`'s retention queue
-   * ([ADR-0086](../../../docs/decisions/0086-absolute-admission-ceilings-on-authored-values.md)).
+   * ([ADR-0087](../../../docs/decisions/0087-consumed-streams-size-bounds-and-run-retention.md) §4; this
+   * pointed at ADR-0086 until 2026-09-04, which governs admission ceilings and not this).
    *
-   * **Count-based rather than age-based, and that is the decision.** An age policy needs a clock, and a
-   * clock in `packages/core` means a new host seam for a bound that a count expresses exactly as well —
+   * **Count-based rather than age-based, and that is the decision** — but not for the reason first written
+   * here. An earlier version of this comment (and ADR-0087 §4 itself) argued that an age policy "needs a
+   * clock, and a clock in `packages/core` is a new host seam". That was false: `ExecutionHost.clock` has
+   * existed since ADR-0036 and this file reads it for lease expiry, gate deadlines, media-job deadlines and
+   * every event timestamp. The reasons that survive are the ones that were always the real ones —
    * "the last N runs stay addressable" is a promise a caller can reason about, where "runs younger than T"
    * depends on how busy the process was. It also makes the eviction deterministic, so a test asserts it
    * rather than waiting for one.

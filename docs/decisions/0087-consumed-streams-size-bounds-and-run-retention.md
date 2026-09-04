@@ -1,6 +1,6 @@
 # ADR-0087: A stream is bounded by whether anyone reads it; outputs and events are bounded by size; finished runs are bounded by count
 
-- **Status**: Proposed
+- **Status**: Accepted — 2026-09-04, with the nine dated corrections recorded below (Proposed 2026-08-29; it merged unapproved, and a review refused acceptance until the corrections existed)
 - **Date**: 2026-08-29
 - **Decides**: `CR-32` and `CR-33` of [Phase 2.6.5](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md)
   (`W3`), plus the stream-consumption question `CR-30` uncovered and could not answer within
@@ -12,6 +12,114 @@
   handle) · [ADR-0078](0078-ordered-durable-append-and-the-terminal-outbox.md) §6 (what `#emitDurable` owes) ·
   [ADR-0086](0086-absolute-admission-ceilings-on-authored-values.md) (the authored-value ceilings this sits
   beside) · [sse-event-schema.md](../reference/contracts/sse-event-schema.md)
+- **Amends (a refinement, not a reversal)**: [ADR-0042](0042-engine-media-storage-substrate-mediastore-deinline-retention.md)
+  §2 — that ADR pins `deInlineMedia` at `#emitDurable` as the sole emit-time transform; §3 below moves the
+  transform for a node's OUTPUT earlier, to the node boundary, so state and log hold the same value. ADR-0042's
+  own invariant (a persisted event carries handles, never bytes) is untouched, so it keeps its Status and gains
+  a dated amendment note. It was listed only as *Related* while this ADR was Proposed; that undersold it.
+- **Implementation**: **partial, and stated rather than implied.** §2 (the three size bounds) and §4 (count-based
+  retention) shipped in `W3`. §3 (media normalised once, at the node boundary) shipped in `W5` as `CR-54` — later
+  than this ADR and under a different item number, which is why the register described it as unimplemented for two
+  waves. **§1 is a recorded decision with no implementation**: no consumption mode exists anywhere in the tree, and
+  the `W3` live blocker it exists to fix — an un-pulled stream dropping the terminal — is still open. "Accepted"
+  here means the decision is settled, not that §1 ships.
+
+> **Correction 1 (2026-09-04) — §1 names ONE seam for two situations that do not share one, and "loud" is too
+> generous.** §1 puts the consumption mode on `createRunHandle` / `createSessionHandle` as though they were
+> symmetric. They are not, and the asymmetry decides how §1 gets built. **`createSessionHandle` is exported and
+> a host calls it directly** — `apps/cli/src/chat/session-host.ts` constructs both of its session handles — so
+> for a session §1 is implementable exactly as written, and the caller that would pass `subscribe-only` is the
+> very caller whose `subscribe()`-only attachment created the problem. **`createRunHandle` is not exported and
+> no host calls it**: a `RunHandle` is produced inside `WorkflowEngine.start()` / `resumeFromCheckpoint()`, and
+> neither `StartInput` nor `WorkflowEngineDeps` has a field that could carry a mode. So for a run the mode has
+> to reach an engine entry point (or engine construction) first, with a stated default and every in-tree caller
+> named — that plumbing is §1's real cost and §1 does not mention it. A review that read the two factories as
+> equivalent concluded no host calls either; half of that is wrong, and the half that is right is the half that
+> needs new API. Separately, §1's Negative calls a mis-wired handle "loud (an empty iteration)": an empty
+> iteration is a clean EOF, indistinguishable from a correctly-closed handle — the same silent shape §1 rejects
+> everywhere else. A `subscribe-only` handle should therefore not present an iterable at all (a discriminated
+> union on the handle type), or iterating one should raise a `RunLoopInvariantError` the way
+> `concurrent_consumer` already does. Two independent reviews reached that second point separately.
+
+> **Correction 2 (2026-09-04) — §1's "Unchanged in every respect" is true of the change and false as a
+> guarantee.** §1 says `iterated` mode is "lossless and bounded per consumer". It is not bounded today, and this
+> was measured: `whenDrained()` resolves immediately whenever `buffer.length < capacity`, without reserving the
+> slot it grants, so N concurrent producers at `capacity − 1` each get permission and the buffer peaks at
+> `capacity + N − 1` (11 against a ceiling of 4 with 8 producers). `#wakeDrainWaiters` reserves correctly for
+> producers already parked; the un-parked fast path does not. **Accepting this ADR does not close that**, and the
+> obvious fix is known to be wrong — a consume/release permit was prototyped and measured to reinstate the
+> original freeze, because `agent-turn.ts` awaits readiness per chunk while `tool_call_*`, `reasoning_*`, `stop`,
+> `media_*` and `tool_result` emit nothing and leak a permit each. The correct shape moves the await to the emit
+> site, which revises `CR-30`'s producer-await and therefore wants its own ADR rather than an amendment to this
+> one. It stays open in the `W3` residuals.
+
+> **Correction 3 (2026-09-04) — §1's replay sentence is a run fact stated as a universal one.** "The durable log
+> is the record a late reader replays from" holds for a RUN. It does not hold for a session: per
+> [sse-event-schema.md](../reference/contracts/sse-event-schema.md), no session resume reads a stored event log —
+> a session's durable state is typed rows, and transient session events (`agent:token`, `agent:reasoning`) are
+> never replayed from anywhere. So a `subscribe-only` **`SessionHandle`** is live-only, and "owes nobody" rests
+> entirely on subscribers attaching before production starts. That is a precondition §1 relies on without naming,
+> and it deserves a test rather than an assumption.
+
+> **Correction 4 (2026-09-04) — a terminal event is NOT measured.** §2 says "a terminal event is measured and
+> never refused", and `measureDraft`'s own doc comment repeats it. `measureDraft` returns `undefined` on
+> `isTerminal` **before** calling `serialisedByteLength`, so nothing is measured, nothing is reported, and the
+> word describes an intention no code holds. The decision — a terminal is never refused — is correct and
+> unchanged; the accurate word is **exempt**. Read as written, §2's "events are bounded by size" is also
+> narrower than the title suggests: a terminal event has no size bound at all, in either direction, and any
+> transitive cap on its `outputs` / `partialOutputs` / `error.message` would be a NEW bound rather than a
+> restatement of this one.
+
+> **Correction 5 (2026-09-04) — the human-gate payload is counted, not refused, and §2 does not say so.** §2 says
+> "an output or state breach fails the node". On the gate-resume path the engine calls `measureNodeOutput`,
+> **discards the breach**, and adds the bytes to the running total; no aggregate check runs there either. That is
+> deliberate and the code states its reason (the gate is already resolved and its vertex already marked
+> completed, so refusing would strand a resumed run mid-settle), but the deviation belongs in the decision rather
+> than only in a comment. Its residual is narrow and real: the run-level total catches an abusive payload *at the
+> next node that adds to it*, so a gate that is the run's LAST node is never checked at all. It stays open in the
+> `W3` residuals.
+
+> **Correction 6 (2026-09-04) — §2 never defines the value domain it measures.** The bound is `JSON.stringify`
+> over the post-de-inline value, and `JSON.stringify` is not a measurement of arbitrary JavaScript: a `Map` or a
+> `Set` serialises to `{}`, a custom `toJSON` substitutes something else entirely, and an accessor runs. So a node
+> can return a large unserialisable structure, measure at two bytes, pass every bound, and put a value in
+> `#states` that a checkpoint replay cannot reproduce — live and resume then disagree about the workflow state.
+> Cycles, `BigInt`s and functions are already caught (`serialisedByteLength` returns `undefined` and
+> `measureNodeOutput` treats it as its own breach), which makes the remaining hole narrower but not principled.
+> Closing it means deciding what a node output IS — normalise and validate to one strict JSON form, measure that
+> form, and store and persist that same form — which refuses shapes that run today and therefore wants its own
+> decision. Recorded as a residual, not settled here.
+
+> **Correction 7 (2026-09-04) — §3 is implemented, and by a later wave than this ADR.** §3 shipped as `W5`'s
+> `CR-54`: `#pinMediaOutput` runs at the dispatch boundary, `#settleCompleted` writes the pinned value into
+> `#states`, the async media-job path re-enters through the same pin, and the human-gate payload is pinned too —
+> and `deInlineMedia` rewrites **every** in-flight carrier, so a `base64` source becomes a handle exactly as a
+> `url` does. The `W3` residual "media is measured as a handle but RETAINED as base64" is therefore closed, and
+> `size-bounds.ts`'s sentence that "`state.output` keeps the raw form only because the de-inline is
+> non-mutating" is stale. One review read that stale comment as proof §3 was unimplemented and concluded the
+> opposite of the truth; a comment that outlives its code is not a harmless comment.
+
+> **Correction 8 (2026-09-04) — §4's central premise is factually wrong; its conclusion survives without it.**
+> §4 argues count-based over age-based because "an age policy needs a clock, and a clock in `packages/core` is a
+> new host seam". `ExecutionHost.clock` has existed since [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md)
+> and the engine reads it in a dozen places (lease expiry, gate deadlines, media-job deadlines, every event
+> timestamp). An age policy would need no new seam. The decision still stands on the reasons that are true —
+> determinism, no sweep, and "the last 100 runs stay addressable" being a promise a caller can reason about
+> where "younger than T" depends on how busy the process was — and the same false premise is repeated in
+> `engine.ts`'s retention comment, which is corrected with this note. §4 also calls the retention limit "a named
+> constant" without saying where it lives: it lives in `ADMISSION_CEILINGS`, which is the wrong home — nothing
+> about it is checked at admission — and moving it is a change to an exported const, so it is recorded rather
+> than done here.
+
+> **Correction 9 (2026-09-04) — §5 claims more movement than this ADR caused.** `turn_limit` carrying the
+> run-level dispatch cap is [ADR-0086](0086-absolute-admission-ceilings-on-authored-values.md) §4's decision, and
+> `GraphIssueKind` gained `ceiling_exceeded` for `CR-31`, also ADR-0086's item; none of this ADR's own three
+> bounds produces a `GraphIssue` at all. "The two taxonomies this moved" should read as what the **wave** moved.
+> The genuine contribution of §5 is the part worth keeping: an oversized durable event fails the run as
+> `internal` rather than gaining an `ErrorCode` member, and a node/state breach is a typed `validation` — both
+> applying [ADR-0082](0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) §9. One
+> live cross-reference knot is fixed alongside this note: `errors.ts` pointed a reader to ADR-0086 for
+> `ceiling_exceeded`'s rationale, and ADR-0086 does not contain the word.
 
 ## Context
 

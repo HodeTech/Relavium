@@ -130,7 +130,7 @@ flowchart TD
 | 0084 | [Consent before a local MCP spawn](0084-consent-before-a-local-mcp-spawn.md) | Accepted | 2026-08-20 |
 | 0085 | [The node executor owes liveness, the engine enforces it, and a late dispatch is fenced](0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) | Accepted | 2026-08-25 |
 | 0086 | [Authored values get absolute admission ceilings, and an omitted concurrency cap is finite](0086-absolute-admission-ceilings-on-authored-values.md) | Accepted | 2026-08-28 |
-| 0087 | [A stream is bounded by whether anyone reads it; outputs and events are bounded by size; finished runs are bounded by count](0087-consumed-streams-size-bounds-and-run-retention.md) | Proposed | 2026-08-29 |
+| 0087 | [A stream is bounded by whether anyone reads it; outputs and events are bounded by size; finished runs are bounded by count](0087-consumed-streams-size-bounds-and-run-retention.md) | Accepted | 2026-09-04 |
 | 0088 | [The MCP boundary is hostile — a remote server is pinned and bounded, an unbounded one must be local and opted into](0088-the-mcp-boundary-is-hostile.md) | Accepted | 2026-08-30 |
 | 0089 | [Media correctness — the four boundaries `W5` had to choose](0089-media-correctness-four-boundaries.md) (amends 0031, 0039, 0042, 0043, 0044, 0070, 0071) | Accepted (§3 superseded by 0090) | 2026-09-02 |
 | 0090 | [A continuation token rides the part it belongs to](0090-a-continuation-token-rides-the-part-it-belongs-to.md) (supersedes 0089 §3; refines 0030, 0039, 0043) | Accepted | 2026-09-02 |

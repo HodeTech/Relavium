@@ -396,6 +396,15 @@ clamped: a file over a ceiling does not run at all.
 | Fan-out width (a node's out-degree) | 50 | plain edges, `parallel_of` members and data references. A `condition`'s branches count toward the EDGE total above but **not** toward width: exactly one is taken, so they are alternatives rather than concurrent work |
 | `max_parallel` | 64 | the authored value (omitted ⇒ **8**) |
 | Node dispatches in one run | 500 | at runtime, counted from `node:started` in the durable log |
+
+The last three are **runtime size bounds rather than admission ceilings**, and they belong to a different
+decision ([ADR-0087](../../decisions/0087-consumed-streams-size-bounds-and-run-retention.md) §2). Nothing about
+them is checked when the file is admitted — a workflow cannot be inspected for the size of a value a model has
+not produced yet — so a breach fails a node or a run mid-flight rather than refusing the file. They are listed
+here because an author asking "what will refuse my run" wants one table, not two.
+
+| What | Bound | Measured on |
+|---|---|---|
 | One node's output | 256 KiB | serialised, at the durable boundary |
 | Total workflow state | 4 MiB | every node output, summed |
 | One durable event | 1 MiB | serialised — **a terminal event is exempt**, see below |
@@ -406,10 +415,20 @@ answer that looks like a right one. The durable-EVENT breach is different in sha
 than glossing: it is raised at the emit choke point, where no node is in scope, so it fails the RUN through
 the engine's internal backstop and surfaces as `run:failed` with `internal` rather than as a per-node
 `validation`. All three sizes are measured on the value that reaches the boundary — an inline media part
-counts as the `media://` handle it becomes, not as its base64. **A terminal event is measured and never refused**: a run that cannot publish its
-terminal is worse in every way than one that wrote an oversized final event, and exactly-one-terminal
+counts as the `media://` handle it becomes, not as its base64. **A terminal event is exempt — not measured, and
+never refused**: a run that cannot publish its terminal is worse in every way than one that wrote an oversized
+final event, and exactly-one-terminal
 ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) outranks every size
-rule here.
+rule here. So a terminal event has no size bound in either direction, which is a deliberate hole and not an
+oversight.
+
+**One documented deviation: a human-gate decision payload is COUNTED, not refused.** A gate payload is a node
+output and is added to the workflow-state total like any other, but its own 256 KiB breach is not raised — by
+the time it is measured the gate is already resolved and its vertex already marked completed, so refusing there
+would strand a resumed run with no terminal. An oversized payload is therefore caught by the run-level total at
+the next node that adds to it; a gate that is the run's LAST node is not caught at all. Recorded in
+[ADR-0087](../../decisions/0087-consumed-streams-size-bounds-and-run-retention.md) Correction 5 and open in the
+`W3` residuals.
 
 Agent-scoped ceilings — `retry.max`, `fallback_chain` length and per-entry `max_attempts` — live with the
 agent that declares them; see [agent-yaml-spec.md](agent-yaml-spec.md). A workflow is checked against them for

@@ -1298,8 +1298,19 @@ exit criterion 7 exists to catch — the register recording a state the code doe
 > It is the third defect in one chain, each the cure for the last: the producer-await deadlocked every CLI
 > session; letting an un-pulled stream through cured that and reopened the unbounded buffer; bounding the
 > buffer cured that and started dropping. [ADR-0087](../../decisions/0087-consumed-streams-size-bounds-and-run-retention.md)
-> §1 records the real fix — a handle declares whether its stream is consumed — and is **Proposed, not
-> Accepted**: it merged unapproved and §1 and §3 are unimplemented.
+> §1 records the real fix — a handle declares whether its stream is consumed.
+>
+> **Status as of 2026-09-04: the ADR is Accepted, the blocker is not closed.** ADR-0087 merged unapproved on
+> 2026-08-29 and a review refused acceptance until nine dated corrections existed; those corrections are now in
+> the ADR and it is Accepted. Two of them change what this entry claimed. **§3 is implemented** — it shipped in
+> `W5` as `CR-54` (the pin runs at the dispatch boundary and the settle writes the pinned value into the run
+> scope), and this register described it as unimplemented for two waves because it landed under a different
+> item number. **§1 is still unimplemented**, and Correction 1 says why it cannot simply be built as written:
+> the mode is put on `createRunHandle` / `createSessionHandle` as though the two were symmetric. A host calls
+> `createSessionHandle` directly, so the session half is buildable as written; a `RunHandle` is only ever
+> produced inside `WorkflowEngine.start()` / `resumeFromCheckpoint()`, so the run half needs the mode plumbed
+> onto an engine entry point first. And a `subscribe-only` handle must not present a silently-empty iterable,
+> which is the same quiet shape §1 rejects everywhere else. **The blocker stands.**
 
 
 All four items closed. Three things this wave established that outlived their own items:

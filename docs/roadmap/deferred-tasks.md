@@ -675,15 +675,27 @@ severity, the trigger and the product claim each narrows, per exit criterion 2.
   is true today for a stream nobody iterates. **Trigger:** any consumer that attaches after `capacity` events,
   which on the session path is every consumer. The fix is
   [ADR-0087](../decisions/0087-consumed-streams-size-bounds-and-run-retention.md) §1 — a handle declares
-  whether its stream is consumed — and that ADR is **Proposed, not Accepted**: it merged unapproved.
+  whether its stream is consumed. That ADR is **Accepted as of 2026-09-04**, with §1 recorded and still
+  **unimplemented**: no consumption mode exists anywhere in the tree. Its Correction 1 also names what §1 got
+  wrong and must be settled before it can be built: the two factories §1 names are not symmetric.
+  `createSessionHandle` is exported and `session-host.ts` calls it directly, so the session half is
+  implementable as written; `createRunHandle` is internal and only `WorkflowEngine.start()` /
+  `resumeFromCheckpoint()` produce a `RunHandle`, so the run half needs the mode plumbed onto an engine entry
+  point first. A `subscribe-only` handle must also not present a silently-empty iterable.
   *(packages/core/src/engine/event-stream.ts, run-handle.ts, session-handle.ts)*
 
-- [ ] **Media is measured as a handle but RETAINED as base64.** *Medium.* `state.output`, the completed state
-  and every downstream template hold the raw bytes while the durable event holds the handle. **The claim it
-  narrows:** [ADR-0042](../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)'s
-  "the engine references media by handle", and CR-32's own memory bound — a 1 MiB image passes a 256 KiB
-  node-output limit and is then held in full. **Trigger:** any media-producing node. ADR-0087 §3 records the
-  fix (de-inline once, at the node boundary). *(packages/core/src/engine/size-bounds.ts, engine.ts)*
+- [x] **Media is measured as a handle but RETAINED as base64.** *Medium — CLOSED 2026-09-04, fixed in `W5`.*
+  `state.output`, the completed state and every downstream template held the raw bytes while the durable event
+  held the handle. **The claim it narrowed:**
+  [ADR-0042](../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)'s "the engine
+  references media by handle", and CR-32's own memory bound — a 1 MiB image passed a 256 KiB node-output limit
+  and was then held in full. **Closed by `CR-54`**, not by a `W3` follow-up: `#pinMediaOutput` runs at the
+  dispatch boundary, `#settleCompleted` writes the pinned value into `#states`, the async media-job path
+  re-enters through the same pin, and `deInlineMedia` rewrites a `base64` source into a handle exactly as it
+  does a `url` — so ADR-0087 §3 is implemented. It stayed open here for two waves because it was fixed under a
+  different item number, and a stale comment in `size-bounds.ts` ("`state.output` keeps the raw form") kept
+  saying otherwise; a 2026-09-04 review read that comment and concluded §3 was unimplemented, which is the cost
+  of a comment outliving its code. *(packages/core/src/engine/engine.ts, size-bounds.ts)*
 
 - [ ] **`whenDrained()` does not atomically reserve the slot it grants.** *Medium.* Several producers each get
   a resolved promise for the same free slot; measured peak `capacity + N − 1` (11 against a ceiling of 4 with
@@ -692,7 +704,10 @@ severity, the trigger and the product claim each narrows, per exit criterion 2.
   was prototyped and measured to REINTRODUCE the freeze — `agent-turn.ts` awaits readiness before `foldChunk`,
   and `tool_call_*`, `reasoning_start/end`, `stop`, `media_*` and `tool_result` emit nothing, so every such
   chunk leaks a permit. The correct shape moves the await to the emit site, which revises CR-30's producer-await
-  and therefore wants an ADR. *(packages/core/src/engine/event-stream.ts)*
+  and therefore wants an ADR. **ADR-0087 is Accepted with this explicitly OUT of scope** (its Correction 2), so
+  its §1 "bounded per consumer" must not be read as a guarantee that holds today — the un-parked fast path of
+  `whenDrained()` grants a slot it does not reserve, while `#wakeDrainWaiters` reserves correctly for producers
+  already parked. *(packages/core/src/engine/event-stream.ts)*
 
 - [ ] **Dispatch headroom is computed but not reserved.** *Medium.* Retry timers can dispatch from the same
   headroom during a batch's durable `node:started` awaits, so a pre-selected batch still starts.
@@ -706,9 +721,13 @@ severity, the trigger and the product claim each narrows, per exit criterion 2.
   form the spec documents. *(packages/core/src/limits.ts)*
 
 - [ ] **A human-gate payload skips the CR-32 bounds.** *Medium.* `measureNodeOutput` is called and its breach
-  discarded, and no aggregate state check runs. **The claim it narrows:** the 256 KiB per-node and 4 MiB
+  discarded, and no aggregate state check runs there. **The claim it narrows:** the 256 KiB per-node and 4 MiB
   accumulated-state contracts. **Trigger:** a gate whose decision carries a payload — the one node output a
-  user supplies directly. *(packages/core/src/engine/engine.ts)*
+  user supplies directly. **Narrowed 2026-09-04:** the discard is deliberate and now documented (ADR-0087
+  Correction 5 + the canonical spec) — the gate is already resolved and its vertex already marked completed, so
+  refusing there would strand a resumed run with no terminal. What remains open is the residual that leaves: the
+  run-level total catches an abusive payload only *at the next node that adds to it*, so a gate that is the
+  run's LAST node is never checked at all. *(packages/core/src/engine/engine.ts)*
 
 - [ ] **`JSON.stringify` is used as a size measure and validates nothing.** *Medium.* Nested functions and
   symbols vanish, `Map`/`Set` become `{}`, array holes become `null`, and a custom `toJSON` changes the value —
@@ -720,6 +739,21 @@ severity, the trigger and the product claim each narrows, per exit criterion 2.
   proves an oversized non-terminal event is refused on the real `#emitDurable` path. **The claim it narrows:**
   the phase's own acceptance rule that a test fails when its production change is reverted.
   *(packages/core/src/engine/engine.test.ts)*
+
+- [ ] **A terminal event has no size bound in either direction.** *Low.* `measureDraft` returns before it
+  measures, so the "measured and never refused" wording in ADR-0087 §2, `size-bounds.ts` and the workflow spec
+  described an intention no code held; all three now say **exempt** (ADR-0087 Correction 4). The decision not to
+  refuse a terminal is correct and unchanged — what is open is that its `outputs`, `partialOutputs` and
+  `error.message` have no transitive cap of their own, so the ADR's "events are bounded by size" is narrower
+  than its title. **The claim it narrows:** that title. **Trigger:** a run whose final outputs are large.
+  Adding a cap would be a NEW bound and wants its own decision. *(packages/core/src/engine/size-bounds.ts)*
+
+- [ ] **`retainedSettledRuns` lives in `ADMISSION_CEILINGS`, which is the wrong home.** *Low.* Nothing about it
+  is checked at admission — it is a runtime retention limit (ADR-0087 §4), grouped with ceilings that refuse a
+  file before it runs. **The claim it narrows:** none directly; it misfiles a constant and quietly enrols it in
+  ADR-0086 §9.3's (also unimplemented) host-override promise. **Trigger:** a reader or a host looking for it.
+  Not moved here because removing a member from an exported const is a public-API change.
+  *(packages/core/src/limits.ts)*
 
 - [ ] **ADR-0086 §9.3's host override does not exist.** *Medium.* The ADR promises ceilings "resolve from named
   constants that a host may override" so an operator "does not fork the engine". There is no such seam.

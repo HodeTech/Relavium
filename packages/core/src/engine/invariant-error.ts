@@ -26,7 +26,7 @@ export type RunLoopInvariantCode =
   | 'no_correlation_key' // an event draft carried NEITHER runId nor sessionId
   | 'concurrent_consumer' // a second next() while one is already parked on a single-consumer stream
   | 'media_store_unavailable' // a media-bearing event was emitted but no MediaStore was injected (1.AF, I3)
-  | 'event_too_large'; // a NON-terminal durable event exceeded CR-32's size bound (ADR-0086); a terminal never does
+  | 'event_too_large'; // a NON-terminal durable event exceeded CR-32's size bound (ADR-0087 §2); a terminal is exempt
 
 export class RunLoopInvariantError extends Error {
   readonly code: RunLoopInvariantCode;
