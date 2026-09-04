@@ -462,7 +462,7 @@ function wireConditionNode(
  * [ADR-0086](../../../docs/decisions/0086-absolute-admission-ceilings-on-authored-values.md) exists to stop,
  * and the same summarize-and-count answer is already used for held nodes and skipped runs elsewhere.
  */
-const MAX_REPORTED_WIDENINGS = 10;
+export const MAX_REPORTED_WIDENINGS = 10;
 
 function collectToolGrantIssues(
   node: AgentNode,

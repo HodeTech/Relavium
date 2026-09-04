@@ -631,3 +631,44 @@ describe('createExpressionSandbox — PR-review regression cases', () => {
     expect(JSON.stringify(generic)).not.toContain('boom'); // detail is non-enumerable (secret-free)
   });
 });
+
+describe('the scope namespaces have no prototype inside the VM', () => {
+  // The host builds `run.outputs` as a null-prototype record precisely so an absent id reads `undefined`,
+  // and marshaling threw that away: `JSON.parse` in the VM produced a normal object, so
+  // `run.outputs.constructor` was a FUNCTION. A computed read — the shape the static scanner deliberately
+  // allows and cannot resolve — could find a truthy value for a node id that does not exist, and a
+  // `condition` comparing it takes the wrong branch. ADR-0093's contract is that an absent output is
+  // `undefined`; this pins that it holds inside the VM, not only at the boundary.
+  const scope = { inputs: { a: 1 }, ctx: { k: 'v' }, outputs: { real: 1 }, branches: [1, 2] };
+  const evaluate = (expression: string): unknown =>
+    sandbox.evaluate({ expression, kind: 'merge_fn', scope });
+
+  for (const inherited of ['constructor', 'toString', 'valueOf', 'hasOwnProperty']) {
+    it(`\`run.outputs.${inherited}\` is undefined, not inherited`, () => {
+      expect(evaluate(`typeof run.outputs.${inherited}`)).toBe('undefined');
+    });
+  }
+
+  it('a COMPUTED read of an absent id is falsy, which is what the scanner cannot check for us', () => {
+    expect(evaluate(`Boolean(run.outputs[['con','structor'].join('')])`)).toBe(false);
+    expect(evaluate(`typeof run.outputs[['to','String'].join('')]`)).toBe('undefined');
+  });
+
+  it('`inputs` and `ctx` are bare too', () => {
+    expect(evaluate('typeof inputs.constructor')).toBe('undefined');
+    expect(evaluate('typeof ctx.constructor')).toBe('undefined');
+  });
+
+  it('and every namespace still reads normally', () => {
+    expect(evaluate(`run.outputs['real']`)).toBe(1);
+    expect(evaluate('inputs.a')).toBe(1);
+    expect(evaluate('ctx.k')).toBe('v');
+    expect(evaluate('branches[1]')).toBe(2);
+    expect(evaluate('Object.keys(run.outputs).join(",")')).toBe('real');
+    expect(evaluate('JSON.stringify(run.outputs)')).toBe('{"real":1}');
+  });
+
+  it('…and stays frozen', () => {
+    expect(() => evaluate('(run.outputs.injected = 1)')).toThrow();
+  });
+});

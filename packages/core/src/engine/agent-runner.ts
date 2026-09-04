@@ -55,6 +55,7 @@ import {
   UnknownModelError,
 } from '@relavium/llm';
 
+import { MAX_REPORTED_WIDENINGS } from '../dag.js';
 import { outputSchemaMiss } from '../output-schema.js';
 import { resolveTemplate } from '../interpolation/resolve.js';
 import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
@@ -987,12 +988,24 @@ function resolveGrant(
   // non-empty string — no charset, no length bound — so an id can carry a newline, a terminal escape, or
   // secret-shaped text, and this message reaches a `node:failed` event and a log. The plan-build check that
   // now catches this first reports it the same way; this is the floor, for a host that builds no plan.
-  const wideningAt = nodeTools.flatMap((t, i) => (agentSet.includes(t) ? [] : [i]));
+  // **Set membership, not `includes`.** This ran `agent.tools.includes(t)` per node tool — O(n×m) — and a
+  // large but entirely LEGAL narrowing then blocked the event loop for seconds, synchronously, where no
+  // deadline can fire.
+  const granted = new Set(agentSet);
+  const wideningAt = nodeTools.flatMap((t, i) => (granted.has(t) ? [] : [i]));
   if (wideningAt.length > 0) {
-    const positions = wideningAt.map((i) => `tools[${i}]`).join(', ');
+    // **Capped, like its plan-build twin.** `collectToolGrantIssues` caps at ten with a summary because an
+    // unbounded list amplified an authored array into a 55 MB message; this path builds the same list from
+    // the same authored array and was left uncapped in the same PR. Same input, same amplification.
+    const shown = wideningAt.slice(0, MAX_REPORTED_WIDENINGS);
+    const positions = shown.map((i) => `tools[${i}]`).join(', ');
+    const remainder =
+      wideningAt.length > shown.length
+        ? ` (and ${wideningAt.length - shown.length} more; ${shown.length} of ${wideningAt.length} shown)`
+        : '';
     return {
       ok: false,
-      message: `node ${positions} ${wideningAt.length === 1 ? 'is' : 'are'} not granted to the agent (a node narrows, never widens)`,
+      message: `node ${positions}${remainder} ${wideningAt.length === 1 ? 'is' : 'are'} not granted to the agent (a node narrows, never widens)`,
     };
   }
   return { ok: true, ids: nodeTools };

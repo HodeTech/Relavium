@@ -147,6 +147,16 @@ describe('literalOutputReads — where it deliberately says NOTHING', () => {
     expect(ids('x\n--> run.outputs["ghost"]')).toEqual([]);
   });
 
+  it('says nothing when an identifier ESCAPE is present — `r\\u0075n` IS `run` to JavaScript', () => {
+    // The guard that closed the eighth false-refusal shape, and nothing exercised it: deleting it left the
+    // suite green. `((r\u0075n) => run.outputs["ghost"])(…)` binds a LOCAL `run`, so reporting `ghost`
+    // would refuse a workflow for a read the real sandbox never performs.
+    expect(ids('((r\\u0075n) => run.outputs["ghost"])({outputs:{ghost:1}})')).toEqual([]);
+    expect(ids('r\\u0075n.outputs["ghost"]')).toEqual([]);
+    // A backslash inside a STRING is masked before the check, so an ordinary expression still scans.
+    expect(ids('"a\\nb" + run.outputs["a"]')).toEqual(['a']);
+  });
+
   it('says nothing when `run` is REBOUND — the shadow is not the scope', () => {
     // `((run) => run.outputs["total"])(inputs.alias)` evaluates against something else entirely; naming
     // `total` would be a false refusal. A use of the scope's `run` is always `run.`/`run?.`, so any other

@@ -23,7 +23,7 @@ resolution, so a schema is always self-contained.
 | the schema is | a possibly-hostile stranger's | the author's own |
 | unknown keyword | **ignored** | **refused** |
 | malformed **bound** (`minLength: "5"`) | ignored | **refused** |
-| malformed `type` / `required` / `properties` / `enum` / `const` / `items` | **fails closed** | **fails closed** |
+| malformed `type` / `required` / `properties` / `enum` / `const` / `items` | **fails closed**, except a DEGENERATE `type` (`[]`, or a duplicated member), which `lenient` accepts and treats as unconstrained | **fails closed** |
 | `pattern` / `format` | accepted, **never compiled** | **enforced** |
 | when it is checked | at tool discovery | at **parse**, before a run id exists |
 

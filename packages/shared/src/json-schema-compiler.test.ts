@@ -74,6 +74,112 @@ describe('strict mode — the allowlist', () => {
     expect(strict({ type: 'string', minItems: 3 }).ok).toBe(true);
   });
 
+  it('a `format` alongside a length bound compiles — the crash an ordinary schema hit', () => {
+    // `{ type: 'string', format: 'email', maxLength: 254 }` — the exact shape json-schema-subset.md tells
+    // authors to write — died with `schema.email is not a function`: the length check produced a
+    // `ZodEffects` that was cast back to `ZodString` with `as unknown as`, and the cast was a lie the
+    // compiler believed and the runtime did not. Every format × bound combination now compiles.
+    for (const format of [
+      'email',
+      'uuid',
+      'uri',
+      'url',
+      'date-time',
+      'date',
+      'time',
+      'duration',
+      'ipv4',
+      'ipv6',
+    ]) {
+      for (const bound of [
+        {},
+        { maxLength: 254 },
+        { minLength: 2 },
+        { minLength: 2, maxLength: 254 },
+      ]) {
+        const r = strict({ type: 'string', format, ...bound });
+        expect({ format, bound, ok: r.ok }).toEqual({ format, bound, ok: true });
+      }
+    }
+    // …and both halves still apply.
+    expect(accepts({ type: 'string', format: 'email', maxLength: 10 }, 'a@b.co')).toBe(true);
+    expect(accepts({ type: 'string', format: 'email', maxLength: 10 }, 'nope')).toBe(false);
+    expect(
+      accepts({ type: 'string', format: 'email', maxLength: 10 }, 'aaaaaaaaaaaaaaa@b.co'),
+    ).toBe(false);
+  });
+
+  it('admits every schema-bearing position, not only the branch the `type` selects', () => {
+    // The compiler descends through the branch the declared `type` picks, so a nested schema under a field
+    // that type never reads was never admitted: a refused construct sat inside it, unseen. ADR-0092 §2's
+    // guarantee says nothing about which type is declared next to a keyword.
+    for (const schema of [
+      { type: 'number', format: 'not-supported' },
+      { type: 'number', pattern: '([' },
+      { type: 'string', properties: { x: { oneOf: [{ type: 'string' }] } } },
+      { type: 'boolean', items: { $ref: '#' } },
+      { type: 'null', additionalProperties: { oneOf: [{ type: 'string' }] } },
+      { type: 'string', minItems: 'oops' },
+      { type: 'string', minimum: 'oops' },
+    ]) {
+      expect(strict(schema).ok).toBe(false);
+    }
+    // A valid nested schema is untouched.
+    expect(
+      strict({
+        type: 'object',
+        properties: { a: { type: 'string', format: 'email', maxLength: 99 } },
+        required: ['a'],
+      }).ok,
+    ).toBe(true);
+  });
+
+  it('refuses `Infinity`, which passed the gate and then serialized to null', () => {
+    // `JSON.parse('1e999')` is `Infinity`: it passed `type: number` and `JSON.stringify`d back to `null`,
+    // so a value cleared validation and CHANGED on its way to the durable log. Both modes, because the MCP
+    // boundary gates its arguments for the same reason.
+    const infinite = JSON.parse('1e999') as number;
+    const strictNumber = strict({ type: 'number' });
+    const lenientNumber = lenient({ type: 'number' });
+    expect(strictNumber.ok === true && strictNumber.schema.safeParse(infinite).success).toBe(false);
+    expect(lenientNumber.ok === true && lenientNumber.schema.safeParse(infinite).success).toBe(
+      false,
+    );
+    expect(accepts({ type: 'number' }, 42)).toBe(true);
+  });
+
+  it('multipleOf handles scientific notation', () => {
+    // Zod derives the scale from the literal's decimal-place count, which reads `1e-7` as having none — so
+    // under `multipleOf: 1e-7` it rejected `1e-7`, `2e-7` and `1`, every one of which IS a multiple.
+    expect(accepts({ type: 'number', multipleOf: 1e-7 }, 1e-7)).toBe(true);
+    expect(accepts({ type: 'number', multipleOf: 1e-7 }, 2e-7)).toBe(true);
+    expect(accepts({ type: 'number', multipleOf: 1e-7 }, 1)).toBe(true);
+    expect(accepts({ type: 'number', multipleOf: 1e-7 }, 1.5e-7)).toBe(false);
+    // The plain cases are unchanged.
+    expect(accepts({ type: 'integer', multipleOf: 5 }, 10)).toBe(true);
+    expect(accepts({ type: 'integer', multipleOf: 5 }, 11)).toBe(false);
+  });
+
+  it('`format: date-time` follows RFC 3339, including its case rules and offset range', () => {
+    // Zod's `.datetime()` rejected the legal lowercase separators and a leap second, and accepted an
+    // out-of-range `+24:00` offset — three answers wrong in two directions.
+    const dt = (v: string): boolean => accepts({ type: 'string', format: 'date-time' }, v);
+    expect(dt('1990-12-31t23:59:59z')).toBe(true); // §5.6 permits lowercase
+    expect(dt('1990-12-31T23:59:60Z')).toBe(true); // leap second
+    expect(dt('2026-09-04T12:00:00+03:00')).toBe(true);
+    expect(dt('2026-01-01T00:00:00+24:00')).toBe(false); // offset out of range
+    expect(dt('2026-13-01T00:00:00Z')).toBe(false);
+  });
+
+  it('`uniqueItems` does not canonicalize a list that is unique by definition', () => {
+    // A single element is unique whatever it contains, so the value-depth bound must not refuse it — it
+    // was demanding proof of something that needs none.
+    let deep: unknown = 1;
+    for (let i = 0; i < 20; i += 1) deep = [deep];
+    expect(accepts({ type: 'array', uniqueItems: true }, [deep])).toBe(true);
+    expect(accepts({ type: 'array', uniqueItems: true }, [1, 1])).toBe(false);
+  });
+
   it('refuses a degenerate `type` or a duplicated `required` name', () => {
     expect(strict({ type: [] }).ok).toBe(false);
     expect(strict({ type: ['string', 'string'] }).ok).toBe(false);
@@ -437,7 +543,10 @@ describe('uniqueItems walks MODEL OUTPUT, so the walk is bounded', () => {
     // explicit cap (`maxDepth`, 16) rejects it. A first version of this test used depth 5000 and could
     // not tell the cap from the `catch` beside it: at that depth the unbounded walk throws RangeError and
     // the catch produces the identical issue, so removing the cap reddened nothing.
-    const parsed = uniqueArray().safeParse([nest(20)]);
+    //
+    // TWO elements, because a shorter list is unique by definition and short-circuits before any
+    // canonicalization runs — a one-element version of this test stopped exercising the cap at all.
+    const parsed = uniqueArray().safeParse([nest(20), nest(21)]);
     expect(parsed.success).toBe(false);
     expect(parsed.success === false && parsed.error.issues[0]?.message).toContain(
       'nests deeper than',
@@ -447,7 +556,7 @@ describe('uniqueItems walks MODEL OUTPUT, so the walk is bounded', () => {
   it('and survives a value that would overflow the stack outright', () => {
     // The belt behind the cap. Measured: an unbounded walk over depth 5000 (~10 KiB of `[[[[…]]]]`)
     // throws RangeError — inside a `safeParse`, that is a crash rather than a validation failure.
-    expect(() => uniqueArray().safeParse([nest(5000)])).not.toThrow();
+    expect(() => uniqueArray().safeParse([nest(5000), nest(5001)])).not.toThrow();
   });
 });
 

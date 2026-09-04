@@ -225,19 +225,29 @@ function buildProgram(expression: string, scope: ExpressionScope): string {
     'Object.freeze(Math);',
     '(function () {',
     `  const __scope = JSON.parse(${scopeLiteral});`,
-    '  const __freeze = function (v) {',
-    '    if (v !== null && typeof v === "object") {',
-    '      Object.freeze(v);',
-    '      const keys = Object.keys(v);',
-    '      for (let i = 0; i < keys.length; i++) { __freeze(v[keys[i]]); }',
+    // **Rebuild every object on a NULL prototype, then freeze.** The host builds `run.outputs` as a
+    // null-prototype record precisely so an absent id reads `undefined`, and `JSON.parse` here threw that
+    // away: inside the VM the record inherited from `Object.prototype`, so `run.outputs.constructor` was a
+    // FUNCTION and `run.outputs.toString` likewise. A computed read the static scanner deliberately allows
+    // — `run.outputs[k]` — could therefore find a truthy value for a node id that does not exist, and a
+    // `condition` comparing it takes the wrong branch. ADR-0093's contract is that an out-of-closure or
+    // absent output is `undefined`; this makes that true inside the VM too, not just at the boundary.
+    '  const __reproto = function (v) {',
+    '    if (v === null || typeof v !== "object") { return v; }',
+    '    if (Array.isArray(v)) {',
+    '      for (let i = 0; i < v.length; i++) { v[i] = __reproto(v[i]); }',
+    '      return Object.freeze(v);',
     '    }',
-    '    return v;',
+    '    const bare = Object.create(null);',
+    '    const keys = Object.keys(v);',
+    '    for (let i = 0; i < keys.length; i++) { bare[keys[i]] = __reproto(v[keys[i]]); }',
+    '    return Object.freeze(bare);',
     '  };',
-    '  __freeze(__scope);',
-    '  const inputs = __scope.inputs;',
-    '  const ctx = __scope.ctx;',
-    '  const run = __scope.run;',
-    '  const branches = __scope.branches;',
+    '  const __bare = __reproto(__scope);',
+    '  const inputs = __bare.inputs;',
+    '  const ctx = __bare.ctx;',
+    '  const run = __bare.run;',
+    '  const branches = __bare.branches;',
     // The expression goes on its OWN line so a trailing line comment (`expr // note`) cannot comment out
     // the closing `);` (which would be a spurious SyntaxError); the `(`/`)` still parenthesize it.
     '  return (',

@@ -255,6 +255,11 @@ export function compileJsonSchemaToZod(
 ): CompileResult {
   const budget: Budget = { nodes: 0, bounds, mode };
   try {
+    if (mode === 'strict') {
+      // A separate counter: this walk and the compile walk each get the full budget, so a schema inside
+      // the documented bounds is not refused for being visited twice.
+      assertStrictAdmission(input, { nodes: 0, bounds, mode }, 0);
+    }
     return { ok: true, schema: compileNode(input, budget, 0) };
   } catch (err) {
     // Fail closed on EVERY error path — an `UnsupportedSchemaError` (a known-unsupported construct) and any
@@ -444,6 +449,8 @@ function readTypes(
  */
 function validateKeywordShapes(node: Record<string, unknown>): void {
   const isPlainObj = (v: unknown): boolean => isPlainObject(v);
+  const count = (v: unknown): boolean => typeof v === 'number' && Number.isInteger(v) && v >= 0;
+  const finite = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v);
   const rules: ReadonlyArray<readonly [string, (v: unknown) => boolean, string]> = [
     ['properties', isPlainObj, 'an object'],
     ['items', (v) => isPlainObj(v) || typeof v === 'boolean', 'a schema or a boolean'],
@@ -457,6 +464,20 @@ function validateKeywordShapes(node: Record<string, unknown>): void {
     ['uniqueItems', (v) => typeof v === 'boolean', 'a boolean'],
     ['nullable', (v) => typeof v === 'boolean', 'a boolean'],
     ['enum', (v) => Array.isArray(v) && v.length > 0, 'a non-empty array'],
+    // The numeric bounds. `readBound` also refuses a malformed one, but only in the type branch that READS
+    // it — so `{ type: 'string', minimum: 'oops' }` slipped through, because no string branch reads
+    // `minimum`. Checked here, they are checked wherever they appear.
+    ['minLength', count, 'a non-negative integer'],
+    ['maxLength', count, 'a non-negative integer'],
+    ['minItems', count, 'a non-negative integer'],
+    ['maxItems', count, 'a non-negative integer'],
+    ['minProperties', count, 'a non-negative integer'],
+    ['maxProperties', count, 'a non-negative integer'],
+    ['minimum', finite, 'a finite number'],
+    ['maximum', finite, 'a finite number'],
+    ['exclusiveMinimum', finite, 'a finite number'],
+    ['exclusiveMaximum', finite, 'a finite number'],
+    ['multipleOf', (v) => finite(v) && (v as number) > 0, 'a positive finite number'],
     [
       'required',
       (v) =>
@@ -478,6 +499,61 @@ function validateKeywordShapes(node: Record<string, unknown>): void {
     if (key in node && !ok(node[key])) {
       // The keyword is named (published vocabulary); the VALUE never is.
       throw new UnsupportedSchemaError(`\`${key}\` must be ${expected}`);
+    }
+  }
+  // `format` and `pattern` VALUES, not just their types — the same reason: they were validated only in the
+  // string branch, so `{ type: 'number', format: 'not-supported' }` and `{ type: 'number', pattern: '([' }`
+  // were accepted with a constraint nothing could ever apply.
+  const format = node['format'];
+  if (typeof format === 'string' && !STRICT_FORMATS.has(format)) {
+    throw new UnsupportedSchemaError(
+      `unsupported \`format\` — must be one of ${[...STRICT_FORMATS].join(', ')}`,
+    );
+  }
+  const pattern = node['pattern'];
+  if (typeof pattern === 'string') {
+    compilePattern(pattern);
+  }
+}
+
+/**
+ * Walk EVERY schema-bearing position and admit it, before any type semantics are produced.
+ *
+ * The admission checks used to run only where the compiler happened to descend, and the compiler descends
+ * only through the branch the declared `type` selects. So a nested schema under a field that type never
+ * reads was never admitted at all: `{ type: 'string', properties: { x: { oneOf: [...] } } }` and
+ * `{ type: 'boolean', items: { $ref: '#' } }` both compiled clean, with a refused construct sitting inside
+ * them. ADR-0092 §2's guarantee is that a supported keyword is enforced or refused — it says nothing about
+ * which type is declared next to it.
+ *
+ * Its own budget counter, under the same bounds: a schema that fits the limits must pass both this walk
+ * and the compile walk, and sharing a counter would have made the pass halve every ceiling.
+ */
+function assertStrictAdmission(node: unknown, budget: Budget, depth: number): void {
+  if (depth > budget.bounds.maxDepth) {
+    throw new UnsupportedSchemaError(
+      `schema nesting exceeds the maximum depth of ${budget.bounds.maxDepth}`,
+    );
+  }
+  if ((budget.nodes += 1) > budget.bounds.maxNodes) {
+    throw new UnsupportedSchemaError(
+      `schema exceeds the maximum of ${budget.bounds.maxNodes} nodes`,
+    );
+  }
+  if (typeof node === 'boolean' || !isPlainObject(node)) {
+    return; // a boolean schema, or a shape `compileNode` will reject on its own
+  }
+  admitKeywords(node, budget);
+  const properties = node['properties'];
+  if (isPlainObject(properties)) {
+    for (const child of Object.values(properties)) {
+      assertStrictAdmission(child, budget, depth + 1);
+    }
+  }
+  for (const key of ['items', 'additionalProperties'] as const) {
+    const child = node[key];
+    if (child !== undefined && typeof child !== 'boolean') {
+      assertStrictAdmission(child, budget, depth + 1);
     }
   }
 }
@@ -623,74 +699,104 @@ function compileTyped(
  * checking it made "validated" false for exactly the schemas someone writes to be precise.
  */
 function stringSchema(node: Record<string, unknown>, budget: Budget): z.ZodTypeAny {
-  let schema = z.string();
   const min = readBound(node, 'minLength', budget, { integer: true, nonNegative: true });
   const max = readBound(node, 'maxLength', budget, { integer: true, nonNegative: true });
+
+  // **The order here is three separate obligations, and getting it wrong crashed on an ordinary schema.**
+  //
+  //   1. `format` first, while the object is still a `ZodString` — `.email()`/`.uuid()`/… exist only there.
+  //   2. THEN the code-point length check, which produces a `ZodEffects`.
+  //   3. THEN `.pipe()` for `pattern`, so an over-long input never reaches the backtracking engine.
+  //
+  // A first version applied the length check first and cast the result back with
+  // `as unknown as z.ZodString` so `applyFormat` would type-check. The cast was a lie the compiler
+  // believed and the runtime did not: `{ type: 'string', format: 'email', maxLength: 254 }` — the exact
+  // shape json-schema-subset.md tells authors to write — died with `schema.email is not a function`, and
+  // the author saw a raw JS TypeError. There is no cast now, which is the point: `as unknown as` is
+  // forbidden here (CLAUDE.md rule 1) precisely because it turns a type error into a runtime one.
+  let base = z.string();
+  if (budget.mode === 'strict') {
+    base = applyDeclaredFormat(base, node);
+  }
+
   // **Code POINTS, not UTF-16 code units.** JSON Schema counts characters; Zod's `.min()`/`.max()` count
   // `String.length`. An emoji is one character and two code units, so `maxLength: 1` rejected "😀" and
   // `minLength: 2` accepted it — both the exact inverse of the spec.
-  if (min !== undefined || max !== undefined) {
-    schema = schema.superRefine((value, ctx) => {
-      const length = [...value].length;
-      if (min !== undefined && length < min) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.too_small,
-          minimum: min,
-          type: 'string',
-          inclusive: true,
-          message: `string has ${length} characters, below the minimum of ${min}`,
-        });
-      }
-      if (max !== undefined && length > max) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.too_big,
-          maximum: max,
-          type: 'string',
-          inclusive: true,
-          message: `string has ${length} characters, above the maximum of ${max}`,
-        });
-      }
-    }) as unknown as z.ZodString;
-  }
+  const bounded: z.ZodTypeAny =
+    min === undefined && max === undefined ? base : withCodePointLength(base, min, max);
+
   if (budget.mode !== 'strict') {
-    return schema;
-  }
-  // `format` first: it returns a `ZodString`, and the `pattern` branch below ends the chain with a pipe.
-  const format = node['format'];
-  if (format !== undefined) {
-    if (typeof format !== 'string') {
-      throw new UnsupportedSchemaError('`format` must be a string');
-    }
-    if (!STRICT_FORMATS.has(format)) {
-      // Refused, not ignored. Accepting `format: "ipv6"` and never checking it is the accepted-but-not-
-      // enforced shape this mode exists to remove, and the author would never see that it did nothing.
-      // The VALUE is not echoed — it is authored text — so the allowed set is listed instead, which is
-      // more actionable than quoting back what they typed.
-      throw new UnsupportedSchemaError(
-        `unsupported \`format\` — must be one of ${[...STRICT_FORMATS].join(', ')}`,
-      );
-    }
-    schema = applyFormat(schema, format);
+    return bounded;
   }
   const pattern = node['pattern'];
-  if (pattern !== undefined) {
-    if (typeof pattern !== 'string') {
-      throw new UnsupportedSchemaError('`pattern` must be a string');
-    }
-    rejectOverSizedString(pattern, 'a `pattern`', budget.bounds.maxStringBytes);
-    const compiled = compilePattern(pattern);
-    // **`.pipe`, not `.regex`** — the ordering is the only ReDoS mitigation this contract honestly offers,
-    // and chaining does not provide it. Zod runs every string check and COLLECTS issues: `.max(8)` does not
-    // stop the `.regex` after it, so a 29-character input still reaches the backtracking engine. Measured
-    // on `^(a+)+$` with `maxLength: 8` — 8010 ms chained, 0.1 ms piped, because a pipeline returns INVALID
-    // without running its second schema. `packages/shared/src/workflow.ts` already orders length before
-    // pattern for exactly this reason; this path did not inherit it.
-    //
-    // It only helps when the author declared a `maxLength`. That is why json-schema-subset.md tells them
-    // to, and why the advice had to become true rather than be deleted.
-    return schema.pipe(z.string().regex(compiled));
+  if (pattern === undefined) {
+    return bounded;
   }
-  return schema;
+  if (typeof pattern !== 'string') {
+    throw new UnsupportedSchemaError('`pattern` must be a string');
+  }
+  rejectOverSizedString(pattern, 'a `pattern`', budget.bounds.maxStringBytes);
+  const compiled = compilePattern(pattern);
+  // **`.pipe`, not `.regex`** — the ordering is the only ReDoS mitigation this contract honestly offers,
+  // and chaining does not provide it. Zod runs every string check and COLLECTS issues: `.max(8)` does not
+  // stop the `.regex` after it, so a 29-character input still reaches the backtracking engine. Measured
+  // on `^(a+)+$` with `maxLength: 8` — 8010 ms chained, 0.1 ms piped, because a pipeline returns INVALID
+  // without running its second schema. `packages/shared/src/workflow.ts` already orders length before
+  // pattern for exactly this reason; this path did not inherit it.
+  //
+  // It only helps when the author declared a `maxLength`. That is why json-schema-subset.md tells them
+  // to, and why the advice had to become true rather than be deleted.
+  return bounded.pipe(z.string().regex(compiled));
+}
+
+/** The declared `format`, applied while the schema is still a `ZodString`. Refuses an unknown value. */
+function applyDeclaredFormat(schema: z.ZodString, node: Record<string, unknown>): z.ZodString {
+  const format = node['format'];
+  if (format === undefined) {
+    return schema;
+  }
+  if (typeof format !== 'string') {
+    throw new UnsupportedSchemaError('`format` must be a string');
+  }
+  if (!STRICT_FORMATS.has(format)) {
+    // Refused, not ignored. Accepting `format: "ipv6"` and never checking it is the accepted-but-not-
+    // enforced shape this mode exists to remove, and the author would never see that it did nothing.
+    // The VALUE is not echoed — it is authored text — so the allowed set is listed instead, which is
+    // more actionable than quoting back what they typed.
+    throw new UnsupportedSchemaError(
+      `unsupported \`format\` — must be one of ${[...STRICT_FORMATS].join(', ')}`,
+    );
+  }
+  return applyFormat(schema, format);
+}
+
+/** `minLength`/`maxLength` measured in code points, as a refinement over whatever came before. */
+function withCodePointLength(
+  schema: z.ZodTypeAny,
+  min: number | undefined,
+  max: number | undefined,
+): z.ZodTypeAny {
+  return schema.superRefine((value: string, ctx: z.RefinementCtx) => {
+    const length = [...value].length;
+    if (min !== undefined && length < min) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.too_small,
+        minimum: min,
+        type: 'string',
+        inclusive: true,
+        message: `string has ${length} characters, below the minimum of ${min}`,
+      });
+    }
+    if (max !== undefined && length > max) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.too_big,
+        maximum: max,
+        type: 'string',
+        inclusive: true,
+        message: `string has ${length} characters, above the maximum of ${max}`,
+      });
+    }
+  });
 }
 
 /**
@@ -716,6 +822,13 @@ function compilePattern(pattern: string): RegExp {
   }
 }
 
+/**
+ * RFC 3339 `date-time`. Case-insensitive `T`/`Z` (§5.6 permits both), a leap second (`:60`) as the grammar
+ * allows, and an offset bounded to `±23:59`.
+ */
+const RFC_3339_DATE_TIME =
+  /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])[Tt](?:[01]\d|2[0-3]):[0-5]\d:(?:[0-5]\d|60)(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
+
 /** Apply one of {@link STRICT_FORMATS}. Every member is handled; the `never` arm makes that a compile error
  *  if a value is added to the set without an implementation here. */
 function applyFormat(schema: z.ZodString, format: string): z.ZodString {
@@ -728,7 +841,9 @@ function applyFormat(schema: z.ZodString, format: string): z.ZodString {
     case 'url':
       return schema.url();
     case 'date-time':
-      return schema.datetime({ offset: true });
+      // RFC 3339 `date-time`, not Zod's `.datetime()`: that one rejected the legal lowercase `t`/`z`
+      // separators and a leap second (`…T23:59:60Z`), and accepted an out-of-range `+24:00` offset.
+      return schema.regex(RFC_3339_DATE_TIME);
     case 'date':
       return schema.date();
     case 'time':
@@ -748,6 +863,32 @@ function applyFormat(schema: z.ZodString, format: string): z.ZodString {
         `unsupported \`format\` — must be one of ${[...STRICT_FORMATS].join(', ')}`,
       );
   }
+}
+
+/**
+ * `multipleOf`, scaled by the decimal places of BOTH operands.
+ *
+ * Zod's own `multipleOf` derives the scale from the literal's decimal-place count, which reads `1e-7` as
+ * having none — so under `multipleOf: 1e-7` it rejected `1e-7`, `2e-7` and `1`, every one of which is a
+ * multiple. Deriving the scale from the exponential form makes the comparison integral, which is what
+ * avoids the floating-point remainder the scaling exists to sidestep.
+ */
+function withMultipleOf(schema: z.ZodNumber, divisor: number): z.ZodTypeAny {
+  const decimals = (value: number): number => {
+    const [mantissa, exponent] = value.toExponential().split('e');
+    const fractionDigits = (mantissa ?? '').split('.')[1]?.length ?? 0;
+    return Math.max(0, fractionDigits - Number(exponent ?? 0));
+  };
+  return schema.superRefine((value, ctx) => {
+    const factor = 10 ** Math.max(decimals(divisor), decimals(value));
+    if (Math.round(value * factor) % Math.round(divisor * factor) !== 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.not_multiple_of,
+        multipleOf: divisor,
+        message: `number is not a multiple of ${divisor}`,
+      });
+    }
+  });
 }
 
 /**
@@ -793,7 +934,12 @@ function numberSchema(
   integer: boolean,
   budget: Budget,
 ): z.ZodTypeAny {
-  let schema = integer ? z.number().int() : z.number();
+  // **`.finite()`, in BOTH modes.** `JSON.parse('1e999')` is `Infinity`, which passed `type: number` and
+  // then `JSON.stringify`d back to `null` — so a value cleared the validation gate and CHANGED on its way
+  // to the durable log and the wire. That is not a rounding residual; it is the gate approving one value
+  // and the system storing another. `Infinity` and `NaN` are not JSON numbers, so nothing legitimate is
+  // lost, and the MCP boundary needs it for the same reason its arguments are gated at all.
+  let schema = (integer ? z.number().int() : z.number()).finite();
   const min = readBound(node, 'minimum', budget);
   const max = readBound(node, 'maximum', budget);
   if (min !== undefined) schema = schema.min(min);
@@ -806,7 +952,7 @@ function numberSchema(
   if (exclusiveMin !== undefined) schema = schema.gt(exclusiveMin);
   if (exclusiveMax !== undefined) schema = schema.lt(exclusiveMax);
   const multipleOf = readBound(node, 'multipleOf', budget, { positive: true });
-  if (multipleOf !== undefined) schema = schema.multipleOf(multipleOf);
+  if (multipleOf !== undefined) return withMultipleOf(schema, multipleOf);
   return schema;
 }
 
@@ -1045,6 +1191,12 @@ function arraySchema(node: Record<string, unknown>, budget: Budget, depth: numbe
   // `{a:1,b:2}` and `{b:2,a:1}` are the same member, which is what the spec means by equal.
   const maxValueDepth = budget.bounds.maxDepth;
   return schema.superRefine((items, ctx) => {
+    // Fewer than two items is unique by definition — no canonicalization, so the value-depth bound below
+    // cannot refuse it. It was rejecting a single deeply-nested element for failing to prove something
+    // that needed no proof.
+    if (items.length < 2) {
+      return;
+    }
     const seen = new Set<string>();
     items.forEach((item, index) => {
       // **Bounded, because this walks MODEL OUTPUT, not the schema.** Every other recursion in this file

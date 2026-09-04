@@ -1,8 +1,7 @@
-import { basename, isAbsolute, relative } from 'node:path';
-
 import { parseAgent, type AgentDefinition } from '@relavium/core';
 import type { LlmProviderId, ReasoningEffort } from '@relavium/shared';
 
+import { sourceLabel } from '../process/source-label.js';
 import { resolveYamlSource } from '../workflows/resolve.js';
 import { buildDefaultChatAgent, DEFAULT_CHAT_MODEL } from './default-agent.js';
 
@@ -80,18 +79,4 @@ export function resolveChatAgentSource(
     agent: parseAgent(source.yaml, { source: sourceLabel(opts.cwd, source.path) }),
     artifact: source.path,
   };
-}
-
-/**
- * A user-facing label for a resolved file: relative to the caller's cwd, else its bare filename.
- *
- * `opts.cwd`, not `process.cwd()` — the resolver was already given a cwd, and computing the label against
- * a different one produces a path relative to nothing the caller chose. And `relative()` does not always
- * return a relative path: across Windows drives it returns an ABSOLUTE one, and an empty string when the
- * two are equal. Either would put back exactly what this function exists to keep out, so a basename is the
- * fallback — enough to identify the file, and it discloses no directory structure.
- */
-function sourceLabel(cwd: string, filePath: string): string {
-  const rel = relative(cwd, filePath);
-  return rel !== '' && !isAbsolute(rel) ? rel : basename(filePath);
 }

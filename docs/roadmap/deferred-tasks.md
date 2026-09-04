@@ -483,7 +483,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   a real cost — a nested-quantifier heuristic both misses cases and can falsely refuse a valid pattern
   (`CR-62` hit that class seven times in one wave); refusing `pattern` is ADR-0092's already-rejected (a1)
   and pushes authors back to unvalidated schemas; a linear-time matcher is a new runtime dependency needing
-  its own ADR. *(M · packages/shared/src/json-schema-compiler.ts)*
+  its own ADR.
+  **Partly mitigated the same day, after that ruling, by an option it did not have.** A declared
+  `maxLength` now GATES the pattern: the compiler builds `z.string()…pipe(z.string().regex(…))`, and a
+  pipeline returns INVALID without running its second schema — 8010 ms chained versus 0.1 ms piped on the
+  measurement above. So the residual is now specifically **a `pattern` with no `maxLength` beside it**;
+  json-schema-subset.md tells authors to declare one and says what happens when they do not. This note
+  described the hazard as wholly unmitigated for a day after it stopped being so.
+  *(M · packages/shared/src/json-schema-compiler.ts)*
 
 ## Phase 2.6.5 `W6` residuals — `CR-62` ([ADR-0093](../decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md), 2026-09-03)
 

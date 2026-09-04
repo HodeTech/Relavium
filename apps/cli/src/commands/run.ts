@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { relative } from 'node:path';
 
 import {
   type EffectCorrelation,
@@ -52,6 +51,7 @@ import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { guardMcpTeardown } from '../engine/mcp-signal-teardown.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { CliError } from '../process/errors.js';
+import { sourceLabel } from '../process/source-label.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -165,7 +165,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
 
   const source = resolveWorkflowSource(args.workflow, { cwd: deps.global.cwd, projectConfigDir });
 
-  const def = parseOrRefuse(source.yaml, relative(deps.global.cwd, source.path));
+  const def = parseOrRefuse(source.yaml, sourceLabel(deps.global.cwd, source.path));
   const inputs = resolveInputs(def, parseInputArgs(args.input));
 
   // Pre-flight provider keys: surface a missing key for an inline agent's PRIMARY provider as a clean
