@@ -165,3 +165,22 @@ nothing about this" case with an evaluation of the same expression in the REAL s
 assertion just restates the scanner's behaviour back to itself — which is how the claim survived being
 false in three documents at once.
 
+### Correction — 2026-09-04: an eighth shape, found after the wave was declared complete
+
+The amendment above says seven, and the table lists seven. There is an **eighth**, and it arrived the way
+the other seven did — from a review round rather than from the author.
+
+| shape | why it produced a false find | now |
+| --- | --- | --- |
+| `((r\u0075n) => run.outputs["ghost"])(…)` | a Unicode identifier ESCAPE: `r\u0075n` **is** the identifier `run` to JavaScript, so this is a shadowing binding — and it was not `run` to the scanner, which read the inner access as the scope's | a backslash anywhere in code position abandons the scan |
+
+Verified the way the contract requires: the same expression evaluates in the REAL sandbox against the local
+binding and never touches the scope, so refusing it was a false refusal.
+
+**Eight is the number to quote, and the fact that it kept moving is the finding.** Each correction closed
+the shape that had been reported and left the property it violated intact — the property being *"the base
+is a FREE reference to the sandbox global"*, which a character class cannot express. It now has a function
+with that name and a docblock saying why. The residue is recorded in
+[deferred-tasks.md](../roadmap/deferred-tasks.md) as *"a read the scan cannot confidently resolve"*, which
+is the phrasing that survives the next shape being found.
+

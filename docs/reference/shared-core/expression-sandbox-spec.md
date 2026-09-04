@@ -174,10 +174,10 @@ ADR. These numbers are the single source of truth; every surface uses them uncha
 > node that is not an ancestor. The scan is conservative by design — literal accesses only, silent where it
 > cannot tell, and it never synthesizes an edge.
 >
-> **The residue, stated rather than implied closed:** a computed or aliased read of a non-ancestor is not
+> **The residue, stated rather than implied closed:** a read the scan cannot confidently resolve — a computed key, an aliased binding, an identifier escape, or any expression whose literals it cannot lex — is not
 > caught by the scan, falls through to the narrowed scope, and still compares against `undefined`. Order such
 > producers with an explicit edge. Exhaustive detection needs VM-side observation, which ADR-0093 records as
-> the follow-up together with the ADR-0027 §3/§6 amendments it would require.
+> the follow-up. *(This sentence added "together with the ADR-0027 §3/§6 amendments it would require" until 2026-09-04. ADR-0093's own correction records that the objection does not apply to an accessor defined VM-SIDE, after `JSON.parse`: nothing live crosses the boundary, marshaling stays JSON-only and `Proxy` stays off. The real cost is that it can only fail AFTER the run has started.)*
 
 ## Error taxonomy
 

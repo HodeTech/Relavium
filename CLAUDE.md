@@ -56,7 +56,7 @@ browsers, competitor-breadth tools, settings/theming/`en`+`tr` localization, and
 run-ops resume follow-up.
 
 **An interlude is running between Wave 1 and Wave 2 of the remediation: Phase 2.6.5 (Core reliability),
-43 of 48 items closed** — `W0` (PR #82, 2026-08-11), `W1`, the eight P0 blockers plus `CR-92`, merged
+39 of 48 items closed** — `W0` (PR #82, 2026-08-11), `W1`, the eight P0 blockers plus `CR-92`, merged
 2026-08-24 (PR #83) behind [ADR-0078](docs/decisions/0078-ordered-durable-append-and-the-terminal-outbox.md)–[ADR-0084](docs/decisions/0084-consent-before-a-local-mcp-spawn.md):
 ordered durable append, cross-process run ownership, the durable effect journal, untrusted compaction summaries,
 the stream-grammar seam obligation, engine-side input admission and resume identity, and consent before a local
@@ -87,17 +87,19 @@ the network into the store under a size ceiling, an idle deadline and the run si
 to a content-addressed handle at first resolution; and a missing media rate is unpriced rather than a price of
 zero. A systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed
 before it merged. Two items closed one half of a two-part obligation and say so; every residual is written out
-rather than left inside a checked box. **`W6` (authoring correctness) is COMPLETE on `development` and awaiting
-review** behind [ADR-0091](docs/decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](docs/decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md):
+rather than left inside a checked box. **`W6` — authoring correctness — MERGED 2026-09-04 (PR #89)** behind [ADR-0091](docs/decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](docs/decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md):
 `merge_strategy: first` means first DECLARED and the plan field no longer claims otherwise; a widened tool grant
 is refused when the plan is BUILT rather than mid-run; an expression sees only its transitive dependency closure
 and a literal out-of-closure `run.outputs` read is refused at parse (as is `edges[].condition`, which nothing
 ever read); and an authored `output_schema` is compiled at parse in an allowlist-strict mode and enforced at run
 time — with **no new dependency**, because the JSON-Schema→Zod compiler the deferral claimed we needed already
-existed in `packages/mcp` and simply moved to `@relavium/shared`. Seven review rounds found that **most defects
+existed in `packages/mcp` and simply moved to `@relavium/shared`. Seven internal review rounds found that **most defects
 were in the FIXES rather than the code they repaired** — the branch-order search was wrong three times, the
-expression scan's no-false-refusal claim was false in seven ways, and a stand-down gate silently removed the
-check it was added to protect; each is a dated correction inside its own ADR.
+expression scan's no-false-refusal claim was false in eight ways, and a stand-down gate silently removed the
+check it was added to protect; each is a dated correction inside its own ADR. A systematic maintainer review
+then returned **two merge blockers**, both breaking a headline claim of the wave — `required` was not enforced
+when a property's schema constrained nothing, and the expression scanner's regex was quadratic and synchronous
+on a parser that accepts 2 MiB — plus eight further High findings, all reproduced and fixed before the merge.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);

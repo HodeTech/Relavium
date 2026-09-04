@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-08-28 — the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
+> Last updated: 2026-09-04 — the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
 > review added the deliberately-unscheduled block at the end, and Phase 2.6.5's `W1` and `W2` residual
 > sections were appended as those waves closed.
 >
@@ -509,8 +509,9 @@ here so the residue sits on a backlog rather than only inside an ADR's Negative 
 - [ ] **The scan is silent on more spellings than the documents say.** Every home describes the blind spot
   as "a computed key, an aliased binding, or a value flowing through a variable"; in fact the scan also
   abandons on any `/` it cannot classify as a comment (so any expression containing DIVISION is unscanned),
-  on a nested template literal, on an HTML-like comment, and on any `run` token not written as a member
-  access. Each is a deliberate bail toward silence — the alternative was a false refusal — but "computed or
+  on a nested template literal, on an HTML-like comment, on any `run` token not written as a member access,
+  and on any BACKSLASH in code position (an identifier escape — added 2026-09-04, and the list growing again
+  is itself the argument for the rewording below). Each is a deliberate bail toward silence — the alternative was a false refusal — but "computed or
   aliased" understates it. Either widen the coverage or make every home say *"a read the scan cannot
   confidently resolve"*. *(S · docs + packages/core/src/expression/literal-output-reads.ts)*
 - [ ] **A read of a node that is not in the workflow is reported by nothing, ever.** Not a hand-off to the

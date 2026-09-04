@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` merged 2026-09-02 (PR #88) behind ADR-0089 + ADR-0090 — a systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed before it merged. **`W6` (authoring correctness) is complete on `development` and awaiting review** — `CR-60`–`CR-64` behind [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md), 27 W6 work commits, seven review rounds. **The pattern of the wave is that most of what the rounds found were defects in the FIXES, not in the code they repaired** — the branch-order search was wrong three times, the expression scan's central soundness claim was false in seven ways, and one stand-down gate silently removed the check it was added to protect. Every one is recorded as a dated correction in its ADR rather than tidied away (43 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28)
+- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` merged 2026-09-02 (PR #88) behind ADR-0089 + ADR-0090 — a systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed before it merged. **`W6` — authoring correctness — MERGED 2026-09-04 (PR #89)** — `CR-60`–`CR-64` behind [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md), 32 commits — 27 of work across seven internal review rounds, then five folding four maintainer rounds on PR #89. **The maintainer review returned two merge blockers**, both of which broke a headline claim of the wave: deep validation did not enforce `required` when the property's schema constrained nothing (so `{ properties: { status: {} }, required: ['status'] }` accepted `{}`), and the expression scanner's regex was quadratic and synchronous (514 ms at 32 K of whitespace, on a parser that accepts 2 MiB, with no deadline able to interrupt it). Both reproduced and fixed before the merge, along with eight further High findings. **The pattern of the wave is that most of what the rounds found were defects in the FIXES, not in the code they repaired** — the branch-order search was wrong three times, the expression scan's central soundness claim was false in EIGHT ways, and one stand-down gate silently removed the check it was added to protect. Every one is recorded as a dated correction in its ADR rather than tidied away (39 of 48 items — the count says 39 and not 43 because W5's six items were counted TWICE: incrementally as they landed (28→32) and then wholesale when the wave closed (32→38), so the figure carried a +4 error into W6. `CR-95` is counted on its non-deferrable short-term half; its long-term half keeps the item on the board. `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28). **Two of the seventeen non-deferrable items remain open — `CR-73` and `CR-80` — so exit criterion 1 is not met today; that pair, not the arithmetic, is what gates the phase.**
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -1744,7 +1744,27 @@ an outage, not a cap. Break-verify by restoring the zero fallback.
 
 ---
 
-## W6 — Authoring correctness
+## W6 — Authoring correctness · ✅ MERGED 2026-09-04 (PR #89, [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md))
+
+> **Merged after four maintainer review rounds on the assembled PR**, the first a REQUEST CHANGES carrying
+> two blockers, the third a further blocker. All reproduced and fixed before the merge.
+>
+> | round | what it returned |
+> | --- | --- |
+> | 1 | 2 blockers + 6 High — `required` unenforced when a property's schema constrains nothing; the expression scanner's regex quadratic and synchronous |
+> | 2 | 1 real bug (a source label built from `process.cwd()` instead of the caller's) + the complexity/ternary set |
+> | 3 | 1 blocker — `format` + `minLength`/`maxLength` crashed the compiler, via an `as unknown as` cast CLAUDE.md rule 1 forbids |
+> | 4 | the widening diagnostic capped its output but not its work; a canonical row that lumped two different lenient behaviours together |
+>
+> **The pattern of the wave, and the reason each ADR carries dated corrections rather than a rewrite: most
+> of what the rounds found were defects in the FIXES, not in the code they repaired.** The branch-order
+> search was wrong three times, each in the mirror of the previous error. The expression scan's
+> no-false-refusal claim — the entire justification for a regex over a parser — was asserted in three
+> documents and false in **eight** distinct ways. A stand-down gate added to prevent a false refusal
+> silently removed the whole check it was protecting.
+>
+> **No closing register yet** (exit criterion 7) — owed for `W5` and `W6` alike.
+
 
 ### CR-60 — `merge_strategy: first` is not implemented as specified · High · ✅ **closed 2026-09-03**
 The canonical table said the first *resolved* branch wins. The engine waits for every branch to settle and the
@@ -1810,11 +1830,11 @@ is refused at parse. Narrowing alone fixes nothing — marshaling is JSON-only a
 absent id still compares silently false; it draws the boundary the scan enforces. `edges[].condition` — accepted
 by the schema, read by nothing, described by three descriptions across two documents as gating its edge — is
 refused at parse, and its pinning test is rewritten rather than deleted.
-**The scan's soundness claim was asserted in three places and false in seven ways.** ADR-0093 §2 justifies a
+**The scan's soundness claim was asserted in three places and false in EIGHT ways.** ADR-0093 §2 justifies a
 regex scan over a parser on one property: it never produces a FALSE REFUSAL. Two rounds found seven shapes that
 did — a `run` property on another object, the same separated by whitespace or a comment, a shadowing binding, a
 nested template literal, an odd-quoted regex shifting string parity, an HTML-like comment, and a Unicode
-identifier ending in `run`. Each is closed by ABANDONING the scan rather than lexing harder, and the claim now
+identifier ending in `run`, and — found after the wave was declared complete — a Unicode identifier ESCAPE, where `r\u0075n` is `run` to JavaScript and was not to the scanner. Each is closed by ABANDONING the scan rather than lexing harder, and the claim now
 has a test that can fail: every "says nothing" case is paired with an evaluation in the REAL sandbox proving the
 read is absent, because a false refusal is a disagreement between scanner and sandbox, not a property of either.
 **One stand-down gate removed the check it was protecting** — standing down for any unresolved `agent_ref` was
@@ -1824,7 +1844,7 @@ workflow built clean and silently lost all of CR-62's coverage. Per-node now.
 silent `false`) is written into [deferred-tasks.md](../deferred-tasks.md) rather than left inside an ADR's
 Negative section.
 
-### CR-63 — Agent `input_schema` runtime enforcement: verify the docs, do not implement · Low *(plan review)*
+### CR-63 — Agent `input_schema` runtime enforcement: verify the docs, do not implement · Low · ✅ **closed 2026-09-03**
 Split out of `CR-61` because it is a different contract with a different answer.
 [agent-yaml-spec.md](../../reference/contracts/agent-yaml-spec.md) states that `input_schema` is *"purely
 additive metadata — it drives type-safe node chaining and editor (VS Code) completion; it does not change
