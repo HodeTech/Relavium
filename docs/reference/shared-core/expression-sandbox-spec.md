@@ -40,7 +40,7 @@ Each expression is evaluated against a single **frozen, JSON-only** scope. The b
 | `inputs` | object | this node's resolved inputs (its declared `{{ … }}` references, already resolved) |
 | `ctx` | object | the workflow context/variables (the eager-once frozen snapshot, per [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md)) |
 | `run.outputs` | object keyed by **node id** | completed upstream node outputs, e.g. `run.outputs["classify"].sentiment` — **never** a bare `output` |
-| `branches` | array | **`merge_fn` only** — the branch outputs to combine, in the stable **`FanInPlanConfig.branchNodeIds` order** (the paired `parallel`'s `parallel_of` order, else the merge's incoming branches in authored order; never arrival/completion order — see [run-plan.md §fan-in branch order](run-plan.md)). `run.outputs` is also available, so a branch may be referenced by node id. |
+| `branches` | array | **`merge_fn` only** — the branch outputs to combine, in the stable **`FanInPlanConfig.branchNodeIds` order** (never arrival/completion order; the order itself is defined by [run-plan.md §fan-in branch order](run-plan.md)). `run.outputs` is also available, so a branch may be referenced by node id. |
 
 Rules:
 
@@ -166,13 +166,18 @@ ADR. These numbers are the single source of truth; every surface uses them uncha
 > object-vs-primitive mismatch as the tell of a non-marshalable result. The contract is therefore
 > slightly stricter than raw JSON-serializability: **return a plain primitive**, never a wrapper.
 >
-> **Unsettled `run.outputs` reads (hazard).** A JS-expression `run.outputs["x"]` read is **not** wired
-> as a dependency edge by the DAG builder (1.M) — only `{{ … }}` template references are (see
-> [run-plan.md](run-plan.md#the-dependency-graph)). So if a `condition`/`transform`/`merge_fn` reads a
-> producer it is not transitively ordered after, it sees `undefined`: a dereference throws a loud
-> `runtime` error, but a bare comparison (`run.outputs["x"] === "ready"`) silently compares against
-> `undefined` and can mis-route. Order such producers with an explicit edge; a future 1.P handler may
-> fail closed on an unsettled reference.
+> **Unsettled `run.outputs` reads.** A JS-expression `run.outputs["x"]` read is still **not** wired as a
+> dependency edge by the DAG builder — only `{{ … }}` template references are. Since
+> [ADR-0093](../../decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md) two rules bound the
+> consequence: the injected `run.outputs` contains only the reading node's **transitive dependency closure**,
+> and the builder **refuses at parse** a literal `run.outputs["id"]` / `run.outputs.id` access naming a
+> node that is not an ancestor. The scan is conservative by design — literal accesses only, silent where it
+> cannot tell, and it never synthesizes an edge.
+>
+> **The residue, stated rather than implied closed:** a computed or aliased read of a non-ancestor is not
+> caught by the scan, falls through to the narrowed scope, and still compares against `undefined`. Order such
+> producers with an explicit edge. Exhaustive detection needs VM-side observation, which ADR-0093 records as
+> the follow-up together with the ADR-0027 §3/§6 amendments it would require.
 
 ## Error taxonomy
 

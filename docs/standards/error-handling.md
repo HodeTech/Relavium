@@ -163,9 +163,14 @@ inside the core.
 ([ADR-0030](../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md))
 is a **request-side hint only** — no adapter validates the response against it, and DeepSeek degrades
 to bare `json_object` with no schema. So the `AgentRunner` (1.O) lowers `output_schema` to
-`responseFormat` **and** validates the returned content node-side. **Phase-1 scope is parse-as-JSON
-only**: an output that does **not parse as valid JSON** maps to `code: 'validation'` (`retryable:
-false` — a re-ask is a node-retry/authoring concern, not a node-level loop); a schema-violating but
-valid-JSON output is **not** yet rejected. **Deep JSON-Schema conformance is a deferred follow-up** (it
-needs a JSON-Schema validator dependency behind an ADR — Zod cannot consume an arbitrary JSON-Schema).
+`responseFormat` **and** validates the returned content node-side. The check is **two steps**: an output that
+does **not parse as valid JSON** maps to `code: 'validation'` (`retryable: false` — a re-ask is a
+node-retry/authoring concern, not a node-level loop), and an output that parses but **violates the
+schema** maps to the same code. Conformance is checked against the schema compiled from the authored
+`output_schema` ([ADR-0092](../decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md)),
+using an allowlist-strict JSON-Schema subset: a construct outside the subset is refused **at parse**, so a
+schema is never accepted and then left unenforced. *(This clause read "Phase-1 scope is parse-as-JSON only…
+deep conformance is a deferred follow-up, it needs a validator dependency behind an ADR" until 2026-09-02.
+The dependency premise was false — the project already owned a dependency-free JSON-Schema compiler, written
+for the hostile-MCP boundary; what it needed was a strict mode, not a vendor.)*
 See [agent-runner.md](../reference/shared-core/agent-runner.md).

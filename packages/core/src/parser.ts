@@ -29,6 +29,7 @@ import {
   type WorkflowIssue,
 } from './errors.js';
 import { analyzePreRunReferences, analyzeSecretTaint } from './interpolation/analyze.js';
+import { outputSchemaRefusals } from './output-schema.js';
 import { decodeHardenedYaml } from './yaml-decode.js';
 
 /** The validated workflow document — `@relavium/shared`'s `Workflow`, under a parser-local alias. */
@@ -110,16 +111,33 @@ export function parseWorkflow(yamlText: string, opts?: ParseWorkflowOptions): Wo
   }
   const definition = result.data;
 
-  // Static interpolation gates (1.L2) over the now-typed definition — both read structure only.
+  assertStaticGates(definition, source);
+  return definition;
+}
+
+/**
+ * The post-schema gates every parse runs over the now-typed definition: the 1.L2 interpolation analyses
+ * (structure only) and the `output_schema` compile.
+ *
+ * **`output_schema` is compiled HERE, which is what "at parse" meant** ([ADR-0092](../../../docs/decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md)
+ * §3). It ran only at plan build, so `parseWorkflow` returned a document the canonical contract calls
+ * invalid — and import/export and the catalog, which parse without building a plan, carried it as valid.
+ * The DAG builder keeps its own check as defence in depth.
+ */
+function assertStaticGates(definition: WorkflowDefinition, source: string | undefined): void {
+  const at = source === undefined ? undefined : { source };
   const preRunIssues = analyzePreRunReferences(definition);
   if (preRunIssues.length > 0) {
-    throw new WorkflowValidationError(preRunIssues, source === undefined ? undefined : { source });
+    throw new WorkflowValidationError(preRunIssues, at);
   }
   const leaks = analyzeSecretTaint(definition);
   if (leaks.length > 0) {
-    throw new WorkflowSecretLeakError(leaks, source === undefined ? undefined : { source });
+    throw new WorkflowSecretLeakError(leaks, at);
   }
-  return definition;
+  const refusals = outputSchemaRefusals(definition);
+  if (refusals.length > 0) {
+    throw new WorkflowValidationError(refusals, at);
+  }
 }
 
 /** Normalize ANY parse-stage throw (a YAML fault, an anchor/alias `ReferenceError`, …) to a typed error. */

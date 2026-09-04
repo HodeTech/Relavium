@@ -22,7 +22,13 @@
  * §Complete example) — no extra vertex is synthesized.
  */
 
-import type { Agent, EngineNodeType, Workflow, WorkflowNode } from '@relavium/shared';
+import {
+  byCodeUnit,
+  type Agent,
+  type EngineNodeType,
+  type Workflow,
+  type WorkflowNode,
+} from '@relavium/shared';
 
 import {
   WorkflowGraphError,
@@ -32,6 +38,8 @@ import {
 } from './errors.js';
 import { analyzeResolvedAgentTaint } from './interpolation/analyze.js';
 import { nodeReferenceSites } from './interpolation/collect.js';
+import { literalOutputReads } from './expression/literal-output-reads.js';
+import { compileOutputSchema } from './output-schema.js';
 import { templateReferences } from './interpolation/references.js';
 import { byId, collectAgentCeilingIssues, collectWorkflowCeilingIssues } from './limits.js';
 import type { JoinStrategy, PlanConfig, PlanVertex, RunPlan } from './run-plan.js';
@@ -55,6 +63,23 @@ export interface BuildRunPlanOptions {
    * secret-taint gate. When omitted, `agent_ref` resolution is deferred (no dangling check).
    */
   readonly agents?: ReadonlyMap<string, Agent>;
+  /**
+   * The host asserts every referenced agent's tool grant is FINAL — its `mcp_servers` are connected and the
+   * workflow has been rewritten so each agent's `tools` includes what they discovered
+   * ([ADR-0094](../../../docs/decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md)).
+   *
+   * This exists because the narrowing check below cannot be correct without it. An agent that declares
+   * `mcp_servers` has a grant that is not knowable from the document alone: refusing a node against the
+   * un-augmented grant would reject a workflow that is about to be valid. So the check runs for such an
+   * agent ONLY when a host says the grant is final — which `relavium run` does, by connecting its servers
+   * and augmenting the workflow BEFORE it calls `engine.start()`.
+   *
+   * An agent that declares no `mcp_servers` is checked either way: its grant is complete in the document,
+   * and no ordering can change that. Absent ⇒ not asserted, so an MCP-declaring agent's nodes are skipped
+   * and the runtime `resolveGrant` check remains their only line — never silently, see the residual in
+   * deferred-tasks.md.
+   */
+  readonly toolGrantsFinal?: boolean;
 }
 
 /** Mirrors parser.ts: only a value matching its field's schema charset is echoed into an error. */
@@ -140,7 +165,15 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
   // a compile step they never see. They join the same `issues` batch as every other graph fault, so an
   // author sees all of them at once instead of fixing one per run.
   collectCeilingIssues(def, agentsById, issues);
-  validateAndWireEdges(spec, nodesById, agentsById, opts?.agents !== undefined, addEdge, issues);
+  validateAndWireEdges(
+    spec,
+    nodesById,
+    agentsById,
+    opts?.agents !== undefined,
+    addEdge,
+    issues,
+    opts?.toolGrantsFinal === true,
+  );
 
   // 4. Kahn topological order (authored-order tie-break → reproducible plan; deep-equal-testable).
   const order = kahnOrder(spec.nodes, dependents, dependencies, authoredIndex);
@@ -156,6 +189,12 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
     });
   }
 
+  // 4b. The authoring checks that need the finished graph (ADR-0093 §2, ADR-0092 §3). Run here rather than
+  // after the throw because they are AUTHORING errors and must ride the same report as every other one —
+  // an author fixing a graph should see all of it at once.
+  const ancestors = collectClosureIssues(spec, order, dependencies, agentsById, issues);
+  collectOutputSchemaIssues(spec, agentsById, issues);
+
   if (issues.length > 0) {
     throw new WorkflowGraphError(issues, sourceOpt);
   }
@@ -165,14 +204,16 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
   const byAuthored = (a: string, b: string): number =>
     (authoredIndex.get(a) ?? 0) - (authoredIndex.get(b) ?? 0);
   const mergeBranchOrder = computeMergeBranchOrder(spec, dependencies, authoredIndex);
+  const outputFeeders = computeOutputFeeders(spec, dependencies);
   for (const node of spec.nodes) {
     vertices.set(node.id, {
       id: node.id,
       type: engineType(node),
       dependencies: [...(dependencies.get(node.id) ?? [])].sort(byAuthored),
       dependents: [...(dependents.get(node.id) ?? [])].sort(byAuthored),
+      ancestors: ancestors.get(node.id) ?? [],
       inputSites: nodeReferenceSites(node),
-      config: buildConfig(node, agentsById, mergeBranchOrder),
+      config: buildConfig(node, agentsById, mergeBranchOrder, outputFeeders),
     });
   }
 
@@ -199,7 +240,10 @@ function validateAndWireEdges(
   registrySupplied: boolean,
   addEdge: (producer: string, consumer: string) => void,
   issues: GraphIssue[],
+  grantsFinal: boolean,
 ): void {
+  /** One granted-set per resolved agent, for the whole pass — see `collectToolGrantIssues`. */
+  const grantedByAgent = new Map<Agent, ReadonlySet<string>>();
   // 3a. Structural edges + handle validation.
   spec.edges.forEach((edge, i) => validateStructuralEdge(edge, i, nodesById, addEdge, issues));
 
@@ -210,7 +254,15 @@ function validateAndWireEdges(
     } else if (node.type === 'condition') {
       wireConditionNode(node, nodesById, addEdge, issues);
     } else if (node.type === 'agent') {
-      validateAgentNode(node, agentsById, registrySupplied, nodesById, addEdge, issues);
+      validateAgentNode(node, {
+        agentsById,
+        registrySupplied,
+        nodesById,
+        addEdge,
+        issues,
+        grantsFinal,
+        grantedByAgent,
+      });
     }
     wireOwnDataEdges(node, addEdge);
   }
@@ -387,15 +439,96 @@ function wireConditionNode(
   }
 }
 
-/** Validate an `agent` node's `agent_ref` and wire data edges from the resolved agent's system prompt. */
-function validateAgentNode(
+/**
+ * A node's `tools:` may only NARROW its agent's grant (ADR-0029 §b). This is where that is enforced —
+ * before a run id exists ([ADR-0094](../../../docs/decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md)).
+ *
+ * Two ADRs, a third by attribution, and the binding `security-review.md` all said the PARSER enforced this.
+ * None of them did: nothing in `parser.ts`, `dag.ts` or `run-plan.ts` read `tools` at all, and the only real
+ * check was `resolveGrant` in the node executor — reached after the run had started and after upstream nodes
+ * had spent money. The security boundary held; its stated location did not.
+ *
+ * **The locator is POSITIONAL and the tool value is never echoed.** `node.tools` is validated only as a
+ * non-empty string — no charset, no length bound — so an authored tool id can carry a newline, a terminal
+ * escape, or secret-shaped text, and a `GraphIssue` is surfaced and logged. This file already keeps that
+ * rule for an invalid edge handle (`edge #n`); a widened grant is reported the same way.
+ */
+/**
+ * At most this many widening positions are reported per node; the rest are counted.
+ *
+ * `node.tools` carries no length ceiling, so one node can name hundreds of thousands of ungranted tools —
+ * measured: a 400 KB workflow produced 200,000 issues and ~55 MB of strings, synchronously, inside
+ * `buildRunPlan`. Amplifying an unbounded authored array into an unbounded issue array is the shape
+ * [ADR-0086](../../../docs/decisions/0086-absolute-admission-ceilings-on-authored-values.md) exists to stop,
+ * and the same summarize-and-count answer is already used for held nodes and skipped runs elsewhere.
+ */
+export const MAX_REPORTED_WIDENINGS = 10;
+
+function collectToolGrantIssues(
   node: AgentNode,
-  agentsById: ReadonlyMap<string, Agent>,
-  registrySupplied: boolean,
-  nodesById: ReadonlyMap<string, WorkflowNode>,
-  addEdge: AddEdge,
+  agent: Agent,
+  grantsFinal: boolean,
   issues: GraphIssue[],
+  grantedByAgent: Map<Agent, ReadonlySet<string>>,
 ): void {
+  const narrowed = node.tools;
+  if (narrowed === undefined || narrowed.length === 0) {
+    // Nothing to report: an empty list can contain no widening entry. (At DISPATCH an empty `tools:` narrows
+    // the grant to NOTHING — `resolveGrant` returns `nodeTools` — so this early return is about what can be
+    // FOUND here, not about what the grant becomes.)
+    return;
+  }
+  // An agent whose grant depends on an MCP server it has not connected is not knowable from the document.
+  // Skip rather than guess — refusing here would reject a workflow that is about to be valid.
+  if ((agent.mcp_servers ?? []).length > 0 && !grantsFinal) {
+    return;
+  }
+  // MEMOIZED per agent, not per node. Built inline, this rebuilt the granted Set on every agent node:
+  // measured at the admission ceilings (499 nodes, a 130k-tool grant, a file well under `MAX_SOURCE_CHARS`)
+  // it cost 2165 ms of synchronous CPU inside `engine.start()`, against 1 ms for the same graph with a small
+  // grant. The plan is built on the load path of every surface, so that is a stall before a run id exists.
+  let granted = grantedByAgent.get(agent);
+  if (granted === undefined) {
+    granted = new Set(agent.tools ?? []);
+    grantedByAgent.set(agent, granted);
+  }
+  let reported = 0;
+  let widened = 0;
+  narrowed.forEach((tool, index) => {
+    if (granted.has(tool)) return;
+    widened += 1;
+    if (reported >= MAX_REPORTED_WIDENINGS) return;
+    reported += 1;
+    issues.push({
+      kind: 'tool_grant_widened',
+      field: `node \`${node.id}\`.tools[${index}]`,
+      message: `this node's \`tools\` names a tool that agent \`${node.agent_ref}\` was not granted — a node may only narrow the grant, never widen it`,
+    });
+  });
+  if (widened > reported) {
+    issues.push({
+      kind: 'tool_grant_widened',
+      field: `node \`${node.id}\`.tools`,
+      message: `and ${widened - reported} further entries name tools that agent \`${node.agent_ref}\` was not granted (${reported} of ${widened} shown)`,
+    });
+  }
+}
+
+/** Validate an `agent` node's `agent_ref` and wire data edges from the resolved agent's system prompt. */
+/** The agent-resolution context threaded through the node walk — one object, not eight positionals. */
+interface AgentValidationContext {
+  readonly agentsById: ReadonlyMap<string, Agent>;
+  readonly registrySupplied: boolean;
+  readonly nodesById: ReadonlyMap<string, WorkflowNode>;
+  readonly addEdge: AddEdge;
+  readonly issues: GraphIssue[];
+  readonly grantsFinal: boolean;
+  readonly grantedByAgent: Map<Agent, ReadonlySet<string>>;
+}
+
+function validateAgentNode(node: AgentNode, ctx: AgentValidationContext): void {
+  const { agentsById, registrySupplied, nodesById, addEdge, issues, grantsFinal, grantedByAgent } =
+    ctx;
   if (registrySupplied && !agentsById.has(node.agent_ref)) {
     issues.push({
       kind: 'dangling_ref',
@@ -407,6 +540,7 @@ function validateAgentNode(
   const agent = agentsById.get(node.agent_ref);
   if (agent !== undefined) {
     wireDataEdges(agent.system_prompt, node.id, nodesById, addEdge);
+    collectToolGrantIssues(node, agent, grantsFinal, issues, grantedByAgent);
   }
 }
 
@@ -618,11 +752,59 @@ function engineType(node: WorkflowNode): EngineNodeType {
 }
 
 /**
+ * Does a vertex of this authored type produce a value a downstream aggregation can consume?
+ *
+ * **A positive list with an exhaustiveness guard, deliberately — not a `!== 'condition'` denylist.** The
+ * first version of this rule was a denylist naming `condition`, justified by a claim that `parallel` could
+ * not reach a merge. That claim was false (see the ADR-0091 amendment's 2026-09-03 correction), and a
+ * denylist is exactly the shape that lets the next non-producing node type reopen the defect in silence.
+ * Adding a ninth `WorkflowNode` type now fails to compile here until someone decides which side it is on.
+ *
+ * `condition` returns `{ kind: 'branch' }` with no output; `parallel` (fan_out) completes with a control
+ * `null`. Both are still real dependencies — they gate their dependents and take part in skip-propagation —
+ * they just carry no value.
+ */
+function producesValue(type: WorkflowNode['type']): boolean {
+  switch (type) {
+    case 'condition':
+    case 'parallel':
+      return false;
+    case 'input':
+    case 'output':
+    case 'transform':
+    case 'agent':
+    case 'merge':
+    case 'human_gate':
+      return true;
+    default: {
+      const exhaustive: never = type;
+      throw new Error(`producesValue: unclassified node type '${String(exhaustive)}'`);
+    }
+  }
+}
+
+/**
  * The stable branch order a `fan_in` (merge) vertex exposes to a `custom` `merge_fn` and `concat`.
  * Order = the paired `parallel`'s `parallel_of` declaration order when this merge joins exactly the
  * branches of one parallel (the common authored shape), else the merge's incoming branches in authored
  * order. A merge's `dependencies` are authored-index-sorted, which is NOT `parallel_of` order, so the
  * run loop / sandbox cannot reconstruct it from the vertex — the builder pins it here.
+ *
+ * **A non-producing predecessor is a CONTROL edge, not a branch** ({@link producesValue}; ADR-0091,
+ * amended 2026-09-03). A `condition` returns `{ kind: 'branch' }` and no output and a `parallel` completes
+ * with a control `null`, yet the engine marks both `completed`, so each lands in the completed-output map
+ * and satisfies the fan-in handler's `runOutputs.has(id)` guard — a PHANTOM branch. Measured: with a
+ * condition authored before the working branch, `first` returned that phantom and threw the real answer
+ * away, and the run exited 0; moving two lines in the YAML changed the workflow's output. `concat` gained
+ * a leading `undefined` and a `custom` `merge_fn` saw every authored index shifted by one. (`object_merge`
+ * alone failed loudly, which is why this survived.) They stay in `dependencies` — the merge still waits for
+ * them and skip-propagation is unaffected — they just contribute no value.
+ *
+ * **A `parallel` reaches a merge through `parallel_of`, not through an edge.** An earlier version of this
+ * comment said a parallel could not get here because an edge from a `parallel` to a node outside its own
+ * `parallel_of` is refused at parse. True, and irrelevant: `parallel_of: [work, join]` names the merge
+ * INSIDE `parallel_of`, so the builder materializes the fan-out edge itself and it never meets that
+ * validator. Reproduced: `first` returned `null` and discarded the real branch, exit 0.
  */
 function computeMergeBranchOrder(
   spec: WorkflowSpec,
@@ -632,27 +814,329 @@ function computeMergeBranchOrder(
   const byAuthored = (a: string, b: string): number =>
     (authoredIndex.get(a) ?? 0) - (authoredIndex.get(b) ?? 0);
   const parallels = spec.nodes.filter((n): n is ParallelNode => n.type === 'parallel');
+  const typeById = new Map(spec.nodes.map((n) => [n.id, n.type]));
   const order = new Map<string, readonly string[]>();
   for (const node of spec.nodes) {
     if (node.type !== 'merge') {
       continue;
     }
     const preds = dependencies.get(node.id) ?? new Set<string>();
-    // The paired parallel: the authored-first parallel ALL of whose `parallel_of` members feed this
-    // merge directly. Then branches follow `parallel_of` order, with any extra (non-parallel) incoming
-    // branches appended in authored order; with no unique pairing, fall back to authored order.
-    const paired = parallels.find(
-      (p) => p.parallel_of.length > 0 && p.parallel_of.every((m) => preds.has(m)),
-    );
+    // **The paired parallel: the one that SUPPLIES the most of this merge's value-producing branches**,
+    // ties broken by authored order. Branches then follow its `parallel_of` order, with any extra
+    // incoming branches appended in authored order; with no pairing, fall back to authored order.
+    //
+    // Two earlier shapes of this search were wrong in OPPOSITE directions, which is why it now ranks
+    // rather than taking the first structural match:
+    //
+    //   - Filtering the predecessors BEFORE the search meant a `parallel_of` listing a condition
+    //     alongside real branches no longer satisfied `every(...)`, so the pairing was LOST and the
+    //     survivors fell back from `parallel_of` order to authored order. Measured on
+    //     `parallel_of: [cond, c, b]`: survivors came out `[b, c]` where the author declared `[c, b]`.
+    //   - Searching the UNFILTERED predecessors let a parallel that supplies NO value win the pairing:
+    //     two parallels feeding one merge, one fanning out guard conditions and one the real work — the
+    //     guard parallel matched first, every real branch fell into `extras`, and the same authored-order
+    //     reordering came back through the opposite door.
+    //
+    // Ranking by coverage subsumes both, and repairs a pre-existing weakness neither caused: a parallel
+    // whose `parallel_of` is a strict SUBSET of another's used to out-rank the exact match purely by
+    // being authored first, discarding the exact match's declared order.
+    const producing = (id: string): boolean => {
+      const type = typeById.get(id);
+      // An id with no node is unreachable — `preds` come from edges the validator already resolved — so
+      // treat it as producing rather than silently dropping a branch on a lookup miss. A phantom branch
+      // is a wrong answer; a dropped real branch is also one, and this must not invent one.
+      return type === undefined || producesValue(type);
+    };
+    let paired: ParallelNode | undefined;
+    let bestCover = 0;
+    for (const p of parallels) {
+      // `parallel_of` may name the MERGE ITSELF — the builder materializes that fan-out edge from
+      // `parallel_of`, so it never meets the explicit-edge validator — and a merge is never its own
+      // predecessor, so without this exemption that reachable, sanctioned shape could never pair.
+      if (
+        p.parallel_of.length === 0 ||
+        !p.parallel_of.every((m) => m === node.id || preds.has(m))
+      ) {
+        continue;
+      }
+      const cover = p.parallel_of.filter((m) => m !== node.id && producing(m)).length;
+      // Strictly greater, so the authored-FIRST parallel still wins a tie (the previous behaviour). A
+      // candidate that covers nothing never pairs at all: `bestCover` starts at 0.
+      if (cover > bestCover) {
+        paired = p;
+        bestCover = cover;
+      }
+    }
+    let ordered: readonly string[];
     if (paired === undefined) {
-      order.set(node.id, [...preds].sort(byAuthored));
+      ordered = [...preds].sort(byAuthored);
     } else {
       const members = new Set(paired.parallel_of);
       const extras = [...preds].filter((m) => !members.has(m)).sort(byAuthored);
-      order.set(node.id, [...paired.parallel_of, ...extras]);
+      // The merge's own id is dropped EXPLICITLY, not by the value filter: `producesValue('merge')` is
+      // true, so a merge listed in its own driving `parallel_of` would otherwise be a branch of itself.
+      ordered = [...paired.parallel_of.filter((m) => m !== node.id), ...extras];
     }
+    order.set(node.id, ordered.filter(producing));
   }
   return order;
+}
+
+/**
+ * Compute the closure and run the out-of-closure read check, when the graph is complete enough to trust.
+ *
+ * Returns the closure so the plan can carry it. Empty when the check stands down — the vertices then get
+ * an empty `ancestors`, which is correct: the build is about to throw.
+ *
+ * **Skipped on a CYCLE.** `ancestors` would be built from a truncated Kahn order and every closure below
+ * the cut would be wrong, so a cycle would produce a page of confident, invented "not ordered after"
+ * findings on top of the real problem.
+ *
+ * **Skipped over a CEILING.** The fold is Θ(V²) worst case — a chain of N nodes retains N²/2 ids — and an
+ * over-ceiling file already has its `ceiling_exceeded` issue waiting to be thrown. Computing the closure
+ * first meant a 15 000-node file did the whole fold before being told it was rejected: measured 4.8 s at
+ * n=10 000 and an OOM above that. A rejection must not be more expensive than an acceptance.
+ *
+ * **Skipped PER NODE for an unresolved agent.** A resolved agent's `system_prompt` wires data edges, so
+ * building without the optional registry — which `BuildRunPlanOptions.agents` documents as supported, and
+ * which is what every current caller does — yields a SMALLER closure, and a refusal from a smaller closure
+ * points the wrong way. A first version stood the WHOLE check down for it: sound, and far too broad, since
+ * an unresolved `$ref` raises no issue at all without a registry, so such a workflow built clean AND
+ * silently lost the entire `CR-62` check. The missing edges all run PRODUCER → AGENT, so they can only add
+ * ancestors to nodes DOWNSTREAM of that agent; every other reading node keeps its check.
+ */
+function collectClosureIssues(
+  spec: WorkflowSpec,
+  order: readonly string[],
+  dependencies: ReadonlyMap<string, ReadonlySet<string>>,
+  agentsById: ReadonlyMap<string, Agent>,
+  issues: GraphIssue[],
+): ReadonlyMap<string, readonly string[]> {
+  const sound =
+    order.length === spec.nodes.length && !issues.some((i) => i.kind === 'ceiling_exceeded');
+  if (!sound) {
+    return new Map<string, readonly string[]>();
+  }
+  const ancestors = computeAncestors(order, dependencies);
+  const unresolvedAgentIds = new Set(
+    spec.nodes.flatMap((n) => (n.type === 'agent' && !agentsById.has(n.agent_ref) ? [n.id] : [])),
+  );
+  collectUnorderedReadIssues(spec, ancestors, issues, unresolvedAgentIds);
+  return ancestors;
+}
+
+/**
+ * Each vertex's **transitive dependency closure** — every vertex it is ordered after — keyed by id, in
+ * deterministic code-unit order.
+ *
+ * This is the scope a `condition` / `transform` / `merge_fn` may read ([ADR-0093](../../../docs/decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md)
+ * §1). Before it, an expression's `run.outputs` held EVERY completed node, so a `condition` could read a
+ * node it is not ordered after and compare against whatever that node happened to hold — or, more often,
+ * against `undefined`, because the producer had not run yet. `undefined === 'approved'` is `false`, so the
+ * run took the false branch and continued as though the author's rule had been evaluated. It had not.
+ *
+ * Computed by one pass over the Kahn order, which is already complete here (a cycle throws above), so each
+ * dependency's own closure is final before it is folded in: O(V + E) unions rather than a walk per vertex.
+ *
+ * **Narrowing alone fixes nothing** — a property the host omits is simply absent in the VM, and an absent
+ * id still compares silently false (ADR-0027 §3 makes marshaling JSON-only, so there is no getter to throw
+ * from). It is the boundary the parse-time scan then enforces; the two ship together, and ADR-0093's
+ * Negative section records what neither closes.
+ */
+function computeAncestors(
+  order: readonly string[],
+  dependencies: ReadonlyMap<string, ReadonlySet<string>>,
+): Map<string, readonly string[]> {
+  const sets = new Map<string, Set<string>>();
+  for (const id of order) {
+    const acc = new Set<string>();
+    for (const dep of dependencies.get(id) ?? []) {
+      acc.add(dep);
+      // Final by construction: `dep` precedes `id` in a topological order.
+      for (const inherited of sets.get(dep) ?? []) {
+        acc.add(inherited);
+      }
+    }
+    sets.set(id, acc);
+  }
+  const ancestors = new Map<string, readonly string[]>();
+  for (const [id, set] of sets) {
+    ancestors.set(id, [...set].sort(byCodeUnit));
+  }
+  return ancestors;
+}
+
+/**
+ * Refuse a `condition` / `transform` / `merge_fn` that LITERALLY reads the output of a node it is not
+ * ordered after ([ADR-0093](../../../docs/decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md)
+ * §2) — before a run id exists, which is the property `W6` is about.
+ *
+ * The scope narrowing alone cannot do this. Marshaling is JSON-only (ADR-0027 §3) and `Proxy` is never
+ * created, so an out-of-closure id is just absent in the VM: `undefined === 'approved'` is `false`, the
+ * `condition` takes the false branch, and the run continues as though the author's rule had been
+ * evaluated. Narrowing actually makes that MORE frequent — more ids absent — which is why the two ship
+ * together and why this one has to be loud.
+ *
+ * **Deliberately incomplete, and its incompleteness is silent.** Only a literal access naming a node that
+ * EXISTS in the workflow is refused. A computed key, a rebound `run`, or any text the masker cannot
+ * confidently lex says nothing here, because the scan cannot see them.
+ *
+ * **A read of a node that is not in the workflow is reported by NOTHING, ever, and that is a residue
+ * rather than a hand-off.** An earlier version of this comment said it was "the runtime resolver's job" —
+ * it is not: `unresolved_reference` covers TEMPLATE fields, and run-plan.md §data edges states plainly
+ * that expression fields are not templates and never produce it. There is no second opinion to avoid
+ * disagreeing with. It is left alone here for a narrower reason — refusing an unknown id would make every
+ * bracket key in a mis-anchored match refusable, which is the false-refusal direction — and it is recorded
+ * in deferred-tasks.md rather than implied closed.
+ */
+function collectUnorderedReadIssues(
+  spec: WorkflowSpec,
+  ancestors: ReadonlyMap<string, readonly string[]>,
+  issues: GraphIssue[],
+  unresolvedAgentIds: ReadonlySet<string>,
+): void {
+  const nodeIds = new Set(spec.nodes.map((n) => n.id));
+  for (const node of spec.nodes) {
+    const visible = new Set(ancestors.get(node.id) ?? []);
+    // An unresolved agent among this node's ancestors means the closure below it is incomplete — that
+    // agent's `system_prompt` would have wired producer edges this build never saw. Only THIS node stands
+    // down; every reading node not downstream of one keeps its check.
+    if (unresolvedAgentIds.size > 0 && [...visible].some((id) => unresolvedAgentIds.has(id))) {
+      continue;
+    }
+    for (const site of expressionSites(node)) {
+      for (const read of literalOutputReads(site.text)) {
+        // Not a node of this workflow: reported by nothing, deliberately (see the docblock).
+        if (!nodeIds.has(read.id) || visible.has(read.id)) {
+          continue;
+        }
+        issues.push({
+          kind: 'unordered_output_read',
+          field: `node \`${node.id}\`.${site.field}`,
+          // Both names are node IDS, never authored values — the invariant in errors.ts. The expression
+          // TEXT is never echoed: it is authored, and an author can put anything in it.
+          message: unorderedReadMessage(node.id, read.id),
+        });
+      }
+    }
+  }
+}
+
+/**
+ * The JS-expression fields on a node that this scan reads. A node has at most one.
+ *
+ * Only a `custom` merge EVALUATES its `merge_fn` (fan-in.ts switches on `mergeStrategy`), and the schema
+ * does not reject a `merge_fn` on the other strategies. Scanning one the engine never runs would refuse a
+ * workflow over an expression that has no effect. Whether such a `merge_fn` should itself be refused is a
+ * separate decision and must not ride in here as a side effect of this scan.
+ */
+function expressionSites(
+  node: WorkflowNode,
+): ReadonlyArray<{ readonly field: string; readonly text: string }> {
+  if (node.type === 'condition') {
+    return [{ field: 'expression', text: node.expression }];
+  }
+  if (node.type === 'transform') {
+    return [{ field: 'transform', text: node.transform }];
+  }
+  if (node.type === 'merge' && node.merge_strategy === 'custom' && node.merge_fn !== undefined) {
+    return [{ field: 'merge_fn', text: node.merge_fn }];
+  }
+  return [];
+}
+
+/**
+ * The refusal text. **Only ONE remedy is named, because only one exists here.** An earlier wording also
+ * offered "reference it from a template field so the builder orders them" — but `nodeReferenceSites`
+ * returns template sites for `agent` and `human_gate` nodes only, and a `condition`, `transform` or
+ * `merge` has no template field at all. A remedy the author cannot perform is worse than no remedy: it
+ * sends them looking for a field that does not exist.
+ */
+function unorderedReadMessage(readerId: string, readId: string): string {
+  // A node's OWN id is a self-read, which the cycle check cannot see because no edge exists. It is still
+  // an out-of-closure read and is reported by the same rule rather than a special case.
+  return readId === readerId
+    ? `this expression reads \`run.outputs\` of its own node \`${readerId}\`, which cannot have produced an output yet`
+    : `this expression reads \`run.outputs\` of node \`${readId}\`, which node \`${readerId}\` is not ordered after — add an edge from \`${readId}\` so the builder orders them`;
+}
+
+/**
+ * Compile every authored `output_schema` in `strict` mode, turning a refusal into an authoring error
+ * ([ADR-0092](../../../docs/decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md)
+ * §3) — before a run id exists, and before a model call is paid for.
+ *
+ * The compile is memoized on the schema object, so the validator the run later enforces is the very one
+ * checked here: a schema cannot be accepted at parse and then fail to build at dispatch.
+ */
+function collectOutputSchemaIssues(
+  spec: WorkflowSpec,
+  agentsById: ReadonlyMap<string, Agent>,
+  issues: GraphIssue[],
+): void {
+  const check = (schema: unknown, field: string): void => {
+    if (schema === undefined || typeof schema !== 'object' || schema === null) {
+      return;
+    }
+    const compiled = compileOutputSchema(schema);
+    if (!compiled.ok) {
+      issues.push({
+        kind: 'invalid_output_schema',
+        field,
+        // `reason` names a PUBLISHED JSON-Schema keyword or nothing at all — the compiler decides that,
+        // and never echoes an authored key or value (errors.ts's rule).
+        message: `this \`output_schema\` is outside the supported subset: ${compiled.reason}`,
+      });
+    }
+  };
+  for (const node of spec.nodes) {
+    if (node.type === 'agent') {
+      check(node.output_schema, `node \`${node.id}\`.output_schema`);
+      // The resolved agent's OWN schema is what applies when the node declares none (agent-runner.ts), so
+      // it is checked under the node that would use it rather than left to whoever supplied the registry.
+      if (node.output_schema === undefined) {
+        check(
+          agentsById.get(node.agent_ref)?.output_schema,
+          `node \`${node.id}\`.agent output_schema`,
+        );
+      }
+    } else if (node.type === 'transform') {
+      check(node.output_schema, `node \`${node.id}\`.output_schema`);
+    }
+  }
+}
+
+/**
+ * The value-producing dependencies of each `output` vertex, in deterministic code-unit order — the
+ * `output` twin of {@link computeMergeBranchOrder}, sharing its {@link producesValue} rule.
+ *
+ * The handler used to derive this itself from `vertex.dependencies` filtered by `runOutputs.has(id)`,
+ * which cannot distinguish "produced nothing" from "produced `undefined`". A `condition` routed straight
+ * at an `output` (its sanctioned routing form) therefore counted as a second feeder and flipped the
+ * canonical single-feeder capture — documented as capturing its one live feeder VERBATIM — into a keyed
+ * wrapper object. Deciding it here, where the node types are known, is the same move the merge's
+ * `branchNodeIds` already makes.
+ */
+function computeOutputFeeders(
+  spec: WorkflowSpec,
+  dependencies: ReadonlyMap<string, ReadonlySet<string>>,
+): Map<string, readonly string[]> {
+  const typeById = new Map(spec.nodes.map((n) => [n.id, n.type]));
+  const feeders = new Map<string, readonly string[]>();
+  for (const node of spec.nodes) {
+    if (node.type !== 'output') {
+      continue;
+    }
+    feeders.set(
+      node.id,
+      [...(dependencies.get(node.id) ?? [])]
+        .filter((id) => {
+          const type = typeById.get(id);
+          return type === undefined || producesValue(type);
+        })
+        .sort(byCodeUnit),
+    );
+  }
+  return feeders;
 }
 
 /** Build the per-type config block for a vertex, deriving engine-only fields (join strategy, fallback). */
@@ -660,12 +1144,13 @@ function buildConfig(
   node: WorkflowNode,
   agentsById: ReadonlyMap<string, Agent>,
   mergeBranchOrder: ReadonlyMap<string, readonly string[]>,
+  outputFeeders: ReadonlyMap<string, readonly string[]>,
 ): PlanConfig {
   switch (node.type) {
     case 'input':
       return { kind: 'input', node };
     case 'output':
-      return { kind: 'output', node };
+      return { kind: 'output', node, feederNodeIds: outputFeeders.get(node.id) ?? [] };
     case 'transform':
       return { kind: 'transform', node };
     case 'condition':
@@ -675,12 +1160,12 @@ function buildConfig(
     case 'parallel':
       return { kind: 'fan_out', node, branchNodeIds: node.parallel_of };
     case 'merge': {
-      const joinStrategy: JoinStrategy =
+      const requestedJoinStrategy: JoinStrategy =
         node.merge_strategy === 'first' ? 'wait_first' : 'wait_all';
       return {
         kind: 'fan_in',
         node,
-        joinStrategy,
+        requestedJoinStrategy,
         mergeStrategy: node.merge_strategy,
         branchNodeIds: mergeBranchOrder.get(node.id) ?? [],
         ...(node.merge_fn === undefined ? {} : { mergeFn: node.merge_fn }),

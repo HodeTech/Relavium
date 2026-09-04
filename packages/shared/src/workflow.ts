@@ -688,6 +688,23 @@ export const WorkflowSchema = z
       ['workflow', 'agents'],
     );
 
+    // A duplicate `parallel_of` member is a silent wrong answer, not an ergonomics nit: the DAG builder
+    // copies `parallel_of` verbatim into the merge's `branchNodeIds`, so the branch's output appears TWICE
+    // in a `concat` array and twice in a `merge_fn`'s `branches`, shifting every index after it. The
+    // dependency graph de-duplicates (a Set), so the node runs once and nothing else disagrees — which is
+    // exactly why it reaches the result unnoticed. There is no reading of `parallel_of: [a, a]` that means
+    // anything, so it is refused here with the other authored-duplicate checks.
+    nodes.forEach((node, i) => {
+      if (node.type === 'parallel') {
+        reportDuplicates(node.parallel_of, `parallel_of member(s) on node \`${node.id}\``, [
+          'workflow',
+          'nodes',
+          i,
+          'parallel_of',
+        ]);
+      }
+    });
+
     // `parallel_of` is authoritative for branch membership: an explicit edge out of a
     // `parallel` node must target a node listed in that node's `parallel_of`
     // (workflow-yaml-spec.md). Explicit fan-out edges are redundant with `parallel_of`,

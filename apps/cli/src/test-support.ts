@@ -3,7 +3,7 @@ import { Readable } from 'node:stream';
 
 import { createRunHistoryStore, type Db } from '@relavium/db';
 import { CapabilityFlagsSchema, type CapabilityFlags } from '@relavium/llm';
-import { RunEventSchema, type RunEvent } from '@relavium/shared';
+import { RunEventSchema, type NodeSkippedReason, type RunEvent } from '@relavium/shared';
 
 import type { CliIo } from './process/io.js';
 
@@ -130,6 +130,8 @@ export type SeedRunOptions = {
   readonly atMs?: number;
   /** For a `paused` run: also leave a BUDGET gate pending (excluded from the human-gate listings). */
   readonly budgetGateId?: string;
+  /** Emit a `node:skipped` after the node lifecycle — for the surfaces that render a skip and its reason. */
+  readonly skipped?: { readonly nodeId: string; readonly reason: NodeSkippedReason };
 } & SeedGateFields;
 
 const DEFAULT_TS_MS = 1_750_000_000_000;
@@ -182,6 +184,9 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
     durationMs: 5,
     cumulativeCostMicrocents: 100,
   });
+  if (opts.skipped !== undefined) {
+    await emit('node:skipped', { nodeId: opts.skipped.nodeId, reason: opts.skipped.reason });
+  }
   if (opts.state === 'paused') {
     await emitPausedState(emit, opts, ts, tsMs);
   } else if (opts.state === 'completed') {

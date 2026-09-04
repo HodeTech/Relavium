@@ -27,6 +27,7 @@ The engine internals that every surface shares. See [architecture/shared-core-en
 | --- | --- |
 | [shared-core/store-shapes.md](shared-core/store-shapes.md) | The five Zustand stores and their TypeScript shapes; the canvas/run store separation that protects streaming performance. |
 | [shared-core/node-types.md](shared-core/node-types.md) | The canvas + engine node-type catalog — visual node components and the engine node-type enum. |
+| [shared-core/json-schema-subset.md](shared-core/json-schema-subset.md) | The JSON-Schema subset a schema may use — the per-keyword enforced/refused matrix for an authored `output_schema` and an MCP `inputSchema`. |
 | [shared-core/built-in-tools.md](shared-core/built-in-tools.md) | Tools available to local agents out of the box (`read_file`, `run_command`, `git_*`, `mcp_call`, `invoke_agent`, …). |
 | [shared-core/mcp-integration.md](shared-core/mcp-integration.md) | MCP in both directions — agents as MCP servers, and agents consuming MCP tools. |
 | [shared-core/database-schema.md](shared-core/database-schema.md) | The local SQLite run-history + catalog schema (Drizzle) — one schema, shared by the desktop (SQLCipher), CLI (`better-sqlite3`), and VS Code (wasm) drivers. |

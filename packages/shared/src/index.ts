@@ -20,6 +20,8 @@
 
 export * from './bytes.js';
 export * from './canonical.js';
+export * from './json-schema-compiler.js';
+export * from './ordering.js';
 export * from './terminal-safe.js';
 export * from './constants.js';
 export * from './declared-env.js';

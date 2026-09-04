@@ -134,6 +134,10 @@ flowchart TD
 | 0088 | [The MCP boundary is hostile — a remote server is pinned and bounded, an unbounded one must be local and opted into](0088-the-mcp-boundary-is-hostile.md) | Accepted | 2026-08-30 |
 | 0089 | [Media correctness — the four boundaries `W5` had to choose](0089-media-correctness-four-boundaries.md) (amends 0031, 0039, 0042, 0043, 0044, 0070, 0071) | Accepted (§3 superseded by 0090) | 2026-09-02 |
 | 0090 | [A continuation token rides the part it belongs to](0090-a-continuation-token-rides-the-part-it-belongs-to.md) (supersedes 0089 §3; refines 0030, 0039, 0043) | Accepted | 2026-09-02 |
+| 0091 | [`merge_strategy: first` means first DECLARED, not first to finish](0091-first-means-first-declared-not-first-to-finish.md) | Accepted | 2026-09-02 |
+| 0092 | [`output_schema` is deep-validated by the JSON-Schema compiler we already own](0092-output-schema-is-validated-by-the-compiler-we-already-own.md) | Accepted | 2026-09-02 |
+| 0093 | [An expression sees only what it is ordered after](0093-an-expression-sees-only-what-it-is-ordered-after.md) | Accepted | 2026-09-02 |
+| 0094 | [A tool grant is checked when the plan is built](0094-a-tool-grant-is-checked-when-the-plan-is-built.md) | Accepted | 2026-09-02 |
 
 ## Creating a new ADR
 

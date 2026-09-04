@@ -56,13 +56,23 @@ function recordOutput(out: NodeOutcome): Record<string, unknown> {
 
 function makeVertex(
   config: PlanConfig,
-  graph: { id?: string; dependencies?: readonly string[]; dependents?: readonly string[] } = {},
+  graph: {
+    id?: string;
+    dependencies?: readonly string[];
+    dependents?: readonly string[];
+    ancestors?: readonly string[];
+  } = {},
 ): PlanVertex {
   return {
     id: graph.id ?? 'node',
     type: config.kind,
     dependencies: graph.dependencies ?? [],
     dependents: graph.dependents ?? [],
+    // These fixtures are one-hop graphs, so the closure IS the direct dependencies — but it defaults from
+    // `dependencies` rather than to `[]` on purpose: an empty default would silently hand every expression
+    // an empty `run.outputs` and make a scope-narrowing test pass for the wrong reason. Override it to
+    // model a deeper graph.
+    ancestors: graph.ancestors ?? graph.dependencies ?? [],
     inputSites: [],
     config,
   };
@@ -260,10 +270,16 @@ describe('transform handler (1.P)', () => {
 
   it('reads run.outputs keys in canonical (sorted) order for resume determinism (Trap 7)', async () => {
     const exec = createTransformNodeExecutor({ sandbox });
-    const v = makeVertex({
-      kind: 'transform',
-      node: { id: 't', type: 'transform', transform: 'Object.keys(run.outputs).join(",")' },
-    });
+    const v = makeVertex(
+      {
+        kind: 'transform',
+        node: { id: 't', type: 'transform', transform: 'Object.keys(run.outputs).join(",")' },
+      },
+      // The closure must be declared now that `run.outputs` is projected through it (ADR-0093 §1); a
+      // vertex with no ancestors correctly sees an EMPTY scope. Declared z-before-a as well, so the
+      // canonical order is proven against an unsorted closure AND an unsorted map, not just one of them.
+      { dependencies: ['z', 'a'] },
+    );
     // Inserted z-before-a; the handler must surface a canonical (sorted) key order regardless.
     const runOutputs = new Map<string, unknown>([
       ['z', 1],
@@ -271,6 +287,78 @@ describe('transform handler (1.P)', () => {
     ]);
     const out = await exec.execute(makeCtx(v, { runOutputs }));
     expect(out).toEqual({ kind: 'completed', output: 'a,z' });
+  });
+
+  it('fails the node when the result does not CONFORM to output_schema (ADR-0092 §4)', async () => {
+    // The handler used to say deep validation needed a new runtime dependency. It did not — the project
+    // already owned a JSON-Schema→Zod compiler one package away, and the deferral outlived its reason.
+    const exec = createTransformNodeExecutor({ sandbox });
+    const v = makeVertex({
+      kind: 'transform',
+      node: {
+        id: 't',
+        type: 'transform',
+        transform: '({ other: 1 })',
+        output_schema: { type: 'object', required: ['status'] },
+      },
+    });
+    const out = await exec.execute(makeCtx(v));
+    expect(out).toMatchObject({ kind: 'failed', error: { code: 'validation', retryable: false } });
+    // Names nothing: a property name is authored and a value is untrusted (ADR-0092 §5).
+    expect(out.kind === 'failed' && out.error.message).not.toContain('status');
+  });
+
+  it('fails INTERNAL, not validation, when the schema could not be compiled', async () => {
+    // Parse refuses every uncompilable schema, so reaching the handler with one means the node was
+    // dispatched without a built plan — a wiring mistake. An earlier version returned "conforms" so as
+    // not to blame the model, and that completed the node with an output nothing had checked: the silent
+    // acceptance this whole change exists to remove. The distinct code is what keeps the blame straight.
+    const exec = createTransformNodeExecutor({ sandbox });
+    const v = makeVertex({
+      kind: 'transform',
+      node: {
+        id: 't',
+        type: 'transform',
+        transform: '({ a: 1 })',
+        output_schema: { oneOf: [{ type: 'string' }] },
+      },
+    });
+    const out = await exec.execute(makeCtx(v));
+    expect(out).toMatchObject({ kind: 'failed', error: { code: 'internal', retryable: false } });
+  });
+
+  it('completes when the result DOES conform', async () => {
+    const exec = createTransformNodeExecutor({ sandbox });
+    const v = makeVertex({
+      kind: 'transform',
+      node: {
+        id: 't',
+        type: 'transform',
+        transform: "({ status: 'ok' })",
+        output_schema: { type: 'object', required: ['status'] },
+      },
+    });
+    expect(await exec.execute(v ? makeCtx(v) : makeCtx(v))).toMatchObject({ kind: 'completed' });
+  });
+
+  it('run.outputs is the CLOSURE — a completed non-ancestor is not visible (ADR-0093 §1)', async () => {
+    const exec = createTransformNodeExecutor({ sandbox });
+    const v = makeVertex(
+      {
+        kind: 'transform',
+        node: { id: 't', type: 'transform', transform: 'Object.keys(run.outputs).join(",")' },
+      },
+      { dependencies: ['upstream'] },
+    );
+    // `stranger` has COMPLETED and is in the run's output map — it is simply not something `t` is
+    // ordered after. Before the narrowing an expression here could read it and compare against whatever
+    // it held, or against `undefined` if it had not run yet, with no error either way.
+    const runOutputs = new Map<string, unknown>([
+      ['upstream', 1],
+      ['stranger', 2],
+    ]);
+    const out = await exec.execute(makeCtx(v, { runOutputs }));
+    expect(out).toEqual({ kind: 'completed', output: 'upstream' });
   });
 
   it('cannot mutate the frozen scope — a write throws sandbox_error and leaves ctx.inputs intact (Trap 4)', async () => {
@@ -332,7 +420,7 @@ function fanInConfig(
       merge_strategy: mergeStrategy,
       ...(mergeFn === undefined ? {} : { merge_fn: mergeFn }),
     },
-    joinStrategy: mergeStrategy === 'first' ? 'wait_first' : 'wait_all',
+    requestedJoinStrategy: mergeStrategy === 'first' ? 'wait_first' : 'wait_all',
     mergeStrategy,
     branchNodeIds,
     ...(mergeFn === undefined ? {} : { mergeFn }),
@@ -498,7 +586,7 @@ describe('fan_in handler (1.P)', () => {
     const v = makeVertex({
       kind: 'fan_in',
       node: { id: 'm', type: 'merge', merge_strategy: 'custom' },
-      joinStrategy: 'wait_all',
+      requestedJoinStrategy: 'wait_all',
       mergeStrategy: 'custom',
       branchNodeIds: ['a'],
     });
@@ -531,7 +619,7 @@ describe('fan_out / input / output handlers (1.P)', () => {
   it('output captures its single feeder verbatim', async () => {
     const exec = createOutputNodeExecutor();
     const v = makeVertex(
-      { kind: 'output', node: { id: 'out', type: 'output' } },
+      { kind: 'output', node: { id: 'out', type: 'output' }, feederNodeIds: ['report'] },
       { dependencies: ['report'] },
     );
     const runOutputs = new Map<string, unknown>([['report', { md: '# done' }]]);
@@ -542,7 +630,7 @@ describe('fan_out / input / output handlers (1.P)', () => {
   it('output captures a deterministic per-feeder record when fed by several nodes', async () => {
     const exec = createOutputNodeExecutor();
     const v = makeVertex(
-      { kind: 'output', node: { id: 'out', type: 'output' } },
+      { kind: 'output', node: { id: 'out', type: 'output' }, feederNodeIds: ['a', 'b'] },
       { dependencies: ['b', 'a'] },
     );
     const runOutputs = new Map<string, unknown>([
@@ -560,7 +648,7 @@ describe('fan_out / input / output handlers (1.P)', () => {
   it('output is null when it has no settled feeder', async () => {
     const exec = createOutputNodeExecutor();
     const v = makeVertex(
-      { kind: 'output', node: { id: 'out', type: 'output' } },
+      { kind: 'output', node: { id: 'out', type: 'output' }, feederNodeIds: ['gone'] },
       { dependencies: ['gone'] },
     );
     const out = await exec.execute(makeCtx(v)); // 'gone' absent
@@ -570,7 +658,7 @@ describe('fan_out / input / output handlers (1.P)', () => {
   it('a multi-declared-feeder output captures the single LIVE feeder verbatim (condition branches converge)', async () => {
     const exec = createOutputNodeExecutor();
     const v = makeVertex(
-      { kind: 'output', node: { id: 'out', type: 'output' } },
+      { kind: 'output', node: { id: 'out', type: 'output' }, feederNodeIds: ['hi', 'lo'] },
       { dependencies: ['hi', 'lo'] }, // two mutually-exclusive condition branches feed here
     );
     const runOutputs = new Map<string, unknown>([['lo', { label: 'low' }]]); // only 'lo' is live
@@ -604,7 +692,10 @@ describe('fan_out / input / output handlers (1.P)', () => {
     ).toMatchObject({ kind: 'failed', error: { code: 'cancelled' } });
     expect(
       await output.execute(
-        makeCtx(makeVertex({ kind: 'output', node: { id: 'o', type: 'output' } }), aborted),
+        makeCtx(
+          makeVertex({ kind: 'output', node: { id: 'o', type: 'output' }, feederNodeIds: [] }),
+          aborted,
+        ),
       ),
     ).toMatchObject({ kind: 'failed', error: { code: 'cancelled' } });
   });
@@ -776,7 +867,10 @@ describe('dispatching executor (1.P)', () => {
     expect(input).toEqual({ kind: 'completed', output: { a: 1 } });
     const output = await exec.execute(
       makeCtx(
-        makeVertex({ kind: 'output', node: { id: 'o', type: 'output' } }, { dependencies: ['u'] }),
+        makeVertex(
+          { kind: 'output', node: { id: 'o', type: 'output' }, feederNodeIds: ['u'] },
+          { dependencies: ['u'] },
+        ),
         {
           runOutputs: new Map([['u', 'cap']]),
         },

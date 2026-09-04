@@ -42,6 +42,25 @@ import { templateReferences } from './interpolation/references.js';
  * caller that wants to display the limits should not have to know eight identifier names, and a future
  * host-side override has one shape to override.
  */
+/**
+ * The bounds an **authored** JSON Schema is compiled under
+ * ([ADR-0092](../../../docs/decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md)).
+ *
+ * Deliberately tighter than the MCP boundary's on shape and LOOSER on nothing. A hostile server's schema is
+ * bounded to survive an attack; an authored one is bounded to catch a mistake, and an author who needs 500
+ * properties in one node output has a design problem the compiler should surface rather than absorb. The
+ * byte limits stay where the MCP boundary put them — a `const` string or a property name has no reason to
+ * be larger in a workflow file than in a tool definition.
+ */
+export const AUTHORED_SCHEMA_BOUNDS = {
+  maxDepth: 12,
+  maxNodes: 1000,
+  maxEnumMembers: 500,
+  maxProperties: 200,
+  maxStringBytes: 4 * 1024,
+  maxPropertyNameBytes: 256,
+} as const;
+
 export const ADMISSION_CEILINGS = {
   /** Authored nodes in one workflow. */
   nodes: 500,

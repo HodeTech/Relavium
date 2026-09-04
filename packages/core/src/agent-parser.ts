@@ -16,6 +16,7 @@ import type { ZodIssue } from 'zod';
 import { AgentSchema, type Agent } from '@relavium/shared';
 
 import { MAX_SOURCE_CHARS } from './parser.js';
+import { outputSchemaRefusals } from './output-schema.js';
 import { decodeHardenedYaml } from './yaml-decode.js';
 
 /** The validated agent document — `@relavium/shared`'s `Agent`, under a parser-local alias (mirrors `WorkflowDefinition`). */
@@ -75,6 +76,13 @@ function locate(source: string | undefined, pos?: { line: number; col: number })
  * files get the same actionable diagnostics as workflow files. `prettyErrors: false` (yaml-decode.ts) keeps the
  * `YAMLParseError` message the RULE alone — no source snippet, no authored key/value — so echoing it is safe.
  */
+/** Flatten field-located `output_schema` refusals into one message line. */
+function describeRefusals(
+  refusals: ReadonlyArray<{ readonly field: string; readonly message: string }>,
+): string {
+  return refusals.map((r) => [r.field, r.message].join(': ')).join('; ');
+}
+
 function agentSyntaxErrorFrom(
   err: unknown,
   source: string | undefined,
@@ -156,6 +164,17 @@ export function parseAgent(yamlText: string, opts?: ParseAgentOptions): AgentDef
       'agent_validation',
       `invalid agent${label}: ${fields.join(', ')}`,
       fields,
+    );
+  }
+  // **`output_schema` is compiled HERE too** (ADR-0092 §3). A standalone agent never reaches a DAG build —
+  // `AgentSession` (`relavium chat`, `agent run`) has no plan — so plan-build was the one place this could
+  // not be checked from, and import/export/catalog carried an invalid agent as valid.
+  const refusals = outputSchemaRefusals(result.data);
+  if (refusals.length > 0) {
+    throw new AgentParseError(
+      'agent_validation',
+      `invalid agent: ${describeRefusals(refusals)}`,
+      refusals.map((r) => r.field),
     );
   }
   return result.data;

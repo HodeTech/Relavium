@@ -127,7 +127,8 @@ journeys, not exhaustive logic — exhaustive logic belongs in engine unit tests
 - `packages/core`, `packages/llm`, and `packages/mcp`: high line **and branch** coverage,
   floor **≥ 90%**, because branch coverage is what catches the error/fallback/edge
   paths that matter here — and `packages/mcp` fences a security-critical seam (the SDK +
-  `node:child_process`) plus the dependency-free JSON-Schema→Zod compiler. Coverage is a
+  `node:child_process`). The JSON-Schema→Zod compiler it used to own now lives in
+  `@relavium/shared` and is tested there. Coverage is a
   floor and a signal, not the goal — an uncovered branch is a question to answer, not a
   number to game.
   - **Where the floor blocks a merge:** `packages/llm` and `packages/mcp` only. `packages/core` is

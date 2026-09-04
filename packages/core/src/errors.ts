@@ -35,7 +35,10 @@ export type GraphIssueKind =
   | 'invalid_handle' // a `nodeId:handle` edge names a handle the source node does not expose
   | 'mismatched_branch_target' // a `condition:handle` edge's `to` contradicts that branch's `target_node`
   | 'dangling_ref' // an `agent_ref` resolves to no agent (only checked when a resolved-agent registry is supplied)
-  | 'ceiling_exceeded'; // an authored value or graph shape is over an absolute admission ceiling (ADR-0086)
+  | 'ceiling_exceeded' // an authored value or graph shape is over an absolute admission ceiling (ADR-0086)
+  | 'tool_grant_widened' // a node's `tools:` names a tool its agent was not granted (ADR-0094)
+  | 'unordered_output_read' // an expression literally reads `run.outputs` of a node it is not ordered after (ADR-0093)
+  | 'invalid_output_schema'; // an authored `output_schema` is outside the supported JSON-Schema subset (ADR-0092)
 
 /**
  * One field-named graph problem found by the DAG builder (1.M). Every field is a *name* — a node id,

@@ -23,7 +23,7 @@ flowchart TB
         LLM["packages/llm<br/>LLMProvider seam · adapters over official SDKs<br/>fallback chains · cost · tool normalize"]
         Shared["packages/shared<br/>Zod schemas + types"]
         DB["packages/db<br/>Drizzle schema (SQLite + Postgres)"]
-        MCP["packages/mcp<br/>inbound MCP client · SDK fence<br/>JSON-Schema→Zod compiler · SSRF-floored transports"]
+        MCP["packages/mcp<br/>inbound MCP client · SDK fence<br/>SSRF-floored transports"]
         UI["packages/ui<br/>shadcn/ui components"]
     end
 
@@ -128,9 +128,12 @@ canonical definitions and per-package purpose are in
   Gemini / DeepSeek plus fallback chains, tool-schema normalization, and cost
   accounting — no 3rd-party framework, and no vendor type crosses the seam. See
   [multi-llm-providers.md](multi-llm-providers.md).
-- **`packages/mcp`** — the inbound MCP client: the SDK-fenced package, the dependency-free
-  JSON-Schema→Zod compiler, and the `http`/`sse`/`websocket` transports behind the SSRF
-  pre-connect floor ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md), [ADR-0053](../decisions/0053-mcp-network-transport-egress-security.md)).
+- **`packages/mcp`** — the inbound MCP client: the SDK-fenced package and the
+  `http`/`sse`/`websocket` transports behind the SSRF pre-connect floor
+  ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md), [ADR-0053](../decisions/0053-mcp-network-transport-egress-security.md)).
+  The dependency-free JSON-Schema→Zod compiler it used to own moved to `@relavium/shared`, because an
+  authored `output_schema` needs it too and `packages/mcp` depends on `packages/core`, not the other way
+  round ([ADR-0092](../decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md) §1).
 - **`packages/shared`** — the Zod schemas and TypeScript types every package
   imports (workflow, agent, run, node, edge, run-event, cost-event). The schema
   shapes are documented under [../reference/contracts/](../reference/contracts/).

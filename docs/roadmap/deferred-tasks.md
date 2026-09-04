@@ -447,6 +447,110 @@ Severity is the review's verified rating. Check an item off in the PR that resol
       run — so this is a delivery artefact, not a durability breach.
       *(low · packages/core/src/engine/engine.ts; ADR-0036, ADR-0085)*
 
+## Phase 2.6.5 `W6` residuals — `CR-61` (`AgentSession`, 2026-09-03)
+
+- [ ] **An agent's `output_schema` is honoured on a workflow node and ignored by `AgentSession`.** `CR-61`
+  wired lowering-plus-enforcement on the `agent` node path (ADR-0092 §3/§4), but
+  `packages/core/src/engine/agent-session.ts` does not read `output_schema` at all — verified by grep, zero
+  occurrences — so `relavium chat` and `relavium agent run` neither lower it to `responseFormat` nor
+  validate the response. The **same agent definition therefore behaves differently depending on which
+  first-class entry point runs it**, which is the property [ADR-0024](../decisions/0024-agent-first-entry-point-agentsession.md)
+  exists to deny. Not widened here because wiring it is new behaviour on a shipping surface, not a doc fix.
+  *(M · packages/core/src/engine/agent-session.ts; agent-yaml-spec.md, agent-session-spec.md)*
+
+- [ ] **A model's integer beyond ±2^53 is rounded before `output_schema` sees it, and the engine keeps the
+  rounded value.** `output_schema` validates the result of `JSON.parse`, which is lossy for integers outside
+  the safe range: a model returning `9007199254740993` is validated — and stored as the node's output — as
+  `9007199254740992`. So a `const`/`enum`/`multipleOf`/boundary check can pass against a number the model did
+  not produce, and the run's output silently differs from the response. **Pre-existing** (the agent path has
+  always used `JSON.parse`), surfaced by `CR-61` making the conformance check meaningful. A correct fix is
+  lossless number parsing or refusing an out-of-range numeric token before parse; both are real work, so the
+  boundary is documented in [json-schema-subset.md](../reference/shared-core/json-schema-subset.md) and
+  recorded here rather than claimed fixed. *(M · packages/core/src/engine/agent-runner.ts)*
+
+## Phase 2.6.5 `W6` residuals — `CR-61` ([ADR-0092](../decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md), 2026-09-03)
+
+- [ ] **An authored `pattern` can hang the whole engine process, and no deadline can interrupt it.**
+  ADR-0092 §2 enforces an authored `pattern` in `strict` mode, reasoning that the ReDoS concern belongs to
+  an untrusted *server's* regex. Half an argument: catastrophic backtracking needs a vulnerable regex AND a
+  hostile string, and the string is **model output**, which an indirect prompt injection can steer.
+  Measured on `^(a+)+$` against `"a"×n + "!"` — 19 chars 9.6 ms, 23 chars 18.1 ms, 27 chars 286 ms, ~40
+  chars minutes. Backtracking is **synchronous**, so ADR-0085's node deadline never gets a turn and a
+  cancel cannot land either: the failure is the whole process, not one node. It also sits against
+  ADR-0027's precedent that an author's *code* is resource-capped precisely so an authored construct cannot
+  hang the engine.
+  **Maintainer ruling 2026-09-03: record, do not mitigate yet.** The three candidate mitigations each have
+  a real cost — a nested-quantifier heuristic both misses cases and can falsely refuse a valid pattern
+  (`CR-62` hit that class seven times in one wave); refusing `pattern` is ADR-0092's already-rejected (a1)
+  and pushes authors back to unvalidated schemas; a linear-time matcher is a new runtime dependency needing
+  its own ADR.
+  **Partly mitigated the same day, after that ruling, by an option it did not have.** A declared
+  `maxLength` now GATES the pattern: the compiler builds `z.string()…pipe(z.string().regex(…))`, and a
+  pipeline returns INVALID without running its second schema — 8010 ms chained versus 0.1 ms piped on the
+  measurement above. So the residual is now specifically **a `pattern` with no `maxLength` beside it**;
+  json-schema-subset.md tells authors to declare one and says what happens when they do not. This note
+  described the hazard as wholly unmitigated for a day after it stopped being so.
+  *(M · packages/shared/src/json-schema-compiler.ts)*
+
+## Phase 2.6.5 `W6` residuals — `CR-62` ([ADR-0093](../decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md), 2026-09-03)
+
+`CR-62` narrowed an expression's `run.outputs` to the reading node's transitive closure and refuses a
+**literal** out-of-closure read at parse. ADR-0093 says in its Decision and its Negative section that this
+closes the common case and **explicitly does not close the class**. These are what it left, written out
+here so the residue sits on a backlog rather than only inside an ADR's Negative section.
+
+- [ ] **The non-literal read is still a silent `false`.** A computed key (`run.outputs[k]`), a rebound
+  `run`, or any expression the masker cannot confidently lex is passed over. The read then resolves to
+  `undefined` in the VM and a `condition` comparing it takes the false branch with no error — the original
+  defect, at a smaller surface. The only exhaustive detector is ADR-0093's alternative (b), VM-side
+  accessors; note its recorded cost was **overstated** and is corrected in the ADR's 2026-09-03 amendment
+  (a VM-side accessor needs no ADR-0027 §3 amendment; the real cost is that it can only fail after the run
+  has started). *(M · packages/core/src/expression/)*
+- [ ] **The scan is silent on more spellings than the documents say.** Every home describes the blind spot
+  as "a computed key, an aliased binding, or a value flowing through a variable"; in fact the scan also
+  abandons on any `/` it cannot classify as a comment (so any expression containing DIVISION is unscanned),
+  on a nested template literal, on an HTML-like comment, and on any `run` token not written as a member
+  access. Each is a deliberate bail toward silence — the alternative was a false refusal — but "computed or
+  aliased" understates it. Either widen the coverage or make every home say *"a read the scan cannot
+  confidently resolve"*. *(S · docs + packages/core/src/expression/literal-output-reads.ts)*
+- [ ] **A read of a node that is not in the workflow is reported by nothing, ever.** Not a hand-off to the
+  runtime resolver — that covers template fields and never fires for an expression. Refusing it here is
+  only safe once the scan's anchoring is beyond doubt, since a mis-anchored match would then make every
+  bracket key refusable. *(S · packages/core/src/dag.ts)*
+- [ ] **Decide whether an edge locator should name its endpoints.** A `WorkflowGraphError` on an edge reads
+  `edge #1` — a 0-based positional index — while `nodes`/`agents`/`inputs`/`context` all resolve to an
+  authored name. Pre-existing, but `CR-62`'s edge-`condition` refusal makes it the locator authors meet
+  most often. Endpoints are kebab ids and would pass `SAFE_ID_LABEL`. *(S · packages/core/src/parser.ts)*
+
+## Phase 2.6.5 `W6` residuals — `CR-64` ([ADR-0094](../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md), 2026-09-02)
+
+> The plan-build narrowing check covers an INLINE agent completely. Two halves of the surface do not exist
+> yet, and both are stated here rather than implied by a closed item.
+
+- [ ] **`$ref` agent resolution is unwired on EVERY surface.** `BuildRunPlanOptions.agents` is exported and
+      documented, and **nothing populates it** — not `relavium run`, not the engine's own call sites. So the
+      `dangling_ref` check (pre-existing) and the new `tool_grant_widened` check are both inert for an
+      external `$ref`'d agent: there is nothing to resolve against. Closing it means a host reading and
+      validating `.agent.yaml` files and passing the registry — a surface feature, not a check.
+      *(medium · apps/cli/src/commands/run.ts, packages/core/src/dag.ts; ADR-0094 §5)*
+- [ ] **`relavium gate` does not assert `toolGrantsFinal`, and it is the host that most safely could.**
+      Not hypothetical, as an earlier wording of this item implied: `gate.ts` calls `resumeFromCheckpoint`
+      with no `planOptions`, so on resume an MCP-declaring agent is skipped. The irony is that the gate path
+      rebuilds from the snapshot `relavium run` froze AFTER augmenting, so the grant there is final BY
+      CONSTRUCTION — `run` has to reason about call ordering to claim the same thing. Either pass the flag at
+      the gate resume, or resolve it together with the resume question below.
+      *(low · apps/cli/src/commands/gate.ts; ADR-0094 §2)*
+- [ ] **A paused run can be stranded by a check it passed before.** `resumeFromCheckpoint` rebuilds the plan
+      from the FROZEN snapshot, so a run that paused at a gate — with a widening node downstream that was
+      never dispatched, and which may have been about to run fine — now fails at resume, permanently: the
+      author cannot fix it, because the resume reads the snapshot rather than the file on disk.
+      `agent-session.ts` records the opposite instinct for a session ("a RESUME does not re-admit… admission
+      governs what is ADMITTED", citing ADR-0083 for the run half), but `buildRunPlan` already applies
+      ADR-0086's ceilings on resume the same way — so this is an engine-wide question about whether a resume
+      re-admits at all, not one `CR-64` may settle alone. The dispatch-time `resolveGrant` floor is
+      unaffected either way.
+      *(medium · packages/core/src/engine/engine.ts, dag.ts; ADR-0094, ADR-0083, ADR-0086)*
+
 ## Phase 2.6.5 `W5` residuals — `CR-50` ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §1, 2026-09-02)
 
 > `CR-50` closed its DELIVERY half: a `read_media` call now reaches the model as media on all three
@@ -812,14 +916,18 @@ so directly: these "should remain visible rather than disappear behind the green
   replay one model's signed thinking to another. Pre-existing, out of `CR-52`'s scope, and narrowing an
   Accepted decision belongs in its own ADR rather than a fold.
   *(low · packages/llm/src/fallback-chain.ts; ADR-0039)*
-- [ ] **`output_schema` deep JSON-Schema conformance** — 1.O validates an `agent` node's `output_schema`
-  node-side but **parse-as-JSON only** (the seam's `responseFormat` is a request hint; a
-  schema-violating-but-valid JSON output, e.g. `{"wrong":true}` for a `{ n: number }` schema, currently
-  passes as `completed`). **1.P shares this gap for the `transform` node's optional `output_schema`** — the
-  sandbox guarantees the result is JSON-serializable but does **not** check it against the declared schema.
-  Deep conformance needs a JSON-Schema validator (Zod cannot consume an arbitrary JSON-Schema), which is a new
-  runtime dependency requiring an ADR. *(medium · packages/core/src/engine/agent-runner.ts,
-  packages/core/src/engine/node-handlers/transform.ts; error-handling.md)*
+- [x] **`output_schema` deep JSON-Schema conformance** — ✅ **DONE (2026-09-03, `CR-61`,
+  [ADR-0092](../decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md)).** An
+  `agent` node's `output_schema` was validated **parse-as-JSON only**, so `{"wrong":true}` passed for a
+  `{ n: number }` schema; `transform` shared the gap and did not check its schema at all. Both now compile
+  the schema at PARSE in `strict` mode and enforce conformance at run time, a miss failing `validation`
+  (`retryable: false`).
+  **The premise this entry rested on was false, and that is the part worth keeping:** it said deep
+  conformance "needs a JSON-Schema validator … a new runtime dependency requiring an ADR". The project
+  already owned a dependency-free JSON-Schema→Zod compiler at the MCP boundary, one package away. The
+  deferral outlived its own reason by three phases because nobody re-checked the sentence that created it.
+  *(packages/core/src/engine/agent-runner.ts, packages/core/src/engine/node-handlers/transform.ts,
+  packages/shared/src/json-schema-compiler.ts; docs/reference/shared-core/json-schema-subset.md)*
 - [ ] **Per-attempt model attribution for `agent:token` / `agent:reasoning`** — `cost:updated` is always
   per-attempt-accurate, but the two mid-stream events `agent:token.model` and `agent:reasoning.model` (EA6, 2.5.H)
   use `activeModel` (updated from the *succeeding* attempt record, which fires after the stream), so a
@@ -865,8 +973,32 @@ so directly: these "should remain visible rather than disappear behind the green
   by `branchNodeIds` order. Genuine early-cancel (abort the still-running sibling branches the moment the
   first settles) needs an **engine-owned per-branch cancellation primitive** — the current single run-wide
   `AbortSignal` cannot cancel one branch without cancelling the run, and a handler cannot cancel sibling
-  vertices. The engine authors already flagged this as a "1.P refinement" (engine.ts:26-28). Promote to a
-  scoped 1.N/engine change (possibly an ADR) only when a real workflow needs it. *(low · packages/core/src/engine/engine.ts, packages/core/src/engine/node-handlers/fan-in.ts; run-plan.md §fan-in)*
+  vertices. The engine's own run-loop docblock (`packages/core/src/engine/engine.ts`, the header comment)
+  records it as a future capability rather than a wiring the executor already reads. Promote to a scoped
+  1.N/engine change (possibly an ADR) only when a real workflow needs it. *(This pointer deliberately names
+  no line number: the previous one, `engine.ts:26-28`, quoted a "1.P refinement" phrase that ADR-0091's
+  wording fix then deleted — a citation that decays the moment the thing it cites is corrected.)*
+
+  **Precondition, added 2026-09-03 with [ADR-0091](../decisions/0091-first-means-first-declared-not-first-to-finish.md).**
+  A future ADR that wants race semantics owes one thing this deferral does not yet answer: how the WINNING
+  BRANCH ID is durably pinned at the moment it is selected. Without that, a replay from a checkpoint can pick
+  a different winner and produce a different run from the same snapshot. (An earlier draft of ADR-0091 said
+  race semantics were *forbidden* by ADR-0027 — they are not; §4 is about expression purity and §7 pins
+  `branches` order for a `custom` `merge_fn`, whose input `first` never uses. The constraint is real but it
+  is a precondition, not a veto.) The COST of the current behaviour is now pinned by an engine test: the join
+  waits for a genuinely still-pending loser, and a failing loser fails the run even when the winner is
+  already done. *(low · packages/core/src/engine/engine.ts, packages/core/src/engine/node-handlers/fan-in.ts; run-plan.md §fan-in)*
+- [ ] **Should a merge with ZERO value-producing branches be refused at parse?** — opened 2026-09-03 by
+  [ADR-0091](../decisions/0091-first-means-first-declared-not-first-to-finish.md)'s amendment. Now that a
+  `condition`/`parallel` predecessor is a control edge rather than a branch, a merge whose only
+  predecessors are control edges combines nothing: `first` → `null`, `concat` → `[]`, `custom` →
+  `branches: []`, `object_merge` → `{}`. **`object_merge` is the reason this is a question rather than a
+  shrug**: it is the one strategy that previously refused a phantom loudly, and it now succeeds quietly.
+  The amendment deliberately did NOT add a parse rejection — such a merge loads today, and refusing it
+  would stop a workflow from loading to improve a value that is meaningless under either reading — but a
+  merge that combines nothing is an authoring mistake in every case anyone has been able to name, and
+  refusing it is exactly the "found before money is spent" property `W6` exists for. Needs a maintainer
+  ruling, not more analysis. *(S · packages/core/src/dag.ts, docs/reference/shared-core/node-types.md)*
 - [x] **`secret`-typed input flowing into an agent prompt (1.O parallel to the 1.P fix)** — the AgentRunner
   resolves `{{ inputs.<name> }}` in a `prompt_template` against the **raw** `RunScope` (agent-runner.ts), so a
   `secret`-typed input interpolates raw into a USER message sent to the provider. This is provider **egress**

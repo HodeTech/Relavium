@@ -117,7 +117,7 @@ describe('buildRunPlan — valid topological orders', () => {
     expect(join?.type).toBe('fan_in');
     expect(join?.config).toMatchObject({
       kind: 'fan_in',
-      joinStrategy: 'wait_all',
+      requestedJoinStrategy: 'wait_all',
       mergeStrategy: 'concat',
     });
   });
@@ -175,13 +175,13 @@ describe('buildRunPlan — valid topological orders', () => {
     );
     expect(p.vertices.get('join')?.config).toMatchObject({
       kind: 'fan_in',
-      joinStrategy: 'wait_all',
+      requestedJoinStrategy: 'wait_all',
       mergeStrategy: 'custom',
       mergeFn: 'branches',
     });
   });
 
-  it('derives join_strategy wait_first for merge_strategy first', () => {
+  it('derives requestedJoinStrategy wait_first for merge_strategy first', () => {
     const p = plan(
       doc(`  id: first
   nodes:
@@ -195,7 +195,7 @@ describe('buildRunPlan — valid topological orders', () => {
     );
     expect(p.vertices.get('join')?.config).toMatchObject({
       kind: 'fan_in',
-      joinStrategy: 'wait_first',
+      requestedJoinStrategy: 'wait_first',
       mergeStrategy: 'first',
     });
   });
@@ -683,6 +683,129 @@ describe('buildRunPlan — agent_ref resolution', () => {
     expect(err.issues[0]?.field).toContain('agent_ref');
   });
 
+  describe('node `tools:` narrows and never widens, at PLAN BUILD (CR-64, ADR-0094)', () => {
+    /** An inline agent granted `read_file`, and a node that narrows or widens it. */
+    const withTools = (nodeTools: string, agentExtra = ''): string =>
+      doc(`  id: grant
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+      tools: [read_file, list_directory]${agentExtra}
+  nodes:
+    - { id: n, type: agent, agent_ref: a, prompt_template: 'go', tools: ${nodeTools} }
+  edges: []`);
+
+    it('REFUSES a node listing a tool its inline agent lacks — before any run id exists', () => {
+      // The whole point of the item: this used to pass every pre-run check and fail partway through a run,
+      // after upstream nodes had already spent money. Five documents said the parser caught it; none did.
+      const err = expectGraphError(withTools('[read_file, run_command]'));
+      expect(err.issues[0]?.kind).toBe('tool_grant_widened');
+    });
+
+    it('locates the offence POSITIONALLY and never echoes the authored tool value', () => {
+      // `node.tools` is only `nonEmptyString` — no charset, no length — so an authored id can carry a
+      // newline, a terminal escape, or secret-shaped text, and a GraphIssue is surfaced AND logged.
+      // errors.ts binds every field to "a *name* … never an authored value"; an invalid edge handle is
+      // already reported as `edge #n` for exactly this reason.
+      const hostile = 'sk-live-AAAABBBBCCCC';
+      const err = expectGraphError(withTools(`[read_file, ${hostile}]`));
+      expect(err.issues[0]?.field).toBe('node `n`.tools[1]'); // the INDEX, not the value
+      expect(JSON.stringify(err.issues[0])).not.toContain(hostile);
+    });
+
+    it('accepts a genuine narrowing, and a node that declares no tools at all', () => {
+      expect(plan(withTools('[read_file]')).vertices.has('n')).toBe(true);
+      expect(
+        plan(
+          doc(`  id: grant
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+      tools: [read_file]
+  nodes:
+    - { id: n, type: agent, agent_ref: a, prompt_template: 'go' }
+  edges: []`),
+        ).vertices.has('n'),
+      ).toBe(true);
+    });
+
+    it('an agent with NO `tools:` has granted NOTHING — any node `tools` widens it', () => {
+      // The security-relevant edge, and it had zero coverage: every fixture in the repo that pairs a node
+      // `tools:` with an agent gives that agent an explicit grant, so a mutation treating an ABSENT grant
+      // as "no restriction" passed the entire suite, typecheck and lint — while converting a deny into a
+      // real ALLOW at dispatch (`grantedToolIds` is derived from `resolveGrant` and is the only gate).
+      // agent-runner.md states the contract: "`node.tools` must be a subset of `agent.tools`" — and only
+      // the empty set is a subset of an absent grant.
+      const err = expectGraphError(
+        doc(`  id: nogrant
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+  nodes:
+    - { id: n, type: agent, agent_ref: a, prompt_template: 'go', tools: [read_file] }
+  edges: []`),
+      );
+      expect(err.issues[0]?.kind).toBe('tool_grant_widened');
+      expect(err.issues[0]?.field).toBe('node `n`.tools[0]');
+    });
+
+    it('CAPS the issues one node can emit, and reports the true count', () => {
+      // `node.tools` has no length ceiling, so one node could amplify an authored array into an unbounded
+      // ISSUE array — measured before the cap: 200,000 issues and ~55 MB of strings, synchronously, inside
+      // `buildRunPlan`. That is the shape ADR-0086 exists to stop, introduced at the layer that enforces it.
+      const many = Array.from({ length: 60 }, (_, i) => `q${i}`).join(', ');
+      const err = expectGraphError(
+        doc(`  id: many
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+      tools: [read_file]
+  nodes:
+    - { id: n, type: agent, agent_ref: a, prompt_template: 'go', tools: [${many}] }
+  edges: []`),
+      );
+      // Ten positions plus one summary line — never one per offending entry.
+      expect(err.issues).toHaveLength(11);
+      expect(err.issues.at(-1)?.message).toContain('50 further entries');
+      expect(err.issues.at(-1)?.message).toContain('10 of 60 shown');
+    });
+
+    it('SKIPS an agent whose grant depends on an unconnected MCP server, unless the host says it is final', () => {
+      // An agent declaring `mcp_servers` has a grant that is not knowable from the document: its tools
+      // arrive at connect. Refusing here would reject a workflow that is about to be valid — so the check
+      // stands down, and `resolveGrant` remains its only line. Recorded, never silent.
+      const mcp = `
+      mcp_servers:
+        - { id: s, transport: stdio, command: ./srv }`;
+      expect(plan(withTools('[read_file, from_mcp]', mcp)).vertices.has('n')).toBe(true);
+
+      // …and once the host asserts the grant is final (it connected and augmented the workflow), the same
+      // widening IS refused. This is the flag `relavium run` passes.
+      const err = expectGraphError(withTools('[read_file, from_mcp]', mcp), {
+        toolGrantsFinal: true,
+      });
+      expect(err.issues[0]?.kind).toBe('tool_grant_widened');
+    });
+
+    it('checks an MCP-free agent either way — its grant is complete in the document', () => {
+      // No `mcp_servers` ⇒ no ordering can change the grant, so the flag is irrelevant.
+      expect(expectGraphError(withTools('[run_command]')).issues[0]?.kind).toBe(
+        'tool_grant_widened',
+      );
+      expect(
+        expectGraphError(withTools('[run_command]'), { toolGrantsFinal: true }).issues[0]?.kind,
+      ).toBe('tool_grant_widened');
+    });
+  });
+
   it('attaches the resolved agent and its fallback chain to an agent vertex', () => {
     const agents = new Map<string, Agent>([
       [
@@ -899,5 +1022,490 @@ describe('buildRunPlan — error hygiene', () => {
       expect(err).toBeInstanceOf(WorkflowGraphError);
       expect((err as WorkflowGraphError).source).toBe('flows/x.relavium.yaml');
     }
+  });
+});
+
+// --- the branch-set invariant (ADR-0091, three corrections) -----------------------------------
+
+/**
+ * `computeMergeBranchOrder` was wrong three times in three review rounds — a phantom branch, then a
+ * reordering, then the reordering's mirror — and each was defended with an argument and shipped without
+ * the test that refuted it. Each fix earned its own targeted case; this asserts the INVARIANT those cases
+ * are instances of, across every shape that has bitten it:
+ *
+ *   `branchNodeIds` is exactly the merge's value-producing predecessors, as a SET.
+ *
+ * Order is pinned separately, per shape, because it depends on which parallel pairs. Membership depends
+ * on nothing, and it is where two of the three defects showed up — always an extra phantom, never a
+ * missing branch, which is why they were invisible.
+ */
+describe('buildRunPlan — a merge branch set is exactly its value-producing predecessors', () => {
+  const wrap = (body: string, edges: string): string => `schema_version: '1.0'
+workflow:
+  id: invariant
+  nodes:
+    - { id: start, type: input }
+${body}
+    - { id: join, type: merge, merge_strategy: concat }
+    - { id: out, type: output }
+  edges:
+${edges}
+    - { from: join, to: out }`;
+
+  const shapes: ReadonlyArray<{
+    readonly name: string;
+    readonly yaml: string;
+    readonly expected: readonly string[];
+  }> = [
+    {
+      name: 'a condition routed into the merge',
+      expected: ['work'],
+      yaml: wrap(
+        `    - { id: cond, type: condition, expression: 'true', branches: [{ when: true, target_node: join }] }
+    - { id: work, type: transform, transform: '"W"' }`,
+        `    - { from: start, to: cond }
+    - { from: start, to: work }
+    - { from: work, to: join }`,
+      ),
+    },
+    {
+      name: 'a parallel naming the merge in parallel_of',
+      expected: ['work'],
+      yaml: wrap(
+        `    - { id: fan, type: parallel, parallel_of: [join, work] }
+    - { id: work, type: transform, transform: '"W"' }`,
+        `    - { from: start, to: fan }
+    - { from: work, to: join }`,
+      ),
+    },
+    {
+      name: 'a paired parallel plus a non-parallel extra branch',
+      expected: ['a', 'b', 'extra'],
+      yaml: wrap(
+        `    - { id: fan, type: parallel, parallel_of: [a, b] }
+    - { id: a, type: transform, transform: '"A"' }
+    - { id: b, type: transform, transform: '"B"' }
+    - { id: extra, type: transform, transform: '"E"' }`,
+        `    - { from: start, to: fan }
+    - { from: start, to: extra }
+    - { from: a, to: join }
+    - { from: b, to: join }
+    - { from: extra, to: join }`,
+      ),
+    },
+    {
+      name: 'two parallels, one supplying no value',
+      expected: ['b', 'c'],
+      yaml: wrap(
+        `    - { id: gate, type: parallel, parallel_of: [g1] }
+    - { id: g1, type: condition, expression: 'true', branches: [{ when: true, target_node: join }] }
+    - { id: work-fan, type: parallel, parallel_of: [c, b] }
+    - { id: b, type: transform, transform: '"B"' }
+    - { id: c, type: transform, transform: '"C"' }`,
+        `    - { from: start, to: gate }
+    - { from: start, to: work-fan }
+    - { from: b, to: join }
+    - { from: c, to: join }`,
+      ),
+    },
+    {
+      name: 'a merge fed by another merge',
+      expected: ['a', 'inner'],
+      yaml: wrap(
+        `    - { id: a, type: transform, transform: '"A"' }
+    - { id: x, type: transform, transform: '"X"' }
+    - { id: inner, type: merge, merge_strategy: concat }`,
+        `    - { from: start, to: a }
+    - { from: start, to: x }
+    - { from: x, to: inner }
+    - { from: a, to: join }
+    - { from: inner, to: join }`,
+      ),
+    },
+  ];
+
+  for (const shape of shapes) {
+    it(`holds for: ${shape.name}`, () => {
+      const cfg = buildRunPlan(parseWorkflow(shape.yaml)).vertices.get('join')?.config;
+      const branches = cfg?.kind === 'fan_in' ? [...cfg.branchNodeIds].sort() : [];
+      expect(branches).toEqual([...shape.expected].sort());
+    });
+  }
+});
+
+// --- an expression sees only what it is ordered after (CR-62, ADR-0093) ------------------------
+
+describe('buildRunPlan — a literal out-of-closure `run.outputs` read is refused at parse', () => {
+  const wf = (nodes: string, edges: string): string => `schema_version: '1.0'
+workflow:
+  id: closure
+  nodes:
+    - { id: start, type: input }
+${nodes}
+    - { id: out, type: output }
+  edges:
+${edges}
+`;
+  const build = (yaml: string): { ok: boolean; message: string; kinds: readonly string[] } => {
+    try {
+      buildRunPlan(parseWorkflow(yaml));
+      return { ok: true, message: '', kinds: [] };
+    } catch (err) {
+      // The rendered `message` summarises ("… (and N more issue)"), so a multi-issue assertion has to
+      // read the structured issues — asserting on the summary would silently pass for the wrong reason.
+      const issues = err instanceof WorkflowGraphError ? err.issues : [];
+      return {
+        ok: false,
+        message: [
+          err instanceof Error ? err.message : String(err),
+          ...issues.map((i) => i.message),
+        ].join(' | '),
+        kinds: issues.map((i) => i.kind),
+      };
+    }
+  };
+
+  it('refuses a `condition` reading a node it is not ordered after', () => {
+    // The defect in one graph: `gate` and `other` are siblings, so `gate` has no ordering against
+    // `other` at all. Before this, the read returned `undefined`, `undefined === 'approved'` was
+    // `false`, and the run took the false branch as though the rule had been evaluated.
+    const r = build(
+      wf(
+        `    - { id: other, type: transform, transform: '"approved"' }
+    - id: gate
+      type: condition
+      expression: 'run.outputs["other"] === "approved"'
+      branches: [{ when: true, target_node: out }]`,
+        `    - { from: start, to: other }
+    - { from: start, to: gate }`,
+      ),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('not ordered after');
+    expect(r.message).toContain('`other`');
+    // The authored expression text is never echoed (errors.ts: a finding names, never quotes).
+    expect(r.message).not.toContain('approved');
+  });
+
+  it('ACCEPTS the same read once an edge orders the two', () => {
+    const r = build(
+      wf(
+        `    - { id: other, type: transform, transform: '"approved"' }
+    - id: gate
+      type: condition
+      expression: 'run.outputs["other"] === "approved"'
+      branches: [{ when: true, target_node: out }]`,
+        `    - { from: start, to: other }
+    - { from: other, to: gate }`,
+      ),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('follows the TRANSITIVE closure, not just direct dependencies', () => {
+    // `gate` depends on `mid`, `mid` on `first`. Reading `first` is legal: `gate` is ordered after it.
+    // This is the case a direct-`dependencies` check would wrongly refuse — the reason the plan carries
+    // `ancestors` as a separate, larger set.
+    const r = build(
+      wf(
+        `    - { id: first, type: transform, transform: '"A"' }
+    - { id: mid, type: transform, transform: '"B"' }
+    - id: gate
+      type: condition
+      expression: 'run.outputs["first"] === "A"'
+      branches: [{ when: true, target_node: out }]`,
+        `    - { from: start, to: first }
+    - { from: first, to: mid }
+    - { from: mid, to: gate }`,
+      ),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('refuses a `transform` and a `merge_fn` on the same rule', () => {
+    const t = build(
+      wf(
+        `    - { id: other, type: transform, transform: '"A"' }
+    - { id: t, type: transform, transform: 'run.outputs["other"]' }`,
+        `    - { from: start, to: other }
+    - { from: start, to: t }`,
+      ),
+    );
+    expect(t.ok).toBe(false);
+    const m = build(
+      wf(
+        `    - { id: other, type: transform, transform: '"A"' }
+    - { id: b, type: transform, transform: '"B"' }
+    - { id: j, type: merge, merge_strategy: custom, merge_fn: 'run.outputs["other"]' }`,
+        `    - { from: start, to: other }
+    - { from: start, to: b }
+    - { from: b, to: j }`,
+      ),
+    );
+    expect(m.ok).toBe(false);
+  });
+
+  it('refuses a self-read, which no edge check can see', () => {
+    const r = build(
+      wf(
+        `    - { id: t, type: transform, transform: 'run.outputs["t"]' }`,
+        `    - { from: start, to: t }`,
+      ),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('its own node');
+  });
+
+  it('says NOTHING about a computed key — silence is the contract, not an oversight', () => {
+    // ADR-0093 §2: the scan only ever refuses, so incompleteness is safe while guessing would refuse a
+    // valid workflow. This read IS out of closure and IS wrong; it is left to the narrowed scope.
+    const r = build(
+      wf(
+        `    - { id: other, type: transform, transform: '"A"' }
+    - { id: t, type: transform, transform: 'run.outputs[["oth","er"].join("")]' }`,
+        `    - { from: start, to: other }
+    - { from: start, to: t }`,
+      ),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('does not scan a `merge_fn` the engine never evaluates', () => {
+    // `fan-in.ts` switches on `mergeStrategy` and runs `merge_fn` only for `custom`; the schema does not
+    // reject one on the other strategies. Refusing a workflow over an expression that has no effect would
+    // be a false refusal in a different costume.
+    const r = build(
+      wf(
+        `    - { id: other, type: transform, transform: '"A"' }
+    - { id: b, type: transform, transform: '"B"' }
+    - { id: j, type: merge, merge_strategy: concat, merge_fn: 'run.outputs["other"]' }`,
+        `    - { from: start, to: other }
+    - { from: start, to: b }
+    - { from: b, to: j }`,
+      ),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('names only a remedy the author can actually perform', () => {
+    const r = build(
+      wf(
+        `    - { id: other, type: transform, transform: '"A"' }
+    - { id: t, type: transform, transform: 'run.outputs["other"]' }`,
+        `    - { from: start, to: other }
+    - { from: start, to: t }`,
+      ),
+    );
+    // A `transform` has no template field, so "reference it from a template field" — the wording this
+    // replaced — sent the author looking for something that does not exist on their node type.
+    expect(r.message).toContain('add an edge');
+    expect(r.message).not.toContain('template field');
+  });
+
+  it('keeps the check for a node NOT downstream of an unresolved agent', () => {
+    // The gate is per-node. A first version stood the WHOLE check down whenever any `agent_ref` was
+    // unresolved — and since no production caller supplies a registry, and an unresolved `$ref` raises no
+    // issue at all, such a workflow built clean AND silently lost the entire check. `t` here is a sibling
+    // of the agent, not downstream of it, so its closure is complete and it is still refused.
+    const r = build(
+      wf(
+        `    - { id: a, type: agent, agent_ref: nowhere }
+    - { id: other, type: transform, transform: '"A"' }
+    - { id: t, type: transform, transform: 'run.outputs["other"]' }`,
+        `    - { from: start, to: a }
+    - { from: start, to: other }
+    - { from: start, to: t }`,
+      ),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.kinds).toContain('unordered_output_read');
+  });
+
+  it('stands the check down for a node DOWNSTREAM of an unresolved agent', () => {
+    // That agent's `system_prompt` would have wired producer edges this build never saw, so `t`'s closure
+    // is a subset of the real one — and refusing from a subset is the false-refusal direction.
+    const r = build(
+      wf(
+        `    - { id: a, type: agent, agent_ref: nowhere }
+    - { id: other, type: transform, transform: '"A"' }
+    - { id: t, type: transform, transform: 'run.outputs["other"]' }`,
+        `    - { from: start, to: a }
+    - { from: start, to: other }
+    - { from: a, to: t }`,
+      ),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('stands down entirely on an over-ceiling graph — a rejection must not cost more than a build', () => {
+    // Behavioural, not timed: an over-ceiling file reports ONLY the ceiling, never a read finding, which
+    // is what proves the Θ(V²) closure never ran. The cost this guards was measured at 8000 nodes —
+    // 2358ms without the gate, 13ms with it, and an outright host OOM above ~10k — but a timing assertion
+    // would be flaky, and the observable consequence pins the same thing.
+    const n = 600; // ADMISSION_CEILINGS.nodes is 500
+    const nodes = Array.from(
+      { length: n },
+      (_, i) => `    - { id: n${i}, type: transform, transform: 'run.outputs["n${n - 1}"]' }`,
+    ).join('\n');
+    const edges = Array.from(
+      { length: n - 1 },
+      (_, i) => `    - { from: n${i}, to: n${i + 1} }`,
+    ).join('\n');
+    const r = build(
+      `schema_version: '1.0'\nworkflow:\n  id: over\n  nodes:\n${nodes}\n  edges:\n${edges}\n`,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.kinds).toContain('ceiling_exceeded');
+    expect(r.kinds).not.toContain('unordered_output_read');
+  });
+
+  it('says nothing about a read of a node that is not in the workflow', () => {
+    // A dangling reference is the runtime resolver's job; a second, disagreeing opinion here is how two
+    // checks drift apart.
+    const r = build(
+      wf(
+        `    - { id: t, type: transform, transform: 'run.outputs["ghost"]' }`,
+        `    - { from: start, to: t }`,
+      ),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('reports the read alongside other graph problems, not instead of them', () => {
+    const r = build(
+      wf(
+        `    - { id: other, type: transform, transform: '"A"' }
+    - { id: t, type: transform, transform: 'run.outputs["other"]' }`,
+        `    - { from: start, to: other }
+    - { from: start, to: t }
+    - { from: t, to: ghost }`,
+      ),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.kinds).toContain('unordered_output_read');
+    expect(r.kinds).toContain('unknown_edge_target');
+  });
+});
+
+// --- `output_schema` is compiled at parse (CR-61, ADR-0092 §3) ---------------------------------
+
+describe('an unsupported `output_schema` is refused at PARSE', () => {
+  const wf = (schema: string): string => `schema_version: '1.0'
+workflow:
+  id: os
+  nodes:
+    - { id: start, type: input }
+    - { id: t, type: transform, transform: '({ a: 1 })', output_schema: ${schema} }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: t }
+    - { from: t, to: out }
+`;
+  const parse = (yaml: string): { ok: boolean; message: string } => {
+    try {
+      parseWorkflow(yaml);
+      return { ok: true, message: '' };
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    }
+  };
+
+  it('accepts a schema inside the supported subset', () => {
+    expect(
+      parse(wf('{ type: object, required: [a], properties: { a: { type: number } } }')).ok,
+    ).toBe(true);
+  });
+
+  it('refuses a keyword nobody implemented — in the PARSER, not only at plan build', () => {
+    // ADR-0092 §3 says "at parse", and it ran only at plan build — so `parseWorkflow` returned a document
+    // the canonical contract calls invalid, and import/export and the catalog carried it as valid.
+    const r = parse(wf('{ type: object, oneOf: [{ type: string }] }'));
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('`t`.output_schema');
+    expect(r.message).toContain('oneOf');
+  });
+
+  it('refuses a malformed value for a supported keyword', () => {
+    expect(parse(wf("{ type: string, minLength: 'five' }")).ok).toBe(false);
+  });
+
+  it('refuses an unsupported `format` rather than accepting it unchecked', () => {
+    expect(parse(wf('{ type: string, format: hostname }')).ok).toBe(false);
+    expect(parse(wf('{ type: string, format: email }')).ok).toBe(true);
+  });
+
+  it('never echoes an authored key', () => {
+    const r = parse(wf("{ type: string, 'sk-live-abcdef': 1 }"));
+    expect(r.ok).toBe(false);
+    expect(r.message).not.toContain('sk-live');
+  });
+
+  it('reaches all THREE declaration sites — node, agent node, and the agent itself', () => {
+    const bad = "{ type: object, minProperties: 'two' }";
+    expect(parse(wf(bad)).ok).toBe(false);
+    const agentNode = `schema_version: '1.0'
+workflow:
+  id: os-agent
+  agents:
+    - { id: a1, model: m, provider: anthropic, system_prompt: 'x' }
+  nodes:
+    - { id: start, type: input }
+    - { id: n, type: agent, agent_ref: a1, output_schema: ${bad} }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: n }
+    - { from: n, to: out }
+`;
+    expect(parse(agentNode).ok).toBe(false);
+    const onAgent = `schema_version: '1.0'
+workflow:
+  id: os-inline
+  agents:
+    - id: a1
+      model: m
+      provider: anthropic
+      system_prompt: 'x'
+      output_schema:
+        type: object
+        minProperties: 'two'
+  nodes:
+    - { id: start, type: input }
+    - { id: n, type: agent, agent_ref: a1 }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: n }
+    - { from: n, to: out }
+`;
+    const viaAgent = parse(onAgent);
+    expect(viaAgent.ok).toBe(false);
+    expect(viaAgent.message).toContain('agent `a1`.output_schema');
+  });
+
+  it('the DAG builder keeps its own check, for a caller that bypasses the parser', () => {
+    // Defence in depth: `buildRunPlan` is reachable with a hand-constructed definition, and a host that
+    // builds one itself must not get an unvalidated schema past both doors.
+    const definition = {
+      schema_version: '1.0' as const,
+      workflow: {
+        id: 'bypass',
+        nodes: [
+          { id: 'start', type: 'input' as const },
+          {
+            id: 't',
+            type: 'transform' as const,
+            transform: '1',
+            output_schema: { oneOf: [{ type: 'string' }] },
+          },
+        ],
+        edges: [{ from: 'start', to: 't' }],
+      },
+    } as unknown as Parameters<typeof buildRunPlan>[0];
+    let kinds: readonly string[] = [];
+    try {
+      buildRunPlan(definition);
+    } catch (err) {
+      kinds = err instanceof WorkflowGraphError ? err.issues.map((i) => i.kind) : [];
+    }
+    expect(kinds).toContain('invalid_output_schema');
   });
 });

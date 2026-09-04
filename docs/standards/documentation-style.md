@@ -101,6 +101,7 @@ everywhere else. The list of single-home artifacts:
 - Config spec → `reference/contracts/config-spec.md`
 - Store shapes → `reference/shared-core/store-shapes.md`
 - Node types → `reference/shared-core/node-types.md`
+- JSON-Schema subset (what an `output_schema` / MCP `inputSchema` may contain) → `reference/shared-core/json-schema-subset.md`
 - Built-in tools → `reference/shared-core/built-in-tools.md`
 - MCP integration → `reference/shared-core/mcp-integration.md`
 - Database schema (DDL) → `reference/shared-core/database-schema.md`

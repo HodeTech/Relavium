@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { relative } from 'node:path';
 
 import {
   type EffectCorrelation,
@@ -52,6 +51,7 @@ import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { guardMcpTeardown } from '../engine/mcp-signal-teardown.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { CliError } from '../process/errors.js';
+import { sourceLabel } from '../process/source-label.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -165,7 +165,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
 
   const source = resolveWorkflowSource(args.workflow, { cwd: deps.global.cwd, projectConfigDir });
 
-  const def = parseOrRefuse(source.yaml, relative(deps.global.cwd, source.path));
+  const def = parseOrRefuse(source.yaml, sourceLabel(deps.global.cwd, source.path));
   const inputs = resolveInputs(def, parseInputArgs(args.input));
 
   // Pre-flight provider keys: surface a missing key for an inline agent's PRIMARY provider as a clean
@@ -385,7 +385,15 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     await engine.drainTerminalOutbox().catch(() => undefined);
     // The AUGMENTED workflow — the same one the store froze above, so the durable snapshot and the executed
     // graph are one thing rather than two that happen to be close.
-    const handle = engine.start({ workflow: runWorkflow, inputs });
+    // `toolGrantsFinal`: the MCP servers were connected and the workflow rewritten above, so every inline
+    // agent's `tools` already includes what its servers discovered. That makes the plan-build narrowing
+    // check correct here (ADR-0094) — a node listing a tool its agent lacks is refused before the run id
+    // exists, rather than partway through, after upstream nodes have spent money.
+    const handle = engine.start({
+      workflow: runWorkflow,
+      inputs,
+      planOptions: { toolGrantsFinal: true },
+    });
 
     // Hand the live run to the shared driver (2.G): it owns the event loop, the SIGINT cooperative-cancel
     // contract, the renderer lifecycle (constructed inside, after SIGINT registration — output mode per

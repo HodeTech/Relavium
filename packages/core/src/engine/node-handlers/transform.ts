@@ -7,6 +7,7 @@
 
 import type { ExpressionSandbox } from '../../expression/sandbox.js';
 import type { NodeExecContext, NodeExecutor, NodeOutcome } from '../node-executor.js';
+import { outputSchemaMiss } from '../../output-schema.js';
 import { buildExpressionScope, cancelled, failed, mapThrownToFailure } from './scope.js';
 
 export interface TransformNodeExecutorDeps {
@@ -35,9 +36,19 @@ function runTransform(ctx: NodeExecContext, deps: TransformNodeExecutorDeps): No
   if (ctx.signal.aborted) {
     return cancelled();
   }
-  // The sandbox already guarantees a transform result is JSON-serializable. The node's optional
-  // `output_schema` is NOT deep-validated here: deep JSON-Schema conformance needs a validator (a new
-  // runtime dependency → ADR), a recorded deferral shared with the agent node (deferred-tasks.md).
+  // The sandbox already guarantees a transform result is JSON-serializable; `output_schema` adds
+  // CONFORMANCE on top ([ADR-0092](../../../../docs/decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md)
+  // §4). This comment used to say deep validation needed a new runtime dependency and cite a deferral —
+  // it did not: the project already owned a JSON-Schema→Zod compiler at the MCP boundary, one package
+  // away, and the deferral outlived the reason for it.
+  //
+  // The schema was compiled and accepted at PARSE, so a miss here is the transform's result failing the
+  // author's own contract, not a bad schema. The message names nothing (ADR-0092 §5).
+  const { output_schema: outputSchema } = config.node;
+  const miss = outputSchema === undefined ? undefined : outputSchemaMiss(outputSchema, value);
+  if (miss !== undefined) {
+    return failed(miss.code, `transform node '${config.node.id}': ${miss.message}`, false);
+  }
   return { kind: 'completed', output: value };
 }
 

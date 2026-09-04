@@ -118,6 +118,28 @@ describe('createPlainRenderer', () => {
     expect(out()).toContain('FAIL x: sandbox_error');
   });
 
+  it('surfaces a skipped node and its reason — a silent skip reads as success in CI', () => {
+    const { io, out } = captureIo();
+    createPlainRenderer(io).onEvent(
+      ev({ type: 'node:skipped', nodeId: 'x', reason: 'branch_not_taken' }),
+    );
+    expect(out()).toContain('skip x (branch_not_taken)');
+  });
+
+  it('surfaces a retry with its attempt, delay and cause — otherwise it is an unexplained stall', () => {
+    const { io, out } = captureIo();
+    createPlainRenderer(io).onEvent(
+      ev({
+        type: 'node:retrying',
+        nodeId: 'x',
+        attemptNumber: 2,
+        error: { code: 'provider_rate_limit', message: 'boom', retryable: true },
+        delayMs: 250,
+      }),
+    );
+    expect(out()).toContain('retry x attempt 2 in 250ms (provider_rate_limit)');
+  });
+
   it('renders a human-gate pause with its gate id and type', () => {
     const { io, out } = captureIo();
     createPlainRenderer(io).onEvent(

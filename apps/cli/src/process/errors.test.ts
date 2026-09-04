@@ -1,4 +1,11 @@
-import { EngineStateError } from '@relavium/core';
+import {
+  AgentParseError,
+  EngineStateError,
+  WorkflowGraphError,
+  WorkflowSecretLeakError,
+  WorkflowSyntaxError,
+  WorkflowValidationError,
+} from '@relavium/core';
 import { CorruptRunEventError, UnreadableRunEventLogError } from '@relavium/db';
 import { describe, expect, it } from 'vitest';
 
@@ -128,5 +135,67 @@ describe('toUserFacing', () => {
     expect(userFacing.code).toBe('internal');
     expect(userFacing.exitCode).toBe(EXIT_CODES.workflowFailed);
     expect(userFacing.message).not.toContain('secret');
+  });
+});
+
+describe('a graph fault is an AUTHORING fault, not an internal one (CR-64 review, ADR-0094)', () => {
+  it('maps WorkflowGraphError to invalid_invocation/exit 2 and keeps its message', () => {
+    // Before this arm, EVERY `WorkflowGraphError` — a cycle, an unknown edge target, an admission ceiling,
+    // and (newly) a widened tool grant — fell through to `internal` / exit 1: the code `commands.md`
+    // reserves for "the workflow ran and failed", answering a file that could never run. `CR-64` routed a
+    // common, easy-to-make authoring mistake into that dead arm, which made the diagnostic strictly WORSE
+    // than the mid-run failure it replaced: the user lost the node id entirely.
+    const err = new WorkflowGraphError([
+      { kind: 'tool_grant_widened', field: 'node `n`.tools[1]', message: 'widened' },
+    ]);
+    const out = toUserFacing(err);
+    expect(out.code).toBe('invalid_invocation');
+    expect(out.exitCode).toBe(EXIT_CODES.invalidInvocation);
+    expect(out.message).toContain('node `n`.tools[1]'); // the locator survives to the user
+    expect(out.message).not.toContain('unexpected internal');
+  });
+
+  it('…and so does a SYNTAX error, which shares the family', () => {
+    // The base constructor is protected, so this asserts through a concrete sibling. That is the point of
+    // matching on the base: a cycle, a ceiling, a widened grant and a malformed file all land here.
+    const out = toUserFacing(new WorkflowSyntaxError('could not parse'));
+    expect(out.code).toBe('invalid_invocation');
+    expect(out.exitCode).toBe(EXIT_CODES.invalidInvocation);
+  });
+
+  it('…and a VALIDATION error and a SECRET-LEAK error — all four subclasses, since the arm keys on the base', () => {
+    // The arm matches an ABSTRACT base class, so a fifth subclass added later auto-promotes to the user with
+    // no test reddening. `WorkflowSecretLeakError` is the one that matters: its message is assembled from
+    // authored identifiers, and it is the reason "echo-safe by contract" needed pinning rather than trusting.
+    expect(
+      toUserFacing(new WorkflowValidationError([{ field: 'x', message: 'bad' }])).exitCode,
+    ).toBe(EXIT_CODES.invalidInvocation);
+    const leak = toUserFacing(
+      new WorkflowSecretLeakError([
+        { location: 'agent `w`.system_prompt', secret: 'inputs.api_key' },
+      ]),
+    );
+    expect(leak.exitCode).toBe(EXIT_CODES.invalidInvocation);
+    expect(leak.message).toContain('inputs.api_key'); // the tainted SYMBOL, never a resolved value
+  });
+
+  it('a genuinely unknown error is still internal/exit 1', () => {
+    const out = toUserFacing(new Error('boom'));
+    expect(out.code).toBe('internal');
+    expect(out.exitCode).toBe(EXIT_CODES.workflowFailed);
+  });
+});
+
+describe('toUserFacing — a malformed standalone agent file', () => {
+  it('is an invalid invocation (exit 2), not an internal error (exit 1)', () => {
+    // `AgentParseError extends Error`, not `WorkflowParseError`, so it fell through the arm added for the
+    // workflow case: `chat --agent`, Home and `agent run` all answered an unloadable agent with
+    // "An unexpected internal error occurred." and exit 1.
+    const mapped = toUserFacing(
+      new AgentParseError('agent_validation', 'invalid agent: output_schema: …', ['output_schema']),
+    );
+    expect(mapped.code).toBe('invalid_invocation');
+    expect(mapped.exitCode).toBe(EXIT_CODES.invalidInvocation);
+    expect(mapped.message).toContain('invalid agent');
   });
 });

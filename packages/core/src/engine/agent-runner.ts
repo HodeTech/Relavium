@@ -55,6 +55,8 @@ import {
   UnknownModelError,
 } from '@relavium/llm';
 
+import { MAX_REPORTED_WIDENINGS } from '../dag.js';
+import { outputSchemaMiss } from '../output-schema.js';
 import { resolveTemplate } from '../interpolation/resolve.js';
 import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
 import type { AgentPlanConfig } from '../run-plan.js';
@@ -456,7 +458,7 @@ async function executeAgent(
     return turnOutcomeForError(err);
   }
 
-  return buildChatTurnOutcome(node, result, outputSchema !== undefined);
+  return buildChatTurnOutcome(node, result, outputSchema);
 }
 
 /**
@@ -472,7 +474,9 @@ async function executeAgent(
 function buildChatTurnOutcome(
   node: AgentNode,
   result: AgentTurnResult,
-  hasOutputSchema: boolean,
+  // The SCHEMA, not a `hasOutputSchema` boolean: the conformance check below needs the object, and a
+  // boolean beside it would be a second truth about the same thing that could drift from the first.
+  outputSchema: object | undefined,
 ): NodeOutcome {
   const tokensUsed = {
     input: result.usage.input,
@@ -492,7 +496,7 @@ function buildChatTurnOutcome(
       false,
     );
   }
-  if (!hasOutputSchema) {
+  if (outputSchema === undefined) {
     return { kind: 'completed', output: result.text, tokensUsed };
   }
   const parsed = tryParseJson(result.text);
@@ -502,6 +506,16 @@ function buildChatTurnOutcome(
       `agent node '${node.id}': output_schema is set but the model output was not valid JSON`,
       false,
     );
+  }
+  // **Parse-as-JSON was only the first half** ([ADR-0092](../../../../docs/decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md)
+  // §4). ADR-0038 required the response to be validated AGAINST the schema because no adapter does it; what
+  // shipped stopped at "is it JSON", so `{ required: ['status'] }` admitted `{}` and the next node read
+  // `undefined` from a field the author had marked required. The message names nothing — not the failing
+  // property, not any part of the output — because a property name is authored and the output is the least
+  // trusted value in the run (ADR-0092 §5).
+  const miss = outputSchemaMiss(outputSchema, parsed);
+  if (miss !== undefined) {
+    return failed(miss.code, `agent node '${node.id}': ${miss.message}`, false);
   }
   return { kind: 'completed', output: parsed, tokensUsed };
 }
@@ -970,11 +984,40 @@ function resolveGrant(
 ): { ok: true; ids: readonly string[] } | { ok: false; message: string } {
   const agentSet = agentTools ?? [];
   if (nodeTools === undefined) return { ok: true, ids: agentSet };
-  const widening = nodeTools.filter((t) => !agentSet.includes(t));
-  if (widening.length > 0) {
+  // POSITIONAL, and the authored tool value is never echoed (ADR-0094). `node.tools` is validated only as a
+  // non-empty string — no charset, no length bound — so an id can carry a newline, a terminal escape, or
+  // secret-shaped text, and this message reaches a `node:failed` event and a log. The plan-build check that
+  // now catches this first reports it the same way; this is the floor, for a host that builds no plan.
+  // **Set membership, not `includes`.** This ran `agent.tools.includes(t)` per node tool — O(n×m) — and a
+  // large but entirely LEGAL narrowing then blocked the event loop for seconds, synchronously, where no
+  // deadline can fire.
+  const granted = new Set(agentSet);
+  // **Capped in the WORK, not only in the message.** `collectToolGrantIssues` caps at ten with a summary
+  // because an unbounded list amplified an authored array into a 55 MB message; a first version of this
+  // twin built the full array of denied indices with `flatMap` and sliced it afterwards, which caps the
+  // output and pays for the amplification anyway. One pass, keeping at most the positions it will print
+  // and counting the rest. The membership test is a `Set`: `includes` per tool made a large but entirely
+  // LEGAL narrowing O(n×m), blocking the event loop synchronously where no deadline can fire.
+  const shown: number[] = [];
+  let denied = 0;
+  for (const [index, tool] of nodeTools.entries()) {
+    if (granted.has(tool)) {
+      continue;
+    }
+    denied += 1;
+    if (shown.length < MAX_REPORTED_WIDENINGS) {
+      shown.push(index);
+    }
+  }
+  if (denied > 0) {
+    const positions = shown.map((i) => `tools[${i}]`).join(', ');
+    const remainder =
+      denied > shown.length
+        ? ` (and ${denied - shown.length} more; ${shown.length} of ${denied} shown)`
+        : '';
     return {
       ok: false,
-      message: `node tools [${widening.join(', ')}] are not granted to the agent (a node narrows, never widens)`,
+      message: `node ${positions}${remainder} ${denied === 1 ? 'is' : 'are'} not granted to the agent (a node narrows, never widens)`,
     };
   }
   return { ok: true, ids: nodeTools };

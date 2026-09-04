@@ -7,6 +7,13 @@
 
 > **Amended 2026-08-17 by [ADR-0080](0080-durable-effect-journal-and-the-tiered-effect-contract.md).** Where this ADR names the `runId + nodeId + retryCount` idempotency key, that key is renamed and re-specified as the five identities in [effect-journal.md](../reference/shared-core/effect-journal.md). The determinism reasoning here is unaffected — only the key's name and composition changed.
 
+
+> **Amended 2026-09-02 by [ADR-0093](0093-an-expression-sees-only-what-it-is-ordered-after.md).** The
+> `run.outputs` scope injected into a `condition`/`transform`/`merge_fn` is narrowed to the reading node's
+> transitive dependency closure, and a literal read of a non-ancestor node is refused at PARSE. §3's
+> JSON-only marshaling and §6's closed error taxonomy are UNCHANGED — ADR-0093 deliberately chose a
+> parse-time scan over VM-side observation precisely so neither had to move.
+
 ## Context
 
 `condition`, `transform`, and a custom `merge_fn` evaluate author-supplied **JavaScript

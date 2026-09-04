@@ -113,7 +113,15 @@ function agentNode(overrides: Partial<AgentNodeT> = {}): AgentNodeT {
 }
 
 function vertexFor(config: AgentPlanConfig): PlanVertex {
-  return { id: 'n1', type: 'agent', dependencies: [], dependents: [], inputSites: [], config };
+  return {
+    id: 'n1',
+    type: 'agent',
+    dependencies: [],
+    dependents: [],
+    ancestors: [],
+    inputSites: [],
+    config,
+  };
 }
 
 /** The common vertex: a resolved agent + a prompt referencing `{{inputs.text}}`. */
@@ -339,6 +347,64 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
     if (outcome.kind === 'completed') expect(outcome.output).toEqual({ n: 2 });
   });
 
+  it('fails when the output PARSES but does not conform (ADR-0038 asked for this; ADR-0092 delivers it)', async () => {
+    // The gap ADR-0092 §4 closes. `parse-as-JSON` was only the first half: a response that parsed but did
+    // not conform was accepted, so a schema declaring `required: ['status']` admitted `{}` and the next
+    // node read `undefined` from a field the author had marked required.
+    const exec = createAgentNodeExecutor(
+      deps(provider([{ type: 'text_delta', text: '{"other":1}' }, STOP])),
+    );
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ output_schema: { type: 'object', required: ['status'] } }),
+        resolvedAgent: AGENT,
+      }),
+    );
+    const outcome = await exec.execute(ctx);
+    expect(outcome).toMatchObject({
+      kind: 'failed',
+      error: { code: 'validation', retryable: false },
+    });
+    // Names neither the failing property nor any part of the model output (ADR-0092 §5).
+    expect(outcome.kind === 'failed' && outcome.error.message).not.toContain('status');
+    expect(outcome.kind === 'failed' && outcome.error.message).not.toContain('other');
+  });
+
+  it('fails INTERNAL, not validation, when the schema could not be compiled', async () => {
+    // The agent twin of the transform case. Both call sites were changed identically to propagate
+    // `miss.code`, and only the transform one got a test — so a refactor that re-hardcoded `'validation'`
+    // here would have been caught on one path and not the other.
+    const exec = createAgentNodeExecutor(
+      deps(provider([{ type: 'text_delta', text: '{"status":"ok"}' }, STOP])),
+    );
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ output_schema: { oneOf: [{ type: 'string' }] } }),
+        resolvedAgent: AGENT,
+      }),
+    );
+    expect(await exec.execute(ctx)).toMatchObject({
+      kind: 'failed',
+      error: { code: 'internal', retryable: false },
+    });
+  });
+
+  it('completes when the output conforms', async () => {
+    const exec = createAgentNodeExecutor(
+      deps(provider([{ type: 'text_delta', text: '{"status":"ok"}' }, STOP])),
+    );
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ output_schema: { type: 'object', required: ['status'] } }),
+        resolvedAgent: AGENT,
+      }),
+    );
+    expect((await exec.execute(ctx)).kind).toBe('completed');
+  });
+
   it('fails with validation when output_schema is set but the output is not JSON', async () => {
     const exec = createAgentNodeExecutor(
       deps(provider([{ type: 'text_delta', text: 'not json' }, STOP])),
@@ -366,6 +432,68 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
     );
     const outcome = await exec.execute(ctx);
     expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'validation' } });
+  });
+
+  it('caps the widening diagnostic like its plan-build twin, and counts the rest', async () => {
+    // `collectToolGrantIssues` caps at ten with a summary because an unbounded list amplified an authored
+    // array into a 55 MB message. This dispatch-time twin builds the same list from the same array and was
+    // left uncapped in the same PR — and then capped only its OUTPUT, still materializing every denied
+    // index first. Nothing tested either half.
+    const agentWithTools: Agent = { ...AGENT, tools: ['read_file'] };
+    const widened = Array.from({ length: 40 }, (_, i) => `nope_${i}`);
+    const exec = createAgentNodeExecutor(deps(provider([STOP])));
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ tools: widened }),
+        resolvedAgent: agentWithTools,
+      }),
+    );
+    const outcome = await exec.execute(ctx);
+    expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'validation' } });
+    const message = outcome.kind === 'failed' ? outcome.error.message : '';
+    // Ten positions, then a summary naming the true total — never forty.
+    expect(message.match(/tools\[\d+\]/g)).toHaveLength(10);
+    expect(message).toContain('and 30 more');
+    expect(message).toContain('10 of 40 shown');
+  });
+
+  it('an agent with NO `tools:` grants nothing — the DISPATCH floor agrees with plan build', async () => {
+    // The two checks must not disagree: one refusing what the other allows is the worst outcome. This is
+    // the runtime half of the same edge, and it was equally uncovered — a mutation making an absent grant
+    // mean "no restriction" left the whole core suite green while turning this deny into a completed run.
+    const exec = createAgentNodeExecutor(deps(provider([STOP])));
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ tools: ['read_file'] }),
+        resolvedAgent: AGENT, // no `tools:` at all
+      }),
+    );
+    const outcome = await exec.execute(ctx);
+    expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'validation' } });
+    expect(outcome.kind === 'failed' ? outcome.error.message : '').toContain('tools[0]');
+  });
+
+  it('…and its message is POSITIONAL — a hostile tool id never reaches the event (ADR-0094)', async () => {
+    // `node.tools` is only `nonEmptyString`: no charset, no length bound. This message rides a
+    // `node:failed` event and a log line, so echoing the authored value would put an unbounded — possibly
+    // secret-shaped or terminal-escaping — string there. The plan-build check (dag.ts) refuses this first
+    // and reports it the same way; this is the floor for a host that builds no plan.
+    const hostile = 'sk-live-AAAABBBBCCCC';
+    const agentWithTools: Agent = { ...AGENT, tools: ['read_file'] };
+    const exec = createAgentNodeExecutor(deps(provider([STOP])));
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ tools: ['read_file', hostile] }),
+        resolvedAgent: agentWithTools,
+      }),
+    );
+    const outcome = await exec.execute(ctx);
+    const message = outcome.kind === 'failed' ? outcome.error.message : '';
+    expect(message).toContain('tools[1]'); // the INDEX
+    expect(message).not.toContain(hostile); // never the value
   });
 
   it('does NOT use node.retry for within-chain primary retry (it is the engine above-chain budget, ADR-0040)', async () => {

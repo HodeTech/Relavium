@@ -26,7 +26,7 @@ It is a **Turborepo + pnpm monorepo**:
 | `packages/llm` (`@relavium/llm`) | Relavium's **own** multi-LLM abstraction: the `LLMProvider` seam + thin hand-rolled adapters over the official provider SDKs. No Vercel AI SDK, no LangChain. |
 | `packages/core` (`@relavium/core`) | **The engine** — YAML→DAG parse, runner, checkpoint/resume, retry. **Zero platform-specific imports.** The most important package. |
 | `packages/db` (`@relavium/db`) | Drizzle schema + migrations — same schema for SQLite (local) and Postgres (cloud). |
-| `packages/mcp` (`@relavium/mcp`) | The inbound MCP client — the SDK-fenced package, the dependency-free JSON-Schema→Zod compiler, and the `http`/`sse`/`websocket` transports behind the SSRF floor. |
+| `packages/mcp` (`@relavium/mcp`) | The inbound MCP client — the SDK-fenced package and the `http`/`sse`/`websocket` transports behind the SSRF floor. (The dependency-free JSON-Schema→Zod compiler moved to `@relavium/shared` — [ADR-0092](docs/decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md) §1.) |
 | `packages/ui` (`@relavium/ui`) | Shared React components: ReactFlow node types + shadcn/ui. |
 | `apps/desktop` | Tauri v2 desktop app — the agent-management center (canvas, run monitoring). |
 | `apps/cli` | Terminal CLI (`commander.js` + `ink`). The engine's first real consumer + regression harness. |
@@ -56,7 +56,7 @@ browsers, competitor-breadth tools, settings/theming/`en`+`tr` localization, and
 run-ops resume follow-up.
 
 **An interlude is running between Wave 1 and Wave 2 of the remediation: Phase 2.6.5 (Core reliability),
-38 of 48 items closed** — `W0` (PR #82, 2026-08-11), `W1`, the eight P0 blockers plus `CR-92`, merged
+43 of 48 items closed** — `W0` (PR #82, 2026-08-11), `W1`, the eight P0 blockers plus `CR-92`, merged
 2026-08-24 (PR #83) behind [ADR-0078](docs/decisions/0078-ordered-durable-append-and-the-terminal-outbox.md)–[ADR-0084](docs/decisions/0084-consent-before-a-local-mcp-spawn.md):
 ordered durable append, cross-process run ownership, the durable effect journal, untrusted compaction summaries,
 the stream-grammar seam obligation, engine-side input admission and resume identity, and consent before a local
@@ -78,15 +78,26 @@ cancellable, `http`/`sse` connect by validated pinned IP, a redirect is refused,
 refused at admission, a server's ingress is bounded at two levels, and its tool DEFINITIONS are treated as
 untrusted. No new product surface in either wave — only the invariants an existing surface already claims.
 A systematic review of PR #87 found **five merge blockers** in `W4` — all reproduced and fixed before it
-merged; the phase doc's `W4` section records what they were and what the pattern says. **`W5` — media correctness — is COMPLETE on `development` (2026-09-02, PR pending)** behind
+merged; the phase doc's `W4` section records what they were and what the pattern says. **`W5` — media correctness — MERGED 2026-09-02 (PR #88)** behind
 [ADR-0089](docs/decisions/0089-media-correctness-four-boundaries.md) and
 [ADR-0090](docs/decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md): `read_media` delivers
 over the media-input rail on a marked, fenced synthesized message; tool and attachment capability is gated on
 the MODEL; Gemini's function-call continuation token rides the part it belongs to; a media body streams from
 the network into the store under a size ceiling, an idle deadline and the run signal; a `url` output is pinned
 to a content-addressed handle at first resolution; and a missing media rate is unpriced rather than a price of
-zero. Two items closed one half of a two-part obligation and say so; every residual is written out rather than
-left inside a checked box. **`W6` (authoring correctness) is next.**
+zero. A systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed
+before it merged. Two items closed one half of a two-part obligation and say so; every residual is written out
+rather than left inside a checked box. **`W6` (authoring correctness) is COMPLETE on `development` and awaiting
+review** behind [ADR-0091](docs/decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](docs/decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md):
+`merge_strategy: first` means first DECLARED and the plan field no longer claims otherwise; a widened tool grant
+is refused when the plan is BUILT rather than mid-run; an expression sees only its transitive dependency closure
+and a literal out-of-closure `run.outputs` read is refused at parse (as is `edges[].condition`, which nothing
+ever read); and an authored `output_schema` is compiled at parse in an allowlist-strict mode and enforced at run
+time — with **no new dependency**, because the JSON-Schema→Zod compiler the deferral claimed we needed already
+existed in `packages/mcp` and simply moved to `@relavium/shared`. Seven review rounds found that **most defects
+were in the FIXES rather than the code they repaired** — the branch-order search was wrong three times, the
+expression scan's no-false-refusal claim was false in seven ways, and a stand-down gate silently removed the
+check it was added to protect; each is a dated correction inside its own ADR.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);

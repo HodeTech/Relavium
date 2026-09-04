@@ -23,9 +23,11 @@
  * 1.N deliberately does **not** own: real node execution (1.O/1.P), node-level retry above the provider
  * chain (1.S), the pre-egress budget gate/estimator (1.AC — 1.N only provides the concurrency-cap
  * scheduling point and would emit the governance events), real `Checkpointer` persistence and gate
- * timeouts (1.R/1.Q). It dispatches a `fan_in` once all its branches have settled and hands the
- * `joinStrategy` + live branch set to the executor, which performs the merge (true `wait_first`
- * early-cancel is a 1.P refinement) — see run-plan.md §fan-in.
+ * timeouts (1.R/1.Q). It dispatches a `fan_in` once all its branches have settled and hands the vertex
+ * config + live branch set to the executor, which merges by `branchNodeIds` declaration order per
+ * `mergeStrategy`. The plan's `requestedJoinStrategy` records what the authored strategy asked for and is
+ * consulted by nothing — true `wait_first` early-cancel is a future capability, not a wiring the executor
+ * already reads (ADR-0091) — see run-plan.md §fan-in.
  */
 
 import {

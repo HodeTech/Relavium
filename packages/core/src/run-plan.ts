@@ -43,9 +43,13 @@ type OutputNode = Extract<WorkflowNode, { type: 'output' }>;
 export type MergeStrategy = MergeNode['merge_strategy'];
 
 /**
- * The `fan_in` *join* axis — *when* the join fires, orthogonal to `merge_strategy`'s *how to combine*
- * (node-types.md §Per-type engine config). `wait_n` is a reserved engine slot with no v1.0 authored
- * surface; the builder only ever derives `wait_all` / `wait_first`.
+ * What a `merge_strategy` ASKED the join to do — **not** what the engine does. `wait_all` / `wait_first`
+ * are derived from the authored strategy and read by nothing; the run loop dispatches a `fan_in` once
+ * EVERY branch has settled, in every case ([ADR-0091](../../../docs/decisions/0091-first-means-first-declared-not-first-to-finish.md);
+ * node-types.md §Merge-strategy reconciliation). An earlier version of this docblock called it the join
+ * *axis* that controls *when* the join fires — the same false runtime contract that got
+ * `FanInPlanConfig.joinStrategy` renamed, restated one hop away on the type the field is declared with,
+ * where an IDE hover still served it. `wait_n` is a reserved slot the builder never produces.
  */
 export type JoinStrategy = 'wait_all' | 'wait_first' | 'wait_n';
 
@@ -61,8 +65,18 @@ export interface FanOutPlanConfig {
 export interface FanInPlanConfig {
   readonly kind: 'fan_in';
   readonly node: MergeNode;
-  /** *When* the join fires — `wait_first` for `merge_strategy: first`, else `wait_all`. */
-  readonly joinStrategy: JoinStrategy;
+  /**
+   * What the authored `merge_strategy` ASKED the join to do — `wait_first` for `first`, else `wait_all`.
+   *
+   * **Named `requested…` because nothing reads it, and the engine does not do it**
+   * ([ADR-0091](../../../docs/decisions/0091-first-means-first-declared-not-first-to-finish.md)). The run
+   * loop dispatches a `fan_in` once EVERY branch has settled, always; `wait_first` early-cancel is a future
+   * capability with a precondition (durably pinning the winner so a replay picks the same one). It was
+   * called `joinStrategy` and documented as controlling *when* the join fires, which is a false runtime
+   * contract: the next consumer to read it and schedule on it would be wrong, and a comment does not stop
+   * that. Kept rather than deleted so the distinction stays legible — renamed so it cannot mislead.
+   */
+  readonly requestedJoinStrategy: JoinStrategy;
   /** *How* the branches combine — the authored `merge_strategy`, carried verbatim. */
   readonly mergeStrategy: MergeStrategy;
   /**
@@ -78,7 +92,7 @@ export interface FanInPlanConfig {
    * The authored `merge_fn` JS expression, lifted onto the config — present only for
    * `merge_strategy: 'custom'`. The `fan_in` handler (1.P) evaluates it in the expression sandbox with
    * `ExpressionScope.branches` in {@link branchNodeIds} order. (The builder always also carries it on
-   * `node.merge_fn`; lifted here so the handler reads one config shape, mirroring `joinStrategy`.)
+   * `node.merge_fn`; lifted here so the handler reads one config shape, mirroring `requestedJoinStrategy`.)
    */
   readonly mergeFn?: string;
 }
@@ -125,6 +139,20 @@ export interface InputPlanConfig {
 export interface OutputPlanConfig {
   readonly kind: 'output';
   readonly node: OutputNode;
+  /**
+   * The **value-producing** dependencies this vertex may capture, in deterministic (code-unit) order —
+   * the `output` twin of {@link FanInPlanConfig.branchNodeIds}, and pinned here for the same reason: the
+   * handler sees only `vertex.dependencies` (ids), so it cannot tell which of them carry a value.
+   *
+   * A `condition` that names this node as a `branches[].target_node` — or a `parallel` that names it in
+   * `parallel_of` — IS a dependency but produces no output, and the handler's old
+   * `runOutputs.has(id)` guard was satisfied by it (a completed condition sits in the map with the value
+   * `undefined`). That turned the canonical single-feeder shape into a keyed wrapper: a workflow whose
+   * only real feeder was `work` captured `{ work: 'WORK' }` instead of `'WORK'`, with a phantom
+   * `cond: undefined` alongside it that `JSON.stringify` then dropped without a trace. See ADR-0091's
+   * 2026-09-03 amendment — the same defect as the merge's, one handler over.
+   */
+  readonly feederNodeIds: readonly string[];
 }
 
 /** The per-type config block on a {@link PlanVertex}, discriminated on `kind` (the engine vertex type). */
@@ -148,6 +176,18 @@ export interface PlanVertex {
   readonly dependencies: readonly string[];
   /** Vertex ids that depend on this one (its out-edges) — drives skip-propagation. */
   readonly dependents: readonly string[];
+  /**
+   * The **transitive dependency closure** — every vertex this one is ordered after, in code-unit order.
+   *
+   * This is the exact set a `condition` / `transform` / `merge_fn` may read as `run.outputs`
+   * ([ADR-0093](../../../docs/decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md) §1).
+   * `dependencies` is the DIRECT in-edges and answers "what must settle before this dispatches";
+   * `ancestors` answers "what this node is ordered after", which is the larger set and the one an
+   * expression's visibility is defined by. They are deliberately different — do not unify them.
+   *
+   * A static property of the plan, so it is identical across a checkpoint/resume replay by construction.
+   */
+  readonly ancestors: readonly string[];
   /**
    * The un-evaluated `{{ … }}` template sites on this vertex's own authored fields (an agent's
    * `prompt_template`, a gate's `assignee`/`message_template`), resolved at dispatch by 1.N/1.O —

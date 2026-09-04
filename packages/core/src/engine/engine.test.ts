@@ -1531,6 +1531,96 @@ describe('WorkflowEngine — cancellation', () => {
   });
 });
 
+// --- `merge_strategy: first` costs what it costs (CR-60, ADR-0091) -----------------------------
+
+describe('WorkflowEngine — `merge_strategy: first` waits for every branch', () => {
+  const RACE = `  id: race
+  nodes:
+    - { id: start, type: input }
+    - { id: fan, type: parallel, parallel_of: [quick, slow] }
+    - { id: quick, type: transform, transform: 'q' }
+    - { id: slow, type: transform, transform: 's' }
+    - { id: join, type: merge, merge_strategy: first }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: fan }
+    - { from: quick, to: join }
+    - { from: slow, to: join }
+    - { from: join, to: out }`;
+
+  it('the join WAITS for a still-running loser — the latency `first` does not save', async () => {
+    // ADR-0091's acceptance, and it has to be measured against a branch that is genuinely still pending.
+    // A first version of this test let both branches settle synchronously, which makes `wait_first` and
+    // `wait_all` indistinguishable — it stayed green even when the fan-in was mutated to fire on the FIRST
+    // settled dependency, i.e. it pinned nothing. `slow` now blocks until the test releases it.
+    let releaseSlow = (): void => undefined;
+    const slowRan = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    const settled: string[] = [];
+    const engine = engineWith({
+      quick: () => {
+        settled.push('quick');
+        return { kind: 'completed', output: 'from-quick' };
+      },
+      slow: async () => {
+        await slowRan; // still in flight while `quick` has already produced its output
+        settled.push('slow');
+        return { kind: 'completed', output: 'from-slow' };
+      },
+    });
+    const handle = engine.start({ workflow: workflow(RACE) });
+    const events: RunEvent[] = [];
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) events.push(event);
+    })();
+
+    // Let the scheduler run everything it can while `slow` is blocked. If the join fired on the first
+    // settled branch, `join` would complete here — with `quick` done and `slow` still pending.
+    //
+    // **Bounded on the WRONG BEHAVIOUR, not on a tick count — and that is not a style preference.** A
+    // fixed `for (i < N)` drain has a silent vacuity band: it must exceed the tick at which the BUG
+    // becomes visible (measured 87), not merely the tick at which this test's own premise holds
+    // (measured 55/67) — and only the second threshold is legible from the assertions below. At N=70
+    // this test passes under the correct engine AND under a `fan_in` mutated to fire on the first
+    // settled dependency; that is, the exact hollowness the first version of this test had. Spinning
+    // until `joinFired()` removes the band: the loop exits the instant the defect appears, so the cap
+    // only has to EXCEED the bug's tick rather than sit inside a window nobody wrote down.
+    const joinFired = (): boolean =>
+      events.some((e) => e.type === 'node:completed' && e.nodeId === 'join');
+    for (let i = 0; i < 5000 && !joinFired(); i += 1) await Promise.resolve();
+    // The premise, asserted rather than assumed: `quick` really has settled while `slow` is still
+    // pending. Without this the `joinFired()` assertion below would be vacuously true in a run where
+    // nothing had been scheduled at all.
+    expect(settled).toEqual(['quick']);
+    expect(joinFired()).toBe(false);
+
+    releaseSlow();
+    await consume;
+    expect(terminalsIn(events)[0]?.type).toBe('run:completed');
+    // BOTH ran — the loser is never cancelled, which is the cost the author pays for `first`.
+    expect(settled).toEqual(['quick', 'slow']);
+  });
+
+  it('a FAILING loser fails the run, even though the winner already produced its output', async () => {
+    // The sharpest edge of "the join waits for all": a branch the merge would have discarded can still
+    // take the whole run down. Documented rather than fixed (ADR-0091) — true early-cancel is a future
+    // capability whose precondition is durably pinning the winner across a replay.
+    const events = await drain(
+      engineWith({
+        quick: () => ({ kind: 'completed', output: 'from-quick' }),
+        slow: () => ({
+          kind: 'failed',
+          error: { code: 'internal', message: 'loser exploded', retryable: false },
+        }),
+      }).start({ workflow: workflow(RACE) }),
+    );
+    expect(terminalsIn(events)[0]?.type).toBe('run:failed');
+    // …and the winner HAD completed. The run still fails.
+    expect(events.some((e) => e.type === 'node:completed' && e.nodeId === 'quick')).toBe(true);
+  });
+});
+
 // --- condition skip-propagation + fan-in over a skipped branch --------------------------------
 
 describe('WorkflowEngine — condition skip-propagation', () => {
@@ -3169,7 +3259,12 @@ ${line
     // …and NOW the abandoned executor wakes and tries to spend.
     costEmit?.(999_999);
     releaseNode?.({ kind: 'completed', output: 'too late' });
-    for (let i = 0; i < 200; i += 1) await Promise.resolve();
+    // Bounded on the symptom, not on a tick count: a straggler APPENDING is what this test forbids, so
+    // spin until one does and let the cap merely exceed the tick it would arrive at. A fixed drain here
+    // asserts "nothing more happened" from a number nobody measured — see the `merge_strategy: first`
+    // latency test above, where exactly that shape passed green against a deliberately broken engine.
+    const strayAppeared = (): boolean => seen.length > terminalIndex + 1;
+    for (let i = 0; i < 5000 && !strayAppeared(); i += 1) await Promise.resolve();
 
     // Nothing after the terminal, and certainly not that number.
     expect(seen.slice(terminalIndex + 1)).toEqual([]);
