@@ -1,4 +1,5 @@
 import {
+  AgentParseError,
   EngineStateError,
   WorkflowGraphError,
   WorkflowSecretLeakError,
@@ -182,5 +183,19 @@ describe('a graph fault is an AUTHORING fault, not an internal one (CR-64 review
     const out = toUserFacing(new Error('boom'));
     expect(out.code).toBe('internal');
     expect(out.exitCode).toBe(EXIT_CODES.workflowFailed);
+  });
+});
+
+describe('toUserFacing — a malformed standalone agent file', () => {
+  it('is an invalid invocation (exit 2), not an internal error (exit 1)', () => {
+    // `AgentParseError extends Error`, not `WorkflowParseError`, so it fell through the arm added for the
+    // workflow case: `chat --agent`, Home and `agent run` all answered an unloadable agent with
+    // "An unexpected internal error occurred." and exit 1.
+    const mapped = toUserFacing(
+      new AgentParseError('agent_validation', 'invalid agent: output_schema: …', ['output_schema']),
+    );
+    expect(mapped.code).toBe('invalid_invocation');
+    expect(mapped.exitCode).toBe(EXIT_CODES.invalidInvocation);
+    expect(mapped.message).toContain('invalid agent');
   });
 });

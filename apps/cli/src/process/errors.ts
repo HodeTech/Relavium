@@ -1,4 +1,9 @@
-import { EngineStateError, isTransientEngineStateError, WorkflowParseError } from '@relavium/core';
+import {
+  AgentParseError,
+  EngineStateError,
+  isTransientEngineStateError,
+  WorkflowParseError,
+} from '@relavium/core';
 import { isCorruptRunEventError, isUnreadableRunEventLogError } from '@relavium/db';
 
 import { EXIT_CODES, type ExitCode } from './exit-codes.js';
@@ -119,6 +124,22 @@ export function toUserFacing(value: unknown): UserFacingError {
     // inputs"), and for an admission refusal it carries the echo-safe half of each issue — so it is
     // promoted as-is rather than re-flattened from `value.issues` here.
     return { code, message: value.message, exitCode: EXIT_CODE_BY_ERROR[code] };
+  }
+  if (value instanceof AgentParseError) {
+    // **A sibling of the arm below, and it needed its own.** `AgentParseError extends Error`, not
+    // `WorkflowParseError`, so a malformed standalone agent file fell straight through to the generic
+    // `internal` arm: `chat --agent`, the Home browser and `agent run` all answered an unloadable agent
+    // with "An unexpected internal error occurred." and exit 1 — the code reserved for a run that ran and
+    // failed, not for a file that could never run.
+    //
+    // The message is promoted, and it is safe to promote because the source label the CLI hands `parseAgent`
+    // is already cwd-relative at every call site (agent-source.ts, catalog.ts, authoring.ts). An absolute
+    // path in a user-facing error is exactly what the WorkflowIssue contract forbids.
+    return {
+      code: 'invalid_invocation',
+      message: value.message,
+      exitCode: EXIT_CODE_BY_ERROR['invalid_invocation'],
+    };
   }
   if (value instanceof WorkflowParseError) {
     // An AUTHORING fault — a parse error, or a graph fault from `buildRunPlan` (`WorkflowGraphError`

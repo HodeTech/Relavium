@@ -3,7 +3,7 @@
  * ([ADR-0092](../../../docs/decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md)
  * §3, §4).
  *
- * [ADR-0038](../../../docs/decisions/0038-agent-node-output-contract.md) required an agent's declared
+ * [ADR-0038](../../../docs/decisions/0038-agentrunner-llm-call-boundary.md) required an agent's declared
  * `output_schema` to be validated against the response, because no adapter validates it. What shipped was
  * parse-as-JSON: a response that parsed but did not CONFORM was accepted, so a schema declaring
  * `{ required: ['status'] }` admitted `{}` and the next node read `undefined` from a field the author had
@@ -38,6 +38,72 @@ import { AUTHORED_SCHEMA_BOUNDS } from './limits.js';
  * exists to prevent.
  */
 const COMPILED = new WeakMap<object, CompileResult>();
+
+/**
+ * Every `output_schema` reachable from an authored document, with the field locator to name it by.
+ *
+ * Shared by the two PARSERS and by the DAG builder, so all three answer the same question the same way —
+ * the check was written at plan build alone, which left `parseWorkflow` and `parseAgent` returning objects
+ * the canonical contract calls invalid, and left `AgentSession` (which never builds a plan) with no check
+ * at all.
+ */
+export function outputSchemaSites(
+  document: unknown,
+): ReadonlyArray<{ readonly field: string; readonly schema: object }> {
+  const sites: Array<{ field: string; schema: object }> = [];
+  const push = (schema: unknown, field: string): void => {
+    if (typeof schema === 'object' && schema !== null) {
+      sites.push({ schema, field });
+    }
+  };
+  if (typeof document !== 'object' || document === null) {
+    return sites;
+  }
+  const record = document as Record<string, unknown>;
+  // A standalone agent document.
+  push(record['output_schema'], 'output_schema');
+  const workflow = record['workflow'];
+  if (typeof workflow !== 'object' || workflow === null) {
+    return sites;
+  }
+  const spec = workflow as Record<string, unknown>;
+  for (const agent of Array.isArray(spec['agents']) ? spec['agents'] : []) {
+    if (typeof agent === 'object' && agent !== null) {
+      const a = agent as Record<string, unknown>;
+      const id = typeof a['id'] === 'string' ? a['id'] : '?';
+      push(a['output_schema'], `agent \`${id}\`.output_schema`);
+    }
+  }
+  for (const node of Array.isArray(spec['nodes']) ? spec['nodes'] : []) {
+    if (typeof node === 'object' && node !== null) {
+      const n = node as Record<string, unknown>;
+      const id = typeof n['id'] === 'string' ? n['id'] : '?';
+      push(n['output_schema'], `node \`${id}\`.output_schema`);
+    }
+  }
+  return sites;
+}
+
+/**
+ * Every `output_schema` in the document that is outside the supported subset, as field-located issues.
+ * Empty when they all compile. The `reason` names a PUBLISHED JSON-Schema keyword or nothing at all — the
+ * compiler decides that, and never echoes an authored key or value.
+ */
+export function outputSchemaRefusals(
+  document: unknown,
+): ReadonlyArray<{ readonly field: string; readonly message: string }> {
+  return outputSchemaSites(document).flatMap(({ field, schema }) => {
+    const compiled = compileOutputSchema(schema);
+    return compiled.ok
+      ? []
+      : [
+          {
+            field,
+            message: `this \`output_schema\` is outside the supported subset: ${compiled.reason}`,
+          },
+        ];
+  });
+}
 
 /** Compile an authored `output_schema` in `strict` mode under {@link AUTHORED_SCHEMA_BOUNDS}, memoized. */
 export function compileOutputSchema(schema: object): CompileResult {

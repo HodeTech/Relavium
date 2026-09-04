@@ -78,6 +78,13 @@ the author is told their schema is "validated".
 > The residual — a `pattern` with no `maxLength` — is tracked in
 > [deferred-tasks.md](../../roadmap/deferred-tasks.md) with the measurement.
 
+> **A number is an IEEE-754 double by the time it is validated.** An `output_schema` is checked against the
+> result of `JSON.parse`, so an integer beyond ±2^53 is ROUNDED before any keyword sees it: a model that
+> returns `9007199254740993` is validated — and stored — as `9007199254740992`. A `const`, `enum`,
+> `multipleOf` or exact boundary on such a value therefore cannot be relied on, and the engine's own output
+> differs from what the model produced. Keep large identifiers as **strings**. Tracked in
+> [deferred-tasks.md](../../roadmap/deferred-tasks.md).
+
 ## Bounds
 
 Every bound fails the whole schema **closed** — none truncates, because a truncated constraint is a
@@ -89,7 +96,7 @@ validator that silently accepts the wrong value.
 | total nodes | 1000 | 2000 |
 | `enum` members | 500 | 1000 |
 | object properties | 200 | 500 |
-| `const`/`enum` string bytes | 4 KiB | 4 KiB |
+| `const`/`enum` string bytes, and a `pattern` | 4 KiB | 4 KiB (a `pattern` is not compiled in `lenient`) |
 | property-name bytes | 256 | 256 |
 
 The authored side is tighter on shape and looser on nothing: an author who needs 500 properties in one node

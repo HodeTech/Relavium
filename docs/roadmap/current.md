@@ -484,7 +484,7 @@ document review on 2026-08-25, which is why the total has moved since the list w
 >
 > **`W6` (authoring correctness) is COMPLETE on `development` and awaiting review** — `CR-60`–`CR-64` behind
 > [ADR-0091](../decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md),
-> 27 commits over seven review rounds: `first` means first DECLARED and the plan stops claiming otherwise; a
+> 27 W6 work commits over seven review rounds: `first` means first DECLARED and the plan stops claiming otherwise; a
 > tool grant is refused when the plan is built rather than mid-run; an expression sees only its transitive
 > closure and a literal out-of-closure read is refused at parse; an `output_schema` is compiled at parse in an
 > allowlist-strict mode and enforced at run time — with **no new dependency**, because the compiler the

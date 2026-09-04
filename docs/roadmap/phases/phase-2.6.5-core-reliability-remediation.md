@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` merged 2026-09-02 (PR #88) behind ADR-0089 + ADR-0090 — a systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed before it merged. **`W6` (authoring correctness) is complete on `development` and awaiting review** — `CR-60`–`CR-64` behind [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md), 27 commits, seven review rounds. **The pattern of the wave is that most of what the rounds found were defects in the FIXES, not in the code they repaired** — the branch-order search was wrong three times, the expression scan's central soundness claim was false in seven ways, and one stand-down gate silently removed the check it was added to protect. Every one is recorded as a dated correction in its ADR rather than tidied away (43 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28)
+- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` merged 2026-09-02 (PR #88) behind ADR-0089 + ADR-0090 — a systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed before it merged. **`W6` (authoring correctness) is complete on `development` and awaiting review** — `CR-60`–`CR-64` behind [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md), 27 W6 work commits, seven review rounds. **The pattern of the wave is that most of what the rounds found were defects in the FIXES, not in the code they repaired** — the branch-order search was wrong three times, the expression scan's central soundness claim was false in seven ways, and one stand-down gate silently removed the check it was added to protect. Every one is recorded as a dated correction in its ADR rather than tidied away (43 of 48 items — `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28)
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -1769,7 +1769,7 @@ of. **Residual:** whether a merge with zero value-producing branches should be a
 ruling in [deferred-tasks.md](../deferred-tasks.md) — `object_merge` was the one strategy that refused a phantom
 loudly and now returns `{}` quietly.
 
-### CR-61 — Agent and transform `output_schema` do not deep-validate · Medium · **needs a dependency ADR**
+### CR-61 — Agent and transform `output_schema` do not deep-validate · Medium · ✅ **closed 2026-09-03**
 An agent's `output_schema` becomes a response-format hint and is then only `JSON.parse`d; the transform node's
 `output_schema` explicitly does not deep-validate.
 
@@ -1800,7 +1800,7 @@ the same agent behaves differently by entry point. Both in [deferred-tasks.md](.
 **Acceptance.** A schema-violating but valid-JSON output fails `validation` (`retryable: false`) on both the
 agent and transform paths; an unsupported schema is refused at parse on all three declaration sites.
 
-### CR-62 — Expression dependencies are invisible, so silent mis-routing is possible · High · **decision open**
+### CR-62 — Expression dependencies are invisible, so silent mis-routing is possible · High · ✅ **closed 2026-09-03**
 The DAG derives edges from template references only and deliberately does not order JS-expression reads of run
 outputs. A condition that runs before its producer compares `undefined` and silently takes the false branch — a
 test currently pins that silence.
@@ -1840,7 +1840,7 @@ row listed `prompt_template`, `on_timeout` and `input_schema`; the real schema h
 AND was not told the names of the two fields they needed. Corrected, closing the still-open half of a
 phase-2.5.5 register item.
 
-### CR-64 — Node-`tools` narrowing is enforced at RUN time, and two ADRs say "parser-enforced" · Medium
+### CR-64 — Node-`tools` narrowing is enforced at RUN time, and two ADRs say "parser-enforced" · Medium · ✅ **closed 2026-09-02**
 
 **Evidence.** `resolveGrant` in `packages/core/src/engine/agent-runner.ts` is where a node's `tools:` is
 checked against the agent's grant — the node executor, reached only after the run has started.

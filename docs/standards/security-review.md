@@ -325,7 +325,9 @@ workflow-API tightenings, cheap now because no workflow exists yet, never sold a
 - **Node `tools:` narrow-only, never escalate.** *(Security tightening — ADR-0029(b).)* A
   workflow agent-node's `tools:` may only **restrict** the agent's granted toolset, never
   add to it. A node listing a tool the agent was not granted is refused when the **run plan is built** — a
-  `GraphIssue` from `buildRunPlan`, before a run id exists ([ADR-0094](../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md)) —
+  `GraphIssue` from `buildRunPlan`, before a run id exists — **but only when the host marks the grant complete**
+  (`BuildRunPlanOptions.toolGrantsFinal`). An incomplete grant is not evidence a node is narrow, and the check
+  stands down rather than refuse on a partial picture ([ADR-0094](../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md)) —
   with the runtime dispatch check (`resolveGrant`) retained as the floor, so a host that constructs a node
   executor directly is still covered. A node can never silently widen a tool grant. *(This clause said
   "parser-enforced" until 2026-09-02; nothing in the parser ever read `tools` — the guarantee held at

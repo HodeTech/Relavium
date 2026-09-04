@@ -40,7 +40,7 @@ Each expression is evaluated against a single **frozen, JSON-only** scope. The b
 | `inputs` | object | this node's resolved inputs (its declared `{{ … }}` references, already resolved) |
 | `ctx` | object | the workflow context/variables (the eager-once frozen snapshot, per [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md)) |
 | `run.outputs` | object keyed by **node id** | completed upstream node outputs, e.g. `run.outputs["classify"].sentiment` — **never** a bare `output` |
-| `branches` | array | **`merge_fn` only** — the branch outputs to combine, in the stable **`FanInPlanConfig.branchNodeIds` order** (the paired `parallel`'s `parallel_of` order, else the merge's incoming branches in authored order; never arrival/completion order — see [run-plan.md §fan-in branch order](run-plan.md)). `run.outputs` is also available, so a branch may be referenced by node id. |
+| `branches` | array | **`merge_fn` only** — the branch outputs to combine, in the stable **`FanInPlanConfig.branchNodeIds` order** (never arrival/completion order; the order itself is defined by [run-plan.md §fan-in branch order](run-plan.md)). `run.outputs` is also available, so a branch may be referenced by node id. |
 
 Rules:
 

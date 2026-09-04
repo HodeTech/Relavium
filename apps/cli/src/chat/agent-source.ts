@@ -1,3 +1,5 @@
+import { relative } from 'node:path';
+
 import { parseAgent, type AgentDefinition } from '@relavium/core';
 import type { LlmProviderId, ReasoningEffort } from '@relavium/shared';
 
@@ -71,5 +73,11 @@ export function resolveChatAgentSource(
     projectConfigDir: opts.projectConfigDir,
     idSuffixes: ['.agent.yaml', '.relavium.yaml', '.yaml'],
   });
-  return { agent: parseAgent(source.yaml, { source: source.path }), artifact: source.path };
+  // The source label rides into `AgentParseError.message`, which the CLI now promotes to the user
+  // (process/errors.ts). An absolute path there is what the error contract forbids, so it is relative
+  // before it is handed over — `artifact` keeps the real path for the caller's own use.
+  return {
+    agent: parseAgent(source.yaml, { source: relative(process.cwd(), source.path) || source.path }),
+    artifact: source.path,
+  };
 }

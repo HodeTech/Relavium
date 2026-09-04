@@ -55,6 +55,37 @@ describe('strict mode — the allowlist', () => {
     expect(strict({ type: 'array', uniqueItems: 'yes' }).ok).toBe(false);
   });
 
+  it('refuses a malformed keyword even when the declared `type` never reads it', () => {
+    // The promise was kept only for keywords the CHOSEN type branch reads. A sibling belonging to another
+    // type was never looked at, so all of these compiled clean — and the author's mistake is the same
+    // whichever type sits next to it.
+    for (const schema of [
+      { type: 'string', required: 'bad' },
+      { type: 'number', properties: [] },
+      { type: 'boolean', items: [] },
+      { type: 'object', pattern: 42 },
+      { type: 'null', uniqueItems: 'yes' },
+      { type: 'array', nullable: 'yes' },
+    ]) {
+      expect(strict(schema).ok).toBe(false);
+    }
+    // Shape only: a keyword that does not APPLY to the declared type is vacuously satisfied per JSON
+    // Schema, not an error.
+    expect(strict({ type: 'string', minItems: 3 }).ok).toBe(true);
+  });
+
+  it('refuses a degenerate `type` or a duplicated `required` name', () => {
+    expect(strict({ type: [] }).ok).toBe(false);
+    expect(strict({ type: ['string', 'string'] }).ok).toBe(false);
+    expect(strict({ type: 'object', required: ['a', 'a'] }).ok).toBe(false);
+    expect(strict({ type: ['string', 'null'] }).ok).toBe(true);
+  });
+
+  it('lenient still ignores all of it — the MCP contract is unchanged', () => {
+    expect(lenient({ type: 'string', required: 'bad' }).ok).toBe(true);
+    expect(lenient({ type: [] }).ok).toBe(true);
+  });
+
   it('still refuses the constructs the denylist refused', () => {
     for (const key of ['$ref', 'oneOf', 'anyOf', 'allOf', 'not', 'patternProperties']) {
       expect(strict({ type: 'object', [key]: {} }).ok).toBe(false);
@@ -142,6 +173,52 @@ describe('strict mode — what it now genuinely ENFORCES', () => {
     expect(r.ok === false && r.reason).not.toContain('([');
   });
 
+  it('counts CODE POINTS for minLength/maxLength, as JSON Schema specifies', () => {
+    // Zod's `.min()`/`.max()` count `String.length` — UTF-16 code units. An emoji is one character and two
+    // units, so `maxLength: 1` rejected "😀" and `minLength: 2` accepted it: the exact inverse of the spec.
+    expect(accepts({ type: 'string', maxLength: 1 }, '😀')).toBe(true);
+    expect(accepts({ type: 'string', minLength: 2 }, '😀')).toBe(false);
+    expect(accepts({ type: 'string', minLength: 2 }, '😀😀')).toBe(true);
+    // …and the ASCII cases are unchanged.
+    expect(accepts({ type: 'string', maxLength: 2 }, 'abc')).toBe(false);
+  });
+
+  it('`format: time` is RFC 3339 full-time, which REQUIRES an offset', () => {
+    // Zod's `.time()` is the opposite of what JSON Schema means: it accepted a bare `12:34:56` and
+    // rejected both offset forms — every answer inverted.
+    expect(accepts({ type: 'string', format: 'time' }, '12:34:56Z')).toBe(true);
+    expect(accepts({ type: 'string', format: 'time' }, '12:34:56+03:00')).toBe(true);
+    expect(accepts({ type: 'string', format: 'time' }, '12:34:56')).toBe(false);
+    expect(accepts({ type: 'string', format: 'time' }, '25:00:00Z')).toBe(false);
+  });
+
+  it('every allowed `format` accepts a valid value and rejects an invalid one', () => {
+    const cases: ReadonlyArray<readonly [string, string, string]> = [
+      ['email', 'a@b.co', 'nope'],
+      ['uuid', '123e4567-e89b-12d3-a456-426614174000', 'not-a-uuid'],
+      ['uri', 'https://example.com/x', 'not a uri'],
+      ['url', 'https://example.com/x', 'not a url'],
+      ['date-time', '2026-09-04T12:00:00Z', '2026-09-04'],
+      ['date', '2026-09-04', '2026-13-99'],
+      ['time', '12:34:56Z', '12:34:56'],
+      ['duration', 'P1DT2H', 'not-a-duration'],
+      ['ipv4', '192.168.0.1', '999.1.1.1'],
+      ['ipv6', '::1', 'not::an::address::at::all'],
+    ];
+    for (const [format, good, bad] of cases) {
+      expect({ format, value: good, ok: accepts({ type: 'string', format }, good) }).toEqual({
+        format,
+        value: good,
+        ok: true,
+      });
+      expect({ format, value: bad, ok: accepts({ type: 'string', format }, bad) }).toEqual({
+        format,
+        value: bad,
+        ok: false,
+      });
+    }
+  });
+
   it('format — and REFUSES an unknown one rather than ignoring it', () => {
     expect(accepts({ type: 'string', format: 'email' }, 'a@b.co')).toBe(true);
     expect(accepts({ type: 'string', format: 'email' }, 'nope')).toBe(false);
@@ -193,6 +270,31 @@ describe('strict mode — what it now genuinely ENFORCES', () => {
     };
     expect(accepts(schema, { a: 'x', b: 1 })).toBe(true);
     expect(accepts(schema, { a: 'x', b: 'not-a-number' })).toBe(false);
+  });
+
+  it('a `required` name is enforced even when its property schema constrains NOTHING', () => {
+    // Presence was left to the compiled property schema, and an unconstrained one cannot enforce it:
+    // `{}`, `true`, an annotation-only object and a bare `nullable` all compile to `z.unknown()`, which is
+    // OPTIONAL inside a `z.object`. `{ properties: { status: {} }, required: ['status'] }` accepted `{}` —
+    // deep validation defeated by the most ordinary way to say "this field exists".
+    for (const property of [
+      {},
+      true,
+      { description: 'x' },
+      { nullable: true },
+      { type: 'string' },
+    ]) {
+      const schema = { type: 'object', properties: { status: property }, required: ['status'] };
+      expect(accepts(schema, {})).toBe(false);
+      expect(accepts(schema, { status: 'x' })).toBe(true);
+    }
+  });
+
+  it('…and the same holds in lenient, where an MCP tool call is gated', () => {
+    // Same hole, same fix: the MCP boundary compiles a server's `inputSchema` through this path.
+    const r = lenient({ type: 'object', properties: { status: {} }, required: ['status'] });
+    expect(r.ok === true && r.schema.safeParse({}).success).toBe(false);
+    expect(r.ok === true && r.schema.safeParse({ status: 1 }).success).toBe(true);
   });
 
   it('a `required` name with no `properties` entry obeys `additionalProperties`', () => {

@@ -1389,31 +1389,7 @@ ${edges}
 
 // --- `output_schema` is compiled at parse (CR-61, ADR-0092 §3) ---------------------------------
 
-describe('buildRunPlan — an unsupported `output_schema` is refused at parse', () => {
-  const build = (
-    yaml: string,
-  ): { ok: boolean; kinds: readonly string[]; message: string; fields: readonly string[] } => {
-    try {
-      buildRunPlan(parseWorkflow(yaml));
-      return { ok: true, kinds: [], message: '', fields: [] };
-    } catch (err) {
-      const issues = err instanceof WorkflowGraphError ? err.issues : [];
-      return {
-        ok: false,
-        kinds: issues.map((i) => i.kind),
-        // The node id lives in the issue's `field` locator, not in its message — asserting on the joined
-        // messages would have passed for the wrong reason had the locator ever been dropped.
-        // The RAW error is included, not just the issue messages: a fixture that fails to PARSE throws a
-        // different error class with no issues, and a test asserting only on issue text then reports an
-        // empty array with no clue why. That cost me three wrong diagnoses on this very block.
-        message: [
-          err instanceof Error ? err.message : String(err),
-          ...issues.map((i) => i.message),
-        ].join(' | '),
-        fields: issues.map((i) => i.field),
-      };
-    }
-  };
+describe('an unsupported `output_schema` is refused at PARSE', () => {
   const wf = (schema: string): string => `schema_version: '1.0'
 workflow:
   id: os
@@ -1425,43 +1401,48 @@ workflow:
     - { from: start, to: t }
     - { from: t, to: out }
 `;
+  const parse = (yaml: string): { ok: boolean; message: string } => {
+    try {
+      parseWorkflow(yaml);
+      return { ok: true, message: '' };
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    }
+  };
 
   it('accepts a schema inside the supported subset', () => {
     expect(
-      build(wf('{ type: object, required: [a], properties: { a: { type: number } } }')).ok,
+      parse(wf('{ type: object, required: [a], properties: { a: { type: number } } }')).ok,
     ).toBe(true);
   });
 
-  it('refuses a keyword nobody implemented — before a run id exists', () => {
-    // The point of compiling at parse: an author who writes `oneOf` learns it is unsupported now, rather
-    // than getting a validator that quietly ignored it and a run that spent money to be told nothing.
-    const r = build(wf('{ type: object, oneOf: [{ type: string }] }'));
+  it('refuses a keyword nobody implemented — in the PARSER, not only at plan build', () => {
+    // ADR-0092 §3 says "at parse", and it ran only at plan build — so `parseWorkflow` returned a document
+    // the canonical contract calls invalid, and import/export and the catalog carried it as valid.
+    const r = parse(wf('{ type: object, oneOf: [{ type: string }] }'));
     expect(r.ok).toBe(false);
-    expect(r.kinds).toContain('invalid_output_schema');
-    expect(r.fields.join(' ')).toContain('`t`.output_schema');
+    expect(r.message).toContain('`t`.output_schema');
     expect(r.message).toContain('oneOf');
   });
 
   it('refuses a malformed value for a supported keyword', () => {
-    expect(build(wf("{ type: string, minLength: 'five' }")).ok).toBe(false);
+    expect(parse(wf("{ type: string, minLength: 'five' }")).ok).toBe(false);
   });
 
   it('refuses an unsupported `format` rather than accepting it unchecked', () => {
-    expect(build(wf('{ type: string, format: hostname }')).ok).toBe(false);
-    expect(build(wf('{ type: string, format: email }')).ok).toBe(true);
+    expect(parse(wf('{ type: string, format: hostname }')).ok).toBe(false);
+    expect(parse(wf('{ type: string, format: email }')).ok).toBe(true);
   });
 
-  it('all THREE declaration sites are reached — node, transform, and the resolved agent', () => {
-    // `outputSchemaMiss` completes the node when a schema did not compile, on the invariant that parse
-    // already refused every such schema. Nothing exercised the third site, so the invariant rested on
-    // reading the code. Each site gets the same unsupported schema and each must refuse.
-    // A malformed VALUE rather than a nested list: same refusal, and it keeps the inline-agent YAML in
-    // simple flow style so the fixture cannot fail for a reason unrelated to the schema.
-    const bad = "{ type: object, minProperties: 'two' }";
-    const transform = build(wf(bad));
-    expect(transform.ok).toBe(false);
-    expect(transform.kinds).toContain('invalid_output_schema');
+  it('never echoes an authored key', () => {
+    const r = parse(wf("{ type: string, 'sk-live-abcdef': 1 }"));
+    expect(r.ok).toBe(false);
+    expect(r.message).not.toContain('sk-live');
+  });
 
+  it('reaches all THREE declaration sites — node, agent node, and the agent itself', () => {
+    const bad = "{ type: object, minProperties: 'two' }";
+    expect(parse(wf(bad)).ok).toBe(false);
     const agentNode = `schema_version: '1.0'
 workflow:
   id: os-agent
@@ -1475,11 +1456,7 @@ workflow:
     - { from: start, to: n }
     - { from: n, to: out }
 `;
-    const onNode = build(agentNode);
-    expect(onNode.ok).toBe(false);
-    expect(onNode.kinds).toContain('invalid_output_schema');
-
-    // The agent's OWN schema, used when the node declares none — checked under the node that would use it.
+    expect(parse(agentNode).ok).toBe(false);
     const onAgent = `schema_version: '1.0'
 workflow:
   id: os-inline
@@ -1499,15 +1476,36 @@ workflow:
     - { from: start, to: n }
     - { from: n, to: out }
 `;
-    const viaAgent = build(onAgent);
+    const viaAgent = parse(onAgent);
     expect(viaAgent.ok).toBe(false);
-    expect(viaAgent.kinds).toContain('invalid_output_schema');
-    expect(viaAgent.fields.join(' ')).toContain('agent output_schema');
+    expect(viaAgent.message).toContain('agent `a1`.output_schema');
   });
 
-  it('never echoes an authored key', () => {
-    const r = build(wf("{ type: string, 'sk-live-abcdef': 1 }"));
-    expect(r.ok).toBe(false);
-    expect(r.message).not.toContain('sk-live');
+  it('the DAG builder keeps its own check, for a caller that bypasses the parser', () => {
+    // Defence in depth: `buildRunPlan` is reachable with a hand-constructed definition, and a host that
+    // builds one itself must not get an unvalidated schema past both doors.
+    const definition = {
+      schema_version: '1.0' as const,
+      workflow: {
+        id: 'bypass',
+        nodes: [
+          { id: 'start', type: 'input' as const },
+          {
+            id: 't',
+            type: 'transform' as const,
+            transform: '1',
+            output_schema: { oneOf: [{ type: 'string' }] },
+          },
+        ],
+        edges: [{ from: 'start', to: 't' }],
+      },
+    } as unknown as Parameters<typeof buildRunPlan>[0];
+    let kinds: readonly string[] = [];
+    try {
+      buildRunPlan(definition);
+    } catch (err) {
+      kinds = err instanceof WorkflowGraphError ? err.issues.map((i) => i.kind) : [];
+    }
+    expect(kinds).toContain('invalid_output_schema');
   });
 });

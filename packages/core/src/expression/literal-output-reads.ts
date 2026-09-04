@@ -140,6 +140,13 @@ function rebindsRun(code: string): boolean {
 }
 
 /**
+ * **`(?:\?\.\s*)?`, not `\??\.?\s*`** — the optional-chain step is ONE atomic alternative rather than two
+ * independently optional characters between two `\s*`. Written the loose way, a whitespace run with no `[`
+ * after it could be split between the two `\s*` at every position, and the match failed quadratically:
+ * measured 8.6 ms at 4 K of whitespace, 39 ms at 8 K, 115 ms at 16 K, 514 ms at 32 K — and the parser
+ * accepts a 2 MiB source while plan build is synchronous, so no deadline or cancel can interrupt it. The
+ * loose form was also wrong: `outputs.["x"]` is not valid JavaScript, only `outputs?.["x"]` is.
+ *
  * `run.outputs["id"]` / `run.outputs['id']`. The key must be a whole single- or double-quoted literal: a
  * template key (`run.outputs[`${x}`]`) or a computed one (`run.outputs[k]`) matches nothing, which is the
  * point — those are the cases the scan deliberately cannot tell about.
@@ -149,13 +156,30 @@ function rebindsRun(code: string): boolean {
  * is the same literal access written another way; not accepting it would be a silent gap in enforcement
  * rather than an unsafe guess.
  */
-const BRACKET_ACCESS = /(?<![.?\w$])run\s*\??\.\s*outputs\s*\??\.?\s*\[\s*(['"])([^'"\\]*)\1\s*\]/g;
+const BRACKET_ACCESS =
+  /(?<![.?\w$])run\s*\??\.\s*outputs\s*(?:\?\.\s*)?\[\s*(['"])([^'"\\]*)\1\s*\]/g;
 
 /**
  * `run.outputs.id`. Only matches an identifier, so a kebab-case node id — the common shape — is
  * unreachable this way in JavaScript anyway (`run.outputs.my-node` is a subtraction, not an access).
  */
 const DOT_ACCESS = /(?<![.?\w$])run\s*\??\.\s*outputs\s*\??\.\s*([A-Za-z_$][A-Za-z0-9_$]*)/g;
+
+/**
+ * Does the CODE (literals already masked) contain a backslash?
+ *
+ * In code position a backslash is a Unicode identifier escape — `r\u0075n` IS the identifier `run` to the
+ * engine, and to this scanner it is not. A shadowing binding written that way therefore read as the scope's
+ * `run`: `((r\u0075n) => run.outputs["ghost"])({outputs:{ghost:1}})` reported `ghost` while the real sandbox
+ * evaluates it against the local binding and never touches the scope — a FALSE REFUSAL, the one failure
+ * ADR-0093 §2's whole argument rests on not having.
+ *
+ * Decoding escapes would mean tracking identifier boundaries, which is the lexer this deliberately is not.
+ * The scan abandons instead, which is the direction every other uncertainty here already fails in.
+ */
+function hasIdentifierEscape(code: string): boolean {
+  return code.includes('\\');
+}
 
 /**
  * Is the `run` at `index` a FREE reference to the sandbox global, rather than a property of some other
@@ -196,7 +220,10 @@ function isFreeRunReference(mask: string, index: number): boolean {
 }
 
 /**
- * Every literal `run.outputs` access in `expression`, de-duplicated, in first-appearance order.
+ * Every literal `run.outputs` access in `expression`, de-duplicated — all BRACKET accesses in source order,
+ * then all DOT accesses. Not first-appearance order across the two forms, which an earlier docblock claimed:
+ * the two patterns are run one after the other. Order is not load-bearing (the caller checks membership),
+ * so the doc is corrected rather than the code.
  *
  * Returns an EMPTY list both when there are genuinely no literal reads and when the masker could not make
  * sense of the text. The two are deliberately indistinguishable to the caller: in both cases the scan has
@@ -204,7 +231,7 @@ function isFreeRunReference(mask: string, index: number): boolean {
  */
 export function literalOutputReads(expression: string): readonly LiteralOutputRead[] {
   const mask = maskLiterals(expression);
-  if (mask === undefined || rebindsRun(mask)) {
+  if (mask === undefined || hasIdentifierEscape(mask) || rebindsRun(mask)) {
     return [];
   }
   const seen = new Set<string>();

@@ -506,7 +506,7 @@ function buildChatTurnOutcome(
       false,
     );
   }
-  // **Parse-as-JSON was only the first half** ([ADR-0092](../../../docs/decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md)
+  // **Parse-as-JSON was only the first half** ([ADR-0092](../../../../docs/decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md)
   // §4). ADR-0038 required the response to be validated AGAINST the schema because no adapter does it; what
   // shipped stopped at "is it JSON", so `{ required: ['status'] }` admitted `{}` and the next node read
   // `undefined` from a field the author had marked required. The message names nothing — not the failing

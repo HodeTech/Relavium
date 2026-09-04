@@ -29,6 +29,7 @@ import {
   type WorkflowIssue,
 } from './errors.js';
 import { analyzePreRunReferences, analyzeSecretTaint } from './interpolation/analyze.js';
+import { outputSchemaRefusals } from './output-schema.js';
 import { decodeHardenedYaml } from './yaml-decode.js';
 
 /** The validated workflow document — `@relavium/shared`'s `Workflow`, under a parser-local alias. */
@@ -118,6 +119,14 @@ export function parseWorkflow(yamlText: string, opts?: ParseWorkflowOptions): Wo
   const leaks = analyzeSecretTaint(definition);
   if (leaks.length > 0) {
     throw new WorkflowSecretLeakError(leaks, source === undefined ? undefined : { source });
+  }
+  // **`output_schema` is compiled HERE, which is what "at parse" meant** (ADR-0092 §3). It ran only at plan
+  // build, so `parseWorkflow` returned a document the canonical contract calls invalid — and import/export
+  // and the catalog, which parse without building a plan, carried it as valid. The DAG builder keeps its own
+  // check as defence in depth.
+  const refusals = outputSchemaRefusals(definition);
+  if (refusals.length > 0) {
+    throw new WorkflowValidationError(refusals, source === undefined ? undefined : { source });
   }
   return definition;
 }

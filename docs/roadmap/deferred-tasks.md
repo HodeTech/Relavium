@@ -458,6 +458,16 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   exists to deny. Not widened here because wiring it is new behaviour on a shipping surface, not a doc fix.
   *(M · packages/core/src/engine/agent-session.ts; agent-yaml-spec.md, agent-session-spec.md)*
 
+- [ ] **A model's integer beyond ±2^53 is rounded before `output_schema` sees it, and the engine keeps the
+  rounded value.** `output_schema` validates the result of `JSON.parse`, which is lossy for integers outside
+  the safe range: a model returning `9007199254740993` is validated — and stored as the node's output — as
+  `9007199254740992`. So a `const`/`enum`/`multipleOf`/boundary check can pass against a number the model did
+  not produce, and the run's output silently differs from the response. **Pre-existing** (the agent path has
+  always used `JSON.parse`), surfaced by `CR-61` making the conformance check meaningful. A correct fix is
+  lossless number parsing or refusing an out-of-range numeric token before parse; both are real work, so the
+  boundary is documented in [json-schema-subset.md](../reference/shared-core/json-schema-subset.md) and
+  recorded here rather than claimed fixed. *(M · packages/core/src/engine/agent-runner.ts)*
+
 ## Phase 2.6.5 `W6` residuals — `CR-61` ([ADR-0092](../decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md), 2026-09-03)
 
 - [ ] **An authored `pattern` can hang the whole engine process, and no deadline can interrupt it.**

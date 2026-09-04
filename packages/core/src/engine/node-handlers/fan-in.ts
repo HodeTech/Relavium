@@ -6,8 +6,10 @@
  * (NOT arrival order, NOT `dependencies` order) — omitting any branch absent from `runOutputs` (a
  * skipped/failed branch never produced an output) — and combines them per `merge_strategy`.
  *
- * `wait_first` (`merge_strategy: first`) is executor-only here: the engine still waits for all
- * branches, so "first" is the first by `branchNodeIds` declaration order among the settled survivors.
+ * `wait_first` (`merge_strategy: first`) is read by NOBODY — not the engine and not this handler, which
+ * switches on `mergeStrategy` alone. The engine waits for every branch, so "first" is the first by
+ * `branchNodeIds` declaration order among the settled survivors. An earlier wording said "executor-only",
+ * which reads as though the executor branches on it (ADR-0091 §4).
  * True early-cancellation of the losing branches is a deferred refinement (it needs engine-owned
  * cross-vertex cancellation) — see run-plan.md §fan-in and deferred-tasks.md.
  */

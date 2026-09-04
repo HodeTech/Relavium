@@ -290,6 +290,7 @@ function compileNode(node: unknown, budget: Budget, depth: number): z.ZodTypeAny
     }
   }
   if (budget.mode === 'strict') {
+    validateKeywordShapes(node);
     for (const key of Object.keys(node)) {
       if (!STRICT_ALLOWED_KEYS.has(key)) {
         // **Named only when it is a real JSON-Schema keyword.** A refusal that will not say which keyword
@@ -408,6 +409,57 @@ function readTypes(
     types.push(entry);
   }
   return { types, nullableFlag };
+}
+
+/**
+ * Check the SHAPE of every supported keyword present on a node, before any type branch is chosen.
+ *
+ * `strict` promises that a malformed value for a supported keyword is refused. It kept that promise only for
+ * the keywords the CHOSEN type reads: a sibling belonging to another type was never looked at, so
+ * `{ type: 'string', required: 'bad' }`, `{ type: 'number', properties: [] }` and `{ type: 'object',
+ * pattern: 42 }` all compiled clean. The author's mistake is the same whichever type sits next to it.
+ *
+ * Shape only — whether a keyword APPLIES to the declared type is a separate question, and JSON Schema's
+ * answer there is "it is vacuously satisfied", not "it is an error".
+ */
+function validateKeywordShapes(node: Record<string, unknown>): void {
+  const isPlainObj = (v: unknown): boolean => isPlainObject(v);
+  const rules: ReadonlyArray<readonly [string, (v: unknown) => boolean, string]> = [
+    ['properties', isPlainObj, 'an object'],
+    ['items', (v) => isPlainObj(v) || typeof v === 'boolean', 'a schema or a boolean'],
+    [
+      'additionalProperties',
+      (v) => isPlainObj(v) || typeof v === 'boolean',
+      'a schema or a boolean',
+    ],
+    ['pattern', (v) => typeof v === 'string', 'a string'],
+    ['format', (v) => typeof v === 'string', 'a string'],
+    ['uniqueItems', (v) => typeof v === 'boolean', 'a boolean'],
+    ['nullable', (v) => typeof v === 'boolean', 'a boolean'],
+    ['enum', (v) => Array.isArray(v) && v.length > 0, 'a non-empty array'],
+    [
+      'required',
+      (v) =>
+        Array.isArray(v) && v.every((n) => typeof n === 'string') && new Set(v).size === v.length,
+      'an array of unique strings',
+    ],
+    [
+      'type',
+      (v) =>
+        typeof v === 'string' ||
+        (Array.isArray(v) &&
+          v.length > 0 &&
+          v.every((t) => typeof t === 'string') &&
+          new Set(v).size === v.length),
+      'a string or a non-empty array of unique strings',
+    ],
+  ];
+  for (const [key, ok, expected] of rules) {
+    if (key in node && !ok(node[key])) {
+      // The keyword is named (published vocabulary); the VALUE never is.
+      throw new UnsupportedSchemaError(`\`${key}\` must be ${expected}`);
+    }
+  }
 }
 
 /** The constraint keywords each JSON-Schema type owns — used to decide what a TYPELESS schema constrains. */
@@ -540,8 +592,32 @@ function stringSchema(node: Record<string, unknown>, budget: Budget): z.ZodTypeA
   let schema = z.string();
   const min = readBound(node, 'minLength', budget, { integer: true, nonNegative: true });
   const max = readBound(node, 'maxLength', budget, { integer: true, nonNegative: true });
-  if (min !== undefined) schema = schema.min(min);
-  if (max !== undefined) schema = schema.max(max);
+  // **Code POINTS, not UTF-16 code units.** JSON Schema counts characters; Zod's `.min()`/`.max()` count
+  // `String.length`. An emoji is one character and two code units, so `maxLength: 1` rejected "😀" and
+  // `minLength: 2` accepted it — both the exact inverse of the spec.
+  if (min !== undefined || max !== undefined) {
+    schema = schema.superRefine((value, ctx) => {
+      const length = [...value].length;
+      if (min !== undefined && length < min) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.too_small,
+          minimum: min,
+          type: 'string',
+          inclusive: true,
+          message: `string has ${length} characters, below the minimum of ${min}`,
+        });
+      }
+      if (max !== undefined && length > max) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.too_big,
+          maximum: max,
+          type: 'string',
+          inclusive: true,
+          message: `string has ${length} characters, above the maximum of ${max}`,
+        });
+      }
+    }) as unknown as z.ZodString;
+  }
   if (budget.mode !== 'strict') {
     return schema;
   }
@@ -622,7 +698,11 @@ function applyFormat(schema: z.ZodString, format: string): z.ZodString {
     case 'date':
       return schema.date();
     case 'time':
-      return schema.time();
+      // RFC 3339 `full-time` REQUIRES an offset, which is what JSON Schema's `time` means. Zod's `.time()`
+      // is the opposite: it accepts a bare `12:34:56` and rejects `12:34:56Z` and `12:34:56+03:00`.
+      return schema.regex(
+        /^(?:[01]\d|2[0-3]):[0-5]\d:(?:[0-5]\d|60)(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/,
+      );
     case 'duration':
       return schema.duration();
     case 'ipv4':
@@ -709,17 +789,17 @@ function rejectProtoKey(name: string): void {
 
 /**
  * Add each `required` name NOT already in `shape` as an untyped (`z.unknown()`) key — so
- * `additionalProperties: false`/strict still ADMITS the key — and return those names for the caller's presence
- * refine (`z.unknown()` alone is OPTIONAL inside `z.object`, so it cannot enforce presence on its own). Fails
- * closed on a `__proto__` required name.
+ * `additionalProperties: false`/strict still ADMITS the key. It returns nothing: presence is enforced by the
+ * caller for EVERY `required` name, because `z.unknown()` is optional inside a `z.object` and so is any other
+ * unconstrained property schema — which is the bug that made this function's old return value look sufficient.
+ * Fails closed on a `__proto__` required name.
  */
 function addUntypedRequired(
   shape: Record<string, z.ZodTypeAny>,
   required: ReadonlySet<string>,
   additional: AdditionalProps,
   budget: Budget,
-): string[] {
-  const untyped: string[] = [];
+): void {
   for (const name of required) {
     if (Object.hasOwn(shape, name)) continue;
     rejectProtoKey(name);
@@ -737,9 +817,7 @@ function addUntypedRequired(
     }
     shape[name] =
       budget.mode === 'strict' && additional.kind === 'schema' ? additional.schema : z.unknown();
-    untyped.push(name);
   }
-  return untyped;
 }
 
 function objectSchema(node: Record<string, unknown>, budget: Budget, depth: number): z.ZodTypeAny {
@@ -770,7 +848,7 @@ function objectSchema(node: Record<string, unknown>, budget: Budget, depth: numb
   }
   // A `required` name not declared in `properties` (or any `required` when `properties` is omitted) is still
   // present-enforced per the JSON-Schema spec — added to the shape as `z.unknown()` here, presence enforced below.
-  const untypedRequired = addUntypedRequired(shape, required, additional, budget);
+  addUntypedRequired(shape, required, additional, budget);
   // Honor `additionalProperties`: `false` ⇒ reject unknown keys (`.strict()`); otherwise pass them through
   // (default JSON-Schema semantics) so the model may include extra keys the server's own schema permits.
   let built: z.ZodTypeAny;
@@ -787,7 +865,16 @@ function objectSchema(node: Record<string, unknown>, budget: Budget, depth: numb
   const minProps = readBound(node, 'minProperties', budget, { integer: true, nonNegative: true });
   const maxProps = readBound(node, 'maxProperties', budget, { integer: true, nonNegative: true });
   const checks: Array<(value: Record<string, unknown>, ctx: z.RefinementCtx) => void> = [];
-  for (const name of untypedRequired) {
+  // **Every `required` name, not only the ones absent from `properties`.** `required` means the key must be
+  // PRESENT, whatever its schema says about the value — but presence was left to the compiled property
+  // schema, and an unconstrained one cannot enforce it: `{}`, `true`, an annotation-only object and a bare
+  // `nullable` all compile to `z.unknown()`, which is OPTIONAL inside a `z.object`, so a missing key passed.
+  // Measured: `{ properties: { status: {} }, required: ['status'] }` accepted `{}` — the headline guarantee
+  // of deep validation, defeated by the most ordinary way to say "this field exists".
+  //
+  // Redundant for a typed property (Zod already reports a missing key there) and deliberately so: the
+  // guarantee should not depend on whether a property's compiled schema happens to reject `undefined`.
+  for (const name of required) {
     checks.push((value, ctx) => {
       if (!Object.hasOwn(value, name)) {
         ctx.addIssue({

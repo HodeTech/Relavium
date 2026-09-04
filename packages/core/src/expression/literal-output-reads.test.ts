@@ -66,6 +66,27 @@ describe('literalOutputReads — what it SEES', () => {
   });
 });
 
+describe('literalOutputReads — the match is linear, not quadratic', () => {
+  it('does not backtrack super-linearly on a long whitespace run', () => {
+    // `outputs\s*\??\.?\s*\[` put two independently-optional characters between two `\s*`, so a
+    // whitespace run with no `[` after it could be split at every position. Measured before the fix:
+    // 8.6 ms at 4 K, 39 ms at 8 K, 115 ms at 16 K, 514 ms at 32 K — and the parser accepts a 2 MiB source
+    // while plan build is synchronous, so no deadline or cancel can interrupt it. Now ~6 ms at 128 K.
+    const evil = (n: number): string => `run${' '.repeat(n)}.outputs${' '.repeat(n)}x`;
+    const time = (text: string): number => {
+      const started = process.hrtime.bigint();
+      literalOutputReads(text);
+      return Number(process.hrtime.bigint() - started) / 1e6;
+    };
+    // Bounded on the SHAPE of the growth, not on a wall-clock number a slow machine could breach: the
+    // quadratic form grew ~4.5× per doubling, so anything near linear passes and the defect cannot.
+    time(evil(8_000)); // warm
+    const small = Math.max(time(evil(16_000)), 0.05);
+    const large = time(evil(64_000));
+    expect(large / small).toBeLessThan(12); // quadratic would be ~16×
+  });
+});
+
 describe('literalOutputReads — where it deliberately says NOTHING', () => {
   // Each of these is a read the scan cannot resolve. ADR-0093 §2 makes silence the contract: the scan
   // only ever REFUSES, so being incomplete is safe, while guessing would refuse a valid workflow.
