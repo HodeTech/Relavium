@@ -189,7 +189,14 @@ describe('strict mode — the allowlist', () => {
 
   it('lenient still ignores all of it — the MCP contract is unchanged', () => {
     expect(lenient({ type: 'string', required: 'bad' }).ok).toBe(true);
-    expect(lenient({ type: [] }).ok).toBe(true);
+    // The two degenerate `type` shapes behave DIFFERENTLY in lenient, which the canonical table used to
+    // lump together: an empty list constrains nothing, while a duplicated member collapses into the same
+    // union arm and still constrains.
+    const empty = lenient({ type: [] });
+    expect(empty.ok === true && empty.schema.safeParse(42).success).toBe(true);
+    const duplicated = lenient({ type: ['string', 'string'] });
+    expect(duplicated.ok === true && duplicated.schema.safeParse('x').success).toBe(true);
+    expect(duplicated.ok === true && duplicated.schema.safeParse(42).success).toBe(false);
   });
 
   it('still refuses the constructs the denylist refused', () => {

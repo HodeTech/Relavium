@@ -823,11 +823,24 @@ function compilePattern(pattern: string): RegExp {
 }
 
 /**
- * RFC 3339 `date-time`. Case-insensitive `T`/`Z` (§5.6 permits both), a leap second (`:60`) as the grammar
- * allows, and an offset bounded to `±23:59`.
+ * RFC 3339 in named parts, composed into the two `format` patterns below.
+ *
+ * Split because one flat expression carried the whole grammar — the date, the time, the leap second and
+ * the offset range in a single unreadable line — and neither a reader nor an analyser could tell which
+ * half a given alternation belonged to. Each part is checkable against the RFC on its own.
  */
-const RFC_3339_DATE_TIME =
-  /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])[Tt](?:[01]\d|2[0-3]):[0-5]\d:(?:[0-5]\d|60)(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/;
+const RFC_3339_DATE = String.raw`\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])`;
+/** `HH:MM:SS[.frac]`, allowing the leap second the grammar permits. */
+const RFC_3339_PARTIAL_TIME = String.raw`(?:[01]\d|2[0-3]):[0-5]\d:(?:[0-5]\d|60)(?:\.\d+)?`;
+/** `Z` or `±HH:MM`, offset bounded to ±23:59. Case-insensitive per §5.6. */
+const RFC_3339_OFFSET = String.raw`(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)`;
+
+/** `date-time`: case-insensitive `T`/`Z` (§5.6 permits both), leap second allowed, offset bounded. */
+const RFC_3339_DATE_TIME = new RegExp(
+  `^${RFC_3339_DATE}[Tt]${RFC_3339_PARTIAL_TIME}${RFC_3339_OFFSET}$`,
+);
+/** `full-time`: what JSON Schema's `time` means — an offset is REQUIRED, not optional. */
+const RFC_3339_FULL_TIME = new RegExp(`^${RFC_3339_PARTIAL_TIME}${RFC_3339_OFFSET}$`);
 
 /** Apply one of {@link STRICT_FORMATS}. Every member is handled; the `never` arm makes that a compile error
  *  if a value is added to the set without an implementation here. */
@@ -849,9 +862,7 @@ function applyFormat(schema: z.ZodString, format: string): z.ZodString {
     case 'time':
       // RFC 3339 `full-time` REQUIRES an offset, which is what JSON Schema's `time` means. Zod's `.time()`
       // is the opposite: it accepts a bare `12:34:56` and rejects `12:34:56Z` and `12:34:56+03:00`.
-      return schema.regex(
-        /^(?:[01]\d|2[0-3]):[0-5]\d:(?:[0-5]\d|60)(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/,
-      );
+      return schema.regex(RFC_3339_FULL_TIME);
     case 'duration':
       return schema.duration();
     case 'ipv4':

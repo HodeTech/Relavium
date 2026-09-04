@@ -434,6 +434,30 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
     expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'validation' } });
   });
 
+  it('caps the widening diagnostic like its plan-build twin, and counts the rest', async () => {
+    // `collectToolGrantIssues` caps at ten with a summary because an unbounded list amplified an authored
+    // array into a 55 MB message. This dispatch-time twin builds the same list from the same array and was
+    // left uncapped in the same PR — and then capped only its OUTPUT, still materializing every denied
+    // index first. Nothing tested either half.
+    const agentWithTools: Agent = { ...AGENT, tools: ['read_file'] };
+    const widened = Array.from({ length: 40 }, (_, i) => `nope_${i}`);
+    const exec = createAgentNodeExecutor(deps(provider([STOP])));
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({ tools: widened }),
+        resolvedAgent: agentWithTools,
+      }),
+    );
+    const outcome = await exec.execute(ctx);
+    expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'validation' } });
+    const message = outcome.kind === 'failed' ? outcome.error.message : '';
+    // Ten positions, then a summary naming the true total — never forty.
+    expect(message.match(/tools\[\d+\]/g)).toHaveLength(10);
+    expect(message).toContain('and 30 more');
+    expect(message).toContain('10 of 40 shown');
+  });
+
   it('an agent with NO `tools:` grants nothing — the DISPATCH floor agrees with plan build', async () => {
     // The two checks must not disagree: one refusing what the other allows is the worst outcome. This is
     // the runtime half of the same edge, and it was equally uncovered — a mutation making an absent grant

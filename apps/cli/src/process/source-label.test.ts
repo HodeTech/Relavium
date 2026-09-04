@@ -1,4 +1,4 @@
-import { isAbsolute } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -8,7 +8,12 @@ describe('sourceLabel', () => {
   // The parsers put this into error messages the CLI promotes to the user, so an absolute path here is a
   // disclosure in something that also reaches logs and `--json` consumers.
   it('is relative to the caller`s cwd for a file inside it', () => {
-    expect(sourceLabel('/work/project', '/work/project/flows/a.yaml')).toBe('flows/a.yaml');
+    // `join`, not a slash-separated literal: `relative()` returns the PLATFORM separator, so a hardcoded
+    // `'flows/a.yaml'` passes here and fails on Windows — the one platform whose separator this test is
+    // most likely to be read as documenting.
+    expect(sourceLabel(join('/work', 'project'), join('/work', 'project', 'flows', 'a.yaml'))).toBe(
+      join('flows', 'a.yaml'),
+    );
   });
 
   it('never returns an absolute path, whatever it is given', () => {
@@ -28,7 +33,8 @@ describe('sourceLabel', () => {
   });
 
   it('falls back to the basename when the two paths are equal (relative returns "")', () => {
-    expect(sourceLabel('/work/a.yaml', '/work/a.yaml')).toBe('a.yaml');
+    const file = join('/work', 'a.yaml');
+    expect(sourceLabel(file, file)).toBe('a.yaml');
   });
 
   it('does not disclose the directory above the cwd beyond the relative hops', () => {

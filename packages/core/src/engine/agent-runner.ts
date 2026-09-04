@@ -992,20 +992,32 @@ function resolveGrant(
   // large but entirely LEGAL narrowing then blocked the event loop for seconds, synchronously, where no
   // deadline can fire.
   const granted = new Set(agentSet);
-  const wideningAt = nodeTools.flatMap((t, i) => (granted.has(t) ? [] : [i]));
-  if (wideningAt.length > 0) {
-    // **Capped, like its plan-build twin.** `collectToolGrantIssues` caps at ten with a summary because an
-    // unbounded list amplified an authored array into a 55 MB message; this path builds the same list from
-    // the same authored array and was left uncapped in the same PR. Same input, same amplification.
-    const shown = wideningAt.slice(0, MAX_REPORTED_WIDENINGS);
+  // **Capped in the WORK, not only in the message.** `collectToolGrantIssues` caps at ten with a summary
+  // because an unbounded list amplified an authored array into a 55 MB message; a first version of this
+  // twin built the full array of denied indices with `flatMap` and sliced it afterwards, which caps the
+  // output and pays for the amplification anyway. One pass, keeping at most the positions it will print
+  // and counting the rest. The membership test is a `Set`: `includes` per tool made a large but entirely
+  // LEGAL narrowing O(n×m), blocking the event loop synchronously where no deadline can fire.
+  const shown: number[] = [];
+  let denied = 0;
+  for (const [index, tool] of nodeTools.entries()) {
+    if (granted.has(tool)) {
+      continue;
+    }
+    denied += 1;
+    if (shown.length < MAX_REPORTED_WIDENINGS) {
+      shown.push(index);
+    }
+  }
+  if (denied > 0) {
     const positions = shown.map((i) => `tools[${i}]`).join(', ');
     const remainder =
-      wideningAt.length > shown.length
-        ? ` (and ${wideningAt.length - shown.length} more; ${shown.length} of ${wideningAt.length} shown)`
+      denied > shown.length
+        ? ` (and ${denied - shown.length} more; ${shown.length} of ${denied} shown)`
         : '';
     return {
       ok: false,
-      message: `node ${positions}${remainder} ${wideningAt.length === 1 ? 'is' : 'are'} not granted to the agent (a node narrows, never widens)`,
+      message: `node ${positions}${remainder} ${denied === 1 ? 'is' : 'are'} not granted to the agent (a node narrows, never widens)`,
     };
   }
   return { ok: true, ids: nodeTools };
