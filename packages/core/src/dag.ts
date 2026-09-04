@@ -22,7 +22,13 @@
  * §Complete example) — no extra vertex is synthesized.
  */
 
-import type { Agent, EngineNodeType, Workflow, WorkflowNode } from '@relavium/shared';
+import {
+  byCodeUnit,
+  type Agent,
+  type EngineNodeType,
+  type Workflow,
+  type WorkflowNode,
+} from '@relavium/shared';
 
 import {
   WorkflowGraphError,
@@ -917,25 +923,6 @@ function collectClosureIssues(
   );
   collectUnorderedReadIssues(spec, ancestors, issues, unresolvedAgentIds);
   return ancestors;
-}
-
-/**
- * UTF-16 code-unit order — **deliberately NOT `localeCompare`**, and the distinction is load-bearing.
- *
- * These orders reach a plan that a resumed run must reproduce byte for byte: `ancestors` fixes the key
- * order of the `run.outputs` record an expression sees, and `feederNodeIds` fixes the key order of a
- * multi-feeder `output` capture (expression-sandbox-spec.md §run.outputs ordering; ADR-0027).
- * `localeCompare` is locale-dependent, so the same workflow resumed under a different `LANG` would build a
- * different object — which is exactly the cross-environment determinism the sort exists to provide.
- *
- * Written as an explicit comparator rather than a bare `.sort()`: the default already IS code-unit order,
- * but leaving it implicit made the choice look accidental, and a static analyser reads a bare `.sort()` on
- * strings as a missing comparator and suggests `localeCompare` — the one change that would break this.
- */
-function byCodeUnit(a: string, b: string): number {
-  if (a < b) return -1;
-  if (a > b) return 1;
-  return 0;
 }
 
 /**

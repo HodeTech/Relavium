@@ -9,7 +9,7 @@
  * the one canonical sandbox scope, and mapping a thrown `SandboxError` to its outcome.
  */
 
-import type { ErrorCode, MaskedSecret } from '@relavium/shared';
+import { byCodeUnit, type ErrorCode, type MaskedSecret } from '@relavium/shared';
 
 import { SandboxError } from '../../errors.js';
 import type { ExpressionScope } from '../../expression/sandbox.js';
@@ -75,12 +75,12 @@ export function outputsRecord(
   return record;
 }
 
-/** Deterministic, locale-independent string order (UTF-16 code unit) — for resume-reproducible records. */
-export function byCodeUnit(a: string, b: string): number {
-  if (a < b) return -1;
-  if (a > b) return 1;
-  return 0;
-}
+/**
+ * Deterministic, locale-independent string order — re-exported from `@relavium/shared` so this package's
+ * handlers keep their existing import while the RULE has one home. There were three copies of it, and they
+ * have to agree: each fixes the key order of something a resumed run rebuilds.
+ */
+export { byCodeUnit };
 
 /**
  * Replace every `secret`-typed input with its {@link MaskedSecret} marker (`{ secret: true, ref }`),

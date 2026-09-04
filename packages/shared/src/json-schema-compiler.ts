@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { utf8ByteLength } from './bytes.js';
+import { byCodeUnit } from './ordering.js';
 
 /**
  * Dependency-free JSON-Schema → Zod compiler (**[ADR-0052](../../../docs/decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §4**,
@@ -1090,7 +1091,7 @@ function canonicalJson(value: unknown, depth: number, max: number): string {
     return `[${value.map((v) => canonicalJson(v, depth + 1, max)).join(',')}]`;
   }
   const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
-    a < b ? -1 : a > b ? 1 : 0,
+    byCodeUnit(a, b),
   );
   return `{${entries
     .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v, depth + 1, max)}`)
