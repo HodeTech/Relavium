@@ -50,38 +50,54 @@ const COMPILED = new WeakMap<object, CompileResult>();
 export function outputSchemaSites(
   document: unknown,
 ): ReadonlyArray<{ readonly field: string; readonly schema: object }> {
-  const sites: Array<{ field: string; schema: object }> = [];
-  const push = (schema: unknown, field: string): void => {
-    if (typeof schema === 'object' && schema !== null) {
-      sites.push({ schema, field });
-    }
-  };
-  if (typeof document !== 'object' || document === null) {
-    return sites;
+  const record = asRecord(document);
+  if (record === undefined) {
+    return [];
   }
-  const record = document as Record<string, unknown>;
   // A standalone agent document.
-  push(record['output_schema'], 'output_schema');
-  const workflow = record['workflow'];
-  if (typeof workflow !== 'object' || workflow === null) {
+  const sites = site(record['output_schema'], 'output_schema');
+  const spec = asRecord(record['workflow']);
+  if (spec === undefined) {
     return sites;
   }
-  const spec = workflow as Record<string, unknown>;
-  for (const agent of Array.isArray(spec['agents']) ? spec['agents'] : []) {
-    if (typeof agent === 'object' && agent !== null) {
-      const a = agent as Record<string, unknown>;
-      const id = typeof a['id'] === 'string' ? a['id'] : '?';
-      push(a['output_schema'], `agent \`${id}\`.output_schema`);
-    }
+  return [
+    ...sites,
+    ...listSites(spec['agents'], (id) => `agent \`${id}\`.output_schema`),
+    ...listSites(spec['nodes'], (id) => `node \`${id}\`.output_schema`),
+  ];
+}
+
+/** A plain object, or `undefined` for anything else (including `null` and an array). */
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/** Zero or one site: a schema that is an object, under the given locator. */
+function site(
+  schema: unknown,
+  field: string,
+): ReadonlyArray<{ readonly field: string; readonly schema: object }> {
+  return typeof schema === 'object' && schema !== null ? [{ field, schema }] : [];
+}
+
+/** Every `output_schema` in a list of authored entries, located by each entry's own id. */
+function listSites(
+  entries: unknown,
+  locate: (id: string) => string,
+): ReadonlyArray<{ readonly field: string; readonly schema: object }> {
+  if (!Array.isArray(entries)) {
+    return [];
   }
-  for (const node of Array.isArray(spec['nodes']) ? spec['nodes'] : []) {
-    if (typeof node === 'object' && node !== null) {
-      const n = node as Record<string, unknown>;
-      const id = typeof n['id'] === 'string' ? n['id'] : '?';
-      push(n['output_schema'], `node \`${id}\`.output_schema`);
+  return entries.flatMap((entry) => {
+    const record = asRecord(entry);
+    if (record === undefined) {
+      return [];
     }
-  }
-  return sites;
+    const id = typeof record['id'] === 'string' ? record['id'] : '?';
+    return site(record['output_schema'], locate(id));
+  });
 }
 
 /**

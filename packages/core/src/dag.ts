@@ -183,45 +183,10 @@ export function buildRunPlan(def: Workflow, opts?: BuildRunPlanOptions): RunPlan
     });
   }
 
-  // 4b. The out-of-closure literal read (ADR-0093 §2). Computed here rather than after the throw because
-  // it is an AUTHORING error and must ride the same report as every other one — an author fixing a graph
-  // should see all of it at once. Skipped when the order is short, i.e. a cycle: `ancestors` would be
-  // built from a truncated order and every closure below the cut would be wrong, so a cycle would produce
-  // a page of confident, invented "not ordered after" findings on top of the real problem.
-  //
-  // **Gated on the CEILINGS too, not only on the cycle.** The closure fold is Θ(V²) in the worst case —
-  // a chain of N nodes retains N²/2 ids — and an over-ceiling file already has its `ceiling_exceeded`
-  // issue sitting in `issues` at this point, waiting to be thrown two lines below. Computing the closure
-  // first meant a 15 000-node file (30× the 500-node ceiling) did the whole fold before being told it was
-  // rejected: measured 4.8 s at n=10 000 and an OOM of the host process above that. A rejection must not
-  // be more expensive than an acceptance.
-  //
-  // **Per-node, not whole-graph, for the unresolved-agent case.** A resolved agent's `system_prompt` wires
-  // data edges (`wireDataEdges`), so building without the optional registry — which
-  // `BuildRunPlanOptions.agents` documents as supported, and which is what EVERY current caller does —
-  // yields a SMALLER closure, and a refusal computed from a smaller closure points the wrong way: a read
-  // that is genuinely ordered would be refused.
-  //
-  // A first version stood the whole check down whenever any `agent_ref` was unresolved. That was sound and
-  // far too broad: an unresolved `$ref` produces no issue at all when no registry is supplied (resolution
-  // is deliberately deferred), so such a workflow built clean AND silently lost the entire `CR-62` check.
-  // Unlike the cycle and ceiling gates, which always ride an issue that throws, this one turned coverage
-  // off in production and said nothing.
-  //
-  // The missing edges all run PRODUCER → AGENT, so they can only add ancestors to nodes DOWNSTREAM of that
-  // agent. A reading node whose closure contains no unresolved agent is therefore unaffected, and keeps
-  // its check.
-  const unresolvedAgentIds = new Set(
-    spec.nodes.flatMap((n) => (n.type === 'agent' && !agentsById.has(n.agent_ref) ? [n.id] : [])),
-  );
-  const closureIsSound =
-    order.length === spec.nodes.length && !issues.some((i) => i.kind === 'ceiling_exceeded');
-  const ancestors = closureIsSound
-    ? computeAncestors(order, dependencies)
-    : new Map<string, readonly string[]>();
-  if (closureIsSound) {
-    collectUnorderedReadIssues(spec, ancestors, issues, unresolvedAgentIds);
-  }
+  // 4b. The authoring checks that need the finished graph (ADR-0093 §2, ADR-0092 §3). Run here rather than
+  // after the throw because they are AUTHORING errors and must ride the same report as every other one —
+  // an author fixing a graph should see all of it at once.
+  const ancestors = collectClosureIssues(spec, order, dependencies, agentsById, issues);
   collectOutputSchemaIssues(spec, agentsById, issues);
 
   if (issues.length > 0) {
@@ -283,8 +248,7 @@ function validateAndWireEdges(
     } else if (node.type === 'condition') {
       wireConditionNode(node, nodesById, addEdge, issues);
     } else if (node.type === 'agent') {
-      validateAgentNode(
-        node,
+      validateAgentNode(node, {
         agentsById,
         registrySupplied,
         nodesById,
@@ -292,7 +256,7 @@ function validateAndWireEdges(
         issues,
         grantsFinal,
         grantedByAgent,
-      );
+      });
     }
     wireOwnDataEdges(node, addEdge);
   }
@@ -545,16 +509,20 @@ function collectToolGrantIssues(
 }
 
 /** Validate an `agent` node's `agent_ref` and wire data edges from the resolved agent's system prompt. */
-function validateAgentNode(
-  node: AgentNode,
-  agentsById: ReadonlyMap<string, Agent>,
-  registrySupplied: boolean,
-  nodesById: ReadonlyMap<string, WorkflowNode>,
-  addEdge: AddEdge,
-  issues: GraphIssue[],
-  grantsFinal: boolean,
-  grantedByAgent: Map<Agent, ReadonlySet<string>>,
-): void {
+/** The agent-resolution context threaded through the node walk — one object, not eight positionals. */
+interface AgentValidationContext {
+  readonly agentsById: ReadonlyMap<string, Agent>;
+  readonly registrySupplied: boolean;
+  readonly nodesById: ReadonlyMap<string, WorkflowNode>;
+  readonly addEdge: AddEdge;
+  readonly issues: GraphIssue[];
+  readonly grantsFinal: boolean;
+  readonly grantedByAgent: Map<Agent, ReadonlySet<string>>;
+}
+
+function validateAgentNode(node: AgentNode, ctx: AgentValidationContext): void {
+  const { agentsById, registrySupplied, nodesById, addEdge, issues, grantsFinal, grantedByAgent } =
+    ctx;
   if (registrySupplied && !agentsById.has(node.agent_ref)) {
     issues.push({
       kind: 'dangling_ref',
@@ -909,6 +877,68 @@ function computeMergeBranchOrder(
 }
 
 /**
+ * Compute the closure and run the out-of-closure read check, when the graph is complete enough to trust.
+ *
+ * Returns the closure so the plan can carry it. Empty when the check stands down — the vertices then get
+ * an empty `ancestors`, which is correct: the build is about to throw.
+ *
+ * **Skipped on a CYCLE.** `ancestors` would be built from a truncated Kahn order and every closure below
+ * the cut would be wrong, so a cycle would produce a page of confident, invented "not ordered after"
+ * findings on top of the real problem.
+ *
+ * **Skipped over a CEILING.** The fold is Θ(V²) worst case — a chain of N nodes retains N²/2 ids — and an
+ * over-ceiling file already has its `ceiling_exceeded` issue waiting to be thrown. Computing the closure
+ * first meant a 15 000-node file did the whole fold before being told it was rejected: measured 4.8 s at
+ * n=10 000 and an OOM above that. A rejection must not be more expensive than an acceptance.
+ *
+ * **Skipped PER NODE for an unresolved agent.** A resolved agent's `system_prompt` wires data edges, so
+ * building without the optional registry — which `BuildRunPlanOptions.agents` documents as supported, and
+ * which is what every current caller does — yields a SMALLER closure, and a refusal from a smaller closure
+ * points the wrong way. A first version stood the WHOLE check down for it: sound, and far too broad, since
+ * an unresolved `$ref` raises no issue at all without a registry, so such a workflow built clean AND
+ * silently lost the entire `CR-62` check. The missing edges all run PRODUCER → AGENT, so they can only add
+ * ancestors to nodes DOWNSTREAM of that agent; every other reading node keeps its check.
+ */
+function collectClosureIssues(
+  spec: WorkflowSpec,
+  order: readonly string[],
+  dependencies: ReadonlyMap<string, ReadonlySet<string>>,
+  agentsById: ReadonlyMap<string, Agent>,
+  issues: GraphIssue[],
+): ReadonlyMap<string, readonly string[]> {
+  const sound =
+    order.length === spec.nodes.length && !issues.some((i) => i.kind === 'ceiling_exceeded');
+  if (!sound) {
+    return new Map<string, readonly string[]>();
+  }
+  const ancestors = computeAncestors(order, dependencies);
+  const unresolvedAgentIds = new Set(
+    spec.nodes.flatMap((n) => (n.type === 'agent' && !agentsById.has(n.agent_ref) ? [n.id] : [])),
+  );
+  collectUnorderedReadIssues(spec, ancestors, issues, unresolvedAgentIds);
+  return ancestors;
+}
+
+/**
+ * UTF-16 code-unit order — **deliberately NOT `localeCompare`**, and the distinction is load-bearing.
+ *
+ * These orders reach a plan that a resumed run must reproduce byte for byte: `ancestors` fixes the key
+ * order of the `run.outputs` record an expression sees, and `feederNodeIds` fixes the key order of a
+ * multi-feeder `output` capture (expression-sandbox-spec.md §run.outputs ordering; ADR-0027).
+ * `localeCompare` is locale-dependent, so the same workflow resumed under a different `LANG` would build a
+ * different object — which is exactly the cross-environment determinism the sort exists to provide.
+ *
+ * Written as an explicit comparator rather than a bare `.sort()`: the default already IS code-unit order,
+ * but leaving it implicit made the choice look accidental, and a static analyser reads a bare `.sort()` on
+ * strings as a missing comparator and suggests `localeCompare` — the one change that would break this.
+ */
+function byCodeUnit(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
+/**
  * Each vertex's **transitive dependency closure** — every vertex it is ordered after — keyed by id, in
  * deterministic code-unit order.
  *
@@ -944,9 +974,7 @@ function computeAncestors(
   }
   const ancestors = new Map<string, readonly string[]>();
   for (const [id, set] of sets) {
-    // Code-unit order (the default string sort), matching the scope record's key-order contract — a
-    // resumed run in another environment must build the same object (expression-sandbox-spec.md).
-    ancestors.set(id, [...set].sort());
+    ancestors.set(id, [...set].sort(byCodeUnit));
   }
   return ancestors;
 }
@@ -982,19 +1010,6 @@ function collectUnorderedReadIssues(
 ): void {
   const nodeIds = new Set(spec.nodes.map((n) => n.id));
   for (const node of spec.nodes) {
-    const sites: ReadonlyArray<{ readonly field: string; readonly text: string }> =
-      node.type === 'condition'
-        ? [{ field: 'expression', text: node.expression }]
-        : node.type === 'transform'
-          ? [{ field: 'transform', text: node.transform }]
-          : // Only a `custom` merge EVALUATES its `merge_fn` (fan-in.ts switches on `mergeStrategy`), and
-            // the schema does not reject a `merge_fn` on the other strategies. Scanning one the engine
-            // never runs would refuse a workflow over an expression that has no effect. Whether such a
-            // `merge_fn` should itself be refused is a separate decision and must not ride in here as a
-            // side effect of this scan.
-            node.type === 'merge' && node.merge_strategy === 'custom' && node.merge_fn !== undefined
-            ? [{ field: 'merge_fn', text: node.merge_fn }]
-            : [];
     const visible = new Set(ancestors.get(node.id) ?? []);
     // An unresolved agent among this node's ancestors means the closure below it is incomplete — that
     // agent's `system_prompt` would have wired producer edges this build never saw. Only THIS node stands
@@ -1002,32 +1017,60 @@ function collectUnorderedReadIssues(
     if (unresolvedAgentIds.size > 0 && [...visible].some((id) => unresolvedAgentIds.has(id))) {
       continue;
     }
-    for (const site of sites) {
+    for (const site of expressionSites(node)) {
       for (const read of literalOutputReads(site.text)) {
-        // Not a node of this workflow: left to the runtime resolver, deliberately (see the docblock).
+        // Not a node of this workflow: reported by nothing, deliberately (see the docblock).
         if (!nodeIds.has(read.id) || visible.has(read.id)) {
           continue;
         }
-        // A node's OWN id is a self-read, which the cycle check cannot see because no edge exists. It is
-        // still an out-of-closure read and is reported by the same rule rather than a special case.
         issues.push({
           kind: 'unordered_output_read',
           field: `node \`${node.id}\`.${site.field}`,
           // Both names are node IDS, never authored values — the invariant in errors.ts. The expression
           // TEXT is never echoed: it is authored, and an author can put anything in it.
-          message:
-            read.id === node.id
-              ? `this expression reads \`run.outputs\` of its own node \`${node.id}\`, which cannot have produced an output yet`
-              : // Only ONE remedy is named, because only one exists here. An earlier wording also offered
-                // "reference it from a template field so the builder orders them" — but `nodeReferenceSites`
-                // returns template sites for `agent` and `human_gate` nodes only, and a `condition`,
-                // `transform` or `merge` has no template field at all. A remedy the author cannot perform
-                // is worse than no remedy: it sends them looking for a field that does not exist.
-                `this expression reads \`run.outputs\` of node \`${read.id}\`, which node \`${node.id}\` is not ordered after — add an edge from \`${read.id}\` so the builder orders them`,
+          message: unorderedReadMessage(node.id, read.id),
         });
       }
     }
   }
+}
+
+/**
+ * The JS-expression fields on a node that this scan reads. A node has at most one.
+ *
+ * Only a `custom` merge EVALUATES its `merge_fn` (fan-in.ts switches on `mergeStrategy`), and the schema
+ * does not reject a `merge_fn` on the other strategies. Scanning one the engine never runs would refuse a
+ * workflow over an expression that has no effect. Whether such a `merge_fn` should itself be refused is a
+ * separate decision and must not ride in here as a side effect of this scan.
+ */
+function expressionSites(
+  node: WorkflowNode,
+): ReadonlyArray<{ readonly field: string; readonly text: string }> {
+  if (node.type === 'condition') {
+    return [{ field: 'expression', text: node.expression }];
+  }
+  if (node.type === 'transform') {
+    return [{ field: 'transform', text: node.transform }];
+  }
+  if (node.type === 'merge' && node.merge_strategy === 'custom' && node.merge_fn !== undefined) {
+    return [{ field: 'merge_fn', text: node.merge_fn }];
+  }
+  return [];
+}
+
+/**
+ * The refusal text. **Only ONE remedy is named, because only one exists here.** An earlier wording also
+ * offered "reference it from a template field so the builder orders them" — but `nodeReferenceSites`
+ * returns template sites for `agent` and `human_gate` nodes only, and a `condition`, `transform` or
+ * `merge` has no template field at all. A remedy the author cannot perform is worse than no remedy: it
+ * sends them looking for a field that does not exist.
+ */
+function unorderedReadMessage(readerId: string, readId: string): string {
+  // A node's OWN id is a self-read, which the cycle check cannot see because no edge exists. It is still
+  // an out-of-closure read and is reported by the same rule rather than a special case.
+  return readId === readerId
+    ? `this expression reads \`run.outputs\` of its own node \`${readerId}\`, which cannot have produced an output yet`
+    : `this expression reads \`run.outputs\` of node \`${readId}\`, which node \`${readerId}\` is not ordered after — add an edge from \`${readId}\` so the builder orders them`;
 }
 
 /**
@@ -1103,9 +1146,7 @@ function computeOutputFeeders(
           const type = typeById.get(id);
           return type === undefined || producesValue(type);
         })
-        // Code-unit order (the default string sort), NOT `localeCompare` — the captured record's key
-        // order must be identical across environments for a checkpoint replay to reproduce it.
-        .sort(),
+        .sort(byCodeUnit),
     );
   }
   return feeders;

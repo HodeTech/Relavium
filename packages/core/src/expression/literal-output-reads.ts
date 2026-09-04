@@ -50,69 +50,83 @@ export function maskLiterals(text: string): string | undefined {
   let out = '';
   let i = 0;
   while (i < text.length) {
-    const ch = text[i];
-    const next = text[i + 1];
-    if (ch === '/' && next === '/') {
-      while (i < text.length && text[i] !== '\n') {
-        out += NUL;
-        i += 1;
-      }
-      continue;
-    }
-    if (ch === '/' && next === '*') {
-      const close = text.indexOf('*/', i + 2);
-      if (close === -1) {
-        return undefined;
-      }
-      out += NUL.repeat(close + 2 - i);
-      i = close + 2;
-      continue;
-    }
-    // **Any other `/` abandons the scan.** Telling a regex literal from division is the one genuinely hard
-    // part of lexing JavaScript, and getting it wrong in the "thought it was division" direction is not
-    // silence: a regex holding an ODD number of quotes shifts every later string boundary by one, so a real
-    // string's opening quote is consumed and its CONTENTS become code — and a second odd-quoted regex
-    // restores parity, so the mask terminates normally and a fabricated read survives. The cost of bailing
-    // is that an expression containing division is never scanned, which is silence, which is safe.
-    if (ch === '/') {
+    const step = maskStep(text, i);
+    if (step === ABANDON) {
       return undefined;
     }
-    // Annex B B.1.3 HTML-like comments. QuickJS accepts them; treating their contents as code would make
-    // a commented-out access refusable. Abandoned rather than lexed — the same trade as `/`.
-    if (text.startsWith('<!--', i) || text.startsWith('-->', i)) {
-      return undefined;
-    }
-    if (ch === "'" || ch === '"' || ch === '`') {
-      let j = i + 1;
-      let closed = false;
-      while (j < text.length) {
-        if (text[j] === '\\') {
-          j += 2;
-          continue;
-        }
-        // A `${` inside a template opens CODE, and that code can itself contain a nested template. Pairing
-        // backticks flat leaves the inner template's text marked as code, which is a false-find shape.
-        // Tracking the nesting is the lexer this deliberately is not, so it abandons instead.
-        if (ch === '`' && text[j] === '$' && text[j + 1] === '{') {
-          return undefined;
-        }
-        if (text[j] === ch) {
-          closed = true;
-          break;
-        }
-        j += 1;
-      }
-      if (!closed) {
-        return undefined;
-      }
-      out += NUL.repeat(j + 1 - i);
-      i = j + 1;
-      continue;
-    }
-    out += ch;
-    i += 1;
+    out += step.masked;
+    i = step.next;
   }
   return out;
+}
+
+/** The scanner abandons: the caller returns `undefined` and nothing is reported. */
+const ABANDON = Symbol('abandon');
+
+/** One step of {@link maskLiterals}: what to append, and where to resume. */
+interface MaskStep {
+  readonly masked: string;
+  readonly next: number;
+}
+
+/**
+ * Classify the construct at `i` and mask it. Split out of {@link maskLiterals} so each construct's REASON
+ * for being masked or abandoned sits next to its own code rather than in one long branch chain — the
+ * reasons are the load-bearing part of this file and they were the hardest thing to find in it.
+ */
+function maskStep(text: string, i: number): MaskStep | typeof ABANDON {
+  const ch = text[i];
+  const next = text[i + 1];
+  if (ch === '/' && next === '/') {
+    const end = text.indexOf('\n', i);
+    const stop = end === -1 ? text.length : end;
+    return { masked: NUL.repeat(stop - i), next: stop };
+  }
+  if (ch === '/' && next === '*') {
+    const close = text.indexOf('*/', i + 2);
+    // An unterminated block comment means the masker has lost track of what is code.
+    return close === -1 ? ABANDON : { masked: NUL.repeat(close + 2 - i), next: close + 2 };
+  }
+  // **Any other `/` abandons the scan.** Telling a regex literal from division is the one genuinely hard
+  // part of lexing JavaScript, and getting it wrong in the "thought it was division" direction is not
+  // silence: a regex holding an ODD number of quotes shifts every later string boundary by one, so a real
+  // string's opening quote is consumed and its CONTENTS become code — and a second odd-quoted regex
+  // restores parity, so the mask terminates normally and a fabricated read survives. The cost of bailing
+  // is that an expression containing division is never scanned, which is silence, which is safe.
+  if (ch === '/') {
+    return ABANDON;
+  }
+  // Annex B B.1.3 HTML-like comments. QuickJS accepts them; treating their contents as code would make
+  // a commented-out access refusable. Abandoned rather than lexed — the same trade as `/`.
+  if (text.startsWith('<!--', i) || text.startsWith('-->', i)) {
+    return ABANDON;
+  }
+  if (ch === "'" || ch === '"' || ch === '`') {
+    return maskStringLiteral(text, i, ch);
+  }
+  return { masked: ch ?? '', next: i + 1 };
+}
+
+/** Mask the string/template literal opening at `i`, or abandon if it does not close or nests a template. */
+function maskStringLiteral(text: string, i: number, quote: string): MaskStep | typeof ABANDON {
+  let j = i + 1;
+  while (j < text.length) {
+    if (text[j] === '\\') {
+      j += 2;
+      continue;
+    }
+    // A `${` inside a template opens CODE, and that code can itself contain a nested template. Pairing
+    // backticks flat leaves the inner template's text marked as code, which is a false-find shape.
+    // Tracking the nesting is the lexer this deliberately is not, so it abandons instead.
+    if (quote === '`' && text[j] === '$' && text[j + 1] === '{') {
+      return ABANDON;
+    }
+    if (text[j] === quote) {
+      return { masked: NUL.repeat(j + 1 - i), next: j + 1 };
+    }
+    j += 1;
+  }
+  return ABANDON; // unterminated
 }
 
 /**

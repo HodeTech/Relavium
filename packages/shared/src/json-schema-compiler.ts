@@ -284,28 +284,7 @@ function compileNode(node: unknown, budget: Budget, depth: number): z.ZodTypeAny
     throw new UnsupportedSchemaError('schema node must be an object or a boolean');
   }
 
-  for (const key of UNSUPPORTED_KEYS) {
-    if (key in node) {
-      throw new UnsupportedSchemaError(`unsupported JSON-Schema construct: "${key}"`);
-    }
-  }
-  if (budget.mode === 'strict') {
-    validateKeywordShapes(node);
-    for (const key of Object.keys(node)) {
-      if (!STRICT_ALLOWED_KEYS.has(key)) {
-        // **Named only when it is a real JSON-Schema keyword.** A refusal that will not say which keyword
-        // is nearly useless, but an unrecognised key is AUTHORED TEXT — an author can write anything
-        // there, including something secret-shaped, and a message never carries an authored value. The
-        // vocabulary is a fixed, published list, so naming a member of it leaks nothing; anything else
-        // stays positional and the author finds it by removing what the subset does not list.
-        throw new UnsupportedSchemaError(
-          JSON_SCHEMA_VOCABULARY.has(key)
-            ? `unsupported keyword "${key}" — an authored schema may only use the documented subset (json-schema-subset.md)`
-            : 'the schema declares a key outside the documented subset (json-schema-subset.md)',
-        );
-      }
-    }
-  }
+  admitKeywords(node, budget);
 
   // `const`/`enum` constrain to specific VALUES; `type` constrains the shape — with `'null'` carried as a
   // first-class type member, so `type:'null'` enforces null and `type:['string','null']` is a real union.
@@ -316,31 +295,71 @@ function compileNode(node: unknown, budget: Budget, depth: number): z.ZodTypeAny
   const constOrEnum = readConstOrEnum(node, budget);
   const { types, nullableFlag } = readTypes(node, budget);
 
+  // The SHAPE half: the declared type(s), or — with no `type` — whatever loose constraints the node
+  // carries, which JSON Schema applies to values of the kind each belongs to.
+  const shape =
+    types.length > 0
+      ? buildTypeUnion(types, node, budget, depth)
+      : loosenedShape(node, budget, depth);
+
   let base: z.ZodTypeAny;
   if (constOrEnum !== undefined) {
     // A value-constraint and a shape-constraint must BOTH hold, so they intersect. With no `type`, the
     // shape half is whatever the loose constraints describe — and it was dropped: `{ enum: ['aa'],
     // minLength: 5 }` accepted `'aa'`, which is two characters, because only the enum arm was built. The
     // same hole `typelessConstrained` exists to close, one branch over.
-    const shape =
-      types.length === 0
-        ? budget.mode === 'strict'
-          ? typelessConstrained(node, budget, depth)
-          : undefined
-        : buildTypeUnion(types, node, budget, depth);
     base = shape === undefined ? constOrEnum : z.intersection(constOrEnum, shape);
-  } else if (types.length > 0) {
-    base = buildTypeUnion(types, node, budget, depth);
+  } else if (shape !== undefined) {
+    base = shape;
   } else {
     // No `type`/`const`/`enum`. In `lenient` that is an unconstrained schema (`{}` / description-only) —
     // accept any value; the gate is *shape*, not exhaustive constraint, and MCP servers emit `{}` for a
     // no-arg tool. In `strict` the node may still carry constraints, which JSON Schema applies to values
     // of the kind each belongs to, so they are enforced rather than dropped.
-    base =
-      (budget.mode === 'strict' ? typelessConstrained(node, budget, depth) : undefined) ??
-      z.unknown();
+    base = z.unknown();
   }
   return nullableFlag ? base.nullable() : base;
+}
+
+/**
+ * Refuse what this mode does not admit: the denylisted constructs in both modes, plus — in `strict` — a
+ * keyword-shape pass and the allowlist. Extracted from {@link compileNode} so the ADMISSION rules read as
+ * one unit rather than as the first third of a long function.
+ */
+function admitKeywords(node: Record<string, unknown>, budget: Budget): void {
+  for (const key of UNSUPPORTED_KEYS) {
+    if (key in node) {
+      throw new UnsupportedSchemaError(`unsupported JSON-Schema construct: "${key}"`);
+    }
+  }
+  if (budget.mode !== 'strict') {
+    return;
+  }
+  validateKeywordShapes(node);
+  for (const key of Object.keys(node)) {
+    if (STRICT_ALLOWED_KEYS.has(key)) {
+      continue;
+    }
+    // **Named only when it is a real JSON-Schema keyword.** A refusal that will not say which keyword is
+    // nearly useless, but an unrecognised key is AUTHORED TEXT — an author can write anything there,
+    // including something secret-shaped, and a message never carries an authored value. The vocabulary is
+    // a fixed, published list, so naming a member of it leaks nothing; anything else stays positional and
+    // the author finds it by removing what the subset does not list.
+    throw new UnsupportedSchemaError(
+      JSON_SCHEMA_VOCABULARY.has(key)
+        ? `unsupported keyword "${key}" — an authored schema may only use the documented subset (json-schema-subset.md)`
+        : 'the schema declares a key outside the documented subset (json-schema-subset.md)',
+    );
+  }
+}
+
+/** The shape a node with NO `type` still constrains — `strict` only; `lenient` leaves such a node open. */
+function loosenedShape(
+  node: Record<string, unknown>,
+  budget: Budget,
+  depth: number,
+): z.ZodTypeAny | undefined {
+  return budget.mode === 'strict' ? typelessConstrained(node, budget, depth) : undefined;
 }
 
 /** `const` → a single literal; `enum` → a union of literal members (budget-charged); BOTH ⇒ their INTERSECTION
@@ -481,6 +500,22 @@ const OBJECT_CONSTRAINTS = [
 ] as const;
 
 /**
+ * Which JSON kind a value is, for choosing the constraints that apply to it.
+ *
+ * `typeof` alone is not that answer: `null` and an array are both `'object'`, so a naive dispatch reports a
+ * missing property on a `null` and object constraints on an array.
+ */
+type JsonKind = 'string' | 'number' | 'array' | 'object' | 'other';
+
+function jsonKindOf(value: unknown): JsonKind {
+  if (typeof value === 'string') return 'string';
+  if (typeof value === 'number') return 'number';
+  if (Array.isArray(value)) return 'array';
+  if (value !== null && typeof value === 'object') return 'object';
+  return 'other';
+}
+
+/**
  * A schema with **no `type`** but with constraints on it.
  *
  * JSON Schema applies a constraint to values of the kind it belongs to and leaves every other kind
@@ -525,17 +560,15 @@ function typelessConstrained(
   const obj = has(OBJECT_CONSTRAINTS) ? objectSchema(node, budget, depth) : undefined;
   // Dispatched on the VALUE's kind rather than compiled as a union: a union would accept the value on any
   // arm that passes, and a catch-all arm for the unconstrained kinds would then swallow a real violation.
+  const byKind: Record<JsonKind, z.ZodTypeAny | undefined> = {
+    string: str,
+    number: num,
+    array: arr,
+    object: obj,
+    other: undefined,
+  };
   return z.unknown().superRefine((value, ctx) => {
-    const applicable =
-      typeof value === 'string'
-        ? str
-        : typeof value === 'number'
-          ? num
-          : Array.isArray(value)
-            ? arr
-            : value !== null && typeof value === 'object'
-              ? obj
-              : undefined;
+    const applicable = byKind[jsonKindOf(value)];
     if (applicable === undefined) {
       return; // this kind carries no constraint here — unconstrained, per JSON Schema
     }
@@ -862,8 +895,6 @@ function objectSchema(node: Record<string, unknown>, budget: Budget, depth: numb
   } else {
     built = z.object(shape).passthrough();
   }
-  const minProps = readBound(node, 'minProperties', budget, { integer: true, nonNegative: true });
-  const maxProps = readBound(node, 'maxProperties', budget, { integer: true, nonNegative: true });
   const checks: Array<(value: Record<string, unknown>, ctx: z.RefinementCtx) => void> = [];
   // **Every `required` name, not only the ones absent from `properties`.** `required` means the key must be
   // PRESENT, whatever its schema says about the value — but presence was left to the compiled property
@@ -885,28 +916,7 @@ function objectSchema(node: Record<string, unknown>, budget: Budget, depth: numb
       }
     });
   }
-  if (budget.mode === 'strict' && minProps !== undefined) {
-    checks.push((value, ctx) => {
-      const count = Object.keys(value).length;
-      if (count < minProps) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `object has ${count} properties, below the minimum of ${minProps}`,
-        });
-      }
-    });
-  }
-  if (budget.mode === 'strict' && maxProps !== undefined) {
-    checks.push((value, ctx) => {
-      const count = Object.keys(value).length;
-      if (count > maxProps) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `object has ${count} properties, above the maximum of ${maxProps}`,
-        });
-      }
-    });
-  }
+  checks.push(...propertyCountChecks(node, budget));
   if (checks.length === 0) {
     return built;
   }
@@ -926,6 +936,42 @@ type AdditionalProps =
   | { kind: 'strict' }
   | { kind: 'passthrough' }
   | { kind: 'schema'; schema: z.ZodTypeAny };
+
+/** `minProperties` / `maxProperties` as refinements — `strict` only; `lenient` ignores both. */
+function propertyCountChecks(
+  node: Record<string, unknown>,
+  budget: Budget,
+): ReadonlyArray<(value: Record<string, unknown>, ctx: z.RefinementCtx) => void> {
+  const min = readBound(node, 'minProperties', budget, { integer: true, nonNegative: true });
+  const max = readBound(node, 'maxProperties', budget, { integer: true, nonNegative: true });
+  if (budget.mode !== 'strict') {
+    return [];
+  }
+  const checks: Array<(value: Record<string, unknown>, ctx: z.RefinementCtx) => void> = [];
+  if (min !== undefined) {
+    checks.push((value, ctx) => {
+      const count = Object.keys(value).length;
+      if (count < min) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `object has ${count} properties, below the minimum of ${min}`,
+        });
+      }
+    });
+  }
+  if (max !== undefined) {
+    checks.push((value, ctx) => {
+      const count = Object.keys(value).length;
+      if (count > max) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `object has ${count} properties, above the maximum of ${max}`,
+        });
+      }
+    });
+  }
+  return checks;
+}
 
 function additionalPropsMode(
   node: Record<string, unknown>,

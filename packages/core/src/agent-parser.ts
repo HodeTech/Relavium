@@ -76,6 +76,13 @@ function locate(source: string | undefined, pos?: { line: number; col: number })
  * files get the same actionable diagnostics as workflow files. `prettyErrors: false` (yaml-decode.ts) keeps the
  * `YAMLParseError` message the RULE alone — no source snippet, no authored key/value — so echoing it is safe.
  */
+/** Flatten field-located `output_schema` refusals into one message line. */
+function describeRefusals(
+  refusals: ReadonlyArray<{ readonly field: string; readonly message: string }>,
+): string {
+  return refusals.map((r) => [r.field, r.message].join(': ')).join('; ');
+}
+
 function agentSyntaxErrorFrom(
   err: unknown,
   source: string | undefined,
@@ -166,7 +173,7 @@ export function parseAgent(yamlText: string, opts?: ParseAgentOptions): AgentDef
   if (refusals.length > 0) {
     throw new AgentParseError(
       'agent_validation',
-      `invalid agent: ${refusals.map((r) => `${r.field}: ${r.message}`).join('; ')}`,
+      `invalid agent: ${describeRefusals(refusals)}`,
       refusals.map((r) => r.field),
     );
   }
