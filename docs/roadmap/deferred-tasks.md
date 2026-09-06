@@ -347,6 +347,42 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   there is concrete surface demand or telemetry showing operators need an earlier signal.
   *(1.AC; ADR-0028; config-spec.md; workflow-yaml-spec.md)*
 
+## Phase 2.6.5 deferrals — `CR-93` and `CR-95` (long half), recorded 2026-09-06
+
+> Written to satisfy [exit criterion 2](phases/phase-2.6.5-core-reliability-remediation.md): a deferral carries
+> its **severity**, its **trigger**, and — the part usually skipped — **the product claim it narrows**. Both
+> decisions are recorded in the phase register; only the WORK is deferred.
+>
+> A third item, `CR-94`, is deliberately **not** deferred here. Deferring a High item whose subject is money is
+> a maintainer's call, and none has been made; it stays open in the register rather than being quietly filed.
+
+- [ ] **Process-global catalog and parameter-learning state is not tenant-safe (`CR-93`).** *Medium today,
+      High for cloud.* The model catalog and the learned-parameter state live in process-global mutable
+      structures. For one local user that is correct and cheap. For a multi-tenant process it means one
+      tenant's learning steers another tenant's requests, and one tenant's catalog refresh is visible to all.
+      **The claim it narrows:** nothing in a shipped Phase-1/2.6 document — the surfaces that exist today are
+      single-user by construction ([ADR-0002](../decisions/0002-local-first-execution.md)), so no current
+      guarantee is wider than the code. What it narrows is a FUTURE claim: the cloud and managed execution
+      modes ([ADR-0012](../decisions/0012-managed-inference-dual-mode.md)–[ADR-0015](../decisions/0015-managed-mode-data-handling-and-compliance.md))
+      cannot be described as tenant-isolated while this stands. **Trigger:** the first multi-tenant surface —
+      `apps/api`, or any managed-mode gateway that serves more than one account from one process. It must be
+      scoped per run/session/tenant BEFORE that ships, not after.
+      *(medium · packages/llm/src/catalog/, packages/llm/src/model-catalog.ts; `CR-93`)*
+
+- [ ] **A mid-tool-loop budget pause replays the whole loop (`CR-95`, long half).** *High.* The
+      **short-term half is closed and shipped** ([ADR-0080](../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md)
+      §10, 2026-08-18): `agent-turn.ts`'s `turnCommitted = toolTurn > 0` guard refuses a `BudgetPauseError`
+      once the turn has dispatched tools, so the replay cannot happen. What is deferred is making the pause
+      WORK: checkpointing the continuation — provider messages, tool call/result pairs, round index — so an
+      approved mid-loop pause resumes from where it stopped instead of re-running paid provider calls and
+      re-performing tool mutations. **The claim it narrows:** `pause_for_approval` in
+      [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md) reads as a general "suspend and
+      continue" for any node; for a tool-using agent turn it is a **refusal**, not a suspension, and the
+      refusal is disruptive by design. **Trigger:** any surface that pauses a tool-using turn on budget and
+      expects it to continue — a desktop approval prompt mid-turn, or a cloud run that pauses for a quota
+      top-up. Until then the fail-closed refusal is the honest answer.
+      *(high · packages/core/src/engine/agent-turn.ts; `CR-95`, ADR-0080 §10)*
+
 ## Phase 2.6.5 `W5` residuals — `CR-55` ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §4, 2026-09-02)
 
 > Recorded, not implied. `CR-55` closed the "a missing media rate reads as a price of zero" defect on both cost

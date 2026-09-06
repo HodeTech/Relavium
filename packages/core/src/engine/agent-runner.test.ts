@@ -14,6 +14,8 @@ import type {
 import { describe, expect, it } from 'vitest';
 
 import type { AgentPlanConfig, PlanVertex } from '../run-plan.js';
+import { BUILTIN_TOOLS } from '../tools/builtins.js';
+import { delegateAvailable } from '../tools/delegates.js';
 import type { ToolCallPart, ToolRegistry, ToolResultPart } from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
 import {
@@ -696,6 +698,65 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
     const { ctx } = ctxFor(agentVertex());
     await exec.execute(ctx);
     expect(req()?.outputModalities).toBeUndefined();
+  });
+});
+
+describe('createAgentNodeExecutor — a delegate-backed tool is not OFFERED without its delegate (CR-73)', () => {
+  // **The run path owes this as much as the chat path does.** The CLI advertise-filter only runs on the chat
+  // path (`session-host.ts`), so an authored workflow granting `invoke_agent` still had it lowered into the
+  // request — and `ctx.invokeAgent` is wired nowhere in the tree, so every such call answers `tool_unavailable`
+  // for a tool the engine itself put in front of the model.
+  function recordingProvider(): { provider: LlmProvider; toolNames: () => string[] } {
+    let seen: readonly { readonly name: string }[] = [];
+    return {
+      provider: {
+        id: 'anthropic',
+        supports: CAPS,
+        generate: () => {
+          throw new Error('unused');
+        },
+        stream: (req) => {
+          seen = req.tools ?? [];
+          return streamOf([{ type: 'text_delta', text: 'ok' }, STOP]);
+        },
+      },
+      toolNames: () => seen.map((t) => t.name),
+    };
+  }
+
+  const INVOKE_AGENT = BUILTIN_TOOLS.find((d) => d.id === 'invoke_agent');
+  if (INVOKE_AGENT === undefined) throw new Error('the invoke_agent built-in is missing');
+  const READ_FILE = BUILTIN_TOOLS.find((d) => d.id === 'read_file');
+  if (READ_FILE === undefined) throw new Error('the read_file built-in is missing');
+
+  it('drops `invoke_agent` from the lowered tool list, and leaves an ordinary granted tool alone', async () => {
+    const { provider: p, toolNames } = recordingProvider();
+    const exec = createAgentNodeExecutor(deps(p, { tools: [INVOKE_AGENT, READ_FILE] }));
+    const { ctx } = ctxFor(
+      vertexFor({
+        kind: 'agent',
+        node: agentNode({}),
+        resolvedAgent: { ...AGENT, tools: ['invoke_agent', 'read_file'] },
+      }),
+    );
+    expect((await exec.execute(ctx)).kind).toBe('completed');
+    // `read_file` is the control: this must drop the tool whose DELEGATE is missing, not thin the list.
+    expect(toolNames()).toEqual(['read_file']);
+  });
+
+  it('the predicate offers it again once a delegate IS present — the drop is by reason, not by id', () => {
+    // The negative control, at the predicate rather than through the executor, because **the run path has no
+    // seam to supply the delegate through**: `agent-runner.ts`'s `dispatchContext` literal has no
+    // `invokeAgent` and no `mediaRead` field at all, so no host can populate one today. That is a sharper
+    // statement of `CR-73` than "nothing wires it" — on this path the tool was advertised and *structurally*
+    // guaranteed to fail. `W7` adds the field; this test says what must then become true, and it fails if the
+    // filter is ever "fixed" by blacklisting the two ids forever.
+    expect(delegateAvailable(INVOKE_AGENT, {})).toBe(false);
+    expect(delegateAvailable(INVOKE_AGENT, { invokeAgent: () => Promise.resolve('done') })).toBe(
+      true,
+    );
+    // An ordinary tool declares no delegate and is unaffected either way.
+    expect(delegateAvailable(READ_FILE, {})).toBe(true);
   });
 });
 

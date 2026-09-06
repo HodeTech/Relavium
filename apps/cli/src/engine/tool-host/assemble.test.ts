@@ -212,6 +212,43 @@ describe('wiredToolIds (advertise-filter)', () => {
     expect(wiredToolIds(['not_a_builtin'], fsHost, defs)).toEqual(['not_a_builtin']);
   });
 
+  it('CR-73: drops delegate-backed tools (invoke_agent/read_media) when the caller wires no delegate', () => {
+    // **The advertisement was permanently false, not merely best-effort.** Nothing in the tree sets
+    // `ctx.invokeAgent` or `ctx.mediaRead`, so both tools were offered to every model granted them and every
+    // call answered `tool_unavailable` — a backstop firing after the model had already committed the turn.
+    expect(wiredToolIds(['read_file', 'invoke_agent', 'read_media'], fsHost, defs)).toEqual([
+      'read_file',
+    ]);
+  });
+
+  it('CR-73: keeps a delegate-backed tool when the caller declares that delegate — and only that one', () => {
+    // The negative control for the test above: the filter drops these two for a REASON, not by id. A caller
+    // that will set `ctx.mediaRead` gets `read_media` advertised, and `invoke_agent` still goes, because its
+    // own delegate is still absent. Without this pair the first test would also pass if the filter simply
+    // blacklisted both ids forever.
+    expect(
+      wiredToolIds(['invoke_agent', 'read_media'], fsHost, defs, { delegates: ['mediaRead'] }),
+    ).toEqual(['read_media']);
+    expect(
+      wiredToolIds(['invoke_agent', 'read_media'], fsHost, defs, { delegates: ['invokeAgent'] }),
+    ).toEqual(['invoke_agent']);
+  });
+
+  it('CR-73: the two delegate-backed built-ins actually DECLARE their delegate', () => {
+    // The filter is only as good as the declaration it reads. A built-in that forgets `requiresDelegate`
+    // falls through to `true` and is advertised again — which is exactly the state CR-73 found. Asserting on
+    // the catalog (not on a fixture) is what makes a future delegate-backed tool fail here until it declares.
+    const byId = new Map(BUILTIN_TOOLS.map((d) => [d.id, d]));
+    expect(byId.get('invoke_agent')?.requiresDelegate).toBe('invokeAgent');
+    expect(byId.get('read_media')?.requiresDelegate).toBe('mediaRead');
+    // And nothing else claims one — a stray declaration would silently un-advertise a working tool.
+    expect(
+      BUILTIN_TOOLS.filter((d) => d.requiresDelegate !== undefined)
+        .map((d) => d.id)
+        .sort(),
+    ).toEqual(['invoke_agent', 'read_media']);
+  });
+
   it('keeps os tools (read_clipboard/notify) even when host.os is absent — the EA1 backstop is their gate', () => {
     // OS_POLICY carries no arm class (no fsScoped/spawnsProcess/egress), so requiredArmPresent falls through to
     // keep them: the advertise-filter is best-effort for os tools and the dispatch tool_unavailable backstop

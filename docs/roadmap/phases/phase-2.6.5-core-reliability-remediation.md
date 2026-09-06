@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` merged 2026-09-02 (PR #88) behind ADR-0089 + ADR-0090 — a systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed before it merged. **`W6` — authoring correctness — MERGED 2026-09-04 (PR #89)** — `CR-60`–`CR-64` behind [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md), 32 commits — 27 of work across seven internal review rounds, then five folding four maintainer rounds on PR #89. **The maintainer review returned two merge blockers**, both of which broke a headline claim of the wave: deep validation did not enforce `required` when the property's schema constrained nothing (so `{ properties: { status: {} }, required: ['status'] }` accepted `{}`), and the expression scanner's regex was quadratic and synchronous (514 ms at 32 K of whitespace, on a parser that accepts 2 MiB, with no deadline able to interrupt it). Both reproduced and fixed before the merge, along with eight further High findings. **The pattern of the wave is that most of what the rounds found were defects in the FIXES, not in the code they repaired** — the branch-order search was wrong three times, the expression scan's central soundness claim was false in EIGHT ways, and one stand-down gate silently removed the check it was added to protect. Every one is recorded as a dated correction in its ADR rather than tidied away (39 of 48 items — the count says 39 and not 43 because W5's six items were counted TWICE: incrementally as they landed (28→32) and then wholesale when the wave closed (32→38), so the figure carried a +4 error into W6. `CR-95` is counted on its non-deferrable short-term half; its long-term half keeps the item on the board. `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28). **Two of the seventeen non-deferrable items remain open — `CR-73` and `CR-80` — so exit criterion 1 is not met today; that pair, not the arithmetic, is what gates the phase.**
+- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` merged 2026-09-02 (PR #88) behind ADR-0089 + ADR-0090 — a systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed before it merged. **`W6` — authoring correctness — MERGED 2026-09-04 (PR #89)** — `CR-60`–`CR-64` behind [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md), 32 commits — 27 of work across seven internal review rounds, then five folding four maintainer rounds on PR #89. **The maintainer review returned two merge blockers**, both of which broke a headline claim of the wave: deep validation did not enforce `required` when the property's schema constrained nothing (so `{ properties: { status: {} }, required: ['status'] }` accepted `{}`), and the expression scanner's regex was quadratic and synchronous (514 ms at 32 K of whitespace, on a parser that accepts 2 MiB, with no deadline able to interrupt it). Both reproduced and fixed before the merge, along with eight further High findings. **The pattern of the wave is that most of what the rounds found were defects in the FIXES, not in the code they repaired** — the branch-order search was wrong three times, the expression scan's central soundness claim was false in EIGHT ways, and one stand-down gate silently removed the check it was added to protect. Every one is recorded as a dated correction in its ADR rather than tidied away (39 of 48 items — the count says 39 and not 43 because W5's six items were counted TWICE: incrementally as they landed (28→32) and then wholesale when the wave closed (32→38), so the figure carried a +4 error into W6. `CR-95` is counted on its non-deferrable short-term half; its long-term half keeps the item on the board. `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28). **`CR-73` and `CR-80` closed 2026-09-06, so every non-deferrable item is now closed and exit criterion 1 is MET** — `invoke_agent` is no longer advertised without a delegate (and `read_media` rides along, for the same reason), and a rejected custom base URL now refuses instead of falling back to the official API. **41 of 48**, and the arithmetic is shown rather than asserted, because it has been wrong twice: 40 item headings carry a ✅, plus `CR-95` counted on its non-deferrable short-term half, whose long-term half keeps that item on the board. Seven items are fully open — `CR-70`, `CR-71`, `CR-72` (`W7`), `CR-81`, `CR-82` (`W8`), `CR-93` and `CR-94` — and `W7` cannot start until the maintainer settles `CR-70`/`CR-71` and `CR-72`, both of which the register marks **decision open**.
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -1774,7 +1774,8 @@ an outage, not a cap. Break-verify by restoring the zero fallback.
 > documents and false in **eight** distinct ways. A stand-down gate added to prevent a false refusal
 > silently removed the whole check it was protecting.
 >
-> **No closing register yet** (exit criterion 7) — owed for `W5` and `W6` alike.
+> **Closing registers written 2026-09-06** (exit criterion 7), for `W5` and `W6` alike — after the merges
+> rather than with them, which is itself the delay the criterion exists to catch and is recorded as such.
 
 
 ### CR-60 — `merge_strategy: first` is not implemented as specified · High · ✅ **closed 2026-09-03**
@@ -1900,6 +1901,54 @@ length bound and would ride an event and a log. The `$ref` half is inert until a
 
 ---
 
+### W5 closing register
+
+Exit criterion 7, for this wave: **per item, the code that closes it** — verified by reading the code, not by
+trusting the mark. Two rows close one HALF of a two-part obligation and say which half in the row itself,
+rather than in a footnote a reader can skip.
+
+| Item | Closed by | The test that fails if it is reverted |
+|------|-----------|----------------------------------------|
+| `CR-50` (**delivery half**) | `read_media` returns a short TEXT descriptor and the bytes ride an ATTACHMENT — a handle-only media part the turn loop delivers on a marked, fenced, engine-synthesized `user` message; the tool's range parameters are removed and its args schema is `.strict()`, so a model sending `start` gets a typed `invalid_args` | `read-media-delivery.test.ts` (Anthropic, OpenAI, Gemini — all three redden when the fixture stops delivering media); `agent-turn.test.ts` for the one-message-per-turn shape, break-verified against three mutations; `builtins.test.ts` — "never delivers bytes itself — the attachment is a HANDLE, and `readRange` is never called" |
+| `CR-51` | capability is gated on the MODEL, not the provider-wide flag: `modelAccepts` degrades an un-catalogued model to ACCEPTED, and the chain pre-skips a model the catalog says rejects tools instead of paying for a 400 | `capabilities.test.ts` — "per-MODEL capability gating (CR-51)", including "the premise: the catalog really records these models as incapable" (the control that stops the group passing vacuously); `fallback-chain.test.ts` — "skips a MODEL the catalog says rejects tools, for free, even on a tool-capable provider"; `anthropic.test.ts` — "WITHHOLDS temperature for a model whose catalog rejects it" |
+| `CR-52` | the thought signature is captured off the `functionCall` part it belongs to and replayed on that same part | `gemini.test.ts` — "CAPTURES the signature off a functionCall part", "REPLAYS a signed reasoning part as a thought part (the second half of the CR-52 defect)", and the two negative controls "omits the field when the part carries no signature" / "sends NO thoughtSignature key when the part carries none" |
+| `CR-53` (**ingest half**) | a media body streams from the network into the store under a size ceiling, an idle deadline and the run signal (`MediaUrlStream` → `MediaStore.putStream?`); `put` is reserved for sub-ceiling bodies and a url with no streaming hook is refused loudly rather than buffered | `media-store.test.ts` — "putStream content-addresses a chunked body to the SAME handle put would"; `media-egress.test.ts` — "ABANDONS a stalled body" and "ABORTS mid-flight when the ceiling is crossed". **No test measures peak MEMORY** — the shipped tests count what the source produced; that gap is stated in the item, not implied |
+| `CR-54` | a `url` output is pinned to a content-addressed handle at first resolution, at the dispatch boundary, and the pinned value is what `#settleCompleted` writes into the run scope; the async media-job path and the human-gate payload re-enter through the same pin | `engine.test.ts` — "the scope and the durable record carry the SAME handle — one fetch, one answer" and "a `save_to` output writes the SAME bytes the durable record names", both against a host that returns DIFFERENT bytes on a second fetch; "pins an ASYNC media-job result too — the LRO path does not pass through the dispatch pin" |
+| `CR-55` | a missing media rate is UNPRICED, never a price of zero, on both producing paths; under `strict_cost_cap` an unpriced media generation is refused pre-egress, and the rate path that makes the refusal actionable lands with it | `cost-tracker.test.ts` — "does not fold an unpriced modality into the running total as a fabricated number", plus the three boundary controls "treats a NEGATIVE rate as unpriced, never as a discount", "treats a non-finite rate as unpriced too" and — the one that stops the fix overshooting — "still prices a stated ZERO — free is a price, and distinct from unpriced"; `fallback-chain.test.ts` — "records an unpriced MODALITY as priced:false too, on a model that IS priced" |
+
+**What this register does NOT cover.** `CR-50`'s producer half and `CR-53`'s delivery + adapter halves are
+open, and every residual behind them is written out in [deferred-tasks.md](../deferred-tasks.md) rather than
+left inside a checked box. The `read_media` delegate in particular is wired **nowhere** in the tree, and that
+is deliberate: wiring it today would hand the model a tool that answers `unknown media handle` to every call,
+which is worse than the fail-closed absence. Since `CR-73` (2026-09-06) the advertise-filter also stops
+OFFERING it, so the absence is no longer visible to the model as a broken tool.
+
+### W6 closing register
+
+Exit criterion 7, for this wave. Written after the merge rather than with it — that delay is itself the thing
+the criterion guards against, and it is recorded rather than smoothed over.
+
+| Item | Closed by | The test that fails if it is reverted |
+|------|-----------|----------------------------------------|
+| `CR-60` | `merge_strategy: first` means first DECLARED, and the plan field no longer claims otherwise (`joinStrategy` → `requestedJoinStrategy`); a merge's branch set is exactly its **value-producing** predecessors, so a `condition` or `parallel` reaching a merge is no longer a phantom branch that `first` could return; the paired-parallel search ranks candidates by coverage | `dag.test.ts` — "buildRunPlan — a merge branch set is exactly its value-producing predecessors" (the whole group), plus "falls back to authored branch order for a merge with no paired parallel" and "derives requestedJoinStrategy wait_first for merge_strategy first" |
+| `CR-61` | an authored `output_schema` is compiled at parse in an allowlist-**strict** mode and enforced at run time, by the JSON-Schema→Zod compiler that already existed in `packages/mcp` and moved to `packages/shared` — **no new dependency** | `json-schema-compiler.test.ts` — "strict mode — what it now genuinely ENFORCES", "strict enforces a constraint that has no `type` beside it" (the blocker a review found: `required` was not enforced when a property's schema constrained nothing), "uniqueItems walks MODEL OUTPUT, so the walk is bounded", and "lenient mode is unchanged — the MCP boundary keeps its contract" (the control that the move did not alter the other caller) |
+| `CR-62` | an expression sees only its transitive dependency closure, and a literal out-of-closure `run.outputs` read is refused at parse; `edges[].condition` — which nothing ever read — is refused rather than silently ignored | `dag.test.ts` — "buildRunPlan — a literal out-of-closure `run.outputs` read is refused at parse"; `literal-output-reads.test.ts` — "what it SEES", "where it deliberately says NOTHING" (the eight false-refusal shapes the original soundness claim missed), and "the match is linear, not quadratic" (the second review blocker: 514 ms at 32 K on a parser that accepts 2 MiB) |
+| `CR-63` | **nothing** — and that is the finding. A repo-wide grep established that the spec's claim, that `input_schema` is additive metadata the engine never reads, is TRUE, so the absence of runtime enforcement is correct. The same check found a canonical `node-types.md` row that could not be authored at all (`prompt_template`/`on_timeout`/`input_schema` against a `.strict()` schema whose real fields are `message_template`/`timeout_action`, with the required `gate_type` and `assignee` omitted); the row was corrected | No runtime test, because there is no runtime change. The claim is pinned by the corrected canonical row and by `HumanGateNodeSchema` being `.strict()` — an author following the old row hit a parse rejection, which is what made the drift detectable |
+| `CR-64` | a widened tool grant is refused when the plan is BUILT rather than mid-run, for an INLINE agent; the runtime `resolveGrant` check stays as the last line of defence rather than the first | `dag.test.ts` — "node `tools:` narrows and never widens, at PLAN BUILD (CR-64, ADR-0094)", including "accepts a genuine narrowing, and a node that declares no tools at all" and "an agent with NO `tools:` has granted NOTHING — any node `tools` widens it" |
+
+**What this register does NOT cover**, stated rather than left to be discovered: the `$ref` half of `CR-64` is
+inert until a surface populates `planOptions.agents`, and none does — it is a residual, not a shipped
+guarantee. `CR-63` closed by verifying a claim rather than by changing behaviour, and a row whose "closed by"
+is *nothing* is exactly the row a future reader will suspect; the grep that established it is named above so
+the suspicion can be settled by repeating it.
+
+**The pattern this wave established, which outlived its own items.** Across seven internal rounds and four
+maintainer rounds, **most defects were in the FIXES rather than in the code they repaired** — the branch-order
+search was wrong three times, each in the mirror of the previous error; the expression scan's
+no-false-refusal claim was asserted in three documents and false in eight distinct ways; and a stand-down gate
+added to prevent a false refusal silently removed the whole check it was protecting. Every one is a dated
+correction inside its own ADR rather than a rewrite, so the wrong reasoning stays legible next to the right one.
+
 ## W7 — Agent product correctness
 
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decision open**
@@ -1919,23 +1968,107 @@ actually happened, or the spec must stop promising it.
 **Fix + acceptance.** Implement it or reject it at parse time with a typed error. A schema that accepts a field
 nothing reads is a claim the code does not keep.
 
-### CR-73 — `invoke_agent` has no production delegate · High (2.6 go/no-go)
+### CR-73 — `invoke_agent` has no production delegate · High (2.6 go/no-go) · ✅ **closed 2026-09-06**
 The builtin exists in the catalog and errors with tool-unavailable when no delegate is wired; nothing wires one
 in production, and the availability filter keeps the delegate-backed tool in the catalog.
 **Fix + acceptance.** Wire the delegate, or stop advertising the tool to the model when no delegate exists. The
 cheap option is always available, which is why this is non-deferrable.
 
+**Closed by the cheap option — the tool is no longer advertised, on any of the three paths that advertise.**
+`ToolDef` gains an optional `requiresDelegate`, declared by the tool rather than looked up in a central
+id→delegate switch (the same reason `policyTarget` and `effect` live on the def: a central predicate drifts
+from the tool it describes). One predicate, `delegateAvailable` in `packages/core/src/tools/delegates.ts`,
+answers it, and all three callers use it:
+
+1. the CLI advertise-filter (`wiredToolIds`), whose new `delegates` option **defaults to none** — that default
+   is the fix rather than a detail, since every in-tree caller omits it and the opposite default would have
+   re-created this item for the next caller who forgot;
+2. `AgentSession`'s `buildLlmTools` (the chat turn); and
+3. `agent-runner.ts`'s `buildLlmTools` (the workflow run turn).
+
+**The first fix covered only path 1, and that was found by asking where else a tool is advertised.** The CLI
+filter runs on the chat path alone, so an authored workflow granting `invoke_agent` still had it lowered into
+the request. The two engine call sites are near-duplicates in two files that have drifted before, which is why
+the predicate has one home instead of being copied into both.
+
+**A sharper statement of the defect than this item had.** On the run path the delegate was not merely unwired —
+`agent-runner.ts`'s `dispatchContext` literal has **no `invokeAgent` and no `mediaRead` field at all**, so no
+host could have supplied one. The tool was advertised there and *structurally* guaranteed to answer
+`tool_unavailable`. Adding that field is `W7`'s work; the predicate's negative control already says what must
+become true when it lands, so the filter cannot be "fixed" later by blacklisting the two ids forever.
+
+**What the old comment got wrong.** `requiredArmPresent` deliberately exempted delegate-backed tools, defending
+it as "best-effort, not a substitute" for the dispatch backstop. For an `os` tool that is true — `host.os` is
+absent only on a profile that chose not to wire it, and the tool works wherever it IS wired. For these two the
+delegate is wired **nowhere in the tree**, so the fall-through was not best-effort, it was a permanently false
+advertisement, and a backstop that fires after the model has committed a turn to the call is not a substitute
+for never offering it. The distinction the comment missed is whether an absent capability is a profile choice
+or a missing implementation.
+
+**`read_media` rides along, and that is intended.** It is the other delegate-backed tool and `ctx.mediaRead` is
+equally unwired — which `CR-50`'s residuals already state, including that wiring it today would hand the model
+a tool answering `unknown media handle` to every call. It is now not offered either. `CR-50` stays closed on
+its delivery half; this changes what the model is told, not what the tool does.
+
+**The tests that fail if it is reverted** (each break-verified against a mutation removing the check it
+covers, per path):
+- `assemble.test.ts` — "`CR-73`: drops delegate-backed tools (invoke_agent/read_media) when the caller wires no
+  delegate"; its negative control "keeps a delegate-backed tool when the caller declares that delegate — and
+  only that one", without which the first would also pass if the filter simply blacklisted both ids forever;
+  and "the two delegate-backed built-ins actually DECLARE their delegate", asserted against the real catalog so
+  a future delegate-backed tool fails here until it declares one.
+- `agent-runner.test.ts` — "drops `invoke_agent` from the lowered tool list, and leaves an ordinary granted
+  tool alone" (`read_file` is the control that this drops by reason rather than thinning the list), plus the
+  predicate's own both-branch control.
+- `agent-session.test.ts` — "`CR-73`: a delegate-backed tool is never advertised while its delegate is absent".
+  Added because the first round of engine mutations reddened the run path and **nothing on the session path** —
+  a check present in one of two near-identical lists and missing from the other is the exact shape of this
+  defect, so both are pinned.
+
 ---
 
 ## W8 — Provider and conformance
 
-### CR-80 — An invalid custom base URL fails OPEN to the official endpoint · High (security/compliance)
+### CR-80 — An invalid custom base URL fails OPEN to the official endpoint · High (security/compliance) · ✅ **closed 2026-09-06**
 When the custom provider factory rejects a private, malformed or credential-bearing URL, the error is caught and
 the default adapter is left standing — and a test pins that fail-open as correct. A user expecting an internal
 gateway silently sends prompts and keys to the official API after a config drift.
 **Fix + acceptance.** Fail closed with an explicit message. The error must name the rejected URL's *shape*
 without echoing an embedded credential — asserted directly. Rewrite the test that pins the old behaviour,
 keeping a note with the reasoning it replaces.
+
+**Closed with a refusing adapter, not a throw.** Resolver construction runs for EVERY command, so throwing
+would make `relavium provider list` — the command you would use to FIND the bad row — unusable. The rejected
+provider becomes one whose every call fails, which is the earliest point the failure is both loud and
+survivable. The provider is also recorded as a custom endpoint, so nothing prices a refusing adapter as the
+official one.
+
+**Each arm fails the way its own signature promises**, which the first version got wrong by giving both the
+same `(): never` thrower: `generate` is declared to return a `Promise`, so a caller may legitimately write
+`.catch()` with no `try`, and a synchronous throw escapes that and crashes the process — a refusal that breaks
+the contract it is enforcing. It rejects instead. `stream` returns an `AsyncIterable` whose `next()` rejects,
+so the failure arrives at the first pull, where a real adapter's would.
+
+**The message names the shape and the remedy.** `InvalidBaseUrlError` gains a `reason` field (mirroring
+`ToolSchemaError.reason`, per error-handling.md's structured-context rule) so the refusal can be composed
+around the original without nesting the "invalid base URL '…'" prefix inside itself. The URL is summarised to
+scheme+host, so an embedded `user:pass@` cannot survive into the message, and the message says which provider
+was refused, that it did **not** fall back to the official endpoint, and how to fix the row.
+
+**The old test was the reason this survived.** It asserted only
+`expect(resolver.resolveProvider('openai')).toBeDefined()` — which a REFUSING adapter satisfies exactly as well
+as a fail-open one, so it could not distinguish the defect from the fix and passed either way. The replacement
+stubs GLOBAL `fetch`, not the injected one: the default adapter builds its own, so with only the injected
+recorder watched, a fallback to the official endpoint would leave the array empty too and the test would pass
+for the wrong reason a second time. Under a mutation restoring the fail-open, the credential test takes ~470 ms
+because it genuinely reaches out to `api.openai.com` — the defect, demonstrated.
+
+**The tests that fail if it is reverted** (both break-verified against the restored fail-open):
+`providers.test.ts` — "`CR-80`: a bad (private) custom base_url FAILS CLOSED", asserting the call throws **and**
+that global `fetch` recorded zero requests; and "`CR-80`: the refusal names the URL SHAPE and the remedy",
+asserting the username and password of `https://alice:hunter2@10.0.0.5/v1` are both absent from the message.
+The wave's **provider/config-trust security sitting** is recorded in
+[security-review.md](../../standards/security-review.md#sitting-provider-and-config-trust--cr-80-2026-09-06).
 
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High
 A recorded response carries status, content type and body only; replay checks that the request body is parseable
@@ -2150,6 +2283,18 @@ This phase is done when **all** of the following hold:
    the merge gate — `coverage` is a separate required check, and this phase edits `packages/core` heavily.
 7. **A closing register in this file states, per item, the code that closes it** — verified by reading the code,
    not by trusting the mark. Wave 1's completion claim was wrong twice before this discipline was adopted.
+
+**Where the criteria stand, 2026-09-06.** Scored honestly, including the ones that are not met.
+
+| # | Criterion | Status |
+|---|---|---|
+| 1 | every non-deferrable item closed, break-verified | ✅ **met** — `CR-73` and `CR-80` were the last two; every test named in their register rows was run against a mutation that restores the defect |
+| 2 | every other item closed, or deferred with severity + trigger + the claim it narrows | ⬜ open — seven items are still scheduled (`CR-70`–`CR-72`, `CR-81`, `CR-82`) or unscheduled (`CR-93`, `CR-94`), and `CR-95`'s long half. `CR-93` and `CR-95`-long have deferral records; `CR-94` does **not**, and deferring a High item is a maintainer call, not an author's |
+| 3 | each `W1` item has an accepted ADR, landing in dependency order | ✅ met — ADR-0078–ADR-0084 |
+| 4 | every canonical document says what the code now does | ⬜ open — the `W3` live blocker means [sse-event-schema.md](../../reference/contracts/sse-event-schema.md)'s gap-free promise is still wider than the code for an un-pulled stream. ADR-0087 §1 is the fix and is Accepted-but-unimplemented, which the ADR now states in its own header rather than leaving to be inferred |
+| 5 | four security-review sittings recorded, each with its adversarial test | ✅ **met 2026-09-06** — [prompt/trust provenance](../../standards/security-review.md#sitting-prompt-and-trust-provenance--cr-01cr-03-cr-10cr-17-2026-09-06), [hostile MCP](../../standards/security-review.md#sitting-the-hostile-mcp-boundary--cr-40cr-42-2026-09-06), [media bytes](../../standards/security-review.md#sitting-media-bytes--cr-50-cr-53-cr-54-2026-09-02), [provider/config trust](../../standards/security-review.md#sitting-provider-and-config-trust--cr-80-2026-09-06). Three were written after their wave merged, which is late and is said so in each |
+| 6 | `pnpm run ci` **and** `pnpm coverage` both exit 0, checked by exit code | ✅ **met 2026-09-06** — both run against the current tree and both exit 0, read from `$?` rather than from the output. **Read the exit code explicitly**: `pnpm run ci \| tail` reports `tail`'s status, not the gate's, and that produced a false green here on 2026-09-06 — a run reported as passing had in fact failed `relavium#lint` with three errors |
+| 7 | a closing register per item, per wave | ✅ **met 2026-09-06** — `W1`, `W2`, `W3`, `W4`, `W5`, `W6`. `W5`'s and `W6`'s were written after their merges rather than with them, and each says so |
 
 ## What a later architecture review contributed — and what it did not
 

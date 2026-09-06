@@ -69,6 +69,7 @@ import type {
   ToolRegistry,
 } from '../tools/types.js';
 import { modelVisibleDescription } from '../tools/types.js';
+import { delegateAvailable, type ToolDelegates } from '../tools/delegates.js';
 import {
   AgentTurnError,
   DEFAULT_AGENT_TURN_LIMITS,
@@ -1309,7 +1310,12 @@ export class AgentSession {
     const dispatchContext = this.#buildDispatchContext(grantedToolIds, turnPolicy);
     // Advertise-filter (ADR-0057): narrow the model-visible tool set per the host's mode (best-effort; the
     // confirm floor stays authoritative). No policy / no filter ⇒ advertise every granted tool.
-    const llmTools = buildLlmTools(this.#deps.tools, grantedToolIds, turnPolicy?.advertise);
+    const llmTools = buildLlmTools(
+      this.#deps.tools,
+      grantedToolIds,
+      dispatchContext,
+      turnPolicy?.advertise,
+    );
     // ADR-0066/0071: resolve the effective reasoning-effort tier (session override → agent's authored tier) and
     // gate it on WHICH TIERS the bound model accepts. Read at turn start so a mid-session setReasoningEffort
     // applies to the NEXT turn — the no-reseat per-turn semantics (§5).
@@ -1542,11 +1548,16 @@ function tailFromUserBoundary(messages: readonly LlmMessage[], maxKeep: number):
 function buildLlmTools(
   defs: readonly ToolDef[],
   granted: ReadonlySet<string>,
+  delegates: ToolDelegates,
   advertise?: (toolId: string) => boolean,
 ): LlmToolDef[] {
   const out: LlmToolDef[] = [];
   for (const def of defs) {
     if (!granted.has(def.id)) continue;
+    // A tool whose dispatch DELEGATE is absent cannot succeed, so it is never offered (`CR-73`). Before the
+    // mode filter: this one is not best-effort and not mode-dependent — the delegate is either there or the
+    // call is guaranteed to answer `tool_unavailable`.
+    if (!delegateAvailable(def, delegates)) continue;
     if (advertise !== undefined && !advertise(def.id)) continue; // mode advertise-filter (ADR-0057)
     // The model-visible description carries a provenance line for a server-supplied tool (ADR-0088 §7.2).
     const description = modelVisibleDescription(def);

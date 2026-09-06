@@ -544,6 +544,20 @@ document review on 2026-08-25, which is why the total has moved since the list w
 >
 > Per-item history, the seven post-review findings and the carried-forward gaps live in the phase document.
 
+> **Pre-`W7` close-out, 2026-09-06.** The last two non-deferrable items closed, so **exit criterion 1 is met**
+> and the phase count is **41 of 48** (40 ✅ headings plus `CR-95`'s short-term half; the arithmetic is shown
+> because it has been wrong twice here). `CR-73`: `invoke_agent` was advertised to every model granted it while
+> its delegate is wired nowhere in the tree, so the advertise-filter now reads a tool's declared
+> `requiresDelegate` and not only its `ToolHost` arm — `read_media` is dropped for the same reason, which is
+> `CR-50`'s own argument for leaving it unwired. `CR-80`: a rejected custom `base_url` was caught and the
+> DEFAULT adapter left standing, which is the official API; it now installs a refusing adapter that names the
+> URL's shape and never its credentials. **Criteria 5 and 7 also closed**: the three missing security sittings
+> (prompt/trust provenance, hostile MCP, provider/config trust) and the `W5` and `W6` closing registers are
+> written, each stating that it was written after its wave merged rather than with it. **Criterion 6** passes
+> on both halves, read from the exit code — `pnpm run ci | tail` reports `tail`'s status and produced one false
+> green in this session. Still open: criterion 2 (`CR-94` has no deferral record, and that is a maintainer's
+> call) and criterion 4 (the `W3` live blocker keeps the gap-free stream promise wider than the code).
+
 **This is the corrected execution order, and it is what the graph above shows:**
 
 1. **`#W15-1` first.** Its five staged steps touch `run-event.ts`, `engine.ts`, `checkpoint.ts` and

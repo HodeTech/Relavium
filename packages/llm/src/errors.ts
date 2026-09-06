@@ -82,12 +82,21 @@ export class InvalidBaseUrlError extends LlmConfigError {
   readonly code = 'invalid_base_url';
   /** Credential-free scheme+host summary of the offending base URL (never the raw, creds-bearing URL). */
   readonly url: string;
+  /**
+   * WHY the URL was refused — the shape, never the value ("must use HTTPS", "resolves to a private,
+   * loopback, or link-local address"). A field as well as part of the message, per
+   * error-handling.md's structured-context rule and mirroring {@link ToolSchemaError.reason}: a caller
+   * that composes a wider refusal around this one (`CR-80`) must not have to re-parse the prose, and
+   * re-wrapping the whole message would nest the "invalid base URL '…'" prefix inside itself.
+   */
+  readonly reason: string;
 
   constructor(url: string, reason: string) {
     const safe = summarizeBaseUrl(url);
     super(`invalid base URL '${safe}': ${reason}`);
     this.name = 'InvalidBaseUrlError';
     this.url = safe;
+    this.reason = reason;
   }
 }
 

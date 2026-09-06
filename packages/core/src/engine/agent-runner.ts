@@ -63,6 +63,7 @@ import type { AgentPlanConfig } from '../run-plan.js';
 import { authoredSystemPrompt, type AuthoredSystemPrompt } from './authored-system-prompt.js';
 import { modelVisibleDescription } from '../tools/types.js';
 import type { ToolDef, ToolDispatchContext, ToolRegistry } from '../tools/types.js';
+import { delegateAvailable, type ToolDelegates } from '../tools/delegates.js';
 import {
   AgentTurnError,
   DEFAULT_AGENT_TURN_LIMITS,
@@ -395,7 +396,6 @@ async function executeAgent(
   }
 
   const messages = assembleMessages(agent, node, prompt.text);
-  const llmTools = buildLlmTools(deps.tools, grantedToolIds);
   const outputSchema = node.output_schema ?? agent.output_schema;
   const responseFormat = lowerOutputSchema(outputSchema);
 
@@ -412,6 +412,10 @@ async function executeAgent(
     fsScope: deps.fsScope ?? 'sandboxed',
     gateApproved: false, // an agent loop provides no human gate — git_commit stays denied
   };
+
+  // AFTER `dispatchContext`, because the model-visible set now depends on which delegates that context will
+  // actually carry (`CR-73`) — a tool whose delegate is absent is never offered.
+  const llmTools = buildLlmTools(deps.tools, grantedToolIds, dispatchContext);
 
   // The per-dispatch `ctx.preEgress` (the engine's budget governor, 1.AC) takes precedence; `deps.preEgress`
   // is the fallback for a host that wires a runner directly. Reading ctx here lets the dispatcher build the
@@ -1045,10 +1049,17 @@ function lowerOutputSchema(schema: unknown): ResponseFormat | undefined {
 }
 
 /** The granted tools as LLM-visible defs, validated through the seam schema (no unsafe cast). */
-function buildLlmTools(defs: readonly ToolDef[], granted: ReadonlySet<string>): LlmToolDef[] {
+function buildLlmTools(
+  defs: readonly ToolDef[],
+  granted: ReadonlySet<string>,
+  delegates: ToolDelegates,
+): LlmToolDef[] {
   const out: LlmToolDef[] = [];
   for (const def of defs) {
     if (!granted.has(def.id)) continue;
+    // A tool whose dispatch DELEGATE is absent is never offered (`CR-73`) — the run path owes this as much as
+    // the session path does, and the CLI advertise-filter cannot cover it (it only runs on the chat path).
+    if (!delegateAvailable(def, delegates)) continue;
     // The model-visible description carries a provenance line for a server-supplied tool (ADR-0088 §7.2).
     const description = modelVisibleDescription(def);
     const parsed = ToolDefSchema.safeParse({

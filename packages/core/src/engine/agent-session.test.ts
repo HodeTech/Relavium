@@ -974,6 +974,48 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
     expect(advertised).not.toContain('read_file');
   });
 
+  it('CR-73: a delegate-backed tool is never advertised while its delegate is absent', async () => {
+    // The session twin of the run-path test in `agent-runner.test.ts`. Both paths build their own
+    // model-visible tool list and have drifted before, so both call the ONE `delegateAvailable` predicate —
+    // and both are pinned, because a check present in one list and missing from the other is exactly the
+    // shape of this defect. `AgentSession` never sets `ctx.invokeAgent`, so `invoke_agent` must not appear
+    // even though the agent is granted it; `read_file` is the control that this drops by reason, not by
+    // thinning the list.
+    const readFileDef = BUILTIN_TOOLS.find((t) => t.id === 'read_file');
+    const invokeAgentDef = BUILTIN_TOOLS.find((t) => t.id === 'invoke_agent');
+    if (readFileDef === undefined || invokeAgentDef === undefined) {
+      throw new Error('a required builtin is missing');
+    }
+    const scripts = [textTurn('a')];
+    let advertised: string[] = [];
+    const provider: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: (req) => {
+        advertised = (req.tools ?? []).map((t) => t.name);
+        return streamOf(scripts[0] ?? []);
+      },
+    };
+    const orchestrator = AgentSchema.parse({
+      id: 'orchestrator',
+      model: 'claude-opus-4-8',
+      provider: 'anthropic',
+      system_prompt: 'x',
+      tools: ['read_file', 'invoke_agent'],
+    });
+    const { deps } = harness(scripts, {
+      resolveProvider: () => provider,
+      tools: [readFileDef, invokeAgentDef],
+    });
+    const s = session(deps, orchestrator);
+    s.start();
+    await s.sendMessage('go');
+    expect(advertised).toEqual(['read_file']);
+  });
+
   it('sends the authored reasoning_effort ONLY when the model is reasoning-capable (ADR-0066)', async () => {
     const reader = AgentSchema.parse({
       id: 'reader',

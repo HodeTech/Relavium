@@ -1,4 +1,4 @@
-import type { FsScopeTier, ToolDef, ToolHost } from '@relavium/core';
+import type { FsScopeTier, ToolDef, ToolDelegateName, ToolHost } from '@relavium/core';
 import type { ToolPolicy } from '@relavium/shared';
 
 import { createNodeEgressCapability } from './egress.js';
@@ -135,23 +135,34 @@ export function assembleToolEnv(opts: AssembleToolEnvOptions): AssembledToolEnv 
 
 /**
  * The **advertise-filter** (ADR-0055, 2.5.A): the subset of `grantedIds` whose required `ToolHost` capability
- * arm is actually wired in `host`, so an unwired tool is **never offered** to the model and the agent's
- * "say so plainly when a tool is unavailable" path applies. It is the best-effort complement to the
- * fail-closed dispatch backstop (`tool_unavailable`, EA1) — never a substitute for it. A granted id with no
- * matching `ToolDef` (a dynamically-registered tool resolved elsewhere) is kept; the registry still gates it.
+ * arm — or, since `CR-73`, whose required dispatch-context DELEGATE — is actually wired, so an unwired tool is
+ * **never offered** to the model and the agent's "say so plainly when a tool is unavailable" path applies. It
+ * is the best-effort complement to the fail-closed dispatch backstop (`tool_unavailable`, EA1) — never a
+ * substitute for it. A granted id with no matching `ToolDef` (a dynamically-registered tool resolved
+ * elsewhere) is kept; the registry still gates it.
+ *
+ * **`delegates` defaults to NONE, and that default is the fix.** Omitting it means "this caller wires no
+ * dispatch delegates", so `invoke_agent` and `read_media` are dropped. Every in-tree caller omits it today
+ * because nothing in the tree sets `ctx.invokeAgent` or `ctx.mediaRead` — the opposite default would have
+ * re-created `CR-73` for the next caller that forgot.
  */
 export function wiredToolIds(
   grantedIds: Iterable<string>,
   host: ToolHost,
   defs: readonly ToolDef[],
-  opts?: { readonly readOnly?: boolean },
+  opts?: {
+    readonly readOnly?: boolean;
+    /** The dispatch-context delegates this caller will actually set. Absent ⇒ none. */
+    readonly delegates?: readonly ToolDelegateName[];
+  },
 ): string[] {
   const readOnly = opts?.readOnly ?? false;
+  const delegates = new Set(opts?.delegates ?? []);
   const byId = new Map(defs.map((d) => [d.id, d]));
   const out: string[] = [];
   for (const id of grantedIds) {
     const def = byId.get(id);
-    if (def === undefined || requiredArmPresent(def, host, readOnly)) out.push(id);
+    if (def === undefined || requiredArmPresent(def, host, readOnly, delegates)) out.push(id);
   }
   return out;
 }
@@ -166,16 +177,31 @@ export function wiredToolIds(
  * (`fsWrite`) is not merely armless — its `fs` arm IS wired but always DENIES the write, so it must never be
  * offered to the model (an always-denied advertisement). Dropping it here is the advertise-side complement to the
  * read-only `fs` arm's dispatch refusal (still authoritative). A read/list fs tool is unaffected.
+ *
+ * **A DELEGATE is checked the same way, and it used not to be (`CR-73`).** `invoke_agent` and `read_media`
+ * dispatch through `ctx.invokeAgent` / `ctx.mediaRead`, which are not reachable from `host` at all, so an
+ * arm-only filter fell through to `true` and advertised them. An earlier version of this comment defended that
+ * as "best-effort", and for an `os` tool it is: `host.os` is absent only on a profile that deliberately did not
+ * wire it, and the tool works everywhere it IS wired. For these two the delegate is wired **nowhere in the
+ * tree**, so the fall-through was not best-effort, it was a permanently false advertisement. The distinction is
+ * whether an absent capability is a profile choice or a missing implementation.
  */
-function requiredArmPresent(def: ToolDef, host: ToolHost, readOnly: boolean): boolean {
+function requiredArmPresent(
+  def: ToolDef,
+  host: ToolHost,
+  readOnly: boolean,
+  delegates: ReadonlySet<ToolDelegateName>,
+): boolean {
   if (def.source === 'mcp') return host.mcp !== undefined; // discovered MCP tools route via host.mcp
+  // Before any policy-class arm: a tool whose DELEGATE is absent cannot succeed regardless of its arms.
+  if (def.requiresDelegate !== undefined && !delegates.has(def.requiresDelegate)) return false;
   if (def.policy.fsScoped)
     return host.fs !== undefined && !(readOnly && def.policy.fsWrite === true);
   if (def.policy.spawnsProcess) return host.process !== undefined;
   if (def.policy.egress === 'mcp') return host.mcp !== undefined; // the `mcp_call` built-in also uses host.mcp
   if (def.policy.egress !== undefined) return host.egress !== undefined; // `http` / `search` → host.egress
-  // `os` (read_clipboard/notify → host.os) + delegate-backed tools (read_media → ctx.mediaRead, invoke_agent →
-  // ctx.invokeAgent) carry no policy-class arm here: keep them and let the dispatch `tool_unavailable` backstop
-  // (EA1) handle an absent arm/delegate — the filter is a best-effort complement, not a substitute.
+  // `os` (read_clipboard/notify → host.os) carries no policy-class arm here: keep it and let the dispatch
+  // `tool_unavailable` backstop (EA1) handle an absent arm — for `os` the filter really is a best-effort
+  // complement, because the arm is wired on the profile that offers those tools.
   return true;
 }

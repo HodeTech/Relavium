@@ -345,6 +345,7 @@ export type {
   ToolRegistry,
   CreateToolRegistryOptions,
   ToolDef,
+  ToolDelegateName,
   ToolId,
   ToolSource,
   JsonSchema,

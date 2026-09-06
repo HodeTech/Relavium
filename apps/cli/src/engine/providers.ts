@@ -405,9 +405,9 @@ type StoredProviderRow = ReturnType<ProviderStore['list']>[number];
  * supported this round; `provider add` refuses a custom `base_url` on `anthropic`/`gemini`, so a stored one on them
  * shouldn't exist — skipped defensively. The custom endpoint's egress rides the host's **SSRF-validated fetch**
  * (`connectValidated`), and the adapter's construction-time `assertHttpsBaseUrl` (HTTPS + private-range + no-creds)
- * gate re-validates the URL. A `base_url` that fails that gate is **skipped** (the default endpoint stands) rather
- * than crashing resolver creation for EVERY command — the fail-fast refusal is at `provider add`; this is the
- * defensive net for a pre-S9 / tampered row.
+ * gate re-validates the URL. A `base_url` that fails that gate makes the provider **refuse every call** (`CR-80`)
+ * rather than crashing resolver creation for EVERY command — the fail-fast refusal is at `provider add`; this is
+ * the defensive net for a pre-S9 / tampered row.
  */
 function applyCustomEndpoints(
   adapters: Record<ProviderId, LlmProvider>,
@@ -448,7 +448,65 @@ function applyCustomEndpointForRow(
     // the same call for the wire; this keeps the estimate describing the request the adapter will send.
     if (isCustomHost(id, row.baseUrl)) custom.add(id);
   } catch (err) {
-    // A bad stored base_url (non-HTTPS / private / creds) — refuse the custom endpoint, keep the default adapter.
+    // **A bad stored `base_url` fails CLOSED (`CR-80`).** This used to swallow the error and leave the DEFAULT
+    // adapter standing, with a comment calling that "refuse the custom endpoint" — but the default adapter is
+    // the OFFICIAL API. A user who pointed Relavium at an internal gateway, and whose stored row later drifted
+    // to something non-HTTPS, private or credential-bearing, silently sent their prompts and their API key to
+    // `api.openai.com` instead, with nothing on screen to say so. Falling back to the official endpoint is the
+    // one outcome a rejected custom endpoint must never produce.
+    //
+    // Not a throw here: resolver construction runs for EVERY command, so throwing would make `relavium provider
+    // list` — the command you would use to FIND the bad row — unusable. The provider becomes one that refuses
+    // at the point of use instead, which is the earliest place the failure can be both loud and survivable.
     if (!(err instanceof InvalidBaseUrlError)) throw err;
+    adapters[id] = refusingProvider(id, adapters[id], err);
+    custom.add(id); // a refusing adapter is not the official endpoint — never price it as one
   }
+}
+
+/**
+ * A provider that refuses every call, standing in for one whose stored custom `base_url` was rejected (`CR-80`).
+ *
+ * `supports` is copied from the adapter it replaces rather than blanked: a capability flag is read to decide
+ * whether to SEND tools or an image, and a blanked one would make a caller quietly drop the feature and then
+ * succeed against a provider that was supposed to be unusable. Every path that matters ends at `generate` /
+ * `stream`, and both throw.
+ *
+ * The message names the URL's SHAPE and never its value — `InvalidBaseUrlError` already summarises to
+ * scheme+host, so an embedded `user:pass@` cannot survive into it — and it says which provider is refused and
+ * how to fix the row. The optional seam methods are deliberately omitted: `contextLimit?` / `listModels?` /
+ * `generateMedia?` are absent-means-unsupported, so a host degrades instead of crashing while enumerating.
+ *
+ * **Each arm fails the way its own signature promises**, which a first version got wrong by giving both the same
+ * `(): never` thrower. `generate` is declared to return a `Promise`, so a caller may legitimately write
+ * `.catch()` with no `try`; a synchronous throw escapes that and crashes the process instead of being handled —
+ * a refusal that breaks the contract it is enforcing. It rejects instead. `stream` returns an `AsyncIterable`,
+ * and a real adapter is an async generator whose failure surfaces at the first pull, so this mirrors that: the
+ * call returns, and the error arrives where a `for await` is already positioned to catch it.
+ */
+function refusingProvider(
+  id: ProviderId,
+  replaced: LlmProvider,
+  cause: InvalidBaseUrlError,
+): LlmProvider {
+  const refusal = (): InvalidBaseUrlError =>
+    new InvalidBaseUrlError(
+      cause.url,
+      `${cause.reason} — refusing provider '${id}' rather than falling back to the official endpoint; fix or remove the stored base URL with \`relavium provider add ${id} --base-url <url>\``,
+    );
+  return {
+    id,
+    customEndpoint: true,
+    supports: replaced.supports,
+    generate: () => Promise.reject(refusal()),
+    // An explicit `AsyncIterable` rather than an `async function*` that only throws: a generator with no
+    // `yield` is a lint error, and silencing that would hide the fact that this iterable never yields — which
+    // is the whole point of it. `next()` REJECTS, so the failure lands at the first pull, where a real
+    // adapter's would, and a `for await` already sitting in a `try` catches it.
+    stream: (): AsyncIterable<never> => ({
+      [Symbol.asyncIterator]: (): AsyncIterator<never> => ({
+        next: (): Promise<IteratorResult<never>> => Promise.reject(refusal()),
+      }),
+    }),
+  };
 }
