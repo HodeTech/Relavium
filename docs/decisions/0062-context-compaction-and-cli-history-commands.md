@@ -12,6 +12,24 @@
 > *preamble prepended to the system prompt*, read ADR-0081 §2-§3 for where it actually goes; the durable
 > half they describe is untouched. **This ADR stays Accepted** — only §1's placement decision was reversed.
 
+> **Amended 2026-09-14 by [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md) and [ADR-0096](0096-a-request-is-measured-before-it-is-sent.md) — refinements, and one correction of reasoning.**
+>
+> - **§6's reasoning is corrected.** Cross-turn tool accumulation was declined because "the architecture already
+>   prevents" the problem. Discarding the pairs is itself a defect (`CR-70`), not a problem the design avoids. The decision itself stands: carrying tool
+>   history into the model's context is deferred (ADR-0095 §2), not built.
+> - **A compaction or trim boundary is identified by turn, not by message count** (ADR-0095 §1), because durable rows
+>   gain structural tool parts that the text-only in-memory transcript does not have.
+> - **ADR-0096 refines §1, §4 and §5.**
+>   - The summariser's input is bounded.
+>   - The token estimate becomes a live input. §4 framed it, as the seam's doc comments still do, as a pre-first-turn
+>     fallback that never drives a live decision; that framing no longer holds.
+>   - The after-turn trigger measures the next request against the window of the first entry the chain will attempt.
+>   - A pre-send compaction is added, and a failed pre-send summariser sends the request rather than trimming. §5's
+>     trim-on-failure remains the after-turn behaviour.
+>
+> Both ADRs are **Accepted** as of 2026-09-14 with their implementation staged for `W7`, so the behaviour described
+> below is what ships until it lands.
+
 ## Context
 
 A long `relavium chat` / Home session grows its transcript every turn. `AgentSession`

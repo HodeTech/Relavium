@@ -4,6 +4,16 @@
 - **Date**: 2026-06-05
 - **Related**: [0024-agent-first-entry-point-agentsession.md](0024-agent-first-entry-point-agentsession.md), [0008-local-first-phase-1-cloud-phase-2.md](0008-local-first-phase-1-cloud-phase-2.md), [0009-git-native-workflow-yaml.md](0009-git-native-workflow-yaml.md), [../reference/contracts/agent-session-spec.md](../reference/contracts/agent-session-spec.md), [../reference/contracts/workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md)
 
+> **Amended 2026-09-14 by [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md) §3 — a refinement, not a reversal.**
+> The export now reflects the flow that happened, and still carries no tool content:
+>
+> - the `tools` union is filled from the persisted, resolved tool names;
+> - `metadata.relaviumExport.messages` carries structural tool rows — names, engine-assigned ids and sizes — with no
+>   argument and no result;
+> - a completed turn with empty final text is exported.
+>
+> ADR-0095 is **Accepted** as of 2026-09-14 with its implementation staged for `W7`.
+
 ## Context
 
 The agent-first pivot ([ADR-0024](0024-agent-first-entry-point-agentsession.md)) makes a chat

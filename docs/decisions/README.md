@@ -12,7 +12,7 @@ Concrete specifications (workflow/agent YAML, the SSE event schema, the IPC cont
 
 ## Format
 
-Every ADR is a single file named `NNNN-short-kebab-slug.md`, where `NNNN` is a zero-padded four-digit sequence number. Each one opens with an H1 title and bold metadata lines, then four sections:
+Every ADR is a single file named `NNNN-short-kebab-slug.md`, where `NNNN` is a zero-padded four-digit sequence number. Each one opens with an H1 title and bold metadata lines, then three sections:
 
 - **Context** — the situation, the problem, the constraints that applied.
 - **Decision** — the option chosen, the alternatives considered, and the drivers that connected them.
@@ -138,6 +138,10 @@ flowchart TD
 | 0092 | [`output_schema` is deep-validated by the JSON-Schema compiler we already own](0092-output-schema-is-validated-by-the-compiler-we-already-own.md) | Accepted | 2026-09-02 |
 | 0093 | [An expression sees only what it is ordered after](0093-an-expression-sees-only-what-it-is-ordered-after.md) | Accepted | 2026-09-02 |
 | 0094 | [A tool grant is checked when the plan is built](0094-a-tool-grant-is-checked-when-the-plan-is-built.md) | Accepted | 2026-09-02 |
+| 0095 | [What an agent session remembers across turns](0095-what-an-agent-session-remembers-across-turns.md) | Accepted | 2026-09-14 |
+| 0096 | [A request is measured before it is sent, and a context overflow is a classified failure](0096-a-request-is-measured-before-it-is-sent.md) | Accepted | 2026-09-14 |
+| 0097 | [A budget approval is an allowance, not an exemption](0097-a-budget-approval-is-an-allowance-not-an-exemption.md) | Accepted | 2026-09-14 |
+| 0098 | [A session's effect row holds no result, never replays, and discloses what did not complete](0098-a-session-effect-row-holds-no-result-and-never-replays.md) | Accepted | 2026-09-14 |
 
 ## Creating a new ADR
 

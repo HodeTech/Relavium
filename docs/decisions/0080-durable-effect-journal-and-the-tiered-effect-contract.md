@@ -17,6 +17,17 @@
   - [effect-journal.md](../reference/shared-core/effect-journal.md) — the one canonical home for the contract, the identities, the state machine and the table.
 - **Decides**: `CR-12` and `CR-95`'s short-term fix of [phase 2.6.5](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md); implementation staged behind it.
 
+> **Refined 2026-09-14 by [ADR-0098](0098-a-session-effect-row-holds-no-result-and-never-replays.md) — for sessions only.**
+>
+> - A session-scoped effect row retains no result.
+> - A session never replays a stored result.
+> - A model-turn effect's identity never repeats across resume, reseat, compaction, or an errored, aborted or crashed
+>   turn.
+> - A committed effect of a turn that did not complete is disclosed on resume. That extends §6's session posture (effect-journal.md §8) — disclose, and continue — to a case it did not name.
+>
+> Run-scoped behaviour, including re-delivery and the resume gate, is unchanged. ADR-0098 is **Accepted** as of
+> 2026-09-14 with its implementation staged for `W7`.
+
 ## Context
 
 A tool effect can complete at its target, the process can die before the result persists, and resume re-runs the

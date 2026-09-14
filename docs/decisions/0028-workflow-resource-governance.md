@@ -12,6 +12,16 @@
 
 > **Amended 2026-06-18 by [ADR-0044](0044-media-access-governance-read-media-save-to-cost.md).** A refinement, not a reversal: ADR-0044 adds a **disjoint per-modality media cost class** to this ADR's pre-egress governor — it widens the pre-egress hook to carry `outputModalities`/a media-unit estimate and folds the media estimate into the **existing** `max_cost_microcents` cap (no new cap dimension, no new event/error class). This ADR's budget / timeout / concurrency decisions are unchanged.
 
+> **Amended 2026-09-14 by [ADR-0096](0096-a-request-is-measured-before-it-is-sent.md) and [ADR-0097](0097-a-budget-approval-is-an-allowance-not-an-exemption.md) — refinements, not reversals.**
+>
+> - **The pre-egress estimate prices input**, recomputed at every attempt from the request actually sent (ADR-0096 §6).
+> - **Approving a `pause_for_approval` gate no longer exempts the step.** It grants a dispatch-owned allowance, shown
+>   before approval, that only that dispatch debits. Exhausting it fails the step closed (ADR-0097). This supersedes
+>   the 1.AC "H3" decision that let an approved step run to completion uncapped.
+> - **`pause_for_approval` still reuses the human-gate seam and still continues the deferred call.**
+>
+> Both ADRs are **Accepted** as of 2026-09-14 with their implementation staged for `W7`.
+
 ## Context
 
 A workflow can spend real money. A fan-out of agent nodes, a fallback chain that tries several

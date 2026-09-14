@@ -4,6 +4,20 @@
 - **Date**: 2026-06-23
 - **Related**: [0005-sqlite-drizzle-local-postgres-cloud.md](0005-sqlite-drizzle-local-postgres-cloud.md) (refines its at-rest framing for the Node/CLI surface), [0008-local-first-phase-1-cloud-phase-2.md](0008-local-first-phase-1-cloud-phase-2.md) (same), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0021-node-sqlite-driver-better-sqlite3.md](0021-node-sqlite-driver-better-sqlite3.md), [0036-run-loop-substrate-event-bus-and-execution-host.md](0036-run-loop-substrate-event-bus-and-execution-host.md), [../reference/shared-core/database-schema.md](../reference/shared-core/database-schema.md), [../reference/desktop/keychain-and-secrets.md](../reference/desktop/keychain-and-secrets.md), [../reference/contracts/config-spec.md](../reference/contracts/config-spec.md), [../roadmap/phases/phase-2-cli.md](../roadmap/phases/phase-2-cli.md) (workstream 2.H)
 
+> **Corrected 2026-09-14 by [ADR-0098](0098-a-session-effect-row-holds-no-result-and-never-replays.md), with [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md) — the premise is narrowed to what holds.**
+> This ADR's decisive scoping fact, that `history.db` "holds no credentials", overstated what the database holds, in
+> four ways:
+>
+> 1. **Tool I/O masking is not at the `RunEventBus`.** It is shape-based regex applied upstream, to event copies. The
+>    bus does no redaction.
+> 2. **User-injected content is already at rest**, as user data: an `@`-attached file, or `!`-shell output.
+> 3. **A committed tier-3 run effect keeps its bounded result** in `run_effects.result_json` until the run's terminal
+>    sweep. ADR-0080 chose that for exactly-once re-delivery.
+> 4. **Session-scoped effect rows keep their results too** (`CR-97`). ADR-0098 removes this.
+>
+> After ADR-0098 and ADR-0095, a session's transcript, its export and its effect rows hold no tool result. Point 3
+> stands. Both ADRs are **Accepted** as of 2026-09-14 with their implementation staged for `W7`.
+
 ## Context
 
 Phase-2 workstream **2.H** wires durable CLI run history to `~/.relavium/history.db`

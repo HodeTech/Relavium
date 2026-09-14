@@ -4,6 +4,16 @@
 - **Date**: 2026-07-29
 - **Related**: [ADR-0028](0028-workflow-resource-governance.md) (the pre-egress cap), [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) (durable run events), [ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) (async media re-attach), [ADR-0070](0070-durable-per-model-session-cost-attribution.md) (session-cost accounting), [ADR-0071](0071-models-dev-as-the-model-metadata-source.md) (the strict-cost-cap posture), and [sse-event-schema.md](../reference/contracts/sse-event-schema.md) (the canonical event contract).
 
+> **Amended 2026-09-14 by [ADR-0096](0096-a-request-is-measured-before-it-is-sent.md) and [ADR-0097](0097-a-budget-approval-is-an-allowance-not-an-exemption.md) — refinements, not reversals.**
+>
+> - **§1: a classified pre-content context overflow is released, not committed** (ADR-0096 §5). All three conditions
+>   must hold: the attempt record says `context_overflow`, it says `contentReceived: false`, and the endpoint is not
+>   custom. In every other case this ADR's conservative commitment stands.
+> - **§3: an approved media submission records `acceptedCostMicrocents`** from the admission it holds (ADR-0097),
+>   rather than skipping it under the approved bypass.
+>
+> Both ADRs are **Accepted** as of 2026-09-14 with their implementation staged for `W7`.
+
 ## Context
 
 The pre-egress governor must make two deliberately different statements about money:
