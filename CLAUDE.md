@@ -56,7 +56,8 @@ browsers, competitor-breadth tools, settings/theming/`en`+`tr` localization, and
 run-ops resume follow-up.
 
 **An interlude is running between Wave 1 and Wave 2 of the remediation: Phase 2.6.5 (Core reliability),
-41 of 48 items closed and every non-deferrable item now closed** — `W0` (PR #82, 2026-08-11), `W1`, the eight P0 blockers plus `CR-92`, merged
+41 of 50 items closed; two shipping defects found on 2026-09-14 (`CR-96`, `CR-97`) reopened the non-deferrable
+list** — `W0` (PR #82, 2026-08-11), `W1`, the eight P0 blockers plus `CR-92`, merged
 2026-08-24 (PR #83) behind [ADR-0078](docs/decisions/0078-ordered-durable-append-and-the-terminal-outbox.md)–[ADR-0084](docs/decisions/0084-consent-before-a-local-mcp-spawn.md):
 ordered durable append, cross-process run ownership, the durable effect journal, untrusted compaction summaries,
 the stream-grammar seam obligation, engine-side input admission and resume identity, and consent before a local
@@ -114,8 +115,27 @@ refusing adapter satisfies too, so it passed either way — the finding under th
 [ADR-0087](docs/decisions/0087-consumed-streams-size-bounds-and-run-retention.md) was also **accepted
 (2026-09-04) with nine dated corrections** after a review refused it as written; its §1 remains unimplemented
 and the `W3` live blocker with it, while its §3 turned out to have shipped in `W5` under a different item
-number. `W7` is blocked on two maintainer decisions the register marks **decision open** (`CR-70`/`CR-71`,
-`CR-72`).
+number.
+
+**`W7` is unblocked (2026-09-14).** The maintainer settled its open decisions, and four ADRs record them, all
+**Accepted** with their implementation staged in `W7`:
+
+- [ADR-0095](docs/decisions/0095-what-an-agent-session-remembers-across-turns.md) decides that a session
+  persists the *structure* of its tool history and never its content, defers carrying tool history into the
+  model's context, and implements the authored `memory` policy — which stays inert until `W7` lands.
+- [ADR-0096](docs/decisions/0096-a-request-is-measured-before-it-is-sent.md) decides that a request is measured
+  before it is sent, that a context overflow is classified and recovered only before any tool runs, and that input
+  is priced. Until `W7` lands, the estimate still prices output only.
+- [ADR-0097](docs/decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) decides that a budget
+  approval grants a dispatch-owned, shown, durable allowance. Until `W7` lands, an approved step still runs uncapped.
+- [ADR-0098](docs/decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md) decides that a session's
+  effect row holds no tool result and never replays.
+
+Six review rounds shaped these ADRs, and they surfaced two shipping defects, opened as `CR-96` and `CR-97`, both
+open, non-deferrable and scheduled into `W7`. `CR-96`: a crash after a budget decision resumes the agent as complete,
+with an invented output. `CR-97`: session effect rows keep tool output at rest and can replay a stale result. After the fifth round, the maintainer
+had the ADRs restated as decisions, invariants and acceptance tests, because every round's defects were in the
+previous round's fixes.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);

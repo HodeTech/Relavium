@@ -347,14 +347,50 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   there is concrete surface demand or telemetry showing operators need an earlier signal.
   *(1.AC; ADR-0028; config-spec.md; workflow-yaml-spec.md)*
 
-## Phase 2.6.5 deferrals — `CR-93` and `CR-95` (long half), recorded 2026-09-06
+## Phase 2.6.5 deferrals — `CR-93` and `CR-95` (long half), recorded 2026-09-06; `CR-70`, `CR-94` (remainder) and the in-turn overflow continuation, recorded 2026-09-14
 
 > Written to satisfy [exit criterion 2](phases/phase-2.6.5-core-reliability-remediation.md): a deferral carries
-> its **severity**, its **trigger**, and — the part usually skipped — **the product claim it narrows**. Both
-> decisions are recorded in the phase register; only the WORK is deferred.
+> its **severity**, its **trigger**, and — the part usually skipped — **the product claim it narrows**. The decisions are recorded in the phase register or, for the in-turn continuation, in ADR-0096 §5; only the WORK is deferred.
 >
-> A third item, `CR-94`, is deliberately **not** deferred here. Deferring a High item whose subject is money is
-> a maintainer's call, and none has been made; it stays open in the register rather than being quietly filed.
+> **A third item, `CR-94`, was not deferred here, and is now decided (2026-09-13).** This note once said no
+> maintainer call had been made. One has since been made, in
+> [ADR-0097](../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md): the minimum correct allowance
+> is built in `W7`, and only the lease's model binding and expiry are deferred. That deferral is recorded below,
+> together with the other two deferrals the `W7` ADRs made.
+
+- [ ] **Carrying tool history into the model's context (`CR-70`).** *High (product).* **Decided and deferred on
+      2026-09-13** by the maintainer, in
+      [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2. Once `W7` lands, a session persists the *structure* of its tool history (ADR-0095 §1). Today and after `W7`, it carries no prior turn's tool rounds into the next request, so a coding agent re-reads a file it read the turn before.
+      - **The claim it narrows.** [agent-session-spec.md](../reference/contracts/agent-session-spec.md) had implied
+        that the transcript carries tool messages across turns. It now says they are not carried.
+      - **Trigger.** [ADR-0096](../decisions/0096-a-request-is-measured-before-it-is-sent.md)'s measurement and
+        recovery have shipped and been observed in a release, and a surface needs carrying. The coding-assistant
+        surface is the named candidate.
+      - **Constraints the future design inherits** (ADR-0095 §2): in-process only; never across a reseat; a pure
+        request projection with a per-turn byte ceiling; no synthesized `read_media` message; engine notes behind
+        ADR-0081's role boundary; ids unique per session; validity proven by the live conformance suite; a
+        user-scoped `[preferences]` toggle.
+      *(high · packages/core/src/engine/agent-session.ts, turn-messages.ts; `CR-70`, ADR-0095)*
+
+- [ ] **Binding a budget allowance to its model, and giving it an expiry (`CR-94`, remainder).** *Medium.*
+      [ADR-0097](../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) builds the minimum
+      correct allowance in `W7`: dispatch-owned, shown, and durable. The lease's two remaining properties are
+      deferred.
+      - **The claim it narrows.** An approved amount is quoted at one catalog price, and is honoured even if the
+        model's price or catalog entry changes before the approval is used.
+      - **Trigger.** The first surface on which an approval can be exercised after the quoted model or its price has
+        changed — for example an approval queue that outlives a catalog refresh.
+      *(medium · packages/core/src/engine/budget-governor.ts; `CR-94`, ADR-0097 §3)*
+
+- [ ] **Recovering a context overflow that arrives after a tool round (the in-turn continuation).** *High.*
+      [ADR-0096](../decisions/0096-a-request-is-measured-before-it-is-sent.md) §5 recovers an overflow only before
+      any tool round runs, because re-running the turn would fire its tools again. An overflow at round one or later
+      fails the turn, and says that tools had already run.
+      - **The claim it narrows.** Overflow recovery covers only a turn that has not yet dispatched a tool.
+      - **Trigger.** The first user whose tool-heavy turn dies at round one or later.
+      - **Shape.** Compact the prior history, keep this turn's tool pairs, and re-issue only the failed round's call.
+        That is the same durable-continuation family as `CR-95`'s long half, and it should be designed with it.
+      *(high · packages/core/src/engine/agent-session.ts, agent-turn.ts; ADR-0096 §5)*
 
 - [ ] **Process-global catalog and parameter-learning state is not tenant-safe (`CR-93`).** *Medium today,
       High for cloud.* The model catalog and the learned-parameter state live in process-global mutable
@@ -1161,6 +1197,20 @@ so the remaining work is the projection and the inline decision.
 
 ## Cross-turn tool-call memory as a default-off toggle (2.6.C spin-off, 2026-07-12)
 
+> **Status, 2026-09-14: decided, and this entry is superseded by three records.**
+>
+> - **The three prerequisite defects** it names are decided in
+>   [ADR-0096](../decisions/0096-a-request-is-measured-before-it-is-sent.md) and scheduled into `W7`:
+>   - no measurement of a request before it is sent;
+>   - an overflow that kills the turn;
+>   - a budget estimate that ignores input.
+> - **Carrying itself is deferred** in
+>   [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2. Its deferral record is in the
+>   Phase 2.6.5 deferrals above. The default-off toggle idea survives there as a user-scoped `[preferences]` key,
+>   not a `[chat]` key.
+> - **Some analysis below is out of date.** It was written before `W1`–`W6`, and its line numbers no longer match.
+>   It is kept as the record of the original analysis.
+
 > Raised while investigating a "`/models` reseat forgets tool calls" report (2.6.C / PR #75). The investigation's
 > findings are restated in full below — every claim carries its own `file:line`, so this entry stands alone.
 > Recorded here — deliberately **not actioned** — pending a maintainer call on sequencing and risk.
@@ -1275,7 +1325,10 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
 > cost-event persistence (below) — those are workstreams, tracked in
 > [phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), not deferred items.
 
-- [ ] **Faithful cross-turn transcript (tool + reasoning history) → 1.X/1.Z.** 1.V appends only the final
+- [ ] **Faithful cross-turn transcript (tool + reasoning history) → 1.X/1.Z.** **Superseded 2026-09-14:** persistence and
+  export are decided by [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md) §1 and §3
+  (`CR-71`, scheduled `W7`), and carrying is deferred under the `CR-70` record in the Phase 2.6.5 deferrals section.
+  Reasoning is never carried (ADR-0030). The original note follows. 1.V appends only the final
   assistant **text** across turns: the turn core keeps the within-turn `tool_use`/`tool_result` pairs internal
   (so the transcript carries no orphaned `tool_use` and stays protocol-valid), and reasoning is dropped (a
   `signature` is a within-turn same-provider replay token — ADR-0030/0039 — that must not span turns). Carrying

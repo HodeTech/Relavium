@@ -1,6 +1,6 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` merged 2026-09-02 (PR #88) behind ADR-0089 + ADR-0090 — a systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed before it merged. **`W6` — authoring correctness — MERGED 2026-09-04 (PR #89)** — `CR-60`–`CR-64` behind [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md), 32 commits — 27 of work across seven internal review rounds, then five folding four maintainer rounds on PR #89. **The maintainer review returned two merge blockers**, both of which broke a headline claim of the wave: deep validation did not enforce `required` when the property's schema constrained nothing (so `{ properties: { status: {} }, required: ['status'] }` accepted `{}`), and the expression scanner's regex was quadratic and synchronous (514 ms at 32 K of whitespace, on a parser that accepts 2 MiB, with no deadline able to interrupt it). Both reproduced and fixed before the merge, along with eight further High findings. **The pattern of the wave is that most of what the rounds found were defects in the FIXES, not in the code they repaired** — the branch-order search was wrong three times, the expression scan's central soundness claim was false in EIGHT ways, and one stand-down gate silently removed the check it was added to protect. Every one is recorded as a dated correction in its ADR rather than tidied away (39 of 48 items — the count says 39 and not 43 because W5's six items were counted TWICE: incrementally as they landed (28→32) and then wholesale when the wave closed (32→38), so the figure carried a +4 error into W6. `CR-95` is counted on its non-deferrable short-term half; its long-term half keeps the item on the board. `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28). **`CR-73` and `CR-80` closed 2026-09-06, so every non-deferrable item is now closed and exit criterion 1 is MET** — `invoke_agent` is no longer advertised without a delegate (and `read_media` rides along, for the same reason), and a rejected custom base URL now refuses instead of falling back to the official API. **41 of 48**, and the arithmetic is shown rather than asserted, because it has been wrong twice: 40 item headings carry a ✅, plus `CR-95` counted on its non-deferrable short-term half, whose long-term half keeps that item on the board. Seven items are fully open — `CR-70`, `CR-71`, `CR-72` (`W7`), `CR-81`, `CR-82` (`W8`), `CR-93` and `CR-94` — and `W7` cannot start until the maintainer settles `CR-70`/`CR-71` and `CR-72`, both of which the register marks **decision open**.
+- **Status**: in progress — **`W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with a live blocker; `W4` merged 2026-09-01 (PR #87) after a systematic review found five merge blockers in it — all reproduced and fixed before the merge.** `W5` merged 2026-09-02 (PR #88) behind ADR-0089 + ADR-0090 — a systematic maintainer review of the branch returned **six merge blockers**, all reproduced and fixed before it merged. **`W6` — authoring correctness — MERGED 2026-09-04 (PR #89)** — `CR-60`–`CR-64` behind [ADR-0091](../../decisions/0091-first-means-first-declared-not-first-to-finish.md)–[ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md), 32 commits — 27 of work across seven internal review rounds, then five folding four maintainer rounds on PR #89. **The maintainer review returned two merge blockers**, both of which broke a headline claim of the wave: deep validation did not enforce `required` when the property's schema constrained nothing (so `{ properties: { status: {} }, required: ['status'] }` accepted `{}`), and the expression scanner's regex was quadratic and synchronous (514 ms at 32 K of whitespace, on a parser that accepts 2 MiB, with no deadline able to interrupt it). Both reproduced and fixed before the merge, along with eight further High findings. **The pattern of the wave is that most of what the rounds found were defects in the FIXES, not in the code they repaired** — the branch-order search was wrong three times, the expression scan's central soundness claim was false in EIGHT ways, and one stand-down gate silently removed the check it was added to protect. Every one is recorded as a dated correction in its ADR rather than tidied away (39 of 48 items **at W6's merge** — the live count is further on in this line — and it said 39 and not 43 because W5's six items were counted TWICE: incrementally as they landed (28→32) and then wholesale when the wave closed (32→38), so the figure carried a +4 error into W6. `CR-95` is counted on its non-deferrable short-term half; its long-term half keeps the item on the board. `CR-21` closed with `CR-14`, `CR-21c` added 2026-08-25, `CR-95`'s non-deferrable short-term half closed with the spine on 2026-08-18 and found still marked open on 2026-08-28). **`CR-73` and `CR-80` closed 2026-09-06.** `invoke_agent` is no longer advertised without a delegate (and `read_media` rides along), and a rejected custom base URL refuses instead of falling back to the official API. **On 2026-09-14 the register grew to 50 items**: `CR-96` and `CR-97`, two shipping defects found while reviewing W7's ADRs. Both meet this phase's definition of non-deferrable, so **exit criterion 1 is open again** until they close; recording them as deferrable to keep a criterion green is the drift this register exists to prevent. **41 of 50** are closed, and the arithmetic is shown because it has been wrong twice: 40 item headings carry a ✅, plus `CR-95` counted on its non-deferrable short-term half. Nine items are open. `CR-71`, `CR-72`, `CR-94`, `CR-96` and `CR-97` are scheduled into `W7`, and `CR-81` and `CR-82` into `W8`. `CR-70` and `CR-93` are decided and deferred, and a deferral does not count as a close. **`W7` is unblocked**: every decision it waited on was made on 2026-09-12 and 2026-09-13, and ADR-0095 to ADR-0098 were accepted on 2026-09-14.
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82) ·
   **`W1` merged**: 2026-08-24 (PR #83)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
@@ -291,9 +291,9 @@ to correct.
 | `CR-62` | ✅ **shipped 2026-09-03** — scope narrowed to the transitive closure, a literal non-ancestor read refused at parse, `edges[].condition` refused. The scan's no-false-refusal claim was false in **seven** ways and now has a sandbox-paired test | [ADR-0093](../../decisions/0093-an-expression-sees-only-what-it-is-ordered-after.md) | no | — |
 | `CR-63` | ✅ **closed 2026-09-03** — verified: nothing reads an agent `input_schema`, so the spec's claim is true and no change was needed. The check found three fabricated `human_in_the_loop_config` fields | — | no | — |
 | `CR-64` | ✅ **shipped 2026-09-02** — a widened tool grant is refused when the plan is built | [ADR-0094](../../decisions/0094-a-tool-grant-is-checked-when-the-plan-is-built.md) | no | — |
-| `CR-70` | **open** — persist bounded tool pairs, or narrow the spec | — | no | — |
-| `CR-71` | with `CR-70` | with `CR-70`'s | no | — |
-| `CR-72` | **open** — implement, or reject at parse | — | no | — |
+| `CR-70` | made 2026-09-13 (carrying deferred; tool history persisted as structure, never content) | [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2 | no | — |
+| `CR-71` | made 2026-09-13 (structural persistence; the export fills `tools` and carries no tool content) | [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §1, §3 | no | — |
+| `CR-72` | made 2026-09-13 (implement; an authored `memory` decides compaction at every entry point) | [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §4 | no | — |
 | `CR-73` | made (wire it, or stop advertising it) | — | yes | — |
 | `CR-80` | made (fail closed) | — | yes | provider/config |
 | `CR-81` | made (match the canonical request) | — | no | — |
@@ -302,8 +302,10 @@ to correct.
 | `CR-91` | made (build the durable-truth oracle) | — | no | — |
 | `CR-92` | made (durable outbox, distinct typed result) | with `CR-10`'s | yes | — |
 | `CR-93` | made (scope per run/session/tenant; may defer the work, not the decision) | — | no | — |
-| `CR-94` | made (numeric approval lease) | — | no | — |
+| `CR-94` | made 2026-09-13 (a dispatch-owned allowance, shown and durable; model binding and expiry deferred) | [ADR-0097](../../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) | no | — |
 | `CR-95` | made (short term: fail closed) | — | yes (short term) | — |
+| `CR-96` | made 2026-09-14 (a decided budget gate never folds into an invented output) | [ADR-0097](../../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) §4 | yes | — |
+| `CR-97` | made 2026-09-14 (a session effect row holds no result, never replays, and discloses what did not complete) | [ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md) | yes | — |
 
 ---
 
@@ -1951,22 +1953,55 @@ correction inside its own ADR rather than a rewrite, so the wrong reasoning stay
 
 ## W7 — Agent product correctness
 
-### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decision open**
+> **Decisions made; `W7` is unblocked (2026-09-14).** The maintainer settled `CR-70`–`CR-72` and `CR-94` on
+> 2026-09-12 and 2026-09-13. Four ADRs, all **Accepted** 2026-09-14 with their implementation staged here, record
+> the decisions:
+>
+> - [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) — `CR-70`–`CR-72`;
+> - [ADR-0096](../../decisions/0096-a-request-is-measured-before-it-is-sent.md) — the three prerequisites carrying
+>   depends on;
+> - [ADR-0097](../../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) — `CR-94` and `CR-96`;
+> - [ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md) — `CR-97`.
+>
+> **`W7`'s scope is therefore:** `CR-71`, `CR-72`, ADR-0096's prerequisites, `CR-94`, `CR-96` and `CR-97`.
+> `CR-70`'s carrying is deferred.
+>
+> Six review rounds shaped those ADRs: the maintainer's review of the first drafts, four adversarial workflow rounds, and a short sixth round after the maintainer had them restated as decisions, invariants and acceptance tests. From the second round on, most defects were in the previous round's fixes. Two of the
+> round's findings were defects already shipping, and they are opened below as `CR-96` and `CR-97`.
+
+### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A
 coding agent cannot remember a file it read in the previous turn and calls the tool again.
 **Open decision.** Persist the tool pairs (bounded), or narrow the canonical session spec. The bound is part of
 the decision.
 
-### CR-71 — Session transcript and export lose tool history · High
+**Decided 2026-09-13.** The maintainer first chose to implement carrying, then deferred it. The deferral came once a
+review established two things. Tool content must never reach disk, and a reseat rebuilds a session from disk, so
+carried content could survive only within one process and one model binding. Carrying was also the largest single
+source of open findings. The canonical spec is narrowed to say a session does not carry prior turns' tool rounds.
+Work reopens when ADR-0096 has shipped and been observed in a release and a surface needs carrying. ADR-0095 §2
+records the constraints the future design inherits. The deferral record is in
+[deferred-tasks.md](../deferred-tasks.md).
+
+### CR-71 — Session transcript and export lose tool history · High · **decided 2026-09-13** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §1, §3) · scheduled `W7`
 The persister stores the same text-only model, so the exporter — written to derive tool names from assistant
 tool-call parts — has nothing to read. The canonical session spec promises a full transcript with a tool union.
 **Fix + acceptance for CR-70/71.** One decision, one PR. A graduated workflow must represent the flow that
 actually happened, or the spec must stop promising it.
 
-### CR-72 — Authored agent `memory` policy is inert · Medium · **decision open**
+**Decided 2026-09-13.** A session's tool history is persisted as **structure, never content**. Its rows record which
+tools ran, in what order, and how large their arguments and results were, and nothing a model or a server chose.
+The export fills its `tools` union from that structure and carries no tool content, because a `.relavium.yaml` is
+committable. ADR-0095's invariants and acceptance tests are this item's acceptance.
+
+### CR-72 — Authored agent `memory` policy is inert · Medium · **decided 2026-09-13: IMPLEMENT** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §4) · scheduled `W7`
 `none | window | summary` is accepted by the schema and consumed by nothing.
 **Fix + acceptance.** Implement it or reject it at parse time with a typed error. A schema that accepts a field
 nothing reads is a claim the code does not keep.
+
+**Decided 2026-09-13: implement.** An omitted `memory` means what ships today. `none` and `window` shape the request
+only. `summary` always permits automatic compaction, whatever `[chat].auto_compact` says. An authored `memory` decides compaction at all three entry points: after a turn,
+before sending, and in overflow recovery. The canonical row's wrong default (`none`) is corrected.
 
 ### CR-73 — `invoke_agent` has no production delegate · High (2.6 go/no-go) · ✅ **closed 2026-09-06**
 The builtin exists in the catalog and errors with tool-unavailable when no delegate is wired; nothing wires one
@@ -2024,6 +2059,38 @@ covers, per path):
   Added because the first round of engine mutations reddened the run path and **nothing on the session path** —
   a check present in one of two near-identical lists and missing from the other is the exact shape of this
   defect, so both are pinned.
+
+### CR-96 — A crash after a budget decision resumes the agent as complete, with an invented output · High · **opened 2026-09-14** · scheduled `W7`
+The checkpoint fold marks the node of every resolved gate `completed`, with the output `{ decision }`
+(`checkpoint.ts:458-461`), without checking whether the gate was a budget gate. On a budget gate that node is the
+agent vertex itself. A crash between the decision and the agent's own terminal therefore resumes the agent as
+complete, with an invented output and no pending gate. Downstream nodes read `{ decision: 'approved' }` as its
+answer, and the run can end `run:completed` on data that was never produced. **Reproduced** on 2026-09-13 with a
+probe over the real fold: `writer state = {"status":"completed","output":{"decision":"approved"}}`, and no pending
+gates.
+**Non-deferrable**, because a run can complete silently on invented data, and the fail-closed option is cheap.
+**Fix + acceptance.** [ADR-0097](../../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) §4:
+- an approved gate re-runs the agent;
+- a rejected gate fails the resumed run with `budget_exceeded`;
+- `input_provided` is refused on a live budget gate;
+- ADR-0097's crash acceptance tests pass, resumed through a sibling human gate.
+
+### CR-97 — A session's effect rows keep tool output at rest, and a resumed session can replay a stale result · High · **opened 2026-09-14** · scheduled `W7`
+Three shipping defects in session-scoped `run_effects` rows, found and reproduced from code during the ADR-0095
+review:
+- **Tool output at rest.** A committed tier-3 effect stores the bounded tool result in `result_json`
+  (`registry.ts:240`) on `chat`, `chat-resume`, `agent run` and the Home, and a session that is never resumed keeps
+  it indefinitely. That falsifies ADR-0050's premise.
+- **Stale replay.** Resume re-seeds the turn counter from rows past the compaction boundary
+  (`session-resume.ts:161`, `agent-session.ts:577`). After `/compact` and a resume, a same-args tool call can
+  therefore replay an earlier turn's stored result.
+- **Protection by accident.** An effect that landed in a turn that did not complete is shielded only by the same
+  replay.
+**Non-deferrable**: a security boundary (tool output at rest) and a correctness boundary (stale replay), both with
+cheap fail-closed options. Security-relevant, so its closing change goes through the security-review skill.
+**Fix + acceptance.**
+[ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md)'s invariants and
+acceptance tests, including the upgrade clearing of rows written before it.
 
 ---
 
@@ -2225,12 +2292,22 @@ Process-global mutable state is fine for a single local user and wrong for the m
 recorded in this phase even if the work is deferred** — a deferral here moves to
 [deferred-tasks.md](../deferred-tasks.md) with its trigger (the first multi-tenant surface) named.
 
-### CR-94 — One budget approval opens every redispatch without a numeric limit · High
+### CR-94 — One budget approval opens every redispatch without a numeric limit · High · **decided 2026-09-13** ([ADR-0097](../../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md)) · scheduled `W7`
 An approved vertex skips pre-egress admission on redispatch, and one agent turn can make many tool rounds plus a
 final generation. The user approves a projection they saw, but the approval means "this vertex is exempt", not
 "up to this amount".
 **Fix + acceptance.** Make the approval an immutable numeric lease bound to money/token/attempt scope, model and
 expiry, consumed atomically by each egress. An approved node that exceeds its lease pauses again.
+
+**Decided 2026-09-13: the minimum correct form now; model binding and expiry deferred.** An approval grants a
+dispatch-owned allowance that only its dispatch debits. It is sized from the paused attempt's own inputs, shown
+before approval from a field no workflow can forge, and frozen durably. Model binding and expiry are deferred in
+[deferred-tasks.md](../deferred-tasks.md).
+
+**One clause of the acceptance above is deliberately reversed.** An approved node that exhausts its allowance
+**fails closed**; it does not pause again. Three successive drafts let it pause again, and each draft found a
+different path back into the 1.AC loop: the run-global ledger, the unpriced input term, and failover under a
+one-call allowance. A dispatch that cannot pause cannot loop.
 
 ### CR-95 — A mid-tool-loop budget pause replays the whole loop · High · ⚠️ SHORT-TERM HALF CLOSED 2026-08-18 ([ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) §10)
 A budget pause becomes a paused outcome; on approval the node is reset to pending and dispatched from the start.
@@ -2262,8 +2339,8 @@ disruptive by design.
 This phase is done when **all** of the following hold:
 
 1. **Every non-deferrable item is closed with a break-verified test.** Non-deferrable means the register above
-   says so: `CR-01`–`CR-03`, `CR-10`–`CR-17`, `CR-50`, `CR-55`, `CR-73`, `CR-80`, `CR-92`, and `CR-95`'s
-   short-term fail-closed fix. **None of these may be deferred**, for one reason: each is either a security or
+   says so: `CR-01`–`CR-03`, `CR-10`–`CR-17`, `CR-50`, `CR-55`, `CR-73`, `CR-80`, `CR-92`, `CR-95`'s
+   short-term fail-closed fix, and — added 2026-09-14 — `CR-96` and `CR-97`. **None of these may be deferred**, for one reason: each is either a security or
    correctness boundary, or a shipped claim the code does not keep — and every one of them has a cheap
    fail-closed option (refuse, remove, narrow the claim) available when the full fix is too large. "Too big to
    fix now" is an argument for the cheap option, never for deferral.
@@ -2284,12 +2361,12 @@ This phase is done when **all** of the following hold:
 7. **A closing register in this file states, per item, the code that closes it** — verified by reading the code,
    not by trusting the mark. Wave 1's completion claim was wrong twice before this discipline was adopted.
 
-**Where the criteria stand, 2026-09-06.** Scored honestly, including the ones that are not met.
+**Where the criteria stand — 2026-09-06, rows 1 and 2 updated 2026-09-14.** Scored honestly, including the ones that are not met.
 
 | # | Criterion | Status |
 |---|---|---|
-| 1 | every non-deferrable item closed, break-verified | ✅ **met** — `CR-73` and `CR-80` were the last two; every test named in their register rows was run against a mutation that restores the defect |
-| 2 | every other item closed, or deferred with severity + trigger + the claim it narrows | ⬜ open — seven items are still scheduled (`CR-70`–`CR-72`, `CR-81`, `CR-82`) or unscheduled (`CR-93`, `CR-94`), and `CR-95`'s long half. `CR-93` and `CR-95`-long have deferral records; `CR-94` does **not**, and deferring a High item is a maintainer call, not an author's |
+| 1 | every non-deferrable item closed, break-verified | ⬜ **open again (2026-09-14)** — `CR-73` and `CR-80` closed on 2026-09-06, and every test named in their rows was run against a mutation restoring the defect. `CR-96` and `CR-97` then joined the non-deferrable list; both are shipping defects scheduled into `W7` |
+| 2 | every other item closed, or deferred with severity + trigger + the claim it narrows | ⬜ open — `CR-71`, `CR-72` and `CR-94` are scheduled into `W7`, and `CR-81` and `CR-82` into `W8`. Deferral records exist for `CR-70` (carrying), `CR-93`, `CR-95`'s long half, `CR-94`'s model binding and expiry, and ADR-0096's in-turn continuation |
 | 3 | each `W1` item has an accepted ADR, landing in dependency order | ✅ met — ADR-0078–ADR-0084 |
 | 4 | every canonical document says what the code now does | ⬜ open — the `W3` live blocker means [sse-event-schema.md](../../reference/contracts/sse-event-schema.md)'s gap-free promise is still wider than the code for an un-pulled stream. ADR-0087 §1 is the fix and is Accepted-but-unimplemented, which the ADR now states in its own header rather than leaving to be inferred |
 | 5 | four security-review sittings recorded, each with its adversarial test | ✅ **met 2026-09-06** — [prompt/trust provenance](../../standards/security-review.md#sitting-prompt-and-trust-provenance--cr-01cr-03-cr-10cr-17-2026-09-06), [hostile MCP](../../standards/security-review.md#sitting-the-hostile-mcp-boundary--cr-40cr-42-2026-09-06), [media bytes](../../standards/security-review.md#sitting-media-bytes--cr-50-cr-53-cr-54-2026-09-02), [provider/config trust](../../standards/security-review.md#sitting-provider-and-config-trust--cr-80-2026-09-06). Three were written after their wave merged, which is late and is said so in each |

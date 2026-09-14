@@ -53,7 +53,7 @@ stateDiagram-v2
 | Operation | Meaning |
 | --- | --- |
 | **start** | Open a session for an `agentRef` with an initial [`SessionContext`](#session-context). Allocates a `sessionId` and persists the session row. |
-| **sendMessage** | Append a user [`SessionMessage`](#session-messages), run one assistant turn through the `AgentRunner` (streaming + tool-call loop), and append the assistant + tool messages. |
+| **sendMessage** | Append a user [`SessionMessage`](#session-messages), run one assistant turn through the `AgentRunner` (streaming + tool-call loop), and append the assistant's final **text**. The within-turn tool call/result pairs are **not** appended, and a later turn's model does not see them: carrying them is deferred ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2). |
 | **setTurnPolicy** | Set/clear the **reseat-less mode policy** (ADR-0057) — the advertise-filter + the interactive approval hook — on the **same** session instance (no reseat, no tool-context loss). Snapshotted at each turn start, so a change applies on the **next** turn. The ask / plan / accept-edits / auto enum lives in the host; this is its mode-agnostic engine projection. Callable in any state, including mid-turn; **inert once cancelled** (a cancelled session runs no further turn, so the policy is never read again). |
 | **abort** | **Mid-turn abort** (ADR-0057 EA7): end the *in-flight turn* via its `AbortSignal` but **keep the session alive** — settle **one** `session:turn_completed{stopReason:'aborted'}` (no error), roll the pending user message back, and return to `idle`. **Distinct from `cancel`** (which is terminal): no `session:cancelled`, no new status. No-op when no turn is in flight; a concurrent `cancel` wins. A **late** abort that lands after the turn already resolved is **also a no-op** — that turn completes normally and its reply is **kept** (`abort` interrupts an in-flight turn only, never discards a finished one). |
 | **cancel** | Abort the in-flight turn via `AbortSignal` **and end the session** (the terminal `session:cancelled`); the session stays resumable from its persisted transcript. |
@@ -189,8 +189,10 @@ Per [ADR-0026](../../decisions/0026-session-export-to-workflow.md), a session ex
 `.relavium.yaml` **scaffold** that the author reviews before committing:
 
 - the session's assistant turns become a **linear chain of `agent` nodes**, in order, carrying the
-  agent binding, resolved prompts, and the tools used;
-- the **full transcript is preserved in the workflow's durable `metadata` field** — a schema field that survives parse → serialize round-trips (not fragile comments), with secrets already excluded by
+  agent binding and resolved prompts. **Today no node carries `tools`**: the persister records no tool parts, so
+  the union below is always empty. [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md)
+  §1 and §3 persist the tool structure in `W7`, and this bullet widens when that lands;
+- the **text transcript is preserved in the workflow's durable `metadata` field** — a schema field that survives parse → serialize round-trips (not fragile comments), with secrets already excluded by
   the no-interpolation rule above);
 - parallel / conditional / loop structure is **not** auto-inferred — the author adds it on the canvas.
 
@@ -211,7 +213,9 @@ reproducible and round-trips):
   `metadata`), so export and `reconstructSessionState`'s rollback (1.Y) agree on what a turn is. Each `agent`
   node carries: `agent_ref` = the session's `agentSlug`; `prompt_template` = the **text** of the turn's
   `user` message(s), with interpolation openers neutralized (omitted if empty); `tools` = the deduped union of
-  tool names invoked across the turn's assistant messages (the `tool_call` parts), omitted when none. No
+  tool names invoked across the turn's assistant messages (the `tool_call` parts), omitted when none. The
+  exporter reads that union, but **no persisted message carries a `tool_call` part today**, so `tools` is
+  currently always omitted (`W7`, ADR-0095). No
   `model`/`temperature`/`max_tokens`/`retry`/`output_schema` are emitted — those are authoring concerns the
   user adds on the canvas, not replay fields.
 - **Edges** — a straight linear chain `input → turn-1 → … → turn-n → output` (just `{ from, to }`); when a
@@ -223,7 +227,7 @@ reproducible and round-trips):
   entry so `agent_ref` resolves; when no snapshot was captured, `agents` is omitted and `agent_ref` resolves
   against the workspace agent registry at author time (the file still parses — `agent_ref` resolution is the
   engine's job, not the schema's).
-- **`metadata`** — the full transcript under a single reserved key: `metadata.relaviumExport = { source:
+- **`metadata`** — the persisted transcript, today text-only, under a single reserved key: `metadata.relaviumExport = { source:
   'session', sessionId, agentSlug, title?, createdAt, updatedAt, messages: SessionMessage[] }`. It is a real
   schema field (`z.record`), so it survives parse → serialize round-trips.
 - **Determinism + exclusions** — the YAML emitter (1.Z, `serializeWorkflow`; 1.L is parse-only) sorts map

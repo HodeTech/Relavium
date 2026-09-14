@@ -73,7 +73,7 @@ Each prompt you type is one user turn; the assistant turn that follows may inclu
 
 1. you type a message → it is appended as a `user` [`SessionMessage`](../contracts/agent-session-spec.md#session-messages);
 2. the `AgentRunner` streams the assistant turn (tokens, tool calls, tool results);
-3. the assistant + any tool messages are appended; the prompt returns for your next turn.
+3. the assistant's final **text** is appended — within-turn tool call/result pairs are not carried into later turns ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2); the prompt returns for your next turn.
 
 Messages are **append-only** and persisted per turn; the loop is the same code path a workflow `agent` node uses — the difference is the entry point and lifetime, not the execution.
 

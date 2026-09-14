@@ -80,7 +80,8 @@ instance on a new model and rebuilds the chain for it ([ADR-0059](../decisions/0
    `AgentRunner`.
 2. The runner streams tokens and drives the tool-call loop against the `ToolRegistry`,
    walking the fallback chain on provider failure — identical to a workflow node.
-3. The user, assistant, and tool messages are appended to the transcript and persisted.
+3. The user message and the assistant's final text are appended to the transcript and persisted. Within-turn
+   tool call/result pairs are not carried into later turns ([ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2).
 
 The difference between a session and a workflow node is the **entry point and lifetime**,
 not the execution: a session is long-lived and conversational, a node is a single
@@ -141,8 +142,9 @@ form of the chat-to-workflow continuum, and it is honest about its fidelity: it 
 **human-reviewed scaffold**, not an auto-inferred optimal graph.
 
 - The session's assistant turns become a **linear chain of `agent` nodes**, in order,
-  carrying the agent binding, the resolved prompts, and the tools that were used.
-- The **full transcript is preserved in the workflow's durable `metadata` field** (a schema
+  carrying the agent binding and the resolved prompts. No node carries `tools` today, because no tool part is
+  persisted; ADR-0095 §1 and §3 add that in `W7`.
+- The **text transcript is preserved in the workflow's durable `metadata` field** (a schema
   field that survives parse → serialize — **not** fragile YAML comments, which [ADR-0026](../decisions/0026-session-export-to-workflow.md)
   rejects) so the file is self-documenting. The no-interpolation rule above keeps **resolved
   secret-tainted `{{ … }}` references** out of the transcript — but it does **not** sanitize a secret a

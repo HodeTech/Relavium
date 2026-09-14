@@ -1,8 +1,7 @@
 # Current state
 
 > Status: Living
->
-> Last updated: 2026-09-04
+> Last updated: 2026-09-14
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -91,7 +90,7 @@ flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
     LEDGER["#W15-1 — realized-cost ledger ✅<br/>ADR-0076 + ADR-0077"]
-    P265["Phase 2.6.5 — Core reliability<br/>48 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094"]
+    P265["Phase 2.6.5 — Core reliability<br/>50 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094<br/>W7 unblocked — ADR-0095–0098 accepted"]
     W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
@@ -465,14 +464,13 @@ gaps**: effect journal, stdio MCP consent-before-spawn, run lease, compaction tr
 input admission, event-log ordering. Three separate reviews landing on the same seven points is not opinion.
 
 The full, self-contained work list is
-[phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md) — **48 items**
-(`CR-01`…`CR-95`) with evidence, fix, acceptance criteria and a decision/ADR/gate register, written so the work
+[phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md) — **50 items** (`CR-01`…`CR-97`; `CR-96` and `CR-97` were opened 2026-09-14 from the `W7` ADR reviews) with evidence, fix, acceptance criteria and a decision/ADR/gate register, written so the work
 can be done from that document alone. An adversarial plan review on 2026-08-10 corrected the phase boundary,
 the exit rule and the execution order, and added two items (`CR-17` resume identity, `CR-63` `input_schema`
 docs-only); `CR-64` came from the Batch 1 triage, `CR-21b` from ADR-0082 §10 and `CR-21c` from the `W2`
 document review on 2026-08-25, which is why the total has moved since the list was first written.
 
-> **Live status — 39 of 48 closed (see the register for why not 43: W5 was counted twice). `W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with one reproduced BLOCKER and nine verified findings open — see the `W3` residuals in [deferred-tasks.md](deferred-tasks.md). `W4` MERGED 2026-09-01 (PR #87) behind [ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md): a systematic review of the branch found five merge blockers — an orphaned MCP child on a signal, an optional validated `fetch`, a bypassable transport byte bound, discovery paging past its budget, and two cloud-metadata endpoints reachable through the local opt-in — all reproduced and fixed before it merged. `W5` MERGED 2026-09-02 (PR #88) behind
+> **Live status — 41 of 50 closed (updated 2026-09-14; at W6's merge it was 39 of 48 — see the register for why not 43: W5 was counted twice). `W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with one reproduced BLOCKER and nine verified findings open — see the `W3` residuals in [deferred-tasks.md](deferred-tasks.md). `W4` MERGED 2026-09-01 (PR #87) behind [ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md): a systematic review of the branch found five merge blockers — an orphaned MCP child on a signal, an optional validated `fetch`, a bypassable transport byte bound, discovery paging past its budget, and two cloud-metadata endpoints reachable through the local opt-in — all reproduced and fixed before it merged. `W5` MERGED 2026-09-02 (PR #88) behind
 > [ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) +
 > [ADR-0090](../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md): all six of
 > `CR-50`–`CR-55` closed, two of them for one half of a two-part obligation and saying so in their own
@@ -544,7 +542,8 @@ document review on 2026-08-25, which is why the total has moved since the list w
 >
 > Per-item history, the seven post-review findings and the carried-forward gaps live in the phase document.
 
-> **Pre-`W7` close-out, 2026-09-06.** The last two non-deferrable items closed, so **exit criterion 1 is met**
+> **Pre-`W7` close-out, 2026-09-06.** *(Superseded in part on 2026-09-14: `CR-96` and `CR-97` reopened exit criterion 1,
+> the count is 41 of 50, and `CR-94` is decided and scheduled into `W7` — see the next block.)* The last two non-deferrable items closed, so **exit criterion 1 is met**
 > and the phase count is **41 of 48** (40 ✅ headings plus `CR-95`'s short-term half; the arithmetic is shown
 > because it has been wrong twice here). `CR-73`: `invoke_agent` was advertised to every model granted it while
 > its delegate is wired nowhere in the tree, so the advertise-filter now reads a tool's declared
@@ -557,6 +556,34 @@ document review on 2026-08-25, which is why the total has moved since the list w
 > on both halves, read from the exit code — `pnpm run ci | tail` reports `tail`'s status and produced one false
 > green in this session. Still open: criterion 2 (`CR-94` has no deferral record, and that is a maintainer's
 > call) and criterion 4 (the `W3` live blocker keeps the gap-free stream promise wider than the code).
+
+> **`W7` decisions made and accepted, 2026-09-14.**
+>
+> **What was decided.** The maintainer settled `CR-70`–`CR-72` and `CR-94` on 2026-09-12 and 2026-09-13. Four ADRs
+> were **accepted** on 2026-09-14, with their implementation staged in `W7`:
+>
+> - [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md) decides that tool history is
+>   persisted as structure, never content; that carrying it into the model's context is deferred; and that `memory`
+>   is implemented. `memory` stays inert until `W7` lands.
+> - [ADR-0096](../decisions/0096-a-request-is-measured-before-it-is-sent.md) decides that a request is measured
+>   before it is sent, that a context overflow is classified and recovered only before any tool runs, and that input
+>   is priced. Until `W7` lands, the estimate still prices output only.
+> - [ADR-0097](../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) decides that a budget
+>   approval is a dispatch-owned allowance, shown before it is granted. Until `W7` lands, an approved step still runs
+>   uncapped.
+> - [ADR-0098](../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md) decides that a session's
+>   effect row holds no result and never replays.
+>
+> **What the reviews found.** Six review rounds shaped the ADRs. They surfaced two shipping defects, now
+> register items `CR-96` and `CR-97`. Both meet the phase's non-deferrable definition, so exit criterion 1 is open
+> again, and the count is **41 of 50**.
+>
+> **What `W7` now covers:** `CR-71`, `CR-72`, ADR-0096's prerequisites, `CR-94`, `CR-96` and `CR-97`. Three
+> canonical claims that were already false are narrowed ahead of the code:
+>
+> - the session spec's tool history and export `tools` union;
+> - `memory`'s default;
+> - the uncapped approved budget step.
 
 **This is the corrected execution order, and it is what the graph above shows:**
 
@@ -576,8 +603,7 @@ document review on 2026-08-25, which is why the total has moved since the list w
 
 Two rules that changed with the plan review:
 
-- **Seventeen items are non-deferrable** — every W0/W1 item plus `CR-50`, `CR-55`, `CR-73`, `CR-80`, `CR-92` and
-  `CR-95`'s short-term fix. Each has a cheap fail-closed option (refuse, remove, narrow the claim), so "too big
+- **Nineteen items are non-deferrable** — every W0/W1 item plus `CR-50`, `CR-55`, `CR-73`, `CR-80`, `CR-92`, `CR-95`'s short-term fix, and (added 2026-09-14) `CR-96` and `CR-97`. Each has a cheap fail-closed option (refuse, remove, narrow the claim), so "too big
   to fix now" argues for the cheap option, never for deferral. The previous exit criterion permitted deferring
   all 43 items and declaring the phase complete.
 - **The gate is `pnpm run ci` AND `pnpm coverage`.** `coverage` is a separate required CI check and is not
