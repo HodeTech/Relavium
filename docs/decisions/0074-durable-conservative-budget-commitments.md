@@ -14,6 +14,16 @@
 >
 > Both ADRs are **Accepted** as of 2026-09-14 with their implementation staged for `W7`.
 
+> **Amended further 2026-09-18 — §1 also releases a pre-content HTTP 4xx.** (Maintainer, 2026-09-18.) Once
+> ADR-0096 §6 prices input, every usage-less engaged failure would commit a window-sized estimate rather than the
+> output-sized one it commits today: a short rate-limit burst could exhaust a session's cap on calls the provider
+> never billed. An upstream **4xx** (429, 400, 401, 402, 403, 404, 413, 422) with `contentReceived: false` on a
+> non-custom endpoint is the same positive evidence §1 already accepts for a classified context overflow — the
+> provider refused the request before inference. Its admission is released. **The list is exactly those eight
+> codes**; any other status keeps this ADR's conservative commitment — a 5xx, a timeout (which is where
+> `kindFromHttpStatus` already routes a 408), a transport failure, and any failure on a custom endpoint — because
+> billing there is genuinely uncertain. The user's explicit release (`/cost --release`) remains the escape for those.
+
 ## Context
 
 The pre-egress governor must make two deliberately different statements about money:

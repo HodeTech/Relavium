@@ -18,6 +18,105 @@
   [ADR-0086](0086-absolute-admission-ceilings-on-authored-values.md) ·
   [ADR-0096](0096-a-request-is-measured-before-it-is-sent.md) §6 (the input estimate)
 
+> **Amended 2026-09-18 — the `W7` pre-implementation review.** A systematic review against the tree found one
+> invariant that contradicts its own acceptance test, several sentences that claim more than the mechanism can
+> keep, and a guarantee with no product surface. The decision is unchanged. Choices the maintainer made on
+> 2026-09-18 are marked.
+>
+> - **"Pauses" means "pauses at round 0".** Every clause about a dispatch that holds no allowance — §2 invariants 3
+>   and 7, §4 invariant 2, and the "Crash, media" and "Legacy" acceptances — holds when the over-cap call is the
+>   turn's round-0 call. At round 1 or later the shipped `CR-95` guard ([ADR-0080](0080-durable-effect-journal-and-the-tiered-effect-contract.md)
+>   §10) refuses the pause and fails the step closed with `budget_exceeded`, because approving would re-fire the
+>   tools the turn already ran. It follows that **the paused attempt is always a round-0 attempt**, which is what
+>   `E` is sized from. Both arms are pinned: over the cap at round 0 pauses; over the cap later fails closed.
+> - **A crash while the approved dispatch was running leaves no allowance.** (Maintainer, 2026-09-18.) An
+>   admission lives only in memory and no row is written before egress, so an attempt that was in flight at the
+>   crash can have been billed and left no record. The fold cannot see it. The resumed dispatch therefore holds no
+>   allowance: its first over-cap round-0 call pauses again with a newly frozen, shown amount. That is what §4
+>   invariant 2's "a charge that durable rows cannot attribute leaves no allowance" already implies, and the
+>   "Crash remainder" acceptance below is SUPERSEDED by this note: where it reads "the remaining allowance is at
+>   most `A` minus those charges", read "the resumed dispatch holds no allowance at all; its first over-cap round-0
+>   call pauses with a newly frozen, shown amount". The rest of that bullet stands — a second crash and resume
+>   restores nothing, and exhaustion fails closed. An implementation or a test written from the body alone would
+>   contradict this note, so the replacement text is spelled out rather than left as "restated". The alternative, a durable pre-egress
+>   "attempt admitted" row, was rejected: it adds an event type and a write plus a barrier on every attempt, to buy
+>   a remainder the ADR already accepts as an under-count.
+> - **The debit rule, spelled out.** A call of the approved dispatch debits its allowance at the amount admitted,
+>   inside the governor's synchronous evaluate-and-admit window. When the attempt settles, the debit is reconciled
+>   to the realized charge: an under-spend is refunded, an overrun is charged, a proven pre-egress release refunds
+>   in full, and a conservative settle keeps the reservation. Only then is invariant 1's "plus ONE attempt's
+>   realized overrun" true, and only then can a crash fold never restore allowance the live path had spent. Calls
+>   of the approved dispatch that project under the cap debit too, so the live remainder and the crash fold count
+>   the same rows.
+> - **Invariant 2's run-wide sum is narrowed.** Spend past the cap that an ALLOWANCE admitted is bounded by the
+>   sum, over approved dispatches, of each allowance plus one attempt's realized overrun. An un-approved attempt
+>   admitted under the cap can still realize more than its reservation, because the estimate is a heuristic
+>   ([ADR-0096](0096-a-request-is-measured-before-it-is-sent.md) §1) — that is ADR-0028's pre-existing bound, not
+>   this ADR's. Only the per-dispatch form (invariant 1) is tested.
+> - **`A` covers every call at the PAUSED attempt's input size.** `E` is sized from the round-0 request, and
+>   ADR-0096 recomputes a larger input estimate each round, so a later round can cost more than `E` and exhaust the
+>   allowance while every call stays within its chain budget. The step then fails closed, which invariants 1 and 3
+>   already require; the "covers every call exhausting its chain, priced at the plan maximum" sentence is narrowed
+>   to say so, and this note records the case the Negative section does not.
+> - **The three ambiguous inputs of `A`.** On the generative route `attempts` is 1: it makes one submission and has
+>   no chain, even though its plan entry carries a chain budget of its own (2 with no authored `retry:`, 1 with
+>   one — `agent-runner.ts:961-967`). `attempts` is summed over exactly the entry set
+>   `E` is taken over. `calls` is 1 when the LOWERED, advertised tool list is empty — after `CR-73`'s delegate
+>   filter — not merely when no tool is granted. Each clause is pinned by a unit test on the computation.
+> - **The lease's scope is money.** `CR-94`'s "money/token/attempt scope" is met as follows: the amount is
+>   micro-cents, attempts and the ADR-0096 input-token estimate only SIZE it, and attempt scope is dispatch
+>   ownership. No separate token or attempt bound is enforced, and none is deferred — a second approval unit the
+>   user never sees would not be one they could reason about.
+> - **Where the frozen amount rides.** The amount, the unrepresentable marker (mutually exclusive with it) and the
+>   structured excluded-entry list are optional fields on `budget:paused` AND on `human_gate:paused` — the CLI
+>   prompter only ever receives the latter — and on `human_gate:resumed`, which carries no `gateId` and so cannot
+>   be joined back to its quote. `#settlePaused` writes the two pause events separately, so the fold takes the
+>   amount from whichever arrived and a crash between them is pinned by a test. `GateRequest` and the checkpoint's
+>   pending gate carry the same fields.
+> - **The quote's provenance rides with the amount.** The stale-quote refusal above cannot be implemented from `A`
+>   alone: `A` is an aggregate, so a later process cannot tell whether today's catalog would still produce it.
+>   The pause therefore also freezes what the quote was computed FROM — the model ids of the entries `E` was taken
+>   over and the rate basis each was priced at (the tier and the cached/non-cached rate), or a deterministic digest
+>   of exactly those values. The refusal compares that against what the resuming process resolves. Without this
+>   field the refusal is unimplementable and the promise would have to be withdrawn, which is why it is stated here
+>   rather than left to the implementation. It is not model BINDING — the allowance still buys whatever the plan
+>   runs; it is the evidence that the figure the user approved is still the figure the plan would quote.
+> - **The refusals must land before the gate is claimed.** `resume()` adds the gate to `#resolvedGates`
+>   synchronously before `#resolveBudgetGate` runs, so a refusal placed inside that method would leave the gate
+>   claimed and every later decision an idempotent no-op — the run would strand where §2 invariant 4 promises it can
+>   still be rejected. The refusal of `approved` on an unrepresentable gate, and of live `input_provided` on a
+>   budget gate, therefore happen before that claim, and before `beginResume` disarms the gate's timer; the
+>   cross-process path must leave no lease or registered run behind. The CLI prompter offers only Reject on an
+>   unrepresentable gate, because `drive.ts` rethrows a typed `EngineStateError` as a bug. Acceptance: after a
+>   refused approval, and after a refused `input_provided`, a rejection still ends the run `budget_exceeded`, and
+>   the gate's timeout still fires.
+> - **A non-interactive approval names the amount it approves, and `relavium budget resume` lands in `W7`.**
+>   (Maintainer, 2026-09-18.) Today a budget pause can be approved only through `relavium run`'s inline prompter,
+>   so a `--json` or non-TTY run cannot be approved at all, and this ADR's cross-process guarantee has no surface.
+>   `W7` builds `relavium budget resume <runId> [--gate <gateId>] --approve-amount <microcents> | --abort`: the
+>   amount flag must equal the frozen amount or the command refuses and prints the frozen figure, which is how
+>   invariant 5's "shown before approval" holds without a question to answer. **`--gate` is what makes it
+>   addressable.** `resume` takes a gateId, this ADR expects parallel vertices to hold separate allowances, and
+>   `relavium gate` and `gate list` both filter budget gates out — so with two budget gates pending there is no way
+>   to say which quote is being approved. With exactly one pending budget gate the command selects it; with more
+>   than one it refuses and lists each gate's id and frozen amount, which is also the discovery surface those
+>   commands do not provide. The command also refuses a quote whose model price no longer
+>   matches, so the deferred model binding cannot silently kill an approved step — the failure mode the deferral
+>   record now names. It moves out of 2.6.K's list.
+> - **"The re-run's first call is always admitted" assumes an unchanged price and plan.** `A` is frozen at the
+>   quote and never recomputed, so a price rise between the quote and the re-run can leave the first call over the
+>   frozen amount; the step then fails closed. The `CR-94` remainder record in
+>   [deferred-tasks.md](../roadmap/deferred-tasks.md) states that failure mode as the claim it narrows, and names
+>   the stale-quote refusal above as its mitigation.
+> - **The new exhaustion message carries no model id**, for the same reason invariant 5 keeps one out of the gate
+>   message, and the open `W5` residual about model ids in budget failure messages gains a cross-reference naming
+>   which budget messages `W7` added, when it lands.
+>
+> **Landing obligations gained.** [commands.md](../reference/cli/commands.md) — the inline gate card for a budget
+> gate shows the frozen allowance and offers no input, and the `budget resume` row documents `--approve-amount` ·
+> the sse-event-schema.md media rewrite keeps units-only rows as a legacy form that still resumes through the
+> re-price-and-hold branch, rather than deleting the case.
+
 ## Context
 
 Under `on_exceed: pause_for_approval`, approving a paused step removes the cap for that step:

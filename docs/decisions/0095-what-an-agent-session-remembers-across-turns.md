@@ -23,6 +23,104 @@
   [agent-session-spec.md](../reference/contracts/agent-session-spec.md) ·
   [agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md)
 
+> **Amended 2026-09-18 — the `W7` pre-implementation review.** A systematic review of this ADR against the tree
+> found one false rationale, several gaps that the implementation would otherwise have decided silently, and
+> wording that contradicts the table below it. The decision is unchanged; this note narrows it and adds landing
+> obligations. Choices the maintainer made on 2026-09-18 are marked as such.
+>
+> **§1 — the shape of a persisted turn.**
+>
+> - **Every completed turn ends with a terminal `assistant` row carrying a text part and no `tool_call` part.**
+>   The text may be empty, which is how a completed turn with empty final text is stored. §1's row shape implies
+>   it; this says it. A turn therefore runs from its `user` row to its terminal row, and the export groups on that
+>   row instead of merging contiguous `user` rows.
+> - **A trailing bare `user` row with no terminal row keeps today's resume rollback**, which is what makes "no
+>   migration is needed" true for every session persisted before `W7`.
+> - **The in-memory transcript is unchanged, and the REQUEST folds adjacent same-role messages.** (Maintainer,
+>   2026-09-18.) A completed turn with empty final text leaves a lone `user` message in memory, so a later turn
+>   can put two `user` messages next to each other. The request projection folds adjacent same-role messages into
+>   one, so every dialect sees an alternating conversation. The Anthropic adapter already does this for itself
+>   (`mergeAdjacentSameRole`); the rule now holds for all of them, in one place, and `session-resume.ts`'s
+>   "provider-rejected request" comment is corrected with it.
+> - **The synthesized `read_media` message is never persisted as a `user` row.** Turn identity is structural, so a
+>   `user` row inside a turn would break it. When a surface wires the media delegate, the attachment is recorded on
+>   the tool row as structure.
+> - **Invariant 1's refusal covers the whole store boundary.** `SessionMessageMeta`'s `toolCalls`, `name` and
+>   `toolCallId` reach `session_messages` today with no schema parse; they stop accepting a model- or server-chosen
+>   value. A raw argument or result key is **refused** on write, never silently stripped.
+> - **The structural tool part is a new session-only durable arm**, not a narrowing of the shared
+>   `DurableContentPart` union that run, event, IPC and export positions all reference.
+>   [database-schema.md](../reference/shared-core/database-schema.md) and
+>   [sse-event-schema.md](../reference/contracts/sse-event-schema.md) define its exact shape when `W7` lands: the
+>   fields, the size unit (UTF-8 bytes of the bounded, model-facing JSON), which value each size measures, the
+>   outcome vocabulary (`ok` / `error` / `denied` / `cancelled`), and the engine id form — which encodes the turn
+>   key and the slot, so [ADR-0098](0098-a-session-effect-row-holds-no-result-and-never-replays.md)'s join is sound.
+> - **A persisted engine-assigned tool-call id is unique within its session**, across resume, reseat and
+>   compaction. ADR-0098 decides "did not complete" by joining effect rows to persisted ids, and a per-turn ordinal
+>   would let a crashed turn's row match an earlier turn's id and suppress a disclosure that is owed.
+> - **"Server-chosen" means a string the registry did not resolve.** A discovered MCP tool's registry id is
+>   `mcp_<server>_<tool>`, whose tool segment the server supplies — reduced to `[a-zA-Z0-9_-]`, length-capped, and
+>   admitted only through the author's own `mcp_servers` ([ADR-0088](0088-the-mcp-boundary-is-hostile.md) §5). It is
+>   a resolved name and it persists and exports as itself; an UNRESOLVED name is what becomes `unknown_tool`. The
+>   acceptance heading "No model- or server-chosen string is persisted" is scoped to tool parts and ids — assistant
+>   text is model-chosen and is persisted by design. The structural field is built from the registry outcome, never
+>   from `agent:tool_call`, which carries the raw model-chosen name on its failure path.
+> - **An exported MCP tool id is honoured only when `relavium run` rediscovers it** from the inlined snapshot's
+>   `mcp_servers`, which [ADR-0094](0094-a-tool-grant-is-checked-when-the-plan-is-built.md) §2 already requires. If
+>   the server no longer exposes that tool, the plan build refuses the file.
+> - **"No tool content at rest" is about model-issued tool parts and effect rows.** `!`-command output and
+>   `@`-mention file content are injected into the user's own message and are persisted and exported as user data,
+>   which [ADR-0061](0061-cli-input-layer-file-injection-and-shell-escape.md) and ADR-0050's note already record.
+>
+> **§4 — `memory`.**
+>
+> - **`window` sends the current user message plus the last N completed turns**, and a completed turn with empty
+>   final text counts as one of them.
+> - **Invariant 1 constrains the policy, not the user.** `none` and `window` shape the request only; a `/trim` the
+>   user runs under `window` — which the table permits — still changes the transcript and writes a marker.
+> - **`compact()` and `trimHistory()` enforce the policy in the engine** and return a typed refusal naming it, so
+>   every surface inherits the author's contract instead of re-implementing it.
+>   [agent-session-spec.md](../reference/contracts/agent-session-spec.md) is its canonical home, and the CLI checks
+>   the policy before its own bound check.
+> - **A one-shot surface skips the after-turn trigger.** `relavium agent run` is one turn, so nothing reads a
+>   summary produced after it. "Always permitted" does not mean "always run" — this is invariant 5's reasoning
+>   applied to the other surface it fits.
+> - **A summary restored from a session compacted before `W7` is not projected under `none` or `window`**, as the
+>   table says. The durable rows keep it.
+> - **The `window` overflow remedy also names `/trim`**, which the table permits, and marks a smaller `window_size`
+>   as applying to a NEW session: a resumed or reseated session runs the frozen `agentSnapshot`, so its author has
+>   nothing to edit.
+> - **`memory` has no effect on a workflow `agent` node**, including one produced by session export. The canonical
+>   `memory` row in [agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md) carries that sentence; nothing
+>   else restates it.
+> - **`summary`'s "always permitted" is permission, not funding.** Once ADR-0096 §6 prices input, the summariser is
+>   the largest request a session makes, so near the cap it is REFUSED on budget: no trim, and the turn ends
+>   `budget_exceeded`. ADR-0096's note of the same date carries the rule.
+>
+> **One implementation note was wrong in a word.** On the idle paths — `/compact` and the after-turn trigger (the
+> kept slice of `splitFoldable`), and `/trim` (the kept slice of `tailFromUserBoundary`, which `/trim` uses
+> instead) — the trailing `user` message is the lone message of a COMPLETED empty-final turn, and it counts. Only
+> on ADR-0096's pre-send and recovery paths, where `sendMessage` has already pushed the in-flight message, is it
+> pending and excluded. Whether a turn is in flight decides which; never the message's position. **`/trim n` keeps
+> counting MESSAGES**, unchanged: invariant 5's boundary IDENTITY is per turn, and the two units are deliberately
+> different.
+>
+> **Landing obligations gained.** [config-spec.md](../reference/contracts/config-spec.md) (`[chat].auto_compact`
+> governs only an omitted `memory`, and covers all three automatic entry points) ·
+> [chat-session.md](../reference/cli/chat-session.md)'s `/compact` and `/trim` rows and its context-compaction
+> section (linking to the `memory` row rather than restating it) · agent-session-spec.md §"Session messages" (the
+> persisted content type and the `LlmMessage` projection) · a further dated note on
+> [ADR-0062](0062-context-compaction-and-cli-history-commands.md) for §4's change to its §5 config gate, its §7
+> commands and its "switchable off" consequence · a dated note on [ADR-0026](0026-session-export-to-workflow.md)
+> adding "and whether each errored" to the structure it lists · the residual record in
+> [deferred-tasks.md](../roadmap/deferred-tasks.md) for an errored or aborted turn, which persists nothing.
+>
+> **Acceptance gained.** `/compact` and `/trim` immediately after an empty-final turn, each followed by
+> `chat-resume` · `window_size: 1` · a session that called a discovered MCP tool persists and exports its
+> namespaced id, and the exported file builds a plan · a pre-`W7` compacted session whose snapshot authors `window`
+> resumes without projecting its summary · `relavium agent run` with `memory: summary`, over the threshold, makes
+> no summariser call after its one turn.
+
 ## Context
 
 A session's turn runs a full tool loop and then discards it. `runAgentTurn` returns only the final content, and

@@ -56,7 +56,7 @@ browsers, competitor-breadth tools, settings/theming/`en`+`tr` localization, and
 run-ops resume follow-up.
 
 **An interlude is running between Wave 1 and Wave 2 of the remediation: Phase 2.6.5 (Core reliability),
-41 of 50 items closed; two shipping defects found on 2026-09-14 (`CR-96`, `CR-97`) reopened the non-deferrable
+41 of 51 items closed; two shipping defects found on 2026-09-14 (`CR-96`, `CR-97`) reopened the non-deferrable
 list** — `W0` (PR #82, 2026-08-11), `W1`, the eight P0 blockers plus `CR-92`, merged
 2026-08-24 (PR #83) behind [ADR-0078](docs/decisions/0078-ordered-durable-append-and-the-terminal-outbox.md)–[ADR-0084](docs/decisions/0084-consent-before-a-local-mcp-spawn.md):
 ordered durable append, cross-process run ownership, the durable effect journal, untrusted compaction summaries,
@@ -131,8 +131,15 @@ number.
 - [ADR-0098](docs/decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md) decides that a session's
   effect row holds no tool result and never replays.
 
-Six review rounds shaped these ADRs, and they surfaced two shipping defects, opened as `CR-96` and `CR-97`, both
-open, non-deferrable and scheduled into `W7`. `CR-96`: a crash after a budget decision resumes the agent as complete,
+The first six review rounds shaped these ADRs, and they surfaced two shipping defects, opened as `CR-96` and
+`CR-97`, both open, non-deferrable and scheduled into `W7`.
+
+A **seventh round on 2026-09-18** then reviewed the four ADRs against the tree before any code was written — eight
+dimensions, each finding adversarially verified — and returned 113 findings plus seventeen maintainer decisions.
+Each ADR carries a dated note of that date, and `W7` gained `CR-98` (ADR-0096's three prerequisites, which had no
+register item), `relavium budget resume` (moved from 2.6.K, so an approval has a non-TTY surface) and a fifth
+security sitting, `history.db` at rest. ADR-0087 §1, the `W3` live blocker that belonged to no wave, is scheduled
+into `W8`. `CR-96`: a crash after a budget decision resumes the agent as complete,
 with an invented output. `CR-97`: session effect rows keep tool output at rest and can replay a stale result. After the fifth round, the maintainer
 had the ADRs restated as decisions, invariants and acceptance tests, because every round's defects were in the
 previous round's fixes.

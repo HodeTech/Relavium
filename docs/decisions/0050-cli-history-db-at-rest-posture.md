@@ -18,6 +18,23 @@
 > After ADR-0098 and ADR-0095, a session's transcript, its export and its effect rows hold no tool result. Point 3
 > stands. Both ADRs are **Accepted** as of 2026-09-14 with their implementation staged for `W7`.
 
+> **Scoped 2026-09-18 (the `W7` pre-implementation review), on two points.**
+>
+> - **"No tool result" means a MODEL-ISSUED tool call.** Point 2 above already records the other half: an
+>   `@`-attached file and `!`-shell output are injected into the user's own message, and they stay at rest — and in
+>   an export — as user data.
+> - **At rest means the file's bytes, not only the row.** (Maintainer, 2026-09-18.) `history.db` runs in WAL mode
+>   with `secure_delete` off, so clearing a value or deleting a row frees the page without zeroing it: the old bytes
+>   remain readable in free pages and in the `-wal` file. `W7` opens the connection with `PRAGMA secure_delete = ON`
+>   and checkpoints the WAL with `TRUNCATE` after ADR-0098's one-time clear of pre-existing session rows AND after
+>   each session-scope sweep. The checkpoint is not optional dressing: in WAL mode the zeroing write is a NEW frame
+>   while the old page image sits in the `-wal` file until a checkpoint moves it, so `secure_delete` alone leaves
+>   the bytes readable there. The claim is therefore "after a successful checkpoint, nothing freed since the upgrade
+>   survives in the main database or the WAL". Two residuals are named rather than covered: a checkpoint blocked by
+>   a concurrent reader (`SQLITE_BUSY`) defers the clearing to the next successful one, and pages freed by sweeps
+>   that ran BEFORE the upgrade are not zeroed retroactively — only a `VACUUM` would reclaim them. Point 3's "until
+>   the run's terminal sweep" becomes honest under the same rule.
+
 ## Context
 
 Phase-2 workstream **2.H** wires durable CLI run history to `~/.relavium/history.db`

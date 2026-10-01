@@ -9,6 +9,15 @@
 > **Amended 2026-07-07 (append-only, no reversal — surface-specific at-rest posture).** Rule (c)'s parenthetical below says user conversational content is "encrypted in `history.db`". That phrasing predates [ADR-0050](0050-cli-history-db-at-rest-posture.md) and is **surface-specific**: on the **CLI** surface `history.db` is **not** encrypted at rest — it is guarded by `0700`/`0600` owner-only permissions with API keys in the OS keychain only (no credentials at rest); only the **desktop** surface uses a SQLCipher-encrypted store. Read the phrase surface-specifically (mirrors the [ADR-0024](0024-agent-first-entry-point-agentsession.md) amendment note). This ADR's tool-policy decisions are unchanged.
 
 
+> **Corrected 2026-09-18 — rule (c)'s at-rest premise, not its decision.** The 2026-07-07 note above fixes the
+> word "encrypted" surface by surface. The sentence's other half — that what sits in `history.db` is safe because
+> the file holds no credentials and the engine masks tool I/O before persistence — was narrowed by
+> [ADR-0050](0050-cli-history-db-at-rest-posture.md)'s note of 2026-09-14: the masking is shape-based redaction
+> applied upstream to event COPIES rather than anything the `RunEventBus` does, user-injected content (`@`-attached
+> files, `!`-shell output) is already at rest as user data, and a committed tier-3 effect keeps its bounded result
+> until its sweep. This ADR's tool-policy decisions are unchanged; only the at-rest premise its parenthetical leans
+> on is narrower than it reads.
+
 > **Amended 2026-09-02 by [ADR-0094](0094-a-tool-grant-is-checked-when-the-plan-is-built.md).** §(b)'s
 > "Enforced by the parser" was never true — nothing in `parser.ts`/`dag.ts`/`run-plan.ts` reads `tools`.
 > The narrowing is enforced when the PLAN IS BUILT (a `GraphIssue` in `buildRunPlan`), with the runtime

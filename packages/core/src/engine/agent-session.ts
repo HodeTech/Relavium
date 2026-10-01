@@ -773,9 +773,10 @@ export class AgentSession {
       // The turn did not complete — roll the user message back so the transcript holds only COMPLETED
       // exchanges (no dangling user turn or two consecutive user messages) on EVERY non-completing exit,
       // including a cancel-during-turn. Nothing is pushed after the user message on a throw (the assistant
-      // append is past the `await`), so the last element is always that message. This also keeps a future
-      // non-AgentTurnError the session does not yet handle — e.g. a 1.AC pre-egress `BudgetPauseError` — from
-      // orphaning it.
+      // append is past the `await`), so the last element is always that message. This also keeps a
+      // non-AgentTurnError from orphaning it — a pre-egress `BudgetPauseError` is settled loudly as
+      // `budget_exceeded` by `#settleTurnError` below (a session has no pause/resume gate machinery), and an
+      // unclassified throw is settled and re-raised.
       this.#messages.pop();
       if (this.#statusIs('cancelled')) return; // cancel-during-turn: session:cancelled is the terminal
       if (this.#abortingTurn) {

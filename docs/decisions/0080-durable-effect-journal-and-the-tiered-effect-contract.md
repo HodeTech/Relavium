@@ -28,6 +28,17 @@
 > Run-scoped behaviour, including re-delivery and the resume gate, is unchanged. ADR-0098 is **Accepted** as of
 > 2026-09-14 with its implementation staged for `W7`.
 
+> **Extended 2026-09-18 (the `W7` pre-implementation review) — the attempt id becomes load-bearing on the session
+> path.** §1 records `EffectAttemptId` as the audit row, "never used for dedup", and
+> [effect-journal.md](../reference/shared-core/effect-journal.md) §2 calls it deliberately unstable. It still is
+> never used for dedup. But ADR-0098's disclosure predicate joins a committed session row to the turn that
+> persisted it, so `W7` threads a per-call, ENGINE-ASSIGNED tool-call id through `EffectDispatchPort.prepare` into
+> the attempt, where every session surface writes a wiring constant today (`'session'`, `'home'`, `'agent-run'`).
+> That id must be stable and unique within its session; the provider's own id is never used, because on the Gemini
+> dialect it is derived from a model-chosen name. effect-journal.md §2, the `EffectAttemptId` docblock in
+> `packages/shared/src/run.ts` and the store's docblock are corrected when `W7` lands. Run-scoped behaviour is
+> unchanged.
+
 ## Context
 
 A tool effect can complete at its target, the process can die before the result persists, and resume re-runs the

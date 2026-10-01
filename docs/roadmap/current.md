@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-09-14
+> Last updated: 2026-09-18
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -464,13 +464,13 @@ gaps**: effect journal, stdio MCP consent-before-spawn, run lease, compaction tr
 input admission, event-log ordering. Three separate reviews landing on the same seven points is not opinion.
 
 The full, self-contained work list is
-[phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md) — **50 items** (`CR-01`…`CR-97`; `CR-96` and `CR-97` were opened 2026-09-14 from the `W7` ADR reviews) with evidence, fix, acceptance criteria and a decision/ADR/gate register, written so the work
+[phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md) — **51 items** (`CR-01`…`CR-98`; `CR-96` and `CR-97` were opened 2026-09-14 from the `W7` ADR reviews, `CR-98` on 2026-09-18) with evidence, fix, acceptance criteria and a decision/ADR/gate register, written so the work
 can be done from that document alone. An adversarial plan review on 2026-08-10 corrected the phase boundary,
 the exit rule and the execution order, and added two items (`CR-17` resume identity, `CR-63` `input_schema`
 docs-only); `CR-64` came from the Batch 1 triage, `CR-21b` from ADR-0082 §10 and `CR-21c` from the `W2`
 document review on 2026-08-25, which is why the total has moved since the list was first written.
 
-> **Live status — 41 of 50 closed (updated 2026-09-14; at W6's merge it was 39 of 48 — see the register for why not 43: W5 was counted twice). `W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with one reproduced BLOCKER and nine verified findings open — see the `W3` residuals in [deferred-tasks.md](deferred-tasks.md). `W4` MERGED 2026-09-01 (PR #87) behind [ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md): a systematic review of the branch found five merge blockers — an orphaned MCP child on a signal, an optional validated `fetch`, a bypassable transport byte bound, discovery paging past its budget, and two cloud-metadata endpoints reachable through the local opt-in — all reproduced and fixed before it merged. `W5` MERGED 2026-09-02 (PR #88) behind
+> **Live status — 41 of 51 closed (updated 2026-09-18; at W6's merge it was 39 of 48 — see the register for why not 43: W5 was counted twice). `W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with one reproduced BLOCKER and nine verified findings open — see the `W3` residuals in [deferred-tasks.md](deferred-tasks.md). `W4` MERGED 2026-09-01 (PR #87) behind [ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md): a systematic review of the branch found five merge blockers — an orphaned MCP child on a signal, an optional validated `fetch`, a bypassable transport byte bound, discovery paging past its budget, and two cloud-metadata endpoints reachable through the local opt-in — all reproduced and fixed before it merged. `W5` MERGED 2026-09-02 (PR #88) behind
 > [ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) +
 > [ADR-0090](../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md): all six of
 > `CR-50`–`CR-55` closed, two of them for one half of a two-part obligation and saying so in their own
@@ -543,7 +543,7 @@ document review on 2026-08-25, which is why the total has moved since the list w
 > Per-item history, the seven post-review findings and the carried-forward gaps live in the phase document.
 
 > **Pre-`W7` close-out, 2026-09-06.** *(Superseded in part on 2026-09-14: `CR-96` and `CR-97` reopened exit criterion 1,
-> the count is 41 of 50, and `CR-94` is decided and scheduled into `W7` — see the next block.)* The last two non-deferrable items closed, so **exit criterion 1 is met**
+> the count is 41 of 51, and `CR-94` is decided and scheduled into `W7` — see the next block.)* The last two non-deferrable items closed, so **exit criterion 1 is met**
 > and the phase count is **41 of 48** (40 ✅ headings plus `CR-95`'s short-term half; the arithmetic is shown
 > because it has been wrong twice here). `CR-73`: `invoke_agent` was advertised to every model granted it while
 > its delegate is wired nowhere in the tree, so the advertise-filter now reads a tool's declared
@@ -556,6 +556,9 @@ document review on 2026-08-25, which is why the total has moved since the list w
 > on both halves, read from the exit code — `pnpm run ci | tail` reports `tail`'s status and produced one false
 > green in this session. Still open: criterion 2 (`CR-94` has no deferral record, and that is a maintainer's
 > call) and criterion 4 (the `W3` live blocker keeps the gap-free stream promise wider than the code).
+> *(Criteria 2 and 4 have both moved on: `CR-94` was decided 2026-09-13 and its remainder now has a deferral
+> record, and ADR-0087 §1 — criterion 4's blocker — is scheduled into `W8`. Criterion 5, called closed above,
+> REOPENED on 2026-09-18 with a fifth sitting, `history.db` at rest.)*
 
 > **`W7` decisions made and accepted, 2026-09-14.**
 >
@@ -574,16 +577,43 @@ document review on 2026-08-25, which is why the total has moved since the list w
 > - [ADR-0098](../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md) decides that a session's
 >   effect row holds no result and never replays.
 >
-> **What the reviews found.** Six review rounds shaped the ADRs. They surfaced two shipping defects, now
+> **What the reviews found.** The first six review rounds shaped the ADRs; a seventh, on 2026-09-18, reviewed them
+> against the tree before any code (see the block below). The six surfaced two shipping defects, now
 > register items `CR-96` and `CR-97`. Both meet the phase's non-deferrable definition, so exit criterion 1 is open
-> again, and the count is **41 of 50**.
+> again, and the count is **41 of 51**.
 >
-> **What `W7` now covers:** `CR-71`, `CR-72`, ADR-0096's prerequisites, `CR-94`, `CR-96` and `CR-97`. Three
-> canonical claims that were already false are narrowed ahead of the code:
+> **What `W7` now covers:** `CR-71`, `CR-72`, `CR-98` (ADR-0096's prerequisites, opened as an item 2026-09-18),
+> `CR-94`, `CR-96` and `CR-97`, plus `relavium budget resume`, which moves here from 2.6.K because ADR-0097's
+> shown-amount guarantee otherwise has no non-TTY surface. Five canonical claims that were already false are
+> narrowed ahead of the code:
 >
 > - the session spec's tool history and export `tools` union;
 > - `memory`'s default;
-> - the uncapped approved budget step.
+> - the uncapped approved budget step;
+> - the SSE schema's "user/assistant/tool messages are persisted" sentence (2026-09-18);
+> - the chat reference's "full transcript" in the export (2026-09-18).
+>
+> *(This `W7` is Phase 2.6.5's seventh wave. It is not the remediation's "Wave 7 — Orchestration & the gate" in
+> the graph at the top of this file, exactly as `W2` is not Wave 2.)*
+
+> **`W7` document review, 2026-09-18 — before any code.** Eight dimensions reviewed the four ADRs, the register,
+> the deferrals and every canonical document they touch against the tree; each finding was verified by an
+> independent adversarial pass. 113 findings held, and the maintainer settled seventeen decisions the same day.
+> Every ADR carries a dated note; the register carries a per-document landing checklist. Three document defects
+> mattered most, and all three would have been discovered mid-implementation:
+>
+> - **ADR-0098's join does not exist.** It says the effect journal already records the tool-call id; every session
+>   surface writes a wiring constant instead, so `W7` must thread an engine-assigned id through the dispatch port.
+> - **ADR-0098's monotonic turn key could not be derived** from the journal, because the sweep deletes the rows the
+>   high-water mark would be read from. It becomes a durable column on the session row.
+> - **ADR-0096 §1's per-part floor** would have charged an inline image megabytes of tokens, contradicting the
+>   per-modality media ceiling in the same section.
+>
+> Two of the seventeen decisions change what ships beyond those ADRs: `history.db` opens with
+> `PRAGMA secure_delete = ON`, so "no tool result at rest" is true of the file's bytes and not only of the row; and
+> a pre-content HTTP 4xx now releases its admission instead of committing an input-sized estimate, which keeps a
+> rate-limit burst from exhausting a session's cap once input is priced. ADR-0087 §1 — the `W3` live blocker that
+> belonged to no wave — is scheduled into `W8`.
 
 **This is the corrected execution order, and it is what the graph above shows:**
 
@@ -698,7 +728,7 @@ The four Day-1-independent 2.6 workstreams everything downstream sits on — and
 1. **ADR-0058** and **ADR-0060** flipped Proposed → Accepted (0060 with its mandatory security review);
    **ADR row 6 drafted when 2.6.H starts, not when 2.6.G starts** as the doc says — H must land before G.
 2. 2.6.A · **`nodeCatalogIssue` never resolves the agent's own model** (#88) — ungated pre-existing bug, first.
-3. **2.6.K** — the shared resume core (security review) → `budget resume` → the gate-decision/`gateType`
+3. **2.6.K** — the shared resume core (security review) → the gate-decision/`gateType`
    cross-check (#0) → **2.6.G's `engine.reconcile()` wiring (#229), pulled forward** to where its only
    dependency resolves → secret re-provide (**mandatory security review** — it relaxes a fail-closed
    guarantee) → ~~gate-timeout re-arm~~ (closed early in 2.6.5 `CR-22`) → the `run:paused` park distinction.

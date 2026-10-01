@@ -26,6 +26,181 @@
   (`CR-95`) · [ADR-0097](0097-a-budget-approval-is-an-allowance-not-an-exemption.md) (sizes an allowance from this
   ADR's estimate)
 
+> **Amended 2026-09-18 — the `W7` pre-implementation review.** A systematic review against the tree found two
+> invariants that cannot both hold as written, several quantities the implementation would have had to invent, and
+> canonical documents this ADR falsifies without listing. The decision is unchanged. Choices the maintainer made on
+> 2026-09-18 are marked.
+>
+> **§1 — what the estimate counts.**
+>
+> - **The per-part floor does not apply to a media part.** Every NON-media part adds at least its serialised length
+>   divided by the character ratio; a media part adds its per-modality ceiling whatever its source encoding carries,
+>   and a `tool_result`'s `media` array is charged per element by modality. Read literally, the floor charged a 5 MB
+>   inline image about 1.7 M tokens, which would end an attachment-bearing attempt `budget_exceeded`.
+> - **The per-modality ceilings are fixed numbers, recorded with their sources.** (Maintainer, 2026-09-18.) The
+>   image ceiling is the largest documented per-image input charge among the supported providers. PDF, audio and
+>   video have no documented per-part maximum, so each is charged a fixed per-part assumption; that keeps §1's
+>   recorded under-count rather than pretending to a bound. The numbers and their citations live in
+>   [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md) beside the estimator.
+> - **The input term is priced at the highest context tier and the non-cached input rate** (`worstCaseRates`),
+>   which is [ADR-0071](0071-models-dev-as-the-model-metadata-source.md) §11's directional rule: on a safety
+>   control, guessing the cheap side is the guess that lets money escape. `budget-estimator.ts`'s "prices only the
+>   output side" comment is corrected with the code, and so are the three per-adapter `CONTEXT_SEAM_DEFAULTS`
+>   comments that repeat the fallback-only framing (`openai.ts:1557`, `gemini.ts:1312`, `anthropic.ts:954`) — §1
+>   names only `types.ts` and `adapters/shared.ts`.
+>
+> **§2 — what is measured.**
+>
+> - **The output reservation, when the adapter sends no cap, is a shared default of 4096 clamped to the model's
+>   catalog output ceiling.** (Maintainer, 2026-09-18.) Only the Anthropic adapter has a default today; OpenAI,
+>   DeepSeek, Gemini and custom endpoints send no cap at all when `max_tokens` is not authored, so "the default"
+>   named nothing for them. 4096 is the figure the governor already assumes (`DEFAULT_MAX_TOKENS_ESTIMATE`) and the
+>   one Anthropic sends. One seam-level helper in `@relavium/llm` returns it, so the session, the governor and the
+>   adapters cannot disagree.
+> - **A custom endpoint's window is unknown.** A provider with `customEndpoint === true` reports the catalog window
+>   of whatever model id it reuses, which is not authoritative (`CR-51`), so pre-send, recovery and after-turn
+>   automatic compaction are all skipped for it — the answer ADR-0062 §5 already gave for a custom id, now true in
+>   the code as well. The CLI footer's window lookup has the same gap and is fixed with it.
+> - **The cooldown pre-skip cannot apply at the pre-send point.** A chain, and its cooldown map, is built inside
+>   every `runAgentTurn`, so at pre-send time no cooldown exists and the rule reduces to the capability pre-skip.
+>   Nothing is to be hoisted to make it otherwise.
+> - **W7 does not calibrate.** (Maintainer, 2026-09-18.) The heuristic ships alone; invariant 4 binds any
+>   calibration that is added later, and the deferral is recorded in
+>   [deferred-tasks.md](../roadmap/deferred-tasks.md). The implementation note naming OpenAI and Gemini as net of
+>   cache is incomplete: Anthropic's `input_tokens` excludes cache reads and writes too, so "gross input" has to be
+>   rebuilt per dialect if calibration is ever built.
+> - **The after-turn trigger measures the same construction with no pending user text**, and applies both of §3's
+>   conditions — the threshold and input-plus-reservation against the window.
+>
+> **§3 — pre-send compaction.**
+>
+> - **The non-foldable floor includes the exchange the compaction primitive keeps verbatim**, which at pre-send
+>   time also carries the already-pushed pending user message. The floor is compared with the WINDOW, as written,
+>   not with the threshold. The cost is disclosed rather than hidden: when the floor sits between
+>   `compact_threshold × window` and the window, a summariser call runs before each turn, and that call is what
+>   keeps the turn from overflowing.
+> - **A skipped pre-send compaction still sends the request**, and it also suppresses §5's recovery in that turn,
+>   exactly as a failed one does. A recovery compaction that returns `nothing_to_compact` ends the turn with one
+>   `context_overflow` terminal and no retry.
+> - **The summariser's input is bounded by a capped multi-pass fold.** (Maintainer, 2026-09-18.) The foldable
+>   history is chunked and folded into a running summary over at most four passes, each of which is budget-gated and
+>   billed. Installation is all-or-nothing: no in-memory change and no boundary marker unless every pass succeeded,
+>   while the spend of the passes that ran stays accounted. One `session:compacting` / terminal pair per compaction,
+>   with `tokensUsed` summed, so the persister still writes one marker. A single foldable message that cannot fit on
+>   its own is truncated head-and-tail behind a fixed engine-authored marker naming how much was dropped.
+> - **A pre-egress budget refusal of the summariser is a BUDGET outcome, not a failed compaction.** (Maintainer,
+>   2026-09-18.) Once input is priced, the summariser is the largest request a session makes, so a session near its
+>   cap has it refused. The history is not trimmed, the pre-send request is not sent, and the turn ends
+>   `budget_exceeded` naming the cap — during recovery too, where reporting `context_overflow` would name a cause
+>   the user cannot act on and a remedy that is also refused. ADR-0097's allowance does not reach it: a session has
+>   no pause/resume gate machinery, so a pre-egress `BudgetPauseError` settles the turn rather than pausing for
+>   approval (`agent-session.ts`'s `#settleTurnError`, and the "Session budget pause/resume" record in
+>   deferred-tasks.md). `session:compacting` is emitted only once the summariser's FIRST pre-egress admission has
+>   succeeded, so a refusal there opens no compaction moment. A refusal on a LATER pass of a multi-pass fold arrives
+>   with the moment already open, and it emits `session:compaction_failed` carrying `budget_exceeded` before the
+>   turn settles — the compaction genuinely did not complete, even though the CAUSE is the cap rather than the
+>   summariser. "Not a failed compaction" governs what happens to the history (it is not trimmed) and which code
+>   the turn ends with; it does not license a `session:compacting` with no terminal.
+> - **`session:compacting` and `session:compacted` gain the additive `reason` values `pre-send` and
+>   `overflow-recovery`, and every failed compaction gets a terminal.** (Maintainer, 2026-09-18.) A new additive
+>   `session:compaction_failed` event ends the moment for a failed automatic OR manual compaction, so
+>   "`session:compacting` with no terminal" stops being a documented exception, the CLI's labelled indicator cannot
+>   stay lit through a streamed reply, and the user is told that the request went out uncompacted.
+>
+> **§4, §5 — classification and recovery.**
+>
+> - **The overflow fixtures are captured live, once, before the classification commit.** (Maintainer, 2026-09-18.)
+>   Every conformance fixture in the tree is hand-authored, so the invariant could not be met by following the
+>   repo's own convention. `W7` ships a capture script the maintainer runs with their own keys for each dialect —
+>   Anthropic, OpenAI, DeepSeek (its own dialect) and Gemini — and commits each response with its capture date and
+>   model id. The Gemini replay harness is changed in the same commit to reject with the recorded message and body
+>   rather than a fixed string, or a recorded Gemini overflow can never reach the classifier. The capture also
+>   answers whether the GA Anthropic API reports a window-truncated generation as the `model_context_window_exceeded`
+>   stop reason, which today's `default` arm would map to a clean `stop`.
+> - **What each dialect keys on is documented per dialect** in llm-provider-seam.md: a structured code where one
+>   exists, and otherwise a status-gated (400 / invalid-request) message match inside the adapter, each pinned by
+>   that dialect's recorded fixture. An unmatched overflow stays `bad_request`. The engine and the surfaces narrow
+>   on the kind only.
+> - **§4 invariant 2 is enforced where `customEndpoint` is visible** — in the `FallbackChain`, which already reads
+>   it for its skip decision. The chain turns a `context_overflow` from a custom-endpoint entry into `bad_request`
+>   before it records or throws; the adapter's host-based endpoint check must not be used for this, because a
+>   custom provider is built by spreading the adapter and the flag is added afterwards. The release acceptance for
+>   condition 3 therefore uses a double that delivers `context_overflow` for a custom-endpoint entry, or deleting
+>   the condition leaves the test green.
+> - **`inputTokensEstimate` is computed by the turn core from the current round's request.** The chain's
+>   `PreAttemptHook` never receives the per-entry request, so the alternative would be a seam contract change this
+>   ADR does not list. Measuring the pre-strip round request over-counts a stripped reasoning part, which is the
+>   conservative direction. The field is REQUIRED on the hook's info (or the governor takes the info object), so a
+>   forwarding site that drops it fails to compile rather than silently zeroing the input term; the generative
+>   media gate forwards `0`, as its `maxTokens: 0` already implies. Its canonical home is
+>   [agent-runner.md](../reference/shared-core/agent-runner.md), which already documents `preEgress`, and not
+>   llm-provider-seam.md, where the "Contract changes" line above points.
+> - **A pre-content HTTP 4xx releases its admission, like a classified overflow.** (Maintainer, 2026-09-18.) Once
+>   input is priced, every usage-less engaged failure would otherwise commit a window-sized estimate, so a short
+>   rate-limit burst could exhaust a session's cap. An upstream 4xx (429, 400, 401, 402, 403, 404, 413, 422) with
+>   `contentReceived: false` on a non-custom endpoint is the same positive evidence §5 invariant 5 already accepts:
+>   the provider refused before inference. The list is exactly those eight codes; every other status keeps
+>   ADR-0074's commitment — 5xx, timeout (where `kindFromHttpStatus` already routes a 408) and transport failures —
+>   because billing there is genuinely uncertain. This extends §5 invariant 5 and is recorded on ADR-0074 as well.
+> - **Recovery measures against §2 invariant 2 applied to the retry's fresh chain.** A workflow node's
+>   `context_overflow` message names the model of the attempt that overflowed, and says the window is unknown in
+>   fixed wording rather than naming a number when the catalog has none.
+> - **The remedy is engine-authored but surface-neutral, and each surface names its own commands.** (Maintainer,
+>   2026-09-18.) `packages/core` is shared by the CLI, the desktop app and the extension, so an engine string
+>   naming `/compact` would put one surface's vocabulary into the engine. The engine states the fact — the request
+>   exceeds the window, whether tools already ran, and which window — and the CLI builds the sentence from ONE
+>   remedy function that knows the effective `memory` policy and whether tools ran. That function serves the
+>   classified code and the custom-endpoint keyword heuristic alike, so a refused command is never suggested: never
+>   `/compact` or `/trim` under `none`, never `/compact` under `window`. `context_overflow` is displayed on the chat
+>   surface and gets no second static hint. The CLI's hint switch is exhaustive only by the `ERROR_CODES` drift
+>   test, not by the compiler — it switches on `string` — so the new code needs a deliberate hint decision rather
+>   than a compile error to prompt one; the Negative section's "the compiler finds every switch" is true of the
+>   engine's unions, not of that site.
+> - **A new `ErrorCode` member is not additive for STORED events.** (Maintainer, 2026-09-18.) An older binary
+>   treats a persisted `node:failed` or `run:failed` carrying `context_overflow` as corruption and refuses to read
+>   it, for display as well as replay. That is accepted, with upgrade as the remedy — the precedent
+>   `effect_needs_attention` set without saying so — and sse-event-schema.md's forward-compatibility section will
+>   state the rule when `W7` lands, rather than leaving the next reader to find it.
+>
+> **Corrections to the implementation notes.** The `finally` that restores `#abort`, `#abortingTurn` and `#status`
+> is at `agent-session.ts:793-797`; `:798-804` is the after-turn auto-compaction call, which sits OUTSIDE it.
+> `compact()` also installs its own controller over `#abort` and its `finally` clears `#abortingTurn` and resets
+> `#status`, so pre-send and recovery compaction need an inner primitive that shares the turn's signal and leaves
+> turn state alone — otherwise an `Esc` during pre-send compaction would settle the compaction and let the turn
+> send anyway.
+>
+> **Landing obligations gained.** [config-spec.md](../reference/contracts/config-spec.md) (`auto_compact` /
+> `compact_threshold` now measure the projected next request against the first attemptable entry's window, the
+> three entry points, and pre-send failure sending rather than trimming) ·
+> [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md)'s cost-cap formula, which prices output
+> only · [agent-runner.md](../reference/shared-core/agent-runner.md) (the `context_overflow` row in its error map,
+> and `PreEgressHook.inputTokensEstimate`) · llm-provider-seam.md:178's "pre-first-turn FALLBACK only" framing, the
+> per-modality ceilings, and the per-dialect classification · error-handling.md's claim that the chain "records the
+> failed attempt's usage", which it does not (the same claim sits in `llm-error.ts`) ·
+> [chat-session.md](../reference/cli/chat-session.md)'s context-fullness paragraph, which stays a billed-usage
+> approximation and is not the trigger.
+>
+> **Register.** These three prerequisites are register item `CR-98`, opened 2026-09-18 (deferrable, scheduled
+> `W7`); this ADR's invariants and acceptance tests — as amended by this note — are that item's acceptance.
+>
+> **Acceptance gained.**
+>
+> - An inline base64 image part adds the image ceiling, not its base64 length divided by the ratio.
+> - An UNAUTHORED `max_tokens` reserves the shared 4096 default clamped to the catalog ceiling, on each dialect —
+>   distinct from the body's "The right output cap", which pins the authored-above-ceiling case.
+> - A custom endpoint that reuses a catalog model id skips pre-send, recovery and after-turn compaction, and the
+>   CLI footer does not claim its window.
+> - A kept exchange larger than the window skips pre-send compaction and makes no summariser call.
+> - A skipped pre-send compaction still sends; a skip suppresses recovery in that turn; and a recovery compaction
+>   that returns `nothing_to_compact` ends the turn with one `context_overflow` terminal and no retry.
+> - A custom-endpoint overflow under `memory: none` never names `/compact` or `/trim`.
+> - A session near its cap whose summariser is refused on budget keeps its history and ends `budget_exceeded`, on
+>   the pre-send path and on the recovery path alike. When the refusal lands on pass 2 of a multi-pass fold, the
+>   open `session:compacting` is closed by one `session:compaction_failed` carrying `budget_exceeded`, and nothing
+>   is installed.
+> - A tiered model's input term is priced at its highest context tier.
+> - A pre-content 429 releases its admission, and a pre-content 5xx, timeout or transport failure stays committed.
+
 ## Context
 
 Three defects make a long session fail badly, and all three are live:

@@ -30,6 +30,34 @@
 > Both ADRs are **Accepted** as of 2026-09-14 with their implementation staged for `W7`, so the behaviour described
 > below is what ships until it lands.
 
+> **Amended further 2026-09-18 — what ADR-0095 §4 changes here, and what ADR-0096 adds.** The note above recorded
+> ADR-0095's boundary rule and ADR-0096's refinements, and left three places in this ADR that stop being true.
+>
+> - **§5's config gate is no longer the only gate.** An authored agent `memory` overrides `[chat].auto_compact` in
+>   both directions and decides all three automatic entry points: this ADR's after-turn trigger, ADR-0096's
+>   pre-send compaction, and its overflow recovery. `summary` permits automatic compaction whatever the config
+>   says; `none` and `window` never compact.
+> - **§7's commands can be refused.** `/compact` and `/trim` are refused under `none`, and `/compact` under
+>   `window`, each naming why — the engine refuses, so every surface inherits it.
+> - **The Negative consequence's "always … switchable off (`auto_compact = false`)" holds only for an omitted
+>   policy.** Under `memory: summary` the off-switch does not apply. A one-shot `relavium agent run` still makes no
+>   after-turn summariser call, because nothing would read its result.
+> - **A failed automatic compaction is never silent, and now always has a terminal.** (Maintainer, 2026-09-18.)
+>   ADR-0096 replaces this ADR's
+>   trim-on-failure for the PRE-SEND path (the request is sent instead), and adds an additive
+>   `session:compaction_failed` event so every `session:compacting` has a terminal — including the manual `/compact`
+>   failure this ADR left without one. A pre-egress BUDGET refusal of the summariser is not a compaction failure at
+>   all: it ends the turn `budget_exceeded` and the history is not trimmed.
+> - **The disclosed summary-of-a-summary degradation gets deeper.** (Maintainer, 2026-09-18.) A compaction whose
+>   foldable history exceeds the summariser's window now runs up to FOUR chained passes, each folding a running
+>   summary, so the nesting this ADR's Negative section discloses across successive compactions can now happen
+>   inside ONE. The mitigations named there are unchanged: nothing durable is deleted, and the last complete
+>   exchange is kept verbatim.
+> - **§7's accepted imprecision now covers one more divergence.** The CLI's context-fullness indicator shows the
+>   last turn's billed input, which is net of cache and summed across tool rounds, against the bound model's
+>   window. ADR-0096's trigger measures the projected next request instead, so the two can disagree in both
+>   directions; the indicator stays an approximation and says so.
+
 ## Context
 
 A long `relavium chat` / Home session grows its transcript every turn. `AgentSession`

@@ -17,6 +17,91 @@
   [ADR-0079](0079-cross-process-run-ownership-lease-and-fencing-token.md) (runs only; a session has no ownership
   guarantee)
 
+> **Amended 2026-09-18 — the `W7` pre-implementation review.** A systematic review against the tree found that the
+> one mechanism this ADR offers for linking a persisted turn to its effect rows does not exist, and that the
+> monotonic key cannot be derived from the journal once the sweep runs. The decision is unchanged; the mechanism
+> notes are corrected. Choices the maintainer made on 2026-09-18 are marked.
+>
+> - **RETRACTED: "The effect journal already records the tool-call id."** `registry.ts:601` is the `toolCallId` of
+>   the model-facing `tool_result` part, not a journal write. The journal's `EffectAttemptId` is fixed once, when
+>   the host wires the port, and every session surface stores a constant: `'session'` in `chat`, `'home'` in the
+>   Home, `'agent-run'` in `agent run`. `effect-journal-store.ts`'s own docblock says the provider's `toolCallId`
+>   is "not threaded to the dispatch today". So the join described there cannot be built as claimed. **`W7` threads
+>   a per-call, ENGINE-ASSIGNED tool-call id through `EffectDispatchPort.prepare` into the attempt** — in the
+>   SQLite store and in the core reference store alike — and never the provider's own id, which on Gemini is
+>   derived from the model-chosen name. That makes the attempt id load-bearing rather than audit-only, so
+>   [effect-journal.md](../reference/shared-core/effect-journal.md) §2, the `EffectAttemptId` docblock in
+>   `packages/shared/src/run.ts` and the store's docblock are corrected at landing, and
+>   [ADR-0080](0080-durable-effect-journal-and-the-tiered-effect-contract.md) carries a further dated note. Its
+>   "never used for dedup" rule is untouched: a disclosure join is not dedup.
+> - **The join reads every persisted row of the session**, not the resumable projection, which drops rows before a
+>   compaction boundary. Engine-assigned ids are unique within the session (ADR-0095's amendment of 2026-09-18), so
+>   a crashed turn's row cannot match an earlier turn's id.
+> - **The turn key's high-water mark is persisted on the session row.** Invariant 3 cannot be met from
+>   `run_effects` alone, because the committed-row sweep deletes the rows the maximum would be read from: complete
+>   a few turns with effects, resume (which sweeps), take an errored turn, and the derived maximum drops below keys
+>   the session already used. The Alternatives' "not required" is withdrawn for that reason. `agent_sessions` gains
+>   one integer column, advanced when a key is issued, which the same section already calls an implementation
+>   choice. The acceptance gains that sequence.
+> - **Invariant 3 ranges over model-turn keys.** A `!`-command writes under the key the next model turn will use,
+>   with its own negative slot space, so "greater than every turn key the session has written" is measured over
+>   model-turn rows. Once the key survives resume and reseat, effect-journal.md §14's `!`-command false-duplicate
+>   limitation no longer holds, and §14 says so at landing; `agent-session.ts`'s comment claiming the turn counter
+>   is "the session's own durable counter, restored on resume" is false today and is replaced with it.
+> - **`max_turns` is unchanged.** The hard turn cap keeps the reconstruction semantics
+>   [chat-session.md](../reference/cli/chat-session.md) documents; only the effect turn key becomes monotonic, as a
+>   separate host-seeded value. The resume-side turn count must also start counting a completed turn with empty
+>   final text once ADR-0095 §1 lands.
+> - **A disclosed row is swept by the first sweep that runs after its disclosure.** (Maintainer, 2026-09-18.) That
+>   applies to a legacy row and to a new one alike, so invariant 7's "once" and invariant 4's "not before" become
+>   one rule. The sweep runs only when the disclosure READ succeeded — today the notice returns `undefined` on a
+>   read failure and the sweep runs anyway, which would delete an undisclosed row. The Home resume path runs the
+>   same sweep under the same rule; it skips retention today only because the old count bound is unavailable there,
+>   and this ADR retires that bound. A crash between the disclosure and the sweep shows the row once more, which is
+>   accepted.
+> - **A pre-upgrade row is recognised by its placeholder attempt id.** Once `result_json` is cleared, a legacy row
+>   and a new one look alike except that the legacy one carries the wiring constant (`'session'` / `'home'` /
+>   `'agent-run'`) where a new row carries an engine-assigned id. That is exactly invariant 7's "cannot be
+>   attributed from durable data" class. The clearing itself is an open-time data update, not a schema migration.
+> - **A never-resumed session's committed rows are swept at exit.** `agent run` mints a session nothing can resume
+>   or disclose, and nothing sweeps it today, so its scrubbed-args digests are permanent — which effect-journal.md
+>   §9 says the session sweep exists to prevent, while listing `agent run` among the surfaces it covers. `W7`
+>   sweeps `agent run`'s committed rows in its teardown; unresolved rows stay, as everywhere else.
+> - **"No tool result at rest" covers the file's bytes.** (Maintainer, 2026-09-18.) `history.db` runs in WAL mode
+>   with `secure_delete` off, so clearing a legacy row with an `UPDATE` frees the page without zeroing it and the
+>   old bytes stay recoverable in free pages and in the `-wal` file. `W7` opens the connection with
+>   `PRAGMA secure_delete = ON`, and it checkpoints the WAL with `TRUNCATE` after the legacy clear AND after each
+>   session-scope sweep — not once at the upgrade. **That ordering is the whole guarantee, because `secure_delete`
+>   alone does not reach the WAL.** In WAL mode every write, including the zeroing one, lands as a new frame while
+>   the OLD page image stays in the `-wal` file until a checkpoint; a maintainer's own probe on this tree found the
+>   planted token absent from the main database and present in `history.db-wal`. So the claim is exactly this: after
+>   a successful checkpoint, no session-scoped row holds a result and no freed byte of one survives in the main
+>   database or the WAL. Two residuals are named rather than covered: a checkpoint that cannot run (a concurrent
+>   reader, `SQLITE_BUSY`) leaves those frames until the next successful one, and pages freed by sweeps that ran
+>   BEFORE the upgrade are not zeroed retroactively — only a `VACUUM` would reclaim them, which decision 15 did not
+>   take. Both are recorded with the `W7` deferrals. The "No result at rest" acceptance plants its token after the
+>   upgrade, forces a `TRUNCATE` checkpoint, and scans the raw database and WAL bytes with the connection still
+>   open. ADR-0050's note carries the same scope.
+> - **"A session's transcript, its export and its effect rows hold no tool result" is about MODEL-ISSUED tool
+>   calls.** A `!`-command's output and an `@`-mention's file content are injected into the user's own message and
+>   remain user data at rest, which ADR-0061 and ADR-0050's note already record.
+> - **Citation.** `blocksResume` is `packages/shared/src/run.ts:467-472`; `apps/cli/src/commands/run.ts:467-471`
+>   is unrelated MCP teardown.
+>
+> **Landing obligations gained.** effect-journal.md §4 (a `prepare` that answers `replay` is run-scope only; a
+> session's matching `prepare` is refused, §8 governs sessions), §11 (a session row holds no result; a run row
+> holds the bounded result until its terminal sweep), §12 (the crash, errored-or-aborted-turn, `!`-command and
+> legacy-row cases) and §2 (the attempt id's new role) · [database-schema.md](../reference/shared-core/database-schema.md)
+> (`run_effects.result_json` is always NULL for a session scope, `!`-command slots are negative, the corrected
+> retention sentence, and the new session-row column) · a CLI reference sentence for the resume disclosure, which
+> no user-facing document carries today.
+>
+> **Acceptance gained.** A disclosure read that throws leaves every committed row of a turn that did not complete
+> in place and skips the sweep · a second `chat-resume` does not disclose the same row again · a Home resume
+> discloses what `chat-resume` discloses and sweeps under the same rule · an aborted engaged turn with a committed
+> effect, then a reseat, then an identical call, dispatches with a greater key · a crashed turn whose engine id
+> WOULD collide with an earlier completed turn's under a per-turn numbering is still disclosed.
+
 ## Context
 
 The durable effect journal ([ADR-0080](0080-durable-effect-journal-and-the-tiered-effect-contract.md)) records a

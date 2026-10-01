@@ -22,6 +22,15 @@
 >
 > Both ADRs are **Accepted** as of 2026-09-14 with their implementation staged for `W7`.
 
+> **Clarified 2026-09-18 (the `W7` pre-implementation review).** "The request actually sent" is the request the
+> TURN CORE builds for the current round: the chain's per-attempt hook never receives the per-entry request, so
+> measuring there would need a seam contract change ADR-0096 does not make. Measuring the round's request
+> over-counts a reasoning part the chain strips on a cross-provider failover, which is the conservative direction.
+> Two figures the projection uses are fixed with it: the input term is priced at the highest context tier and the
+> non-cached input rate (ADR-0071 §11's directional rule), and the output reservation is a shared default of 4096
+> clamped to the model's catalog output ceiling whenever the adapter sends no cap of its own. (Both figures:
+> maintainer, 2026-09-18.)
+
 ## Context
 
 A workflow can spend real money. A fan-out of agent nodes, a fallback chain that tries several

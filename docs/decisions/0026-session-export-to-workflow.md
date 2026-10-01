@@ -14,6 +14,13 @@
 >
 > ADR-0095 is **Accepted** as of 2026-09-14 with its implementation staged for `W7`.
 
+> **Corrected 2026-09-18 (the `W7` pre-implementation review).** The list above omits one field the structural rows
+> carry: **whether each tool call errored**. It is part of what ADR-0095 §1 records, and the export copies the rows
+> as stored. The exact shape — the fields, the size unit, the outcome vocabulary and the engine id form — is defined
+> in [database-schema.md](../reference/shared-core/database-schema.md) and
+> [sse-event-schema.md](../reference/contracts/sse-event-schema.md) when `W7` lands, because the export makes it a
+> committed-file contract.
+
 ## Context
 
 The agent-first pivot ([ADR-0024](0024-agent-first-entry-point-agentsession.md)) makes a chat
