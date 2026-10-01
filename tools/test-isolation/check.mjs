@@ -1,5 +1,5 @@
 /**
- * Test-isolation guard — a repo-local SECOND checkout must never be collected by a root run (`CR-90`).
+ * Test-isolation guard — repo-local SECOND checkouts and private analysis must not enter product runs.
  *
  * The defect this closes was live, not theoretical. Measured 2026-08-10: a root `vitest list` discovered
  * **472** test files, **234** of them under `.claude/worktrees/<id>/packages/...` — a full agent-tooling
@@ -26,7 +26,9 @@
  *    location is excluded, never that the list is COMPLETE**: because the fixtures are derived from the list,
  *    deleting `'**\/.claude\/**'` also deletes its probe, and the guard re-collects all 234 foreign suites
  *    while printing a green line. Measured, on the first version of this file. Hence assertion 1.
- * 3. **Every workspace still yields tests.** A single canary is not enough: the structural rule this repo
+ * 3. **Every real source-adjacent test is collected in root AND package mode.** A single canary is not enough:
+ *    a root-only include can leave every package script green with zero tests (`passWithNoTests`). The
+ *    on-disk test set is the positive control for both modes. The structural rule this repo
  *    rejected (`'**\/*\/{packages,apps,tools}\/**'`) drops exactly four real files under
  *    `packages/core/src/tools/`, and a canary in `packages/shared` never notices. Passing by not running is a
  *    worse failure than the leak.
@@ -123,7 +125,7 @@ if (patterns.length === 0) {
   );
 }
 
-// --- 2. The list must reach BOTH excludes (assertion 3) --------------------------------------------
+// --- 2. The list must reach BOTH excludes (assertion 4) --------------------------------------------
 
 // A GLOBAL count of `...REPO_LOCAL_CHECKOUTS` is the wrong test, and passes the exact defect it is for: two
 // spreads inside `test.exclude` and none inside `coverage.exclude` reads as 2 and goes green, while a foreign
@@ -161,7 +163,7 @@ for (const [name, match, why] of [
 // --- 3. Plant one fixture per entry, collect, assert ------------------------------------------------
 
 /**
- * Locations probed ALWAYS, whatever `REPO_LOCAL_CHECKOUTS` currently says — the three that exist today.
+ * Locations probed ALWAYS, whatever `REPO_LOCAL_CHECKOUTS` currently says, including marker-free prototypes.
  *
  * This is the answer to the hole the header describes: because the pattern-derived fixtures below come FROM
  * the list, deleting `'**\/.claude\/**'` deletes its probe too, and the guard goes green while re-collecting a
@@ -174,7 +176,7 @@ for (const [name, match, why] of [
  * gets probed here and fails loudly; a NEW location nobody added here is still probed by the derived fixtures.
  * Neither omission can produce a silent pass.
  */
-const ALWAYS_PROBED = ['.claude', '.worktrees', 'worktrees'];
+const ALWAYS_PROBED = ['.claude', '.worktrees', 'worktrees', 'docs/analysis/private'];
 
 const fixtureDirs = [...new Set([...patterns.map(plantableDir), ...ALWAYS_PROBED])];
 const fixtures = fixtureDirs.map((dir) => ({
@@ -198,7 +200,11 @@ function plant(fixture) {
   mkdirSync(src, { recursive: true });
   // The workspace marker too, so the fixture shape-matches a real second checkout for BOTH assertions: if an
   // exclusion breaks, the structural check fires alongside the leak check and the error names the cause twice.
-  writeFileSync(join(fixture.root, 'pnpm-workspace.yaml'), "packages:\n  - 'packages/*'\n");
+  // Private prototypes are PARTIAL copies without a workspace marker: the primary detector cannot catch
+  // them. Keep this probe equally marker-free so removing its exclusion fails on a clean checkout too.
+  if (fixture.dir !== 'docs/analysis/private') {
+    writeFileSync(join(fixture.root, 'pnpm-workspace.yaml'), "packages:\n  - 'packages/*'\n");
+  }
   writeFileSync(join(src, 'probe.ts'), 'export const probe = 1;\n');
   writeFileSync(
     join(src, 'probe.test.ts'),
@@ -233,7 +239,7 @@ function clear(fixture) {
  * `npx` would search a writeable `PATH`, need `shell: true` for the Windows `.cmd` shim, and can reach for the
  * registry when it cannot resolve locally — the convention `tools/coverage-gate/run.mjs` documents.
  */
-function collectedFiles() {
+function collectedFiles(cwd = repoRoot) {
   let vitestEntry;
   try {
     const pkgPath = require.resolve('vitest/package.json');
@@ -250,7 +256,7 @@ function collectedFiles() {
   // config prefixes `[name] `) or on the platform separator. `--filesOnly` keeps it cheap: the file set is
   // resolved without importing a single test module.
   const result = spawnSync(process.execPath, [vitestEntry, 'list', '--filesOnly', '--json'], {
-    cwd: repoRoot,
+    cwd,
     encoding: 'utf8',
     shell: false,
   });
@@ -277,8 +283,9 @@ function collectedFiles() {
  * add`, `git clone` and a full copy — every case seen here — but NOT for a sparse checkout, a
  * `--no-checkout` worktree, or a partial rsync of `packages/**`. Those would be collected with nothing in
  * their ancestry to detect, and this assertion would pass in silence, leaving only the list-based checks
- * below. Nothing in this repo produces such a tree today; if that changes, this predicate needs a second
- * marker (a `package.json` whose `name` matches the root's would be the obvious one).
+ * below. W7 found exactly such partial prototypes in `docs/analysis/private`; that named location now has
+ * its own marker-free probe. An unlisted partial copy still needs an explicit exclusion/probe or a second
+ * structural marker (a `package.json` whose `name` matches the root's would be the obvious one).
  */
 function nestedCheckoutOf(fileRel) {
   const parts = fileRel.split('/');
@@ -407,6 +414,39 @@ if (silent.length > 0) {
       `\n  prevents: the suite goes green by not running. Narrow the pattern.` +
       `\n  Collected ${files.length} file(s) in total.`,
   );
+}
+
+/** Every real source-adjacent test must be collected, not merely one canary per workspace. */
+function workspaceTests(dir) {
+  const tests = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) tests.push(...workspaceTests(path));
+    else if (entry.name.endsWith('.test.ts') || entry.name.endsWith('.test.tsx')) {
+      tests.push(relative(repoRoot, path).split(sep).join('/'));
+    }
+  }
+  return tests;
+}
+
+// A root-only include can preserve the root file set yet silently empty package runs (passWithNoTests).
+// Compare both modes against the on-disk files; neither expected set is derived from the Vitest patterns.
+try {
+  const rootFiles = new Set(files);
+  for (const workspace of expected) {
+    const sourceTests = workspaceTests(join(repoRoot, workspace, 'src'));
+    const packageFiles = new Set(collectedFiles(join(repoRoot, workspace)));
+    const missing = sourceTests.filter((file) => !rootFiles.has(file) || !packageFiles.has(file));
+    if (missing.length > 0) {
+      throw new Error(
+        `${workspace} lost real test files in root or package collection:\n` +
+          missing.map((file) => `    ${file}`).join('\n'),
+      );
+    }
+  }
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
 }
 
 console.log(

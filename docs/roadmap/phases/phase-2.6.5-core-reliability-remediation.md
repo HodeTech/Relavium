@@ -2032,6 +2032,13 @@ failure, not a green coverage result, and step 1 fixes the gate before implement
 cwd-tolerant root config also governs package tests, so simply anchoring every include to `packages/*/src` would
 silently stop package-scoped tests and is not an acceptable fix.
 
+**Step 1 implementation checkpoint, 2026-10-02:** private prototypes are excluded from both tests and
+coverage, with a marker-free guard probe; every source-adjacent suite is checked in root and package mode.
+Removing the private exclusion, removing the coverage exclusion and switching to a root-only include each
+breaks the guard. `pnpm run ci` and `pnpm coverage` both exit 0. The
+[capture tool procedure](../../runbooks/capture-provider-overflow.md) is available; its tests and offline
+command smoke do not constitute live provider evidence. Two fresh independent review rounds remain pending.
+
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A
 coding agent cannot remember a file it read in the previous turn and calls the tool again.

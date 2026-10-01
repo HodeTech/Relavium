@@ -43,10 +43,11 @@ merged too (PR #85, 2026-08-28).
 > [ADR-0099](../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md),
 > [ADR-0100](../decisions/0100-budget-authorization-is-durable-state-with-a-replay-barrier.md) and the
 > [twelve-step W7 plan](phases/phase-2.6.5-core-reliability-remediation.md#w7-pre-implementation-review-and-proposed-execution-plan--2026-10-02).
-> Work remains on `development`, starting with step 1; each step closes with two fresh independent Codex
-> review rounds and verified fixes. Baseline `pnpm run ci` exits 0; `pnpm coverage` exits 1 because the root
-> runner collects ignored private prototype suites. Step 1 repairs collection without deleting those artifacts
-> and prepares the required maintainer-run live overflow captures. The six W7 items stay open.
+> Work remains on `development`; each step closes with two fresh independent Codex review rounds and verified
+> fixes. Step 1's implementation passes `pnpm run ci` and `pnpm coverage`; its independent reviews are pending.
+> It repairs collection without deleting private artifacts and provides the
+> [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
+> Live fixtures are still required before step 7's classification commit. The six W7 items stay open.
 
 ## Execution order — Phase 2.5.5 + Phase 2.6 (temporary)
 

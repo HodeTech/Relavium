@@ -862,6 +862,10 @@ modes. The full design — gateway, key vault and pools, metering — is in
 
 ## Dependency posture
 
+The maintainer-only [overflow capture procedure](../../runbooks/capture-provider-overflow.md)
+collects the live evidence required by ADR-0096. It is separate from the public provider seam
+and the product adapters; offline command probes do not substitute for live fixtures.
+
 The adapters prefer the official SDKs (`@anthropic-ai/sdk`, `openai`,
 `@google/genai`) for typed event parsing and wire/SSE handling. **Their own retry is deliberately disabled (`maxRetries: 0`) for the chain-governed calls — `FallbackChain` is the sole retry authority there (error-handling.md §6, per ADR-0011; #276). The two surfaces the chain does not sit above — live model discovery and the async media-job poll — run with `maxRetries: 0` **as well**. A small SDK retry there was tried and REVERTED: the SDK's sleep honours `retry-after` with no ceiling and no abort awareness, so a hostile `retry-after-ms` parks the call for days.** **DeepSeek reuses
 the `openai` SDK with a custom `baseURL` (`api.deepseek.com`)** — no separate
