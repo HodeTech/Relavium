@@ -179,13 +179,15 @@ respect to the EXECUTOR — §6 of that ADR states the half that stays condition
 
 ### 6. Finish
 
-On the last node the engine writes the final output and a cost record to SQLite,
-then emits `run:completed` (or `run:failed` if the run failed). Per-node token counts
-and per-run cost accumulate as `cost:updated` events during the run (payload
-`{ nodeId, model, inputTokens, outputTokens, costMicrocents, cumulativeCostMicrocents }`) and are
-persisted at the end — the source of the per-node cost waterfall in the UI. Cost
-accounting is computed in `packages/llm`; see
-[multi-llm-providers.md](multi-llm-providers.md).
+On the last node the engine writes the final output and its terminal record to SQLite
+before delivering `run:completed` (or `run:failed` if the run failed). Live `cost:updated`
+events report token counts and realized cost; realized charges are also persisted
+per attempt behind the durability barrier of
+[ADR-0076](../decisions/0076-durable-per-attempt-realized-cost-ledger.md) and
+[ADR-0077](../decisions/0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md),
+rather than waiting for the run to finish. The exact event and accounting contracts live
+in [sse-event-schema.md](../reference/contracts/sse-event-schema.md). Cost accounting
+is computed in `packages/llm`; see [multi-llm-providers.md](multi-llm-providers.md).
 
 ## Failure and recovery
 
@@ -195,12 +197,15 @@ accounting is computed in `packages/llm`; see
   the node is considered failed.
 - **Crash recovery** — on startup the host reconciles in-flight runs from their
   last checkpoint rather than losing them.
-- **Retry-from-node** — a user can re-run from any node; the stable idempotency
-  key (`runId + nodeId + retryCount`) prevents double-applied side effects.
-  *Forward-compatibility:* Phase 1 is DAG-only, so a node executes at most once per
-  run. When loops land (a future ADR), a node may execute multiple times within one
-  run, so the key gains an `iterationIndex` to keep each iteration's side effects
-  distinct.
+- **Retry and resume with effects** — the durable effect journal brackets an effectful
+  dispatch. The guarantee depends on the target
+  ([ADR-0080](../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md));
+  the shipping tier-3 contract is at-most-once dispatch attempt, with retained-result
+  re-delivery where available and a preflight refusal when the earlier effect cannot be
+  resolved safely. A retry count is not a durable idempotency key and does not prevent
+  double effects. The identities, replay and refusal rules have one canonical home in
+  [effect-journal.md](../reference/shared-core/effect-journal.md). Future loop support
+  requires its own effect-identity decision before implementation.
 
 ## Local vs cloud execution
 

@@ -1,6 +1,6 @@
 # Desktop Keychain & Secrets
 
-> Last updated: 2026-06-03
+> Last updated: 2026-10-02
 
 - **Status**: Reference
 - **Surface**: Desktop (Tauri v2)
@@ -63,7 +63,7 @@ There is **no** encrypted-file key store in v1.0. A headless/CI fallback for env
 
 The global run-history database (`~/.relavium/history.db`) is encrypted with SQLCipher **on the desktop** (see [database-schema.md](../shared-core/database-schema.md)). Its passphrase is derived from the same stable machine secret combined with a keychain entry, so the database opens automatically on restart without prompting the user. The passphrase is set in the Rust `setup()` hook **before** the SQL plugin initializes — if it is not present when the database is opened, the open fails.
 
-The **Phase-2 CLI does not use SQLCipher**: it opens the same `history.db` with `better-sqlite3` **unencrypted**, guarded by `0600`/`0700` OS file permissions ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)). That is proportionate because the file holds **no credentials** — provider keys stay here in the OS keychain, and `secret`-typed inputs are persisted as `{ secret: true, ref }` placeholders. It is **not** empty of sensitive content, and [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)'s note of 2026-09-14 says what it does hold: tool-I/O redaction is shape-based and applied upstream to event copies rather than by the bus, user-injected content (an `@`-attached file, `!`-shell output) is at rest as the user's own data, and a committed tier-3 run effect keeps its bounded result until that run's sweep. A session's effect rows keep theirs too until [ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md) lands in `W7`. The two at-rest postures cannot share one file at the same path; reconciling cross-surface coexistence is a named Phase-3 follow-on (ADR-0050).
+The **Phase-2 CLI does not use SQLCipher**: it opens the same `history.db` with `better-sqlite3` **unencrypted**, guarded by `0600`/`0700` OS file permissions ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)). Relavium-managed provider keys stay here in the OS keychain, and `secret`-typed inputs are persisted as `{ secret: true, ref }` placeholders. This is a key-custody guarantee, not a guarantee that the file contains no credentials or sensitive content, and [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)'s note of 2026-09-14 says what it does hold: tool-I/O redaction is shape-based and applied upstream to event copies rather than by the bus, user-injected content (an `@`-attached file, `!`-shell output) is at rest as the user's own data, and a committed tier-3 run effect keeps its bounded result until that run's sweep. A session's effect rows keep theirs too until [ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md) lands in `W7`. The two at-rest postures cannot share one file at the same path; reconciling cross-surface coexistence is a named Phase-3 follow-on (ADR-0050).
 
 ## What never holds a secret
 

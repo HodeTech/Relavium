@@ -1,15 +1,18 @@
 # Reviews
 
 This folder holds **review records** — the written output of a business, code, security,
-or performance review of a specific change, milestone, or release. It is intentionally
-**empty until the first review is written**: this index exists to define the convention
-so that the first record is born compliant.
+or performance review of a specific change, milestone, or release.
 
 A review record is a *point-in-time* artifact: it captures what was reviewed, by whom, on
 what date, and what was found. Unlike a [standard](../standards/README.md) (a binding
 rule) or an [ADR](../decisions/README.md) (a settled decision), a review is a dated
 observation that is never rewritten — if a follow-up review is needed, a new record is
 added.
+
+## Records
+
+- [2026-10-02 — W7 documentation and implementation preflight](2026-10-02T01-14-15-w7-preflight-review.md):
+  existing contract review, supplemental Proposed decisions and execution-plan approval gate.
 
 ## File naming convention
 
@@ -25,7 +28,7 @@ YYYY-MM-DDTHH-MM-SS-<slug>-review.md
 - `<slug>` is a short kebab-case description of what was reviewed
   (e.g. `engine-checkpoint`, `phase-1-release`, `keychain-secrets`).
 
-Examples (illustrative — none exist yet):
+Illustrative filenames:
 
 ```text
 2026-06-10T14-30-00-engine-checkpoint-review.md
@@ -45,7 +48,7 @@ Each record starts with a single H1 and a bold metadata block, then the findings
 
 - **Type**: Business | Code | Security | Performance
 - **Date**: YYYY-MM-DD
-- **Reviewer(s)**: @handle
+- **Reviewer(s)**: <@handle or stable agent identity>
 - **Subject**: <PR / milestone / release / file under review>
 - **Outcome**: Approved | Changes requested | Blocked
 
@@ -56,6 +59,9 @@ Each record starts with a single H1 and a bold metadata block, then the findings
 
 Keep findings concrete and actionable. Link to the code, ADR, or runbook each finding
 touches rather than restating it.
+
+An automated reviewer uses its stable task identity rather than an invented account handle.
+Record its model, effort and review scope in the coverage section where available.
 
 ## Conventions
 

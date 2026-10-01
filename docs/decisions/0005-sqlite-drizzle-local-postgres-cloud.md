@@ -17,6 +17,15 @@
 > permissions** (the file carries no credentials: keys stay in the keychain and the bus masks
 > secrets). The desktop SQLCipher path here is unchanged.
 
+> Corrected 2026-10-02 — the 2026-06-23 note's "file carries no credentials" and "bus masks
+> secrets" premises were already withdrawn by [ADR-0050](0050-cli-history-db-at-rest-posture.md)'s
+> 2026-09-14 amendment. Relavium-managed provider keys remain in the OS keychain; this does
+> not exclude credentials or sensitive user/tool content from the history database. Event-copy
+> redaction is shape-based and upstream of the bus; a committed tier-3 run effect also retains
+> its bounded result until its run's sweep. The canonical retention and per-surface at-rest
+> posture live in [database-schema.md](../reference/shared-core/database-schema.md). The storage
+> decision and historical bodies above and below are unchanged.
+
 ## Context
 
 Relavium persists run history, the per-run event log, and per-node cost data so the desktop app can show run monitoring and cost tracking, and so the engine can resume paused runs (e.g. after a human gate). The data model is concrete and documented in [reference/shared-core/database-schema.md](../reference/shared-core/database-schema.md): run history (`runs`, `step_executions`, `run_events`, `run_costs`, `messages`), catalog tables, and per-project metadata — see [reference/shared-core/database-schema.md](../reference/shared-core/database-schema.md) for the canonical, fuller set.

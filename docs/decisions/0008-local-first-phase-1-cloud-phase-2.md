@@ -11,6 +11,15 @@
 > carries no credentials — the keychain holds keys and the engine masks secrets at the bus).
 > Local-first is unchanged.
 
+> Corrected 2026-10-02 — the 2026-06-23 note's "carries no credentials" and "masks secrets
+> at the bus" premises were already withdrawn by [ADR-0050](0050-cli-history-db-at-rest-posture.md)'s
+> 2026-09-14 amendment. Relavium-managed provider keys remain in the OS keychain; retained
+> user/tool content and bounded tier-3 run-effect results can still contain sensitive data or
+> credentials. Event-copy redaction is shape-based and upstream of the bus. Retention and the
+> per-surface at-rest posture are canonical in
+> [database-schema.md](../reference/shared-core/database-schema.md). Local-first and the
+> historical bodies above and below are unchanged.
+
 ## Context
 
 Relavium has to decide *where workflows run* and *what the product depends on to function* — and it has to decide this before any storage, secrets, or engine-hosting choice is locked, because those choices all cascade from it. An execution model is the hardest thing to change later: build for the cloud first and you bake a server, an account system, and a network round-trip into the core; build for local first and you risk a second, painful re-architecture if cloud execution is ever needed.

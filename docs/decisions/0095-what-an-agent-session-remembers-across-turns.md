@@ -121,6 +121,13 @@
 > resumes without projecting its summary · `relavium agent run` with `memory: summary`, over the threshold, makes
 > no summariser call after its one turn.
 
+> Amended 2026-10-02 — [ADR-0099](0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md),
+> accepted by the maintainer, qualifies the 2026-09-18 "permission, not funding" note for idle compaction.
+> Funding refusal and no budget fallback trim remain. An active pre-send/recovery turn ends
+> `budget_exceeded`; after-turn refusal preserves the already-successful turn and reports a side notice;
+> manual refusal returns a typed outcome without a turn terminal. `memory`'s permission rules are unchanged.
+> Implementation is staged in `W7`; the historical text below is unchanged.
+
 ## Context
 
 A session's turn runs a full tool loop and then discards it. `runAgentTurn` returns only the final content, and

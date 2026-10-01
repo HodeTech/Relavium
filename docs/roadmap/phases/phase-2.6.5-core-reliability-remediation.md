@@ -1987,6 +1987,51 @@ correction inside its own ADR rather than a rewrite, so the wrong reasoning stay
 > carries a dated note of 2026-09-18 with its corrections, and the landing checklist below collects every canonical
 > document `W7` must update in one place.
 
+### W7 pre-implementation review and proposed execution plan — 2026-10-02
+
+**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Implementation is in progress, starting with step 1.**
+The four Accepted ADRs retain their decisions. Three verified gaps were explicitly resolved before code:
+manual compaction with an unknown window and the budget outcome of idle compaction
+([ADR-0099](../../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md)),
+and an older binary stripping an authorization's optional fields and replaying the old uncapped/invented-output
+semantics ([ADR-0100](../../decisions/0100-budget-authorization-is-durable-state-with-a-replay-barrier.md)).
+The maintainer authorised implementation on `development`. Their pre-approval review and evidence are recorded in
+[the preflight review](../../reviews/2026-10-02T01-14-15-w7-preflight-review.md).
+
+All work stays on `development`. The existing six-item scope and `budget resume` pull-in above stand; no item
+closes merely because its supporting type or schema lands. Each step updates its canonical contracts with the
+behaviour it actually implements; the final pass reconciles the complete wave and its register.
+
+| Step | Deliverable and main ownership | Acceptance focus / dependency |
+|---|---|---|
+| 1 | Repair the root test/coverage collection of private analysis prototypes; build and review the maintainer-run overflow capture tool (`vitest.config.ts`, `tools/test-isolation`, capture tooling under `packages/llm`) | Root and package-scoped collection both retain every real suite; private artifacts are neither run nor counted and are never deleted. Capture is finite, fixed-endpoint, synthetic-input-only and secret-free. The maintainer captures all four dialects before step 7's classification commit; no invented fixture substitutes |
+| 2 | Shared session-specific structural parts, strict store/metadata boundary, durable effect-turn high-water allocation and engine-assigned id contract (`shared`, `db`, core host ports) | Raw values in every `SessionMessageMeta` field, including `content`, are refused or derived from canonical text; one session key never repeats; safe exhaustion; legacy high-water initialization before cleanup; store updates cannot clobber the mark |
+| 3 | Completed-turn tool structure through turn/session events, atomic persister, resume/reseat/compaction boundary mapping, export and per-call effect-attempt joining (`core`, `cli`, `db`) | Empty final text, all historical rows in the join, resolved MCP ids, no unresolved names/content, atomic failure latch, turn-identified markers; IDs from step 2 reach both stored transcript and effect preparation |
+| 4 | Session effect privacy, no replay, legacy clear, secure deletion/WAL checkpoint, disclosure and retention across chat/Home/one-shot (`db`, `core` reference store, `cli`) | No result in session rows or post-checkpoint bytes; run replay unchanged; read failure prevents sweep; disclose then sweep once; errored/aborted/crashed turns; negative `!` slots; `agent run` teardown; history.db security sitting; depends on steps 2–3 |
+| 5 | One request projection for omitted/none/window/summary memory; same-role folding; policy refusals in engine and CLI (`core`, `cli`) | Current message plus N completed turns, empty finals counted, restored summary excluded under none/window, `/trim` message units preserved, frozen snapshots, workflow-node no-op documented; later automatic entry points consume the same policy |
+| 6 | Shared request estimator and output reservation; per-round input pricing, required hook forwarding, attempt evidence and proven pre-content HTTP refusal release (`llm`, `core`, `cli`) | Media encoding does not inflate tokens, conservative serialization fallback, sourced media constants, highest-tier non-cached input/user overlays, every forwarding site, generative input estimate 0, growing tool-round input, 4xx versus uncertain 5xx/timeout, cap and custom-endpoint identity |
+| 7 | Fixture-pinned overflow normalization per dialect, chain custom-endpoint downgrade, recoverability evidence, engine code and policy-aware CLI remedy (`llm`, `shared`, `core`, `cli`) | Four live-captured fixtures, Gemini replay body/message, no failover on overflow, content/tool-round flags, no provider text in engine messages, release conditions and stored-code upgrade behaviour; captured fixtures are required |
+| 8 | Capped atomic multi-pass compaction primitive, terminal balance, pre-send measurement and single overflow recovery (`core`, `cli`) | All ADR-0096 and approved ADR-0099 paths: differing fallback windows, four-pass exhaustion, pending versus completed empty-final user row, budget refusal with an after-turn first-pass notice, failure/skip, abort/cancel, turn cap, one-shot no after-turn call; depends on steps 5–7 |
+| 9 | Pure frozen allowance/provenance computation and synchronous dispatch-owned governor debit/reconciliation (`core`, `llm`) | calls × attempts × E at paused input size, lowered tool list, generative route, exclusions, zero/unrepresentable amounts, under-cap debit, refund/overrun, strict refusal and sibling/straggler isolation; depends on input pricing |
+| 10 | Durable authorization protocol, checkpoint correction and live/cross-process budget resume (`shared`, `core`, `db`/CLI checkpointer) | Approved amount never uncaps, exhaustion never re-pauses/retries, pre-claim refusal/timer intact, no ownership leak, legacy/no-allowance reset, companion-write crashes, identified/legacy joins and stale-gate duplicates, absolute deadlines, absorbed-fault acknowledgement, frozen-predecessor downgrade replay refusal, sibling human-gate crash matrix, effect preflight precedence; depends on step 9 and approved ADR-0100 |
+| 11 | `relavium budget resume`, inline frozen-amount confirmation and safe discovery/rendering (`cli`) | `--gate`, exact `--approve-amount` or `--abort`, multiple gates, stale price refusal, non-TTY/JSON behaviour, reject-only unrepresentable gate, inherited secret re-provide and MCP consent handling; engine behaviour from step 10 is the one authority |
+| 12 | Whole-wave cross-surface review, canonical checklist, dated ADR landing notes, per-item closing register, roadmap/guide status and PR preparation | All six items break-verified; privacy sitting recorded; every canonical document describes shipped behaviour; `pnpm run ci` and `pnpm coverage` each exit 0; no W7 residual introduced without a demonstrated necessity and maintainer decision |
+
+**Every step has the same gate:** implement with meaningful tests and adjacent canonical docs → required checks →
+implementation commit → fresh independent Codex reviewers → independently reproduce/verify findings → fix, check
+and commit → a second round with fresh independent Codex reviewers → verify/fix/check/commit. Each reviewer receives
+the complete step diff, its accepted contracts and prior findings; round 2 also reviews the fixes. The parent
+validates findings and owns all edits. Another corrective round is required if a material issue survives round 2.
+The next step starts automatically once the current step closes. The parent selects Codex models and effort
+for each scope: durability, privacy, budgeting and compaction use `gpt-6-astra` at xhigh or max plus an independent
+`gpt-6.1-sol` at xhigh; routine capture/collection work may use high effort. Each round uses fresh agents. A clean report is evidence of its stated coverage, never a guarantee that defects are impossible.
+
+At the baseline `1b3f8d70`, `pnpm run ci` exited 0. `pnpm coverage` exited 1 because it collected two ignored
+private CR-94 prototype suites with missing imports; 284 real suites and 6,263 tests passed. This is a collection
+failure, not a green coverage result, and step 1 fixes the gate before implementation proceeds. The existing
+cwd-tolerant root config also governs package tests, so simply anchoring every include to `packages/*/src` would
+silently stop package-scoped tests and is not an acceptable fix.
+
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A
 coding agent cannot remember a file it read in the previous turn and calls the tool again.
@@ -2205,6 +2250,7 @@ stand.
 | [chat-session.md](../../reference/cli/chat-session.md) | what a turn appends and what the export carries; the `/compact` and `/trim` rows and the compaction section (linking to the `memory` row), including the "`session:compacting` may have no terminal" sentence that `session:compaction_failed` retires and what a multi-pass fold bills; the overflow hint, which becomes code-based with a policy-dependent remedy; the context-fullness indicator as an approximation; the reseat paragraph's text-only replay and its "Phase-3 persister" attribution, which ADR-0095 §2 and `CR-70`'s deferral now own; the resume effect-disclosure sentence, which no user-facing document carries today |
 | [commands.md](../../reference/cli/commands.md) | the inline budget gate card shows the frozen allowance and takes no input; `relavium budget resume` documents `--gate` and `--approve-amount`, and says how a run with two pending budget gates is addressed — `gate` and `gate list` still filter budget gates out |
 | [agent-session-spec.md](../../reference/contracts/agent-session-spec.md) · [agent-yaml-spec.md](../../reference/contracts/agent-yaml-spec.md) · [agent-sessions.md](../../architecture/agent-sessions.md) | as ADR-0095 and ADR-0096 already list, plus §"Session messages" (the persisted content type and the `LlmMessage` projection), the `memory` row's workflow-node sentence, and step 1's claim that a turn projects the persisted rows |
+| [execution-model.md](../../architecture/execution-model.md) | blanket retry-key idempotency and end-of-run-only cost persistence were corrected in the 2026-10-02 preflight under ADR-0080 and ADR-0076/0077; keep these descriptions consistent with the budget crash/resume work |
 
 ---
 

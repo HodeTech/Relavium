@@ -117,6 +117,16 @@
 > the sse-event-schema.md media rewrite keeps units-only rows as a legacy form that still resumes through the
 > re-price-and-hold branch, rather than deleting the case.
 
+> Amended 2026-10-02 — [ADR-0100](0100-budget-authorization-is-durable-state-with-a-replay-barrier.md),
+> accepted by the maintainer, refines the durable mechanism without changing allowance policy.
+> `budget:authorization` records the authoritative pause/decision before companion publication or approved
+> redispatch, behind an explicitly observed durability/ownership barrier. W7 budget companions join by
+> `(runId, nodeId, gateId)`; newly emitted `human_gate:resumed` budget companions carry `gateId`, qualifying
+> the 2026-09-18 missing-key limitation. Legacy missing-key rows use exactly one then-outstanding gate and
+> its recorded budget identity. Corrupt durable conflicts refuse; repeated API decisions remain no-ops.
+> The authoritative pause also preserves any existing absolute gate deadline. The predecessor's strict
+> replay refuses the new state-bearing event. Implementation is staged in `W7`; historical bodies are unchanged.
+
 ## Context
 
 Under `on_exceed: pause_for_approval`, approving a paused step removes the cap for that step:

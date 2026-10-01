@@ -201,6 +201,16 @@
 > - A tiered model's input term is priced at its highest context tier.
 > - A pre-content 429 releases its admission, and a pre-content 5xx, timeout or transport failure stays committed.
 
+> Amended 2026-10-02 — [ADR-0099](0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md),
+> accepted by the maintainer, qualifies §2 invariant 2 for summariser requests: each pass respects every
+> attemptable known fallback window and its output reservation. Main-turn measurement still uses the first
+> entry actually attempted. §3 invariant 4's unknown-window fit guarantee is replaced by disclosed manual
+> best effort under a 16,384 estimated-input-token soft bound; a mixed chain also retains every known bound.
+> Automatic paths skip unknown windows. Idle budget refusal preserves history and the completed turn,
+> surfaces separately and never trims; active-turn refusal retains `budget_exceeded`. Estimation remains
+> heuristic, never a bound on actual provider tokenisation. Implementation is staged in `W7`; the historical
+> text below is unchanged.
+
 ## Context
 
 Three defects make a long session fail badly, and all three are live:

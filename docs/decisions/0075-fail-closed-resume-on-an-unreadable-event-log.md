@@ -4,6 +4,14 @@
 - **Date**: 2026-08-09
 - **Related**: [ADR-0074](0074-durable-conservative-budget-commitments.md) §5 (the tolerant read this amends), [ADR-0050](0050-cli-history-db-at-rest-posture.md) (durability-first posture), [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) (durable run events), [ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) (async media re-attach), and [sse-event-schema.md](../reference/contracts/sse-event-schema.md) (the canonical event contract, incl. §Forward-compatibility).
 
+> Amended 2026-10-02 — [ADR-0100](0100-budget-authorization-is-durable-state-with-a-replay-barrier.md),
+> accepted by the maintainer, applies this existing replay policy to W7 budget authorization. The new
+> state-bearing `budget:authorization` cannot be stripped as optional fields of a known legacy event.
+> A predecessor refuses replay before execution registration/scheduling/dispatch/egress; any lease
+> acquired for the authoritative read is released under ADR-0079. Tolerant read-only inspection remains.
+> No general log-version system or attempt-level durable barrier is introduced. Implementation is staged
+> in `W7`; this ADR's decision and historical bodies are unchanged.
+
 ## Context
 
 [ADR-0074](0074-durable-conservative-budget-commitments.md) §5 made the stored-event read boundary **tolerant**: an unknown event `type` is dropped, a known type with an invalid body still fails loud. That decision was right, and it fixed a real doc↔code contradiction — `sse-event-schema.md` had always promised that adding a new event type is not a breaking change "provided consumers ignore unknown `type`s", while all three schema unions actually threw.

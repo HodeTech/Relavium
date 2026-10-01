@@ -58,6 +58,14 @@
 >   window. ADR-0096's trigger measures the projected next request instead, so the two can disagree in both
 >   directions; the indicator stays an approximation and says so.
 
+> Amended 2026-10-02 — [ADR-0099](0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md),
+> accepted by the maintainer, distinguishes active-turn summariser budget refusal from idle compaction.
+> Pre-send/recovery settle the active turn `budget_exceeded`; after-turn refusal preserves its successful
+> terminal and history, with a separate visible notice; manual refusal returns a typed budget outcome.
+> Neither idle path invents a turn terminal or trims on budget refusal. Unknown-window manual compaction
+> remains available under ADR-0099's disclosed soft input bound and atomic four-pass limit. These decisions
+> are staged in `W7`; the historical text below is unchanged.
+
 ## Context
 
 A long `relavium chat` / Home session grows its transcript every turn. `AgentSession`

@@ -142,6 +142,8 @@ flowchart TD
 | 0096 | [A request is measured before it is sent, and a context overflow is a classified failure](0096-a-request-is-measured-before-it-is-sent.md) | Accepted | 2026-09-14 |
 | 0097 | [A budget approval is an allowance, not an exemption](0097-a-budget-approval-is-an-allowance-not-an-exemption.md) | Accepted | 2026-09-14 |
 | 0098 | [A session's effect row holds no result, never replays, and discloses what did not complete](0098-a-session-effect-row-holds-no-result-and-never-replays.md) | Accepted | 2026-09-14 |
+| 0099 | [Compaction has an idle budget outcome and an unknown-window policy](0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md) | Accepted | 2026-10-02 |
+| 0100 | [Budget authorization is durable state with a replay barrier](0100-budget-authorization-is-durable-state-with-a-replay-barrier.md) | Accepted | 2026-10-02 |
 
 ## Creating a new ADR
 

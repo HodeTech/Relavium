@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-09-18
+> Last updated: 2026-10-02
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -38,6 +38,15 @@ price ruling.
 temporary section, deleted when both phases close. Its baseline step is discharged (PRs #76 and #77 merged)
 and Wave 0 is merged (PR #82), as is Wave 1 (PR #83). The interlude's `W2` (core reliability, six items) is
 merged too (PR #85, 2026-08-28).
+
+> **W7 implementation, 2026-10-02:** the documentation review is closed. The maintainer approved
+> [ADR-0099](../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md),
+> [ADR-0100](../decisions/0100-budget-authorization-is-durable-state-with-a-replay-barrier.md) and the
+> [twelve-step W7 plan](phases/phase-2.6.5-core-reliability-remediation.md#w7-pre-implementation-review-and-proposed-execution-plan--2026-10-02).
+> Work remains on `development`, starting with step 1; each step closes with two fresh independent Codex
+> review rounds and verified fixes. Baseline `pnpm run ci` exits 0; `pnpm coverage` exits 1 because the root
+> runner collects ignored private prototype suites. Step 1 repairs collection without deleting those artifacts
+> and prepares the required maintainer-run live overflow captures. The six W7 items stay open.
 
 ## Execution order — Phase 2.5.5 + Phase 2.6 (temporary)
 
