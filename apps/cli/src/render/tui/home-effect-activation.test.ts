@@ -103,6 +103,51 @@ afterEach(() => {
 });
 
 describe('Home activation owns disclosure evidence (ADR-0098)', () => {
+  it.each(['stopped', 'tearing down'] as const)(
+    'disarms a pending acknowledgement when the same mounted chat is %s',
+    async (ending) => {
+      let acknowledge: () => void = () => undefined;
+      let releaseTeardown: () => void = () => undefined;
+      const flushed = new Promise<void>((resolve) => {
+        acknowledge = resolve;
+      });
+      const closing = new Promise<void>((resolve) => {
+        releaseTeardown = resolve;
+      });
+      const made = session(undefined, () => flushed);
+      let stopped = false;
+      made.processLine.mockImplementation(() => {
+        stopped = true;
+        return Promise.resolve();
+      });
+      made.teardown.mockImplementation(() => closing);
+      const built = { ...made.built, shouldStop: () => stopped };
+      const c = controller(() => Promise.resolve(built));
+      try {
+        submit(c);
+        await flush();
+        expect(rows()).toHaveLength(1);
+        expect(c.getSnapshot().submitBusy).toBe(true);
+        if (ending === 'tearing down') {
+          c.handleKey('c', { ctrl: true });
+          await vi.waitFor(() => expect(made.teardown).toHaveBeenCalledTimes(1));
+        } else stopped = true;
+        expect(c.getSnapshot().mode).toBe('chat');
+        expect(c.getSnapshot().session).toBe(built);
+        acknowledge();
+        await flush();
+        expect(rows()).toHaveLength(1);
+        expect(made.processLine.mock.calls).toEqual(
+          ending === 'tearing down' ? [['/cancel', undefined]] : [],
+        );
+      } finally {
+        acknowledge();
+        releaseTeardown();
+        await c.teardownActive();
+      }
+    },
+  );
+
   it.each([false, true])(
     'gates the first message until rendered disclosure settles (exit=%s)',
     async (exit) => {

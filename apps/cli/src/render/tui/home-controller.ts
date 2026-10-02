@@ -302,7 +302,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const activatedSessions = new WeakSet<HomeChatSession>();
   const activationPending = new WeakMap<HomeChatSession, Promise<void>>();
   const activateSession = (session: HomeChatSession, ready: () => void): void => {
-    const isActive = (): boolean => !exiting && state.session === session && state.mode === 'chat';
+    const isActive = (): boolean =>
+      !exiting &&
+      state.session === session &&
+      state.mode === 'chat' &&
+      tearingDown !== session &&
+      !session.shouldStop();
     const finish = (): void => {
       if (isActive()) ready();
     };

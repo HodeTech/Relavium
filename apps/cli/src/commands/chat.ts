@@ -2458,15 +2458,22 @@ export async function drivePlain(ctx: ChatDriveContext): Promise<ChatDriveOutcom
   // command's finally runs cancelOnce() + close() — the session is marked 'ended', never left orphaned 'active'.
   let active = true;
   const isActive = (): boolean => active && !ctx.shouldStop();
+  let interrupt: () => void = () => undefined;
+  const interrupted = new Promise<void>((resolve) => {
+    interrupt = resolve;
+  });
   const onSigint = (): void => {
     active = false;
+    interrupt();
     rl.close();
   };
   process.once('SIGINT', onSigint);
   try {
     ctx.io.writeOut(`${ctx.intro ?? 'relavium chat — type a message, or /exit to quit.'}\n`);
     ctx.startSession(); // subscription wired above ⇒ session:started is observed (fresh), or a no-op (resume)
-    if (isActive()) await ctx.onActivated?.(isActive);
+    // A full output pipe must not hold cancellation/teardown hostage. The race observes late
+    // delivery failures; the permanently disarmed activity predicate prevents a late sweep.
+    if (isActive()) await Promise.race([ctx.onActivated?.(isActive), interrupted]);
     if (isActive()) {
       for await (const line of lines) {
         if (!isActive()) break;
@@ -2500,14 +2507,21 @@ export async function driveJson(ctx: ChatDriveContext): Promise<ChatDriveOutcome
   const lines = rl[Symbol.asyncIterator]();
   let active = true;
   const isActive = (): boolean => active && !ctx.shouldStop();
+  let interrupt: () => void = () => undefined;
+  const interrupted = new Promise<void>((resolve) => {
+    interrupt = resolve;
+  });
   const onSigint = (): void => {
     active = false;
+    interrupt();
     rl.close();
   };
   process.once('SIGINT', onSigint);
   try {
     ctx.startSession(); // subscription wired above ⇒ the synchronous session:started is the first NDJSON line
-    if (isActive()) await ctx.onActivated?.(isActive);
+    // Keep terminal finalization and resource teardown independent of a blocked diagnostic sink.
+    // Late activation settlement stays observed and cannot recover this driver's activity.
+    if (isActive()) await Promise.race([ctx.onActivated?.(isActive), interrupted]);
     if (isActive()) {
       for await (const line of lines) {
         if (!isActive()) break;

@@ -170,7 +170,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  client.sqlite.close();
+  if (client.sqlite.open) client.sqlite.close();
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -441,6 +441,107 @@ describe('actual Ink driver activation owns session effect disclosure (ADR-0098)
       }
     },
   );
+
+  it.each([
+    { json: false, failLate: false },
+    { json: true, failLate: false },
+    { json: false, failLate: true },
+    { json: true, failLate: true },
+  ])('interrupt tears down before pending stderr delivery (%o)', async ({ json, failLate }) => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'stderr');
+    if (descriptor === undefined) throw new Error('expected stderr descriptor');
+    class PendingOutput extends OwnedTtyOutput {
+      complete: (() => void) | undefined;
+      override _write(
+        _chunk: unknown,
+        _encoding: BufferEncoding,
+        callback: (error?: Error | null) => void,
+      ): void {
+        this.complete = () => {
+          this.complete = undefined;
+          callback(failLate ? new Error('PRIVATE_LATE_OUTPUT_ERROR') : undefined);
+        };
+      }
+    }
+    const stderr = new PendingOutput();
+    const captured = captureIo();
+    const close = vi.fn(() => client.sqlite.close());
+    const prepare = vi.spyOn(client.sqlite, 'prepare');
+    const interrupts = process.listenerCount('SIGINT');
+    let settled = false;
+    let outcome: Promise<number> | undefined;
+    try {
+      Object.defineProperty(process, 'stderr', { configurable: true, get: () => stderr });
+      const actual = processIo();
+      Object.defineProperty(process, 'stderr', descriptor);
+      outcome = chatResumeCommand(
+        { sessionId: 'activation-0' },
+        {
+          ...deps,
+          openSessionStore: () => ({
+            store: createSessionStore(client.db),
+            db: client.db,
+            close,
+          }),
+          global: { ...deps.global, json },
+          drive: json ? driveJson : drivePlain,
+          io: {
+            ...actual,
+            writeOut: (text) => captured.io.writeOut(text),
+            stdin: captured.io.stdin,
+            stdoutIsTty: false,
+            stdinIsTty: false,
+          },
+        },
+      ).then((code) => {
+        settled = true;
+        return code;
+      });
+      await vi.waitFor(() => expect(stderr.complete).toBeDefined());
+      expect(rows()).toHaveLength(1);
+      process.emit('SIGINT');
+      await vi.waitFor(() => expect(settled).toBe(true), { timeout: 250 });
+      expect(await outcome).toBe(4);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(client.sqlite.open).toBe(false);
+      expect(process.listenerCount('SIGINT')).toBe(interrupts);
+      const databaseCalls = prepare.mock.calls.length;
+      stderr.complete?.();
+      await vi.waitFor(() => {
+        expect(stderr.listenerCount('error')).toBe(0);
+        expect(stderr.listenerCount('close')).toBe(0);
+      });
+      // A late success or failure must neither touch the closed database nor enqueue a warning.
+      expect(prepare).toHaveBeenCalledTimes(databaseCalls);
+      expect(stderr.complete).toBeUndefined();
+      expect(captured.out()).not.toContain('external effect');
+      expect(captured.out()).not.toContain('PRIVATE_LATE_OUTPUT_ERROR');
+      if (json) {
+        const events: unknown[] = captured
+          .out()
+          .trim()
+          .split('\n')
+          .map((line) => {
+            const event: unknown = JSON.parse(line);
+            return event;
+          });
+        expect(
+          events.filter(
+            (event) =>
+              typeof event === 'object' &&
+              event !== null &&
+              'type' in event &&
+              event.type === 'session:cancelled',
+          ),
+        ).toHaveLength(1);
+      }
+    } finally {
+      Object.defineProperty(process, 'stderr', descriptor);
+      stderr.complete?.();
+      await outcome;
+      stderr.destroy();
+    }
+  });
 
   it.each([false, true])(
     'raw Ctrl-Z cannot consume an undisplayed notice (alt=%s)',
