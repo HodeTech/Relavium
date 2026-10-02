@@ -322,56 +322,78 @@ describe('actual Ink driver activation owns session effect disclosure (ADR-0098)
     },
   );
 
-  it.each(['ready', 'non-tty', 'raw-fails'] as const)(
-    'actual Ink waits for usable input and displayed disclosure (%s)',
-    async (mode) => {
-      const ink = await vi.importActual<typeof import('ink')>('ink');
-      const input = new OwnedTtyInput();
-      input.isTTY = mode !== 'non-tty';
-      input.failRaw = mode === 'raw-fails';
-      const stdout = new OwnedTtyOutput();
-      const stderr = new OwnedTtyOutput();
-      let actual: Instance | undefined;
-      let callbacks: ReturnType<typeof mountedCallbacks> | undefined;
-      let firstNoticeRows: number | undefined;
-      stdout.onFrame = (frame) => {
-        if (frame.includes('external effect') && firstNoticeRows === undefined)
-          firstNoticeRows = rows().length;
-      };
-      renderer.render.mockImplementation((node, options) => {
-        callbacks = mountedCallbacks(node);
-        actual = ink.render(node, { ...options, stdin: input, stdout, stderr, debug: true });
-        return actual;
-      });
-      let rendererError: unknown;
-      const outcome = chatResumeCommand({ sessionId: 'activation-0' }, deps).then(
-        (code) => ({ code }),
-        (error: unknown) => {
-          rendererError = error;
-          return { error };
-        },
-      );
-      try {
-        if (mode === 'ready') {
-          await vi.waitFor(() => expect(firstNoticeRows).toBeDefined());
-          expect(firstNoticeRows).toBe(1);
-          await vi.waitFor(() => expect(rows()).toEqual([]));
-        } else {
-          await vi.waitFor(() =>
-            expect(stdout.frames.some((frame) => frame.includes('ERROR'))).toBe(true),
-          );
-          expect(rows()).toHaveLength(1);
-          expect(firstNoticeRows).toBeUndefined();
-          await vi.waitFor(() => expect(rendererError).toBeInstanceOf(Error));
-        }
-      } finally {
-        callbacks?.exit();
-        await outcome;
-        actual?.cleanup();
-        input.destroy();
-        stdout.destroy();
-        stderr.destroy();
+  it.each([
+    'ready',
+    'non-tty',
+    'raw-fails',
+    'output-before',
+    'output-error-before',
+    'output-during',
+    'output-error',
+  ] as const)('actual Ink waits for usable input and displayed disclosure (%s)', async (mode) => {
+    const ink = await vi.importActual<typeof import('ink')>('ink');
+    const input = new OwnedTtyInput();
+    input.isTTY = mode !== 'non-tty';
+    input.failRaw = mode === 'raw-fails';
+    const stdout = new OwnedTtyOutput();
+    const stderr = new OwnedTtyOutput();
+    let actual: Instance | undefined;
+    let callbacks: ReturnType<typeof mountedCallbacks> | undefined;
+    let firstNoticeRows: number | undefined;
+    stdout.onFrame = (frame) => {
+      if (frame.includes('external effect') && firstNoticeRows === undefined) {
+        firstNoticeRows = rows().length;
+        if (mode === 'output-during') stdout.destroy();
+        if (mode === 'output-error') stdout.destroy(new Error('SECRET_OUTPUT_FAILURE'));
       }
-    },
-  );
+      if ((mode === 'output-before' || mode === 'output-error-before') && frame.trim().length > 0)
+        stdout.destroy(
+          mode === 'output-error-before' ? new Error('SECRET_OUTPUT_FAILURE') : undefined,
+        );
+    };
+    renderer.render.mockImplementation((node, options) => {
+      callbacks = mountedCallbacks(node);
+      actual = ink.render(node, { ...options, stdin: input, stdout, stderr, debug: false });
+      return actual;
+    });
+    let rendererError: unknown;
+    const outcome = chatResumeCommand({ sessionId: 'activation-0' }, deps).then(
+      (code) => ({ code }),
+      (error: unknown) => {
+        rendererError = error;
+        return { error };
+      },
+    );
+    try {
+      if (mode === 'ready') {
+        await vi.waitFor(() => expect(firstNoticeRows).toBeDefined());
+        expect(firstNoticeRows).toBe(1);
+        await vi.waitFor(() => expect(rows()).toEqual([]));
+      } else if (mode.startsWith('output-')) {
+        await vi.waitFor(() => expect(rendererError).toBeInstanceOf(Error));
+        expect(rows()).toHaveLength(1);
+        expect(firstNoticeRows).toBe(mode.endsWith('before') ? undefined : 1);
+        expect(String(rendererError)).not.toContain('SECRET_OUTPUT_FAILURE');
+        expect(String(rendererError)).toContain('terminal output closed');
+      } else {
+        await vi.waitFor(() =>
+          expect(stdout.frames.some((frame) => frame.includes('ERROR'))).toBe(true),
+        );
+        expect(rows()).toHaveLength(1);
+        expect(firstNoticeRows).toBeUndefined();
+        await vi.waitFor(() => expect(rendererError).toBeInstanceOf(Error));
+      }
+    } finally {
+      callbacks?.exit();
+      await outcome;
+      actual?.cleanup();
+      await vi.waitFor(() => {
+        expect(stdout.listenerCount('close')).toBe(0);
+        expect(stdout.listenerCount('error')).toBe(0);
+      });
+      input.destroy();
+      stdout.destroy();
+      stderr.destroy();
+    }
+  });
 });

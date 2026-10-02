@@ -11,6 +11,7 @@ import {
 } from 'react';
 
 import type { SuspendPort } from '../suspend.js';
+import { useVisibleRenderFlush } from './render-acknowledgement.js';
 import {
   driveJson,
   drivePlain,
@@ -1499,16 +1500,16 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // back to 80×24 off a TTY (a harness), moot on a real TTY (the only place alt mounts, via the driveInk gate).
   const windowSize = useWindowSize();
 
+  const flushVisible = useVisibleRenderFlush(props.onError);
   useEffect(() => {
     if (props.onActivated === undefined) return;
     let mounted = true;
     // Ink yields for passive raw-input setup. Its flush can also resolve after error-driven unmount,
     // so component ownership AND the driver's observed Ink exit are required before/after activation.
-    void app
-      .waitUntilRenderFlush()
+    void flushVisible()
       .then(async () => {
         if (!mounted) return;
-        await props.onActivated?.(() => app.waitUntilRenderFlush());
+        await props.onActivated?.(flushVisible);
         if (mounted) activationReady.current = true;
       })
       .catch(props.onError);
@@ -1516,7 +1517,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       mounted = false;
       activationReady.current = false;
     };
-  }, [app, props.onActivated, props.onError]);
+  }, [flushVisible, props.onActivated, props.onError]);
 
   // A resize re-wraps the transcript, so every display-line index the live selection holds moves. Drop it rather than
   // highlight — and copy — the wrong text (2.6.F Step 6).

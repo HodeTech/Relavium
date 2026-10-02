@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useSyncExternalStore, type ReactElement } 
 import { CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
 import type { PendingAttachment } from './attachments.js';
 import { ChatView, useCopiedToast } from './chat-ink.js';
+import { useVisibleRenderFlush } from './render-acknowledgement.js';
 import type { EditorState } from './chat-input.js';
 import { liveScrollGeometry, sanitizeInline, wrapTranscript } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
@@ -53,6 +54,9 @@ import type { ClipboardOutcome } from '../clipboard.js';
 import type { SuspendPort } from '../suspend.js';
 
 export interface RootAppProps {
+  /** Publishes a mounted render acknowledgement bound to this Ink tree and its exact output stream. */
+  readonly onRendererReady?: (flushVisible: () => Promise<void>) => void;
+  readonly onRendererError?: (error: Error) => void;
   readonly controller: HomeController;
   readonly nowMs: () => number;
   readonly color: boolean;
@@ -414,6 +418,10 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   // one `text` event, so a multi-line block appends verbatim and a pasted approval token never reaches the key
   // reducers (ADR-0068). The controller gates it (drops behind an overlay / pending approval / mid-turn).
   usePaste((text) => controller.handlePaste(text));
+  const flushVisible = useVisibleRenderFlush(props.onRendererError);
+  useEffect(() => {
+    props.onRendererReady?.(flushVisible);
+  }, [flushVisible, props.onRendererReady]);
 
   if (state.mode === 'chat' && state.session !== undefined) {
     return (

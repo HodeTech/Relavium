@@ -215,6 +215,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     | Pick<ReturnType<typeof render>, 'unmount' | 'waitUntilRenderFlush' | 'waitUntilExit'>
     | undefined;
   let rendererActive = true;
+  let flushVisible: (() => Promise<void>) | undefined;
   let controller: HomeController | undefined;
   let unsubscribeSignals: (() => void) | undefined;
   let unsubscribeProcessExit: (() => void) | undefined;
@@ -604,8 +605,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
                     deliverNotice: (text) => store.notice(text),
                     isActive: () => rendererActive && isActive(),
                     flushNotice: async () => {
-                      if (instance === undefined) throw new Error('Home renderer is not ready.');
-                      await instance.waitUntilRenderFlush();
+                      if (flushVisible === undefined)
+                        throw new Error('Home renderer is not ready.');
+                      await flushVisible();
                     },
                   }),
               }),
@@ -965,6 +967,14 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         configCopyOnSelect: config.copyOnSelect,
       });
       const props: RootAppProps = {
+        onRendererReady: (flush) => {
+          flushVisible = flush;
+        },
+        onRendererError: (error) => {
+          rendererActive = false;
+          if (controller !== undefined) void controller.teardownActive().catch(() => undefined);
+          reject(error);
+        },
         controller,
         nowMs: now,
         color: deps.global.color,
@@ -1008,10 +1018,12 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       void instance.waitUntilExit().then(
         () => {
           rendererActive = false;
+          if (controller !== undefined) void controller.teardownActive().catch(() => undefined);
           resolve(EXIT_CODES.success);
         },
         (err: unknown) => {
           rendererActive = false;
+          if (controller !== undefined) void controller.teardownActive().catch(() => undefined);
           reject(err instanceof Error ? err : new Error('Home renderer failed.'));
         },
       );
@@ -1022,6 +1034,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     });
   } finally {
     rendererActive = false;
+    flushVisible = undefined;
     // The clean-exit / error / INIT-FAULT path (NOT the signal path, which exits the process directly): undo the
     // terminal state, reclaim a live session, and close the shared db ONCE. The terminal restore swallows its own
     // throw, so it neither turns a clean exit into a failure nor skips the teardown + close below — a faulty

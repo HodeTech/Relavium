@@ -160,6 +160,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       uuid: () => `id-${uuidN++}`, // unique per call (mirrors production randomUUID): the session id + message ids never collide
       render: (props) => {
         capture(props);
+        props.onRendererReady?.(() => Promise.resolve());
         return {
           unmount,
           waitUntilRenderFlush: () => Promise.resolve(),
@@ -545,9 +546,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
-  it.each([false, true])(
+  it.each([false, true, 'closed-before', 'closed-during', 'error-during'] as const)(
     'the REAL Home reseat displays disclosure before sweeping (actual Ink: %s)',
-    async (actualInk) => {
+    async (mode) => {
+      const actualInk = mode !== false;
       let captured: RootAppProps | undefined;
       let buildChecks = 0;
       const input = new OwnedTtyInput();
@@ -560,8 +562,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       });
       let firstNoticeRows: number | undefined;
       stdout.onFrame = (frame) => {
-        if (frame.includes('external effect') && firstNoticeRows === undefined)
+        if (frame.includes('external effect') && firstNoticeRows === undefined) {
           firstNoticeRows = client.sqlite.prepare('SELECT * FROM run_effects').all().length;
+          if (mode === 'closed-during') stdout.destroy();
+          if (mode === 'error-during') stdout.destroy(new Error('SECRET_OUTPUT_FAILURE'));
+        }
       };
       const { deps } = makeDeps(
         (props) => {
@@ -570,17 +575,19 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         {
           render: (props: RootAppProps) => {
             captured = props;
-            if (!actualInk)
+            if (!actualInk) {
+              props.onRendererReady?.(() => Promise.resolve());
               return {
                 unmount: finishRenderer,
                 waitUntilRenderFlush: () => Promise.resolve(),
                 waitUntilExit: () => syntheticExit,
               };
+            }
             instance = renderInk(createElement(RootApp, props), {
               stdin: input,
               stdout,
               stderr,
-              debug: true,
+              debug: false,
               exitOnCtrlC: false,
               patchConsole: false,
               alternateScreen: false,
@@ -590,6 +597,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           providers: scriptedResolver([textTurn('first reply')]),
           buildResumedSession: async (options) => {
             const built = await buildResumedChatSession(options);
+            if (mode === 'closed-before' && buildChecks === 0) stdout.destroy();
             expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toHaveLength(
               buildChecks === 0 ? 2 : 1,
             );
@@ -598,7 +606,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           },
         },
       );
+      let rendererError: unknown;
       const running = driveHome(deps);
+      const settled = running.catch((error: unknown) => {
+        rendererError = error;
+      });
       try {
         await instance?.waitUntilRenderFlush();
         const props = captured;
@@ -641,10 +653,22 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           props.controller.handleKey('', ENTER);
           if (props.controller.getSnapshot().modelPicker?.phase === 'effort')
             props.controller.handleKey('', ENTER);
-          await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+          if (typeof mode === 'string')
+            await vi.waitFor(() => expect(rendererError).toBeInstanceOf(Error));
+          else
+            await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
           await instance?.waitUntilRenderFlush();
         };
         await pick('claude-opus-4-8');
+        if (typeof mode === 'string') {
+          await settled;
+          expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toHaveLength(2);
+          expect(firstNoticeRows).toBe(mode === 'closed-before' ? undefined : 2);
+          expect(String(rendererError)).toContain('terminal output closed');
+          expect(String(rendererError)).not.toContain('SECRET_OUTPUT_FAILURE');
+          expect(closeSpy).toHaveBeenCalledTimes(1);
+          return;
+        }
         expect(client.sqlite.prepare('SELECT state FROM run_effects').all()).toEqual([
           { state: 'ambiguous' },
         ]);
@@ -671,8 +695,12 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         instance?.unmount();
         finishRenderer();
         if (captured !== undefined) await captured.controller.teardownActive();
-        await running.catch(() => undefined);
+        await settled;
         instance?.cleanup();
+        await vi.waitFor(() => {
+          expect(stdout.listenerCount('close')).toBe(0);
+          expect(stdout.listenerCount('error')).toBe(0);
+        });
         input.destroy();
         stdout.destroy();
         stderr.destroy();

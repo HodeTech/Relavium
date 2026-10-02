@@ -1,5 +1,6 @@
 import type { SessionStreamHandleEvent, ToolApprovalRequest } from '@relavium/core';
-import { cleanup, render } from 'ink-testing-library';
+import { cleanup, render as renderCapture } from 'ink-testing-library';
+import { useStdout } from 'ink';
 import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -38,6 +39,17 @@ import { bracketed, settleFrames, waitFor } from './harness-util.js';
  * a live ink tree (with its store + stdin listeners) into the rest of the run. Frame assertions poll via
  * {@link waitFor} (never a fixed single yield) because React 19's commit can be deferred under load.
  */
+
+// ink-testing-library supplies an EventEmitter capture, not a native Writable. Declare its working
+// output capability explicitly; production output failures are tested with real owned Writable ports.
+function WritableCapture(props: { readonly children: ReactElement }): ReactElement {
+  const { stdout } = useStdout();
+  Object.defineProperty(stdout, 'writable', { value: true });
+  return props.children;
+}
+function render(tree: ReactElement): ReturnType<typeof renderCapture> {
+  return renderCapture(<WritableCapture>{tree}</WritableCapture>);
+}
 
 afterEach(cleanup);
 
