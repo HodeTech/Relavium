@@ -371,6 +371,8 @@ export interface EffectIdentity {
 /**
  * The audit identity of ONE occurrence. Never used for dedup — it is deliberately unstable, because its
  * question is "which occurrence was this?" rather than "is this the same effect?".
+ * The session's engine-owned tool-call id is load-bearing for the all-history completion/disclosure join
+ * (ADR-0098), independently of deduplication and completed-turn counts.
  */
 export interface EffectAttemptId {
   /** The node-retry attempt (ADR-0040), or `undefined` on the session path, which has no node retry. */
