@@ -157,3 +157,15 @@ is not a new decision.
 - A deliberate **divergence from the desktop** (SQLCipher) and a partial divergence from the
   original "encrypted local SQLite" intent of 0005/0008 — accepted knowingly, scoped to the
   CLI surface, and recorded rather than silent.
+
+### Session-effect privacy implementation — 2026-10-02
+
+W7 steps 2–4 implement ADR-0095's structural transcript and ADR-0098's session effect suppression and retention.
+The Node client enables `secure_delete = ON`, initializes the durable effect-turn high-water mark before clearing
+legacy session results, and follows the clear and each session sweep with an after-commit `TRUNCATE` checkpoint.
+The successful-checkpoint claim covers bytes freed from the upgrade onward, in both the main database and WAL,
+with the connection still open. A busy reader can leave old bytes in **both** files until a later successful
+checkpoint; even an empty sweep retries it. Pages freed before the upgrade are not retroactively erased.
+Run effect results, user text, `@` content and `!` output remain sensitive data at rest; keychain custody is a
+separate property. See [effect-journal.md §11](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold)
+for the canonical guarantee and the two accepted residuals.

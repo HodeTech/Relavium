@@ -15,6 +15,10 @@ table, and this document links to it rather than restating it.
 > The READ side: the resume gate (§4) refuses a run whose prior attempt left an effect unresolved, a session
 > discloses instead of blocking (§8), and retention sweeps only `committed` rows of a run that can no longer
 > be resumed (§9).
+> Session privacy and disclosure follow [ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md):
+> a session row holds no result and never replays; resume/reseat discloses incomplete or unattributable
+> committed effects before sweeping the exact captured rows. The file-byte guarantee is conditional on
+> a successful WAL checkpoint (§11).
 >
 > Two things in this document are still **specified but unoccupied**, and both say so where they appear:
 > tiers 1 and 2 (no shipping capability offers an idempotency key or a receipt lookup — §1), and the operator
@@ -84,6 +88,8 @@ the wiring-time audit fields, preserving run node/fence fields. The same engine 
 **all historical completed turns**, including compacted/trimmed ones. Provider/model-chosen ids
 are never part of a session's durable attempt. The core reference journal records these per-call
 fields too. Run callers without this override retain their existing wiring-time audit behaviour.
+This id is load-bearing for the session disclosure join, **never for dedup**. A legacy wiring
+placeholder (`session`, `home`, `agent-run`) cannot establish completion and is disclosed conservatively.
 
 ### The target idempotency key
 
@@ -123,14 +129,18 @@ crash-resume and on a budget approval, so an attempt-scoped lookup would miss th
 
 | record state | tier | behaviour |
 |---|---|---|
-| `committed`, result retained | any | re-deliver the stored result; do **not** re-execute |
+| `committed`, result retained | any | RUN only: re-deliver the stored result; do **not** re-execute |
 | `committed`, result not retained | 1 | retry under the stored target idempotency key |
 | `committed`, result not retained | 2 | reconcile from a receipt lookup, then decide |
 | `committed`, result not retained | 3 | `needs_attention` |
 | `prepared` / `dispatched` / `ambiguous` | 1 or 2 | reconcile, then decide |
 | `prepared` / `dispatched` / `ambiguous` | 3 | `needs_attention` |
 
-**A `committed` row is not a green light.** If the journal did not retain enough to re-deliver the result, it
+This table and `blocksResume` govern **runs**. A matching session `prepare` is always refused, even
+if an older writer left a result; neither SQLite nor the core reference journal serializes a session
+result or returns one from its readers. Sessions use the disclosure contract in §8.
+
+**A `committed` run row is not a green light.** If the journal did not retain enough to re-deliver the result, it
 blocks the node exactly as an unresolved row does. This is the window an earlier draft of ADR-0080 left open:
 settle succeeds, the process dies before `node:completed` persists, and a gate that only examined *unresolved*
 rows would wave the re-run through.
@@ -239,10 +249,22 @@ from the transient "another process owns this" of exit 6. It is the one code who
 The run is **not** resumable past the unresolved effect; resuming it re-enters the gate in §4 and stops
 again.
 
-**A session discloses once and does not block.** A chat has no operator queue and no run to pause, so
-`chat-resume` reads its unresolved rows, renders them, and continues. Tier 3's actual guarantee — never
-auto-retried, because nothing re-dispatches them — is unchanged; what changes is that the fact reaches the one
-person who can act on it instead of halting a conversation.
+**A session discloses and does not block.** Initial `chat-resume`, standalone `/models` reseat and Home
+reseat read one snapshot in an owned read transaction: content-free effect metadata and **every** strictly
+decoded historical transcript row, including rows before compaction/trim. Atomic completed-turn writes make
+the engine-assigned structural call ids completion evidence; completed-turn counts are not a join key.
+
+- Every unresolved state is disclosed, including negative-slot `!` commands; these rows remain evidence.
+- A committed non-negative-slot effect whose valid engine id is absent from the historical transcript is
+  disclosed as **landed in a turn that did not complete**. A persisted match is silent. Corrupt or mismatched
+  attribution and legacy placeholders are disclosed conservatively as **possibly incomplete**.
+- A committed negative-slot `!` command is silent: it is not a model turn.
+
+The active TTY/Home transcript receives the notice; plain/JSON modes use stderr. Delivery precedes retention
+(§9), and a failed read, failed notice delivery or lost active-session ownership prevents deletion. A discarded
+Home build cannot consume evidence. A committed incomplete/legacy row is disclosed once after a successful
+sweep; a crash between notice and sweep may disclose it again. Unresolved rows are disclosed on later resumes
+until resolved. No earlier effect is auto-retried. The user must check its target before repeating the message.
 
 An operator resolves a row as **accepted** (the effect landed; treat it as committed) or **discarded** (it did
 not; the node may run again). The resolution is written to the row with the actor and a timestamp. The CLI
@@ -257,10 +279,17 @@ exist before anything can resolve rows.
 - **`committed` rows** are swept only once their correlation can no longer be resumed. Sweeping a committed row
   while its run is still resumable would delete the evidence the gate in §4 reads, reintroducing the duplicate.
 Both sweeps ship: a run's committed rows go when the run reaches a terminal (it can no longer be resumed —
-`resumeFromCheckpoint` returns a closed handle for one), and a session's go for every turn BEFORE the one
-being resumed. The session half is the one that matters most in practice: `chat`, `chat-resume`,
-`agent run` and the bare-`relavium` Home all write session-scoped rows, and leaving them forever would make
-§11's digest a growing permanent oracle rather than a bounded one.
+`resumeFromCheckpoint` returns a closed handle for one). A resumed session sweeps only the committed rows
+captured by its successful §8 read **after** active-surface disclosure. There is no completed-turn-count bound.
+One owned `BEGIN IMMEDIATE` transaction, with busy retry, checks each captured physical id **together with**
+its scope/slot/tool address and its current committed state. All chunks commit together; actual deletions are
+counted. A new commit after the read, a changed state, or the reuse of an id at a different effect address survives.
+Reads and sweeps refuse an outer transaction, whose uncommitted view cannot prove durable completion.
+
+`agent run` is never resumable and has no transcript to disclose. Its teardown sweeps owned committed rows on
+success, failure, abort and setup/teardown unwind, while retaining unresolved rows. Ownership begins only after
+its one-shot turn-key reservation succeeds; a refused reservation cannot sweep another session's evidence.
+Each session sweep checkpoints the WAL after commit, including an empty sweep (§11).
 
 - **Growth is bounded by resolution, not by time.** Unresolved rows accumulate until an operator clears them;
   that is a deliberate trade against silently discarding an ambiguous external effect, and the quota/archive
@@ -284,6 +313,21 @@ unencrypted at rest. "A digest, not the bytes" is therefore not by itself a suff
 contract does not make it. The hash is SHA-256 over a canonical JSON serialization (sorted keys, no insignificant
 whitespace) of the redacted projection, using a vetted implementation — never a hand-rolled one.
 
+A **session** row's `result_json` is always SQL NULL; even a supplied result whose serializer throws is never
+examined. A matching prepare refuses rather than replaying, and readers suppress legacy results before parsing.
+A **run** row retains its bounded result until the terminal sweep, preserving §4's replay contract.
+
+The Node client opens with `secure_delete = ON`. After schema migration and **high-water initialization**,
+an owned `BEGIN IMMEDIATE` data update clears every legacy session result, including unresolved, orphan and
+one-shot rows, without changing their other fields. The clear and every session sweep are followed **after
+commit** by `wal_checkpoint(TRUNCATE)`. After a successful checkpoint, bytes freed from the upgrade onward
+survive in neither the main database nor WAL; acceptance scans both files while the connection remains open.
+A busy reader defers physical erasure (old bytes can remain in the main file **and** WAL) until the next
+successful open/sweep checkpoint. Pages freed before the upgrade are not retroactively zeroed; no `VACUUM`
+is performed. These two accepted residuals remain in [deferred-tasks.md](../../roadmap/deferred-tasks.md).
+User text, `@` file content and `!` output, and run tool results, remain sensitive data at rest;
+OS key storage does not make `history.db` content-free.
+
 ## 12. The crash matrix this contract must be tested against
 
 Each is an acceptance point, not a suggestion:
@@ -293,6 +337,12 @@ completes, before the settle · 4. after the settle, before the tool-result even
 before `node:completed` · 6. two effects in one node · 7. two processes preparing the same identity ·
 8. a settle write that fails · 9. tier 1 retry, tier 2 reconcile, tier 3 attention · 10. session
 disclosure-once and a concurrent `chat-resume` · 11. the committed-retention sweep boundary.
+
+Session acceptance additionally covers errored/aborted/crashed turns with a committed effect; all-history
+joins after compaction/trim and empty finals; legacy disclosure once; negative command slots; read/notice/
+activation failure preserving evidence; concurrent post-read commits and id replacement; atomic chunk
+rollback and outer-transaction refusal; owned one-shot unwind; and live main/WAL byte scans before/after
+clear or sweep, with a blocked reader and a successful later **empty** checkpoint as separate controls.
 
 ## 13. CR-95: the budget path must not become an effect duplicator
 
@@ -321,6 +371,8 @@ Trigger: a user who must resume a partially completed tool loop rather than fail
   turns. `!` commands restart their negative slot ordinal under a newly allocated key, including after
   reseat or transcript-write failure. See [the allocation contract](database-schema.md#session-content-parts).
   Trigger to revisit: the first supported concurrent-resume flow.
+- **Physical erasure is conditional.** Busy checkpoints defer it; pre-upgrade freed pages are outside the
+  secure-delete guarantee (§11). No automatic `VACUUM` or encryption change is implied.
 - **A credential rotation changes the redacted projection**, so an effect whose args reference a rotated
   credential gets a fresh identity and degrades to tier-3 behaviour for that occurrence.
 - **`EffectSlot` is not stable across a model replay**, which is why the gate is at node granularity. A design

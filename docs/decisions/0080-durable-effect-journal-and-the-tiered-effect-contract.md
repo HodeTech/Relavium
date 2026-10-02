@@ -315,3 +315,12 @@ completed tool loop rather than fail it.
   tier-3 behaviour for that occurrence. Named rather than hidden.
 - **Five ADRs are amended.** None is reversed, so all four are dated in-place amendments per the documentation
   standard, and the sentences being corrected are quoted rather than silently rewritten.
+
+### Session privacy and disclosure refinement — 2026-10-02
+
+[ADR-0098](0098-a-session-effect-row-holds-no-result-and-never-replays.md) now governs session correlations:
+their rows keep no result, a matching prepare never replays, and the per-call engine-owned attempt id joins
+all historical structural transcript rows for disclosure. That join is load-bearing **for completion evidence,
+never for dedup**; run occurrence/replay semantics and `blocksResume` are unchanged. Session retention consumes
+only the exact successfully read and disclosed committed snapshot, after the surface activates, and checkpoints
+WAL after its owned transaction commits. The canonical contract is [effect-journal.md §8–§11](../reference/shared-core/effect-journal.md#8-needs_attention).

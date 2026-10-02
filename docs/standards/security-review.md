@@ -35,11 +35,13 @@ surface is covered in [Managed mode (Phase 2)](#managed-mode-phase-2) below.
   Tauri IPC payload to the WebView, no key in a Zustand store, no key in a React prop, no
   key in localStorage, no key returned from an IPC command. The frontend learns *that* a
   provider is configured, never its secret.
-- **No plaintext at rest.** No key in a config file, `.env` committed to git,
+- **Relavium-managed provider keys are never stored as plaintext.** No such key in a config file, `.env` committed to git,
   `.relavium.yaml`, a log, or a DB column (the **desktop's** local DB is SQLCipher-encrypted;
   the **CLI's** `history.db` is unencrypted, guarded by `0600`/`0700` OS permissions per
   [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md) — either way, secrets
-  belong in the keychain, never a DB column).
+  belong in the keychain, never a DB column). This is a key-custody control, not a claim that user content,
+  event copies or retained run tool results contain no credentials or sensitive data; see
+  [the history.db sitting](#sitting-historydb-at-rest--cr-71-cr-97-2026-10-02).
 - Keys are never interpolated into error messages, the normalized `LlmError` (`.message` / `.code`), or
   the `node:failed` / `run:failed` events (see [error-handling.md](error-handling.md)). **This is a
   positive, *tested* obligation, not only a prohibition:** the `@relavium/llm` **per-adapter adapter tests**
@@ -399,6 +401,31 @@ resolver returns `undefined` for genuine absence and re-raises a non-`KeychainUn
 rather than reporting "no key", the `--pricing-url` and `--base-url` parsers throw rather than defaulting, and
 `validated-fetch.ts` normalises every escaping error to one reason-only `SafeEgressError` rather than
 continuing. Those are recorded here as checked, not assumed.
+
+### Sitting: `history.db` at rest — `CR-71`, `CR-97` (2026-10-02)
+
+W7 step 4's implementation sitting covers model-issued session tool results, durable effect evidence and
+its disclosure/retention boundary. Independent acceptance review rounds are recorded at step closure. The
+threat is sensitive output recoverable from an unencrypted local database, plus an undisclosed external effect
+whose only durable evidence disappears during resume. Keychain custody alone addresses neither threat.
+
+| Control | Adversarial evidence |
+|---|---|
+| A session result is never serialized, retained, decoded or replayed; run replay is unchanged | `session-effect-journal.test.ts`, `effect-journal-store.test.ts` and `session-effect-privacy.test.ts`: throwing serializers, planted malformed legacy results, exact matching prepare refusal, run replay and committed-NULL refusal controls |
+| Legacy clearing preserves state/digest/attempt and follows high-water initialization | `session-effect-privacy.test.ts`: real 0016 upgrade, orphan/unresolved/hidden one-shot rows, unchanged run result and next durable key after sweep |
+| Secure deletion AND an after-commit TRUNCATE checkpoint protect post-upgrade freed bytes | Real-file main/WAL scans while the connection remains open; live reader defers erasure, then an empty sweep completes it. Mutations turning secure deletion off or skipping checkpoint both fail the byte assertions |
+| Disclosure reads all history and effect metadata in one owned transaction | `session-effect-disclosure.test.ts`: completed empty final behind compaction, concurrent completion on another SQLite connection, corrupt transcript refusal and native/Drizzle outer-transaction refusal. Removing the owned read transaction fails the snapshot assertion |
+| Notice delivery and activation precede deletion of exactly captured committed evidence | `effect-retention.test.ts`, actual `chat.test.ts`/`drive-home.test.ts` resume/reseat drivers and `home-effect-activation.test.ts`: failed reads/sinks, discarded builds, synchronous exit during publication/delivery and later commits retain evidence |
+| Captured identity and current-state predicates prevent destructive sweep races | Native SQLite post-read commit, state change, foreign session and same-id replacement controls; all chunks roll back on a late refusal. Removing the captured effect-address predicate deletes the replacement and fails the assertion |
+| Errored, aborted and crashed turns do not silently lose committed effects | Real MCP + session/persister errored/aborted turns, a real SIGKILL after durable settlement before transcript persistence, disclosure once, then a greater durable key and silent completed-turn control |
+| One-shot cleanup requires proven ownership and preserves unresolved effects | Actual `agent-run.test.ts` allocator/host success, failure, abort, teardown rejection and owned setup unwind; a refused collision reservation leaves the prior owner's committed row intact |
+| Diagnostics and stored output do not escape into disclosure text | Fixed warnings on DB/read/sink failure, strict content-free snapshot and raw-result suppression; malformed attempt/name metadata is conservative rather than falsely reported as a completed or incomplete turn |
+
+The byte claim starts with the upgrade and requires a successful checkpoint. A busy reader can leave old
+bytes in the main file and WAL; pages freed before the upgrade are not retroactively erased. No `VACUUM`,
+encryption or session-ownership decision was added. User text, `@` content, `!` output and run tool results
+remain sensitive data at rest. The canonical scope is [effect-journal.md §11](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold),
+with the two accepted residuals in [deferred-tasks.md](../roadmap/deferred-tasks.md).
 
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 

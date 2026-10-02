@@ -2111,6 +2111,19 @@ transactions are refused at snapshot/maintenance boundaries, Home revalidates re
 and busy checkpoints preserve the Accepted deferred-erasure residual. No new ADR decision is needed.
 The session journal's result privacy and disclosure/sweep remain step 4. All six W7 items remain open.
 
+**Step 4 implementation checkpoint — 2026-10-02.** Session effects retain no result in SQLite or the core
+reference journal and never replay. The Node client enables secure deletion, seeds the high-water mark before
+legacy clearing, and checkpoints after the clear and every session sweep, including an empty one. Disclosure
+uses an owned all-history snapshot, then active-surface delivery, then an atomic sweep of captured physical-id/
+effect-address pairs. Chat resume/reseat, Home activation and owned one-shot unwind use that contract. Failed
+reads/sinks, discarded or reentrant Home activation, newer commits, changed states and id replacement preserve
+evidence. Run replay is unchanged. The accepted busy-checkpoint and pre-upgrade freed-page residuals remain;
+no new ADR decision is required. The [history.db sitting](../../standards/security-review.md#sitting-historydb-at-rest--cr-71-cr-97-2026-10-02)
+records its controls. The first full coverage run passes **296 suites, 6,467 tests, 11 skipped**, with all root
+thresholds met. Five controlled mutations independently fail secure-delete, WAL-checkpoint, captured-address,
+consistent-snapshot and malformed-attribution assertions. Fresh independent acceptance rounds follow the
+implementation commit; step 4 is not closed and all six W7 register items remain open.
+
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A
 coding agent cannot remember a file it read in the previous turn and calls the tool again.

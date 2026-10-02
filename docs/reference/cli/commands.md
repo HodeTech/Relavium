@@ -310,6 +310,10 @@ Exports a persisted session to a `.relavium.yaml` **scaffold** for review before
 
 ### `relavium agent run`
 
+Committed effect metadata is swept at one-shot teardown; unresolved effects remain audit evidence.
+No transcript is persisted and no earlier invocation is replayed. A failed one-shot identity reservation
+cannot clean another session's rows; see [effect-journal.md §9](../shared-core/effect-journal.md#9-retention).
+
 Runs a single agent **one-shot** (non-interactive) on the same `AgentSession` infra as `relavium chat` — a session with one turn, then exit. The agent-first headline as a scriptable, CI-friendly primitive.
 
 ```bash
@@ -324,7 +328,7 @@ echo "review it" | relavium agent run code-reviewer --fixture ./fixtures/review.
 - `--fixture <path>` replays a recorded LLM **cassette** so the run is deterministic and fully offline (no key, no network, no keychain) — the format is documented in [agent-run-fixture.md](agent-run-fixture.md). A malformed cassette exits `2`.
 - `--json` emits the [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) NDJSON stream on stdout (the same shape `chat --json` produces); otherwise the assistant reply streams in human form.
 - `--allow-mcp-stdio <digest>` (repeatable) authorizes a **local MCP program** for this invocation only. `agent run` is the one-shot, pipeline-facing member of the chat family — its stdin carries the prompt, so it can never prompt for consent, and an agent declaring an unapproved `stdio` MCP server exits `2` before anything spawns. See [Local MCP servers need consent](#local-mcp-servers-need-consent).
-- **The transcript is not persisted** — a stateless invoke (no transcript or resumable session; only an already-tombstoned durable effect-identity bookkeeping row), unlike the REPL. It does still **open `history.db`** to attach the effect journal ([effect-journal.md](../shared-core/effect-journal.md)): an external effect is carried forward by the target, not by the run, so an unattached journal would refuse every effectful tool on this surface. The rows it writes are never read back. A `history.db` that cannot be opened fails the invocation.
+- **The transcript is not persisted** — a stateless invoke (no transcript or resumable session; only an already-tombstoned durable effect-identity bookkeeping row), unlike the REPL. It does still **open `history.db`** to attach the effect journal ([effect-journal.md](../shared-core/effect-journal.md)): an external effect is carried forward by the target, not by the run, so an unattached journal would refuse every effectful tool on this surface. Its effect metadata is read at teardown for the owned committed-row sweep, never for replay. A `history.db` that cannot be opened fails the invocation.
 - The exit code is the **turn's outcome**: `0` on success, `1` on a turn error; an invocation fault is `2`. It is **never** `4` (that is the interactive REPL's session-ended code). A termination **signal** exits `128+signo` (`130` on Ctrl-C) after tearing any MCP servers down — this surface has no cooperative-cancel contract to preserve, unlike `run` ([ADR-0088](../../decisions/0088-the-mcp-boundary-is-hostile.md) §1.3).
 - **Ctrl-C leaves no orphan.** Any `stdio` MCP server this invocation spawned is reaped before the process exits, including on a `kill`, a closed terminal window, or a second impatient Ctrl-C.
 

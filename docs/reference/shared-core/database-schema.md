@@ -35,6 +35,12 @@ Two SQLite databases exist:
 
 The database is opened with `PRAGMA journal_mode = WAL` (readers never block the writer and vice-versa — but SQLite still allows **only one writer at a time**, so engine authors must funnel `run_events` and other hot-path writes through a single serialized writer, never concurrent writers) and `PRAGMA foreign_keys = ON` per connection (SQLite does **not** enforce foreign keys by default). Run events in `history.db` are pruned after 90 days by a background job that runs on app launch.
 
+The Node client also uses `secure_delete = ON`. After migration and session-effect high-water initialization,
+it clears all legacy session effect results in an owned transaction, then checkpoints WAL with `TRUNCATE`;
+every session effect sweep repeats that after-commit checkpoint, including an empty sweep. Logical suppression
+is immediate; physical erasure requires a successful checkpoint. A busy reader and pages freed before the
+upgrade remain accepted residuals. See [effect-journal.md §11](effect-journal.md#11-secrets-what-a-row-may-hold).
+
 > Workflows and agents are **not** the database's source of truth. The git-committable YAML files (`.relavium.yaml` / `.agent.yaml`) are authoritative; see [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md) and [../contracts/agent-yaml-spec.md](../contracts/agent-yaml-spec.md). The catalog tables below cache and snapshot them for fast querying, run reproducibility, and offline browsing.
 
 ## SQLite type conventions
@@ -575,7 +581,7 @@ OCCURRENCE, written by a `prepare` **before** an effectful tool dispatch leaves 
 | `state` | TEXT | NOT NULL — `prepared` \| `dispatched` \| `committed` \| `ambiguous` \| `needs_attention` |
 | `args_digest` | TEXT | NOT NULL — SHA-256 over canonical JSON of the effective args with every secret-tainted key **removed before hashing** |
 | `target_idempotency_key` | TEXT | NULL — tier 1 only; what a safe retry reuses verbatim |
-| `result_json` | TEXT | NULL — the BOUNDED tool result, retained only when re-delivery is possible |
+| `result_json` | TEXT | Always NULL for `session:` scopes, including legacy rows after open-time clearing; RUN scopes retain the bounded result when re-delivery is possible |
 | `attempt_json` | TEXT | NOT NULL — the audit occurrence (node attempt, provider attempt, tool-call id, owning fence) |
 | `created_at` | INTEGER | NOT NULL |
 | `updated_at` | INTEGER | NOT NULL |
@@ -591,8 +597,10 @@ CREATE INDEX idx_run_effects_scope ON run_effects (scope);  -- the resume gate r
 a `run_id` column for the same reason it drops the attempt: a SESSION effect has no run at all, and the
 node-retry attempt resets to 1 on both a crash-resume and a budget approval, so a key containing it would miss
 the row the gate looks for. Retention is stated in [effect-journal.md](effect-journal.md) §9 and is **partly implemented, by design**:
-the `committed` sweeps SHIP — a run's rows go when it reaches a terminal, and a session's when a turn can no
-longer be resumed — while **unresolved rows (`prepared` / `dispatched` / `ambiguous` / `needs_attention`) are
+the `committed` sweeps SHIP — a run's rows go when it reaches a terminal; a resumed session's captured rows go
+only after a successful all-history disclosure read and active notice delivery, while a never-resumed one-shot
+sweeps its owned rows at teardown. There is no completed-turn-count bound. **Unresolved rows (`prepared` /
+`dispatched` / `ambiguous` / `needs_attention`) are
 never swept by age**. That asymmetry is the contract, not a gap: an unresolved row is the record an operator
 needs, and it outlives its run deliberately, which is the same reason the table carries no foreign key to
 `runs`. (This paragraph previously said no sweep touches the table at all, which contradicted both the

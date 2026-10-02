@@ -249,3 +249,25 @@ by the monotonic key** (rejected: it deletes the only record of a turn that did 
 - **Canonical docs**: [effect-journal.md](../reference/shared-core/effect-journal.md) §§8, 9 and 14 — the session
   disclosure predicate, the sweep bound, and "a session never replays".
 - **Records**: a new register item, `CR-97`.
+
+### W7 implementation — 2026-10-02
+
+Steps 2–4 implement the accepted contract. The allocator's durable high-water mark is initialized before
+open-time clearing. SQLite and the core reference journal never serialize, retain, decode or replay a session
+result; run replay and `blocksResume` remain unchanged. The Node client enables secure deletion and checkpoints
+with `TRUNCATE` after the legacy clear and every session sweep, including an empty sweep. A busy result is
+reported as deferred; a successful checkpoint is required for the main-file/WAL byte claim. Pre-upgrade freed
+pages remain outside that claim; no `VACUUM` or encryption change was introduced.
+
+Disclosure reads content-free effect metadata and every strictly decoded historical message in one owned
+read transaction. Matching engine ids establish completion independently of compaction/trim and turn counts;
+corrupt attribution is conservative, and committed negative command slots stay silent. The active chat/Home
+surface receives the notice before a sweep of the exact captured physical-id/effect-address pairs. An outer
+transaction, failed read/delivery or lost Home activation prevents evidence consumption. A newer commit,
+changed state or replacement id at a different address survives the owned atomic sweep. One-shot teardown
+sweeps committed evidence only after its own reservation succeeded, on every owned unwind path.
+
+The September amendment's **disclose then sweep** rule governs the older acceptance sentences saying a
+committed incomplete row “survives that resume's sweep”: it survives until disclosure succeeds, then the same
+successful activation may sweep it. A crash before that sweep can repeat the notice. Unresolved rows remain.
+The canonical behaviour and physical residuals are in [effect-journal.md](../reference/shared-core/effect-journal.md).

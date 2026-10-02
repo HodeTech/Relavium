@@ -419,8 +419,10 @@ Severity is the review's verified rating. Check an item off in the PR that resol
       legacy clear and after each session-scope sweep, which is what makes the guarantee true — in WAL mode the
       zeroing write is a new frame while the old page image waits in the `-wal` file for a checkpoint.
       - **Residual 1: a checkpoint that cannot run.** A concurrent reader (another `relavium` process holding the
-        database open) makes `wal_checkpoint(TRUNCATE)` return `SQLITE_BUSY`, and those frames keep the old bytes
-        until the next successful checkpoint. The sweep still succeeds; the zeroing is deferred, not skipped.
+        database open) makes `wal_checkpoint(TRUNCATE)` return a busy result, and old bytes can remain in the
+        main database and WAL until the next successful checkpoint. Logical clearing/deletion still commits;
+        physical erasure is deferred, not claimed complete. Every later open and session sweep retries the
+        checkpoint, including an empty sweep.
       - **Residual 2: pages freed before the upgrade.** `secure_delete` is not retroactive, and `chat-resume` has
         been sweeping committed session rows — which held `result_json` — since long before this change. Only a
         `VACUUM` reclaims those pages, which decision 15 did not take: it needs an exclusive lock other processes
