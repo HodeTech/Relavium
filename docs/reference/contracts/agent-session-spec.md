@@ -146,7 +146,10 @@ assistant row containing a text part, even when that text is empty. The additive
 field on [the completed-turn event](sse-event-schema.md#session-event-namespace) supplies only
 structure; streaming tool inputs and result summaries never feed transcript persistence.
 The persister commits the entire exchange and session totals atomically. A failure latches
-and stops later model/command egress. Errors and aborts commit no transcript; their billed cost remains real.
+and stops later model/command egress. Admission checks the live latch at each provider attempt and
+effect preparation, including a cached idle-command key and a cost-write failure after provider
+admission. Settling or discarding an already-prepared effect remains available to record its outcome.
+Errors and aborts commit no transcript; their billed cost remains real.
 
 Resume, model reseat, export and boundary mapping share `completedSessionTurns`. A tool-call row
 with preamble text is never a terminal, and an unfinished exchange rolls back. An empty-final turn

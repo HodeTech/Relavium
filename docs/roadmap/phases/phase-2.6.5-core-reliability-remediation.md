@@ -2079,7 +2079,12 @@ plan tests pass. Required lint/typecheck/test/build/format checks pass; root cov
 [Round 1](../../reviews/2026-10-02T05-34-44-w7-step-3-round-1-review.md) verified that recursive
 JSON size metadata could abort a valid correction and that recovered policy denials lost their
 `denied` outcome. Both are corrected with regressions that failed before the fixes. Required checks
-pass and root coverage exits 0 (291 suites, 6,406 passing tests, 11 skipped). Fresh round 2 is pending;
+pass and root coverage exits 0 (291 suites, 6,406 passing tests, 11 skipped); full CI exits 0
+at `4045272c`. [Round 2](../../reviews/2026-10-02T05-48-54-w7-step-3-round-2-review.md) verified
+a cached-command durability bypass and loss of the resolved tool name on a recovered filesystem
+denial. A live effect-prepare guard and registry-verified name fallback correct both, with regressions
+that failed before correction. Required checks and coverage pass (291 suites, 6,410 passing tests,
+11 skipped). A third round with fresh independent reviewers is pending;
 **step 3 is not closed**. The session journal's result privacy and disclosure/sweep remain step 4.
 
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)

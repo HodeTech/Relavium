@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -25,6 +25,7 @@ import { createSessionPersister } from './persister.js';
 import {
   buildChatSession,
   buildResumedChatSession,
+  type BuildChatSessionOptions,
   type BuiltChatSession,
 } from './session-host.js';
 import { scriptedResolver, textTurn, stop } from './test-support.js';
@@ -114,7 +115,7 @@ describe('session structure through the real CLI host and SQLite', () => {
     if (initialSequenceNumber === undefined) built.session.start();
     return persister;
   }
-  const fresh = (scripts: StreamChunk[][]) =>
+  const fresh = (scripts: StreamChunk[][], overrides: Partial<BuildChatSessionOptions> = {}) =>
     buildChatSession({
       chat,
       agentRef: join(root, 'mcp.agent.yaml'),
@@ -126,6 +127,7 @@ describe('session structure through the real CLI host and SQLite', () => {
       onListenerError: () => undefined,
       startMcpClient: connect,
       consentGate: () => Promise.resolve(new Map()),
+      ...overrides,
     });
 
   it('persists resolved MCP structure with exact per-call attempt joins and no raw strings', async () => {
@@ -305,5 +307,102 @@ describe('session structure through the real CLI host and SQLite', () => {
         .prepare('SELECT scope, attempt_json AS attemptJson FROM run_effects ORDER BY slot')
         .all(),
     ).toHaveLength(1);
+  });
+
+  it('refuses another idle command after a failed trim even with a cached command key', async () => {
+    const spawn = vi.fn(() =>
+      Promise.resolve({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }),
+    );
+    const built = await fresh([textTurn('first'), textTurn('second')], {
+      chat: { ...chat, allowedCommands: ['ls'] },
+      toolHost: { process: { spawn } },
+    });
+    const persister = attach(built);
+    for (const text of ['first', 'second']) {
+      persister.beginUserTurn(text);
+      await built.session.sendMessage(text);
+    }
+    expect((await built.session.runUserCommand('ls', [])).kind).toBe('ran');
+    const fail = vi.spyOn(store, 'writeTurn').mockImplementation(() => {
+      throw new Error('synthetic-private-store-token');
+    });
+    built.session.trimHistory(2);
+    expect(persister.durabilityFailure).toBeDefined();
+    fail.mockRestore();
+    const outcome = await built.session.runUserCommand('ls', []);
+    expect(outcome.kind).toBe('failed');
+    expect(JSON.stringify(outcome)).not.toContain('synthetic-private-store-token');
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(client.sqlite.prepare('SELECT scope, slot FROM run_effects').all()).toEqual([
+      { scope: 'session:session:3', slot: -1 },
+    ]);
+    expect(
+      client.sqlite
+        .prepare('SELECT effect_turn_high_water AS highWater FROM agent_sessions WHERE id = ?')
+        .get('session'),
+    ).toEqual({ highWater: 3 });
+  });
+
+  it('refuses a model effect when its attempt cost write has just latched a durability failure', async () => {
+    const providers = scriptedResolver([call('provider'), textTurn('never')]);
+    const provider = providers.resolveProvider('anthropic');
+    if (provider === undefined) throw new Error('missing scripted provider');
+    const egress = vi.spyOn(provider, 'stream');
+    const built = await fresh([], { providers });
+    const persister = attach(built);
+    const dispatch = vi.spyOn(connection, 'callTool');
+    vi.spyOn(store, 'recordSessionCost').mockImplementation(() => {
+      throw new Error('synthetic-private-store-token');
+    });
+    persister.beginUserTurn('read');
+    await built.session.sendMessage('read');
+    expect(persister.durabilityFailure).toBeDefined();
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(egress).toHaveBeenCalledTimes(1);
+    expect(client.sqlite.prepare('SELECT id FROM run_effects').all()).toEqual([]);
+    expect(store.loadMessages('session')).toEqual([]);
+  });
+
+  it('persists the resolved tool name after a real recoverable filesystem scope denial', async () => {
+    const workspace = join(root, 'workspace');
+    mkdirSync(workspace);
+    writeFileSync(join(root, 'outside.txt'), 'private-host-content');
+    const agentRef = join(root, 'read.agent.yaml');
+    writeFileSync(
+      agentRef,
+      'id: reader\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: Read things.\ntools: [read_file]\n',
+    );
+    const built = await fresh(
+      [
+        [
+          { type: 'tool_call_start', id: 'provider-private-id', name: 'read_file' },
+          {
+            type: 'tool_call_delta',
+            id: 'provider-private-id',
+            argsJsonDelta: '{"path":"../outside.txt"}',
+          },
+          { type: 'tool_call_end', id: 'provider-private-id' },
+          stop('tool_use'),
+        ],
+        textTurn('recovered'),
+      ],
+      { agentRef, cwd: workspace },
+    );
+    const persister = attach(built);
+    persister.beginUserTurn('read');
+    await built.session.sendMessage('read');
+    const full = store.loadFull('session');
+    if (full === undefined) throw new Error('missing persisted session');
+    const parts = full.messages.flatMap((message) => message.content);
+    expect(parts.find((part) => part.type === 'tool_call')).toMatchObject({ name: 'read_file' });
+    expect(parts.find((part) => part.type === 'tool_result')).toMatchObject({ outcome: 'denied' });
+    const exported = sessionToWorkflow(full.session, full.messages);
+    expect(exported.workflow.nodes.find((node) => node.type === 'agent')).toMatchObject({
+      tools: ['read_file'],
+    });
+    for (const sentinel of ['provider-private-id', '../outside.txt', 'private-host-content']) {
+      expect(JSON.stringify(full.messages)).not.toContain(sentinel);
+      expect(serializeWorkflow(exported)).not.toContain(sentinel);
+    }
   });
 });

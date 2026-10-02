@@ -37,6 +37,10 @@ added.
   deep JSON metadata interrupted correction and policy-denial outcome lost its classification;
   both verified and corrected, fresh round 2 pending.
 
+- [2026-10-02 — W7 step 3, round 2](2026-10-02T05-48-54-w7-step-3-round-2-review.md):
+  cached command identity bypassed the durability latch and filesystem denials lost their tool name;
+  both verified and corrected, fresh corrective review pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

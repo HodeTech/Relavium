@@ -64,7 +64,10 @@ merged too (PR #85, 2026-08-28).
 > resume/export and per-call effect ids across the CLI hosts. Required checks and coverage pass;
 > [Round 1](../reviews/2026-10-02T05-34-44-w7-step-3-round-1-review.md) verified a deep-JSON
 > metadata failure and a lost policy-denial classification. Both corrections pass the required
-> checks and coverage (291 suites, 6,406 passing tests, 11 skipped); fresh round 2 is pending.
+> checks and coverage (291 suites, 6,406 passing tests, 11 skipped); full CI passes at `4045272c`.
+> [Round 2](../reviews/2026-10-02T05-48-54-w7-step-3-round-2-review.md) verified a cached-command
+> durability bypass and a missing tool name on recovered filesystem denial. Both corrections pass
+> checks and coverage (291 suites, 6,410 passing tests, 11 skipped); fresh corrective review is pending.
 > Step 3 is not closed.
 > It repairs collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).

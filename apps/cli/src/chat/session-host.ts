@@ -18,6 +18,7 @@ import {
   type SessionResumeState,
   type ToolDef,
   type ToolHost,
+  ToolExecutionError,
   unwiredEffectJournal,
 } from '@relavium/core';
 import {
@@ -57,6 +58,9 @@ import {
 import { resolveChatAgentSource, type ResolvedChatAgent } from './agent-source.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import { hostDeadlineTimer, hostSleep } from '../process/sleep.js';
+
+const SESSION_DURABILITY_FAILURE =
+  'this session could not be saved, so it will not send anything further — the transcript and cost on disk are behind what you see';
 
 /**
  * Assemble a ready-to-run `relavium chat` session over `@relavium/core`'s {@link AgentSession} (2.M — the
@@ -405,15 +409,26 @@ function buildSessionRuntime(
     effects: (correlation: EffectCorrelation): EffectDispatchPort => {
       const port = effectJournal?.(correlation);
       return {
-        prepare: (slot, toolId, tier, redactedArgs, targetIdempotencyKey, callAttempt) =>
-          (port ?? unwiredEffectJournal()).prepare(
+        prepare: (slot, toolId, tier, redactedArgs, targetIdempotencyKey, callAttempt) => {
+          // A cached idle-command key is not a durability acknowledgement. Check at the actual effect
+          // boundary, including when cost persistence failed after this model attempt was admitted.
+          // Settling/discarding an existing claim must remain possible after a failure: that records what
+          // already happened rather than admitting another effect.
+          if (durabilityProbe() !== undefined)
+            return Promise.reject(
+              new ToolExecutionError(toolId, SESSION_DURABILITY_FAILURE, undefined, {
+                retryable: false,
+              }),
+            );
+          return (port ?? unwiredEffectJournal()).prepare(
             slot,
             toolId,
             tier,
             redactedArgs,
             targetIdempotencyKey,
             callAttempt,
-          ),
+          );
+        },
         settle: (slot, toolId, state, result) =>
           (port ?? unwiredEffectJournal()).settle(slot, toolId, state, result),
         discard: (slot, toolId) => (port ?? unwiredEffectJournal()).discard(slot, toolId),
@@ -479,10 +494,7 @@ function buildSessionRuntime(
         // turn failure and carries this MESSAGE onto the terminal, which is all this needs. Exporting the
         // turn-error class from `@relavium/core` to type it would widen a package's public API for a string.
         // The message names the state without echoing the store's own text, which can carry a path.
-        throw new Error(
-          'this session could not be saved, so it will not send anything further — the transcript and cost on disk are behind what you see',
-          { cause: failure },
-        );
+        throw new Error(SESSION_DURABILITY_FAILURE, { cause: failure });
       }
       return governor?.preEgress(info);
     },
