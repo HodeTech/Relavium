@@ -119,6 +119,9 @@ added.
 - [2026-10-03 — W7 step 9, round 1](2026-10-03T00-25-08-w7-step-9-round-1-review.md):
   unsafe actual text settlement and post-provider generative refunds reproduced and corrected; fresh round 2 pending.
 
+- [2026-10-03 — W7 step 9, round 2](2026-10-03T01-10-45-w7-step-9-round-2-review.md):
+  async pricing gaps/orphaned admissions and cancellation teardown reproduced and corrected; fresh round 3 pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

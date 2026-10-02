@@ -145,7 +145,12 @@ settlement carries the priced flag: unknown model/modality pricing retains E whi
 the existing unpriced result; a known zero reconciles as genuinely free. Post-provider
 pricing/outcome exceptions retain any still-owned admission. Already settled event-sink failures
 do not duplicate conservative spend; proven pre-egress key/cancel failures refund, and async
-jobs transfer their held admission. Conservative commitments remain separate from actual cost.
+jobs transfer their held admission. The engine's parked-job consumer applies the same distinction
+on done, failed, deadline and cancellation: pricing gaps retain E, and accounting faults finish
+the transferred admission before the poll backstop handles them. Its early exactly-once marker
+prevents callback reentry from billing twice. Terminal accounting guards each job independently
+so one fault cannot skip the remaining jobs or timer/lease/stream cleanup; cancellation and an
+earlier failure retain precedence. Conservative commitments remain separate from actual cost.
 
 A consumed positive allowance, a prospective E larger than the remainder, an unsafe E or a real
 overdraw closes later admission with `budget_exceeded`; it cannot produce a new pause or retry.

@@ -360,3 +360,14 @@ zero/underspend, proven pre-egress release, already settled event-sink failures 
 ownership transfer keep their distinct behaviour. This repairs integration with the foundation
 without changing A, eligibility, strict refusal or the Step 10 authorization boundary. E remains
 a conservative commitment, never a fabricated actual.
+
+## W7 step 9 transferred-admission review correction — 2026-10-03
+
+The second fresh review reproduced a transferred async admission refunded after pricing loss
+or left in flight after an accounting fault. The actual engine consumer now conserves safe
+E and closes its slot before handling the terminal, without granting new authority or turning
+E into actual spend. Per-job terminal guards prevent an exception from abandoning other jobs
+or timer/lease/stream cleanup. Reentrant callbacks cannot bill twice, and known-zero/actual
+reconciliation and cancellation/earlier-failure precedence remain intact. This is a caller
+integration repair to the existing foundation; Step 10 still owns durable activation and
+process-local allowance lifetime wiring.

@@ -187,3 +187,15 @@ pre-egress failure refunds it. Already settled or transferred admissions remain 
 This implements the existing conservative commitment policy; it does not invent a realized
 charge or make unsafe actual arithmetic authoritative. See the
 [runner contract](../reference/shared-core/agent-runner.md#dispatch-allowance-foundation).
+
+## W7 step 9 parked-job settlement correction — 2026-10-03
+
+Fresh review reproduced the same conservative-accounting gap in the engine's transferred
+async media admission. Done, failed, deadline and terminal-abandonment paths now retain safe
+E when current pricing is missing or accounting rejects the actual. The job's exactly-once
+marker remains before pricing callbacks, and its captured admission finishes before a fault
+escapes. Terminal accounting handles each job independently so an exception cannot strand
+other paid jobs, timers, ownership or the event stream. Cancellation and an earlier failure
+keep their precedence. Known zero/under-spend/overrun still reconcile actual cost; an already
+settled delivery fault cannot manufacture a second commitment. Conservative E remains separate
+from actual spend. This completes the adjacent caller correction without changing authorization.

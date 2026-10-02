@@ -328,3 +328,14 @@ admission before propagating. An event-sink fault after known settlement cannot 
 conservative charge, and async jobs retain their transferred admission. These are caller
 corrections to the existing gap and conservative-accounting policies, not a new fallback price.
 See the [runner contract](../reference/shared-core/agent-runner.md#dispatch-allowance-foundation).
+
+## W7 step 9 async consumer correction — 2026-10-03
+
+The synchronous correction did not cover the actual parked-job consumer: it still settled an
+explicit unpriced zero as free, and pricing/unsafe-actual faults lost its admission. The engine
+now carries the same priced-versus-gap distinction through done, failed, deadline and cancel.
+A gap retains safe E and preserves the explicit unpriced result; a fault retains E before the
+existing poll backstop classifies it. Terminal cleanup continues across every paid job even
+when one accounting path faults, preserving cancellation and earlier-failure precedence.
+Known actual, callback reentry and delivery faults remain exactly-once. No estimate becomes
+an actual media price. See the [runner contract](../reference/shared-core/agent-runner.md#dispatch-allowance-foundation).

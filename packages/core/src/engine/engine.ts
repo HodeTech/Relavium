@@ -1874,7 +1874,7 @@ class RunExecution {
         } catch {
           // The settle itself faulted (the same broken host can fault the abort path's own timer arm).
           // Fall back to the in-memory backstop — an aborted run still beats a hung one.
-          this.#failNodeInternal(vertex, message);
+          this.#failNodeInternal(vertex.id, message);
         }
         this.#schedule();
       });
@@ -2516,7 +2516,7 @@ class RunExecution {
       // un-re-hosted url, a non-canonical byte carrier, a missing/erroring MediaStore). Both map to a single
       // run:failed here. (A durable PERSIST rejection still never reaches here: #emitDurable absorbs persist
       // faults and self-schedules; only the de-inline transform re-throws, and only for non-terminal events.)
-      this.#failNodeInternal(vertex, 'the engine failed while settling a node');
+      this.#failNodeInternal(vertex.id, 'the engine failed while settling a node');
     }
     this.#schedule();
   }
@@ -2797,26 +2797,36 @@ class RunExecution {
     // Mark before the first side effect. A terminal/error path may re-enter while a sink is unwinding; the provider
     // has only one submitted job, so the engine must never manufacture a second billed addend for it.
     job.costAccounted = true;
-    const realized = realizedMediaCost(job.model, job.modality, job.units, this.#resolvePrice);
-    // Reconcile the lease BEFORE publishing the engine cost event. If event delivery faults after a provider-paid
-    // job, the reservation cannot be released as though the submission were free. Clear the process-local handle
-    // after its idempotent settle so every terminal sweep remains exactly-once from the governor's perspective.
-    job.admission?.settle(realized.costMicrocents);
+    // Capture and clear before pricing can re-enter terminal cleanup. This job already crossed egress:
+    // missing pricing retains its accepted estimate; a pricing/unsafe-actual fault must also finish that
+    // hold before the poll backstop or terminal sweep handles the error.
+    const admission = job.admission;
     delete job.admission;
-    this.#nodeEmit({
-      type: 'cost:updated',
-      nodeId,
-      model: job.model,
-      inputTokens: 0,
-      outputTokens: 0,
-      costMicrocents: realized.costMicrocents,
-      cumulativeCostMicrocents: 0, // #nodeEmit overwrites with the authoritative run-wide total
-      // The async-job half of ADR-0089 §4. A minute-scale video generation is the single most expensive thing
-      // this engine emits a cost for, so a `0` here that cannot be told from "free" is the worst version of
-      // `CR-55` — and this settle runs on EVERY terminal (success, fail, deadline, cancel), because the
-      // provider bills regardless. `false` only; absence is the ordinary, fully-priced case.
-      ...(realized.priced ? {} : { priced: false }),
-    });
+    try {
+      const realized = realizedMediaCost(job.model, job.modality, job.units, this.#resolvePrice);
+      // Settle before event delivery. A later sink fault cannot undo an already known actual or bill twice.
+      if (realized.priced) admission?.settle(realized.costMicrocents);
+      else admission?.settleAtReservedEstimate({ nodeId });
+      this.#nodeEmit({
+        type: 'cost:updated',
+        nodeId,
+        model: job.model,
+        inputTokens: 0,
+        outputTokens: 0,
+        costMicrocents: realized.costMicrocents,
+        cumulativeCostMicrocents: 0, // #nodeEmit overwrites with the authoritative run-wide total
+        // The async-job half of ADR-0089 §4. A minute-scale video generation is the single most expensive thing
+        // this engine emits a cost for, so a `0` here that cannot be told from "free" is the worst version of
+        // `CR-55` — and this settle runs on EVERY terminal (success, fail, deadline, cancel), because the
+        // provider bills regardless. `false` only; absence is the ordinary, fully-priced case.
+        ...(realized.priced ? {} : { priced: false }),
+      });
+    } catch (error) {
+      // Idempotent after a known actual, conservative while its reservation is still unsettled. Keep the
+      // original fault loud; no fabricated zero or unsafe actual may substitute for the accepted estimate.
+      admission?.settleAtReservedEstimate({ nodeId });
+      throw error;
+    }
   }
 
   /**
@@ -2832,22 +2842,21 @@ class RunExecution {
       return; // run terminal, or the job was already cleared (nothing to clean up)
     }
     const vertex = this.#plan.vertices.get(nodeId);
-    if (vertex === undefined) {
-      // The parked node no longer exists in the plan — only reachable via same-slug workflow CONTENT drift on
-      // resume (the identity guard checks the surrogate workflow id, not content). A silent return would strand
-      // the run paused forever on a job that can never re-attach. The provider billed the submitted job
-      // regardless of the drift, so emit its lone realized cost addend BEFORE clearing (ADR-0045 §5: exactly
-      // one addend on EVERY terminal path — there is no vertex to settle node:failed against, but the cost is
-      // still owed). Then clear + drive the loop so the now-jobless idle settles the run instead of hanging.
-      this.#emitMediaJobCost(nodeId, job);
-      this.#clearMediaJob(nodeId);
-      this.#schedule();
-      return;
-    }
     // The whole settle path is wrapped: a synchronous bus/Zod throw (or a #nodeEmit fault) must NOT escape the
     // fire-and-forget `void #pollMediaJob` as an unhandled rejection — route it to a single run:failed instead
     // (mirroring the #onOutcome backstop), keeping the run total for faults.
     try {
+      if (vertex === undefined) {
+        // Defensive checkpoint edge: a parked job has no vertex in the admitted plan. A silent return would
+        // strand the run paused forever on a job that cannot re-attach. The provider billed the submitted job
+        // regardless, so emit its lone realized cost addend BEFORE clearing (ADR-0045 §5: exactly
+        // one addend on EVERY terminal path — there is no vertex to settle node:failed against, but the cost is
+        // still owed). Then clear + drive the loop so the now-jobless idle settles the run instead of hanging.
+        this.#emitMediaJobCost(nodeId, job);
+        this.#clearMediaJob(nodeId);
+        this.#schedule();
+        return;
+      }
       if (Date.parse(this.#host.clock.now()) > Date.parse(job.deadlineAt)) {
         await this.#settleMediaJobFailed(vertex, job, {
           code: 'provider_unavailable',
@@ -2917,7 +2926,7 @@ class RunExecution {
     } catch {
       if (!this.#settled) {
         this.#clearMediaJob(nodeId);
-        this.#failNodeInternal(vertex, 'the media job poll loop failed while settling the node');
+        this.#failNodeInternal(nodeId, 'the media job poll loop failed while settling the node');
         // Drive the loop so `#step` observes `#failure` and settles `run:failed`. Unlike `#onOutcome` (whose
         // backstop is followed by an unconditional `#schedule()`), this poll is fired out-of-band from a timer
         // — nothing else re-enters the loop, so without this the run would hang at `run:paused` forever (M1).
@@ -3132,15 +3141,15 @@ class RunExecution {
   }
 
   /** Mark a vertex failed and fail the run (unless already cancelling/failing) — the internal backstop. */
-  #failNodeInternal(vertex: PlanVertex, message: string): void {
-    const state = this.#states.get(vertex.id);
+  #failNodeInternal(nodeId: string, message: string): void {
+    const state = this.#states.get(nodeId);
     // A media-parked node is `'paused'`, not `'running'`, when its poll loop's settle-path backstop fires —
     // transition it to `'failed'` too so the in-memory state matches the run's terminal outcome (L1).
     if (state?.status === 'running' || state?.status === 'paused') {
       state.status = 'failed';
     }
     if (!this.#settled && this.#failure === undefined && !this.#cancelling) {
-      this.#failure = { nodeId: vertex.id, error: { code: 'internal', message, retryable: false } };
+      this.#failure = { nodeId, error: { code: 'internal', message, retryable: false } };
       this.#abort.abort();
     }
   }
@@ -3369,7 +3378,24 @@ class RunExecution {
     // (ADR-0045 §5, the local-only-cancel cost-integrity caveat). run:completed never reaches here with a
     // pending job (each completes + clears at its own `done`). Emit BEFORE the terminal so the run total folds it.
     for (const [nodeId, job] of this.#pendingMediaJobs) {
-      this.#emitMediaJobCost(nodeId, job);
+      try {
+        this.#emitMediaJobCost(nodeId, job);
+      } catch {
+        // The accepted reservation is already conserved. Continue EVERY job and the terminal cleanup:
+        // #settled is true, so another #settle cannot rescue an interrupted timer/lease/stream teardown.
+        // Cancellation and an earlier failure retain precedence; an otherwise successful run fails loudly.
+        if (type !== 'run:cancelled') {
+          this.#failure ??= {
+            nodeId,
+            error: {
+              code: 'internal',
+              message: 'a submitted media job cost could not be accounted for',
+              retryable: false,
+            },
+          };
+          type = 'run:failed';
+        }
+      }
     }
     for (const disarm of this.#mediaJobTimers.values()) {
       disarm();

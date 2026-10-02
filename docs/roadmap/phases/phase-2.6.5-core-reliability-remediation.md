@@ -2953,3 +2953,15 @@ its sizes/threshold; restoring the original quadratic regex still fails that ass
 skips; line/branch/function coverage 95.88%/92.82%/96.57%). Fresh round 2 precedes Step 9 closure;
 Steps 7–8, 10–11 and all six
 register items remain pending. No new residual was deferred.
+
+**Step 9 round 2 correction — 2026-10-03.** [Fresh full-step review](../../reviews/2026-10-03T01-10-45-w7-step-9-round-2-review.md)
+verified the transferred async admission was refunded after pricing loss or orphaned on
+accounting faults; cancellation could additionally stop before terminal cleanup. The engine
+now conserves safe E before fault handling, distinguishes unpriced zero from genuine free
+usage, retains its reentry guard and accounts for each terminal job independently. Fifty-one
+permanent done/failed/deadline/cancel, reentry/delivery and sibling-job regressions pass.
+Three actual-source negatives fail as expected; restored adjacent checks pass 406 tests.
+Full `pnpm run ci` and sequential `pnpm coverage` exit 0 (314 suites, 7,143 passing tests,
+11 existing skips; line/branch/function coverage 95.88%/92.85%/96.57%). Fresh round 3
+precedes Step 9 closure. Steps 7–8, 10–11 and all six register items remain pending; no residual
+was deferred.
