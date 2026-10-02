@@ -99,7 +99,13 @@ merged too (PR #85, 2026-08-28).
 > notice publication and render acknowledgement share terminal ownership with suspension. Nine focused suites
 > pass 217 tests, including delayed native delivery and independent real STOP/CONT controls.
 > Required workspace checks, build and coverage pass (298 suites, 6,514 tests, 11 skipped). Full CI
-> and a fifth fresh acceptance round are required. Step 4 and all six items remain open.
+> passed at `b9d52d76`; round 5 required two more corrections.
+> [Round 5](../reviews/2026-10-02T10-36-22-w7-step-4-round-5-review.md) independently reproduced blocked native stderr
+> holding Ctrl-C teardown and late Home acknowledgement deleting evidence during canceled-session MCP close.
+> Headless activation now races an owned interrupt; Home activation requires a running session outside teardown.
+> Eight focused suites pass 310 tests; native pipe/FIFO before/after controls and late callbacks after actual
+> database close pass. Workspace checks, build and coverage pass (298 suites, 6,520 tests, 11 skipped).
+> Full CI and a sixth fresh round precede closure. Step 4 and all six items remain open.
 > It repairs collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.

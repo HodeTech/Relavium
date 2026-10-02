@@ -271,13 +271,18 @@ until activation completes. Component lifetime and the observed Ink exit/error g
 Home also observes its renderer lifetime. The acknowledgement uses the exact stdout from Ink context,
 checks that it can write before and after the flush and observes output close/error. An Ink flush promise
 alone can resolve for unwritable output and is not sufficient. Failed setup, read, notice delivery or
-render acknowledgement, and callbacks after exit or a session swap, prevent deletion. Notice insertion and
+render acknowledgement, and callbacks after cancellation, teardown, exit or a session swap, prevent deletion. Notice insertion and
 render acknowledgement share terminal ownership with suspension: publication waits for terminal reclaim,
 and a stop during publication waits for acknowledgement. An inline Static notice must not be consumed by a
 suspended renderer. A flush adapter that omits publication or discards an asynchronous delivery failure cannot
 permit deletion. Plain/JSON await the native stderr write callback on the exact output sink, checking its state
 and handling error/close. Returning from `write()` alone only acknowledges enqueueing. Failed stderr delivery
-retains evidence; stdout remains the event stream. A discarded Home build cannot consume evidence. A committed incomplete/legacy row is disclosed once after a successful
+retains evidence; stdout remains the event stream. Ctrl-C disarms ownership before releasing the
+headless activation wait, so a blocked native write cannot delay command teardown. Its late success or failure
+stays observed and cannot sweep or access a closed database. EOF still waits for delivery. The command does
+not destroy its externally owned stderr or claim that queued bytes were flushed. Home disarms activation as
+soon as the session stops or its teardown starts, even while the same chat remains mounted during MCP close.
+A discarded Home build cannot consume evidence. A committed incomplete/legacy row is disclosed once after a successful
 sweep; a crash between notice and sweep may disclose it again. Unresolved rows are disclosed on later resumes
 until resolved. No earlier effect is auto-retried. The user must check its target before repeating the message.
 

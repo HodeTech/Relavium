@@ -2162,7 +2162,18 @@ and detachment wakes pending operations. Reconciliation refuses omitted publicat
 failures. Nine focused suites pass 217 tests, including actual delayed native command delivery; independent
 owned-worker real STOP/CONT controls pass. The [round 4 record](../../reviews/2026-10-02T10-04-04-w7-step-4-round-4-review.md)
 records evidence and limits. Workspace checks, build and coverage pass (298 suites, 6,514 tests, 11 skipped).
-Full CI and a fifth fresh independent round precede closure; all six items remain open.
+Full CI passed at `b9d52d76`; a fifth fresh independent round returned two further corrections.
+
+**Step 4, review round 5 — 2026-10-02.** Both reviewers independently reproduced headless SIGINT held
+behind native stderr backpressure; lifecycle additionally reproduced a late Home acknowledgement deleting
+evidence while a canceled session remained mounted during MCP close. The parent independently verified
+native pipe/FIFO and actual Home before/after controls. Headless activation races an owned interrupt with
+permanently disarmed ownership; Home activation requires a running session outside teardown. Four actual
+command and two controller regressions failed before correction; late callbacks cannot touch a closed
+database. Eight focused suites pass 310 tests. The [round 5 record](../../reviews/2026-10-02T10-36-22-w7-step-4-round-5-review.md)
+records evidence and limits. Workspace checks, build and coverage pass (298 suites, 6,520 tests, 11 skipped).
+Full CI and a sixth fresh independent round precede closure;
+all six items remain open.
 
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A
