@@ -284,3 +284,17 @@ SDK HTTP tests cover both paths; the canonical mechanism remains the
 
 These corrections enforce the existing transport-preservation and immutable-cap decisions; neither
 changes a generation control or introduces another lowering authority.
+
+## Implementation correction — 2026-10-02, W7 step 6 third review
+
+Deep freezing the captured JSON does not isolate its inherited `toJSON`: parsed records and arrays
+retain mutable prototypes. Actual SDK HTTP review reproduced a captured nonnumeric shape priced
+with fallback 17, then serialized as numeric 200,000 after credential resolution activated an inherited
+serializer. Both pre-existing and newly installed serializers reproduce the mismatch on both paths.
+
+Every captured JSON object and array now has its prototype detached before freezing. Array identity,
+own data keys and JSON shape remain intact, while later inherited serialization cannot change the
+admitted cap. This is an enforcement correction to the accepted immutable projection, not a new
+generation control or a claim that arbitrary host-wide mutation is sandboxed. The canonical mechanism
+and staged heterogeneous-candidate obligation remain in the
+[seam contract](../reference/shared-core/llm-provider-seam.md#current-request-estimates-and-bound-output-caps).

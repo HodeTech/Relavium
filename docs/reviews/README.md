@@ -90,6 +90,10 @@ added.
   primitive BigInt cap mutation, Gemini discarded-control refusal and omitted output-schema input
   independently reproduced and corrected; full CI/coverage and four causal negatives pass; fresh round 3 pending.
 
+- [2026-10-02 — W7 step 6, round 3](2026-10-02T18-23-45-w7-step-6-round-3-review.md):
+  inherited serializers on frozen JSON caps independently reproduced and isolated; full CI/coverage
+  and causal negatives pass, intermittent growth measurement repaired without weakening its threshold; fresh round 4 pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

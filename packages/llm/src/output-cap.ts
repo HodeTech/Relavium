@@ -109,6 +109,9 @@ function immutableJsonCap(field: OutputCapField, value: unknown): unknown {
       const item = pending.pop();
       if (typeof item !== 'object' || item === null) continue;
       for (const child of Object.values(item)) pending.push(child);
+      // Freeze alone leaves inherited toJSON executable during later SDK serialization.
+      // JSON arrays keep their array identity and own data with a detached prototype.
+      Object.setPrototypeOf(item, null);
       Object.freeze(item);
     }
     return captured;

@@ -256,7 +256,9 @@ fallback; a native output envelope is a reservation and cannot become an invente
 Plans are factory-created immutable cap projections, guarded at runtime and bound to model, actual
 provider/endpoint, canonical cap and the three native cap fields. `prepareOutputCapRequest` stages a
 cap/options copy before admission and credential awaits. Surviving object, function and BigInt cap values
-are JSON-lowered once under their original property key, then copied and deeply frozen: boxed numbers,
+are JSON-lowered once under their original property key, then copied and deeply frozen with detached
+object/array prototypes, so an inherited `toJSON` cannot run again after admission. Array identity and
+own JSON data keys are preserved. Boxed numbers,
 object `toJSON` results and primitive `BigInt.prototype.toJSON` results are priced at the numeric value
 actually forwarded, and invalid JSON data retains its wire shape. Omitted values remain omitted.
 Discarded opaque/BigInt controls are never serialized, including OpenAI-only cap fields that Gemini's
@@ -269,6 +271,9 @@ except a callable outer `providerOptions.toJSON`: it is executable body replacem
 override mapped fields. Noncallable data bearing that name is preserved.
 `LlmRequest.preparedOutputCaps` carries a measured candidate's plan through the chain and
 adapter unchanged, including after a catalog refresh; another candidate gets its own bound plan.
+The staged step 9 allowance consumer must prepare heterogeneous candidates from original construction
+inputs or separately preserved candidate plans; a primary's filtered cap projection cannot recover
+opaque controls that its dialect discarded.
 A substituted plan or changed cap/routing binding throws `InvalidOutputCapPlanError`. Neither
 `providerOptions` nor prepared plans enter durable budget quotes or events.
 

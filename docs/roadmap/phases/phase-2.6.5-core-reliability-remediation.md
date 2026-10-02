@@ -2853,3 +2853,15 @@ Four separate causal negatives fail as intended; restored full CI and coverage p
 6,824 tests and 11 pre-existing skips. The
 [second-round record](../../reviews/2026-10-02T17-54-28-w7-step-6-round-2-review.md)
 records the corrections and limitations. **Fresh round 3 is required; step 6 remains open.**
+
+**Step 6 third review checkpoint — 2026-10-02.** Both fresh reviewers independently reproduced
+one High defect: deeply frozen JSON cap objects and arrays retained inherited serializers that
+could change the admitted shape during a credential await. The parent replayed the actual-SDK
+matrix and financial evidence before correction. Captured containers now have detached prototypes;
+array identity, own data and wire JSON shape remain intact. The 72-case SDK matrix and 244 focused
+permanent tests pass; removing isolation reproduces all 50 permanent failures. An adjacent,
+intermittent growth test now uses interleaved median samples with unchanged input sizes and
+threshold; the original quadratic regex still fails its causal control. Complete restored CI and
+coverage pass 304 suites, 6,898 tests and 11 pre-existing skips. The
+[third-round record](../../reviews/2026-10-02T18-23-45-w7-step-6-round-3-review.md)
+records evidence and limits. **Fresh round 4 is required; step 6 remains open.**

@@ -245,6 +245,43 @@ describe('effective wire-cap plans (ADR-0101)', () => {
     });
   });
 
+  it('isolates every captured JSON container from inherited serialization without changing own data', () => {
+    const value: unknown = JSON.parse(
+      '{"nested":[{"__proto__":{"limit":2},"toJSON":"ordinary data"}],"limit":1}',
+    );
+    const plan = prepareOutputCapPlan(
+      identity('openai', 'official', undefined, { max_tokens: value }),
+    );
+    const captured = plan.providerOptions?.['max_tokens'];
+    expect(JSON.stringify(captured)).toBe(JSON.stringify(value));
+    const pending: unknown[] = [captured];
+    let containers = 0;
+    while (pending.length > 0) {
+      const item = pending.pop();
+      if (typeof item !== 'object' || item === null) continue;
+      containers++;
+      expect(Object.getPrototypeOf(item)).toBeNull();
+      expect(Object.isFrozen(item)).toBe(true);
+      for (const child of Object.values(item)) pending.push(child);
+    }
+    expect(containers).toBe(4);
+    expect(outputTokensReservation(plan, 17)).toBe(17);
+  });
+
+  it('keeps arrays identifiable and independent of a caller-supplied array prototype', () => {
+    const value = [1, { nested: [2] }];
+    const plan = prepareOutputCapPlan(
+      identity('openai', 'official', undefined, { max_completion_tokens: value }),
+    );
+    const captured = plan.providerOptions?.['max_completion_tokens'];
+    expect(Array.isArray(captured)).toBe(true);
+    expect(JSON.stringify(captured)).toBe('[1,{"nested":[2]}]');
+    expect(Object.getPrototypeOf(captured)).toBeNull();
+    expect(Object.getPrototypeOf(value)).toBe(Array.prototype);
+    expect(Object.isFrozen(value)).toBe(false);
+    expect(outputTokensReservation(plan, 17)).toBe(17);
+  });
+
   it('refuses unserializable surviving controls without serializing shadowed controls', () => {
     const cycle: Record<string, unknown> = {};
     cycle['self'] = cycle;
