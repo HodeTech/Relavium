@@ -55,7 +55,7 @@ import {
   type ToolDef as LlmToolDef,
 } from '@relavium/llm';
 
-import { SessionToolHistoryEntrySchema, utf8ByteLength } from '@relavium/shared';
+import { SessionToolHistoryEntrySchema } from '@relavium/shared';
 
 import { ADMISSION_CEILINGS } from '../limits.js';
 import { ToolDispatchError } from '../tools/errors.js';
@@ -75,6 +75,7 @@ import {
 import { LedgerDurabilityError, type TurnMoneyPort } from './money-durability.js';
 import type { AuthoredSystemPrompt } from './authored-system-prompt.js';
 import type { NodeStreamEvent } from './node-executor.js';
+import { sessionJsonBytes } from './session-json-bytes.js';
 
 /**
  * Loop bounds for one agent turn. The authored hard cap + the `turn_limit` surfacing is the 1.V knob.
@@ -793,11 +794,11 @@ function synthesizedMediaMessage(pending: readonly PendingAttachment[]): LlmMess
 
 /** Count only JSON the model issued/receives; neither its value nor a digest leaves the turn. */
 function jsonBytes(value: unknown): number {
-  try {
-    return utf8ByteLength(JSON.stringify(value) ?? '');
-  } catch {
+  const bytes = sessionJsonBytes(value);
+  if (bytes === undefined) {
     throw new AgentTurnError('tool_failed', 'tool payload could not be represented as JSON', false);
   }
+  return bytes;
 }
 
 function sessionToolHistoryEntry(
@@ -806,6 +807,7 @@ function sessionToolHistoryEntry(
   call: ToolCallPart,
   result: ToolResultPart,
   media: readonly DurableMediaPart[] = [],
+  outcome: SessionToolHistoryEntry['result']['outcome'] = result.isError === true ? 'error' : 'ok',
 ): SessionToolHistoryEntry {
   const parsed = SessionToolHistoryEntrySchema.safeParse({
     call: { type: 'tool_call', id, name: resolvedName, argsBytes: jsonBytes(call.args) },
@@ -813,7 +815,7 @@ function sessionToolHistoryEntry(
       type: 'tool_result',
       toolCallId: id,
       resultBytes: jsonBytes(result.result),
-      outcome: result.isError === true ? 'error' : 'ok',
+      outcome,
       ...(media.length === 0
         ? {}
         : {
@@ -999,7 +1001,16 @@ async function dispatchToolCalls(
           params.registry.has(err.toolId)
             ? err.toolId
             : 'unknown_tool';
-        history.push(sessionToolHistoryEntry(id, name, call, part));
+        history.push(
+          sessionToolHistoryEntry(
+            id,
+            name,
+            call,
+            part,
+            [],
+            err instanceof ToolDispatchError && err.code === 'tool_denied' ? 'denied' : 'error',
+          ),
+        );
       }
       results.push(failure);
       correctable = true;

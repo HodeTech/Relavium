@@ -751,7 +751,13 @@ and replaces raw tool values with the following structural parts:
 An optional result `media` array contains strict handle-only media metadata (`type`, `mimeType`,
 `source`, optional `byteLength` / `durationMs`). It has no filename or transcript field. Sizes are
 non-negative safe integers. Names have the admitted tool charset `[a-zA-Z0-9_-]`, at most 128
-characters; the registry outcome, not syntax alone, establishes resolution. The completed-turn producer derives these fields from actual registry outcomes. Generic durable run/event/IPC tool parts retain their existing shape.
+characters; the registry outcome, not syntax alone, establishes resolution. The completed-turn
+producer derives these fields from actual registry outcomes: a recovered policy denial remains
+`denied`, while another recovered dispatch failure is `error`. An unrecovered failure has no
+completed-turn transcript. Byte measurement preserves native JSON encoding, including string/key
+escaping, and counts deeply nested plain JSON iteratively when native serialization exceeds the
+call stack; structural metadata does not prevent correction of valid model JSON. Generic durable
+run/event/IPC tool parts retain their existing shape.
 
 The engine id is `session-tool:<effect-turn-key>:<slot>`, with canonical decimal safe integers,
 a positive turn key and a non-negative whole-turn slot. No provider- or model-chosen string is part

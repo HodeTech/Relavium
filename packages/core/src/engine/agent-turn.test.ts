@@ -1086,14 +1086,51 @@ describe('runAgentTurn — tool loop', () => {
     ]);
     const params = baseParams(provider, {
       registry,
+      sessionToolCallId: (slot) => `session-tool:42:${String(slot)}`,
       limits: { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true },
     });
     const result = await runAgentTurn(params);
     expect(result.text).toBe('recovered'); // the turn continued past the scope denial
+    expect(result.toolHistory.map((entry) => entry.result.outcome)).toEqual(['denied', 'ok']);
     expect(
       eventsOf(params).find((e) => e.type === 'agent:tool_result' && !e.success),
     ).toBeDefined();
   });
+
+  it.each(['array', 'object'] as const)(
+    'records deeply nested valid JSON %s arguments without blocking correction',
+    async (shape) => {
+      const depth = 15_000;
+      const nested =
+        shape === 'array'
+          ? `${'['.repeat(depth)}0${']'.repeat(depth)}`
+          : `${'{"x":'.repeat(depth)}0${'}'.repeat(depth)}`;
+      const args = `{"value":${nested}}`;
+      const registry = stubRegistry(() => {
+        throw new UnknownToolError('echo', ['echo']);
+      });
+      const provider = scriptedProvider('anthropic', [
+        [
+          { type: 'tool_call_start', id: 'provider-id', name: 'echo' },
+          { type: 'tool_call_delta', id: 'provider-id', argsJsonDelta: args },
+          { type: 'tool_call_end', id: 'provider-id' },
+          STOP('tool_use'),
+        ],
+        [{ type: 'text_delta', text: 'corrected' }, STOP()],
+      ]);
+      const result = await runAgentTurn(
+        baseParams(provider, { registry, sessionToolCallId: () => 'session-tool:42:0' }),
+      );
+      expect(result.text).toBe('corrected');
+      expect(result.toolHistory[0]?.call).toEqual({
+        type: 'tool_call',
+        id: 'session-tool:42:0',
+        name: 'unknown_tool',
+        argsBytes: args.length,
+      });
+      expect(JSON.stringify(result.toolHistory)).not.toContain('provider-id');
+    },
+  );
 
   it('does NOT recover a NON-scope tool_denied (a guardrail denial) even with recoverToolFailures (Step 14)', async () => {
     // The taxonomy split: only a SCOPE denial (recoverable) is fed back — a guardrail/grant denial (`not_granted`,

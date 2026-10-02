@@ -62,7 +62,10 @@ merged too (PR #85, 2026-08-28).
 > and both fixes, including real lock contention and process-crash checks. Step 2 is closed;
 > step 3 implementation now connects structural completed turns, atomic persistence, empty-final
 > resume/export and per-call effect ids across the CLI hosts. Required checks and coverage pass;
-> its two fresh post-commit review rounds are pending. Step 3 is not closed.
+> [Round 1](../reviews/2026-10-02T05-34-44-w7-step-3-round-1-review.md) verified a deep-JSON
+> metadata failure and a lost policy-denial classification. Both corrections pass the required
+> checks and coverage (291 suites, 6,406 passing tests, 11 skipped); fresh round 2 is pending.
+> Step 3 is not closed.
 > It repairs collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.

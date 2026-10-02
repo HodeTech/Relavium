@@ -2075,7 +2075,11 @@ Home. One-shot runs atomically retain only an already-tombstoned effect-identity
 call ids reach per-call journal attempts, including disjoint negative shell slots. Real CLI/SQLite
 MCP, late-write rollback, hidden one-shot identity, resume/trim/empty-final and rediscovered-export
 plan tests pass. Required lint/typecheck/test/build/format checks pass; root coverage exits 0
-(290 suites, 6,394 passing tests, 11 skipped). Independent post-commit review rounds are pending;
+(290 suites, 6,394 passing tests, 11 skipped). Full CI exits 0 at `f6c61b79`.
+[Round 1](../../reviews/2026-10-02T05-34-44-w7-step-3-round-1-review.md) verified that recursive
+JSON size metadata could abort a valid correction and that recovered policy denials lost their
+`denied` outcome. Both are corrected with regressions that failed before the fixes. Required checks
+pass and root coverage exits 0 (291 suites, 6,406 passing tests, 11 skipped). Fresh round 2 is pending;
 **step 3 is not closed**. The session journal's result privacy and disclosure/sweep remain step 4.
 
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)

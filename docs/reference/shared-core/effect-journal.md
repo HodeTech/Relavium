@@ -314,16 +314,15 @@ Trigger: a user who must resume a partially completed tool loop rather than fail
 
 ## 14. Known limitations
 
-- **The session path has no ownership guarantee.** ADR-0079 is runs-only, so two `chat-resume` processes on one
-  session can both dispatch. The UNIQUE prepare detects the collision but cannot distinguish a live prepare from
-  a dead one; the loser refuses rather than taking over. Trigger to revisit: the first supported concurrent-resume
-  flow.
+- **The session path has no ownership guarantee; concurrent resume remains unsupported.** ADR-0079 is
+  runs-only. The durable effect-turn allocator gives each host a distinct key, so two `chat-resume`
+  processes can both dispatch the same user request under different identities. UNIQUE prepare refuses
+  reuse of the same journal identity; it does not grant session ownership or detect these independent
+  turns. `!` commands restart their negative slot ordinal under a newly allocated key, including after
+  reseat or transcript-write failure. See [the allocation contract](database-schema.md#session-content-parts).
+  Trigger to revisit: the first supported concurrent-resume flow.
 - **A credential rotation changes the redacted projection**, so an effect whose args reference a rotated
   credential gets a fresh identity and degrades to tier-3 behaviour for that occurrence.
-- **Concurrent session resume remains unsupported.** The durable effect-turn allocator gives each host a
-  distinct key, including after a reseat or transcript-write failure, but does not grant session ownership.
-  `!` commands restart their negative slot ordinal under a newly allocated key rather than colliding with
-  a prior process's commands. See [the durable allocation contract](database-schema.md#session-content-parts).
 - **`EffectSlot` is not stable across a model replay**, which is why the gate is at node granularity. A design
   that later needs slot-granular resume needs a durable record of the model response, which is CR-95's long-term
   continuation checkpoint, not this.
