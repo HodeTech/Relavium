@@ -9,6 +9,7 @@ import type {
   MediaGenResult,
   MediaJobStatus,
   ProviderId,
+  PricingOverlay,
   StreamChunk,
 } from '@relavium/llm';
 import { describe, expect, it } from 'vitest';
@@ -28,6 +29,10 @@ import {
 import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
 import type { NodeExecContext, NodeStreamEvent } from './node-executor.js';
 import type { PreEgressInfo } from './agent-turn.js';
+import { parseWorkflow } from '../parser.js';
+import { createInMemoryHost } from './execution-host.js';
+import { WorkflowEngine } from './engine.js';
+import type { RunEvent } from '@relavium/shared';
 
 const CAPS: CapabilityFlags = {
   tools: true,
@@ -70,6 +75,99 @@ const AGENT: Agent = {
   provider: 'anthropic',
   system_prompt: 'You summarize.',
 };
+
+describe('authored output-schema current-request admission (ADR-0096)', () => {
+  it.each([
+    { descriptionChars: 0, cap: 1000, allowed: true },
+    { descriptionChars: 40_000, cap: 100_000, allowed: true },
+    { descriptionChars: 40_000, cap: 1000, allowed: false },
+  ])('prices schema input before egress ($descriptionChars chars, cap $cap)', async (testCase) => {
+    const schema = {
+      type: 'object',
+      description: 'x'.repeat(testCase.descriptionChars),
+      properties: {},
+      additionalProperties: false,
+      required: [],
+    };
+    const workflow = parseWorkflow(
+      JSON.stringify({
+        schema_version: '1.0',
+        workflow: {
+          id: 'schema-admission',
+          budget: { max_cost_microcents: testCase.cap, on_exceed: 'fail' },
+          agents: [{ ...AGENT, system_prompt: 's' }],
+          nodes: [
+            {
+              id: 'work',
+              type: 'agent',
+              agent_ref: AGENT.id,
+              prompt_template: 'hi',
+              max_tokens: 1,
+              output_schema: schema,
+            },
+          ],
+          edges: [],
+        },
+      }),
+    );
+    const resolvePrice: PricingOverlay = new Map([
+      [
+        AGENT.model,
+        {
+          provider: 'anthropic',
+          nativeId: AGENT.model,
+          displayName: AGENT.model,
+          contextWindowTokens: 1_000_000,
+          maxOutputTokens: 128_000,
+          inputPerMtokMicrocents: 1_000_000,
+          outputPerMtokMicrocents: 1_000_000,
+          cachedInputPerMtokMicrocents: 1_000_000,
+        },
+      ],
+    ]);
+    const requests: LlmRequest[] = [];
+    const source = provider([{ type: 'text_delta', text: '{}' }, STOP]);
+    const p: LlmProvider = {
+      ...source,
+      stream: (req, key) => {
+        requests.push(req);
+        return source.stream(req, key);
+      },
+    };
+    const runner = createAgentNodeExecutor(deps(p, { resolvePrice }));
+    const infos: PreEgressInfo[] = [];
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      resolvePrice,
+      executor: {
+        execute: (ctx) => {
+          const preEgress = ctx.preEgress;
+          return runner.execute({
+            ...ctx,
+            preEgress: (info) => {
+              infos.push(info);
+              return preEgress?.(info);
+            },
+          });
+        },
+      },
+    });
+    const events: RunEvent[] = [];
+    for await (const event of engine.start({ workflow }).events) events.push(event);
+    expect(infos).toHaveLength(1);
+    expect(infos[0]?.inputTokensEstimate).toBeGreaterThanOrEqual(
+      Math.ceil(JSON.stringify(schema).length / 4),
+    );
+    expect(requests).toHaveLength(testCase.allowed ? 1 : 0);
+    expect(events.at(-1)?.type).toBe(testCase.allowed ? 'run:completed' : 'run:failed');
+    if (testCase.allowed) {
+      expect(requests[0]?.responseFormat).toMatchObject({ type: 'json', schema });
+    } else {
+      const terminal = events.at(-1);
+      expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('budget_exceeded');
+    }
+  });
+});
 
 function stubRegistry(): ToolRegistry {
   return {

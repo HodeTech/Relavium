@@ -266,3 +266,21 @@ existing validated custom-factory path can select another endpoint. Canonical de
 live in the [seam contract](../reference/shared-core/llm-provider-seam.md#current-request-estimates-and-bound-output-caps)
 and adapter test suites. Required core hook transport has its single home in the
 [agent-runner contract](../reference/shared-core/agent-runner.md#pre-egress-injection-contract).
+
+## Implementation correction — 2026-10-02, W7 step 6 second review
+
+The forwarded-JSON capture also covers **primitive BigInt**: JavaScript invokes
+`BigInt.prototype.toJSON` for it, and a credential-await mutation must not change a cap after
+admission. A valid serializer is captured under its property key once; a genuinely unserialisable
+surviving value receives the existing fixed refusal before admission. Discarded BigInt remains inert.
+
+The same review distinguished a forwarded but unsupported control from one the wire lowering
+actually discards. Gemini's SDK drops OpenAI-only cap fields before JSON serialization, so their
+opaque values must never be inspected through JSON or refused for a cycle. The shared reconciliation
+now discards those fields as well as mapped-field collisions. DeepSeek's forwarded modern key
+retains capture even though its official dialect does not recognise it for reservation. Actual
+SDK HTTP tests cover both paths; the canonical mechanism remains the
+[one seam contract](../reference/shared-core/llm-provider-seam.md#current-request-estimates-and-bound-output-caps).
+
+These corrections enforce the existing transport-preservation and immutable-cap decisions; neither
+changes a generation control or introduces another lowering authority.

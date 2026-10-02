@@ -177,7 +177,7 @@ interface LlmProvider {
   // ADR-0062 context-compaction: per-provider token/context vocabulary, in Relavium/Zod seam types only (no vendor type crosses).
   contextLimit?(model: string): number | undefined;      // the model's context window in tokens; undefined for an unrated/custom model (engine then skips auto-compaction)
   managesOwnContext?(): boolean;                          // provider bounds context itself ⇒ engine skips compaction; false for all current providers
-  estimateTokens?(input: EstimateTokensInput): number;   // { system, messages, tools? } → a prospective request estimate; actual usage remains authoritative for realized billing
+  estimateTokens?(input: EstimateTokensInput): number;   // { system, messages, tools?, responseFormat? } → a prospective request estimate; actual usage remains authoritative for realized billing
   // ADR-0064 live model catalog: return the models this `key` can reach, each mapped INSIDE the adapter to a
   // Relavium ModelListing (no vendor models.list() type crosses). OPTIONAL (a provider without a list endpoint
   // omits it → host degrades to static-only). Bounded + abortable + secret-free; one bad row is dropped, a
@@ -210,7 +210,10 @@ and [ADR-0101](../../decisions/0101-configured-output-estimates-apply-only-when-
 separate prospective request size from realized usage. `estimateRequestTokens` is pure and exported
 from `@relavium/llm`; adapter `estimateTokens` defaults delegate to it. It sums `ceil(system.length / 4)`,
 two tokens per message, and the complete serialized-length/4 floor of each text, reasoning, tool-call,
-tool-result body and tool definition. Escaping, opaque args/results and continuation signatures count.
+tool-result body, tool definition and JSON `responseFormat` (including its output schema, name and strictness).
+An absent or plain-text response format adds nothing. Measurement uses the constructed pre-strip request;
+a dialect that drops a structured schema can therefore be overcounted, in the same conservative direction
+as stripped reasoning. Escaping, opaque args/results and continuation signatures count.
 Only actual media parts and the typed `tool_result.media` attachments use fixed per-part charges:
 media-looking objects nested inside opaque values remain ordinary serialized data.
 
@@ -252,11 +255,14 @@ fallback; a native output envelope is a reservation and cannot become an invente
 
 Plans are factory-created immutable cap projections, guarded at runtime and bound to model, actual
 provider/endpoint, canonical cap and the three native cap fields. `prepareOutputCapRequest` stages a
-cap/options copy before admission and credential awaits. Surviving non-primitive cap values are
-JSON-lowered once under their original property key, then copied and deeply frozen: boxed numbers
-and `toJSON` results are priced at the numeric value actually forwarded, and invalid JSON data
-retains its wire shape. Omitted values remain omitted. Discarded opaque controls are never
-serialized; an unserializable surviving control refuses with the fixed typed cap-plan error.
+cap/options copy before admission and credential awaits. Surviving object, function and BigInt cap values
+are JSON-lowered once under their original property key, then copied and deeply frozen: boxed numbers,
+object `toJSON` results and primitive `BigInt.prototype.toJSON` results are priced at the numeric value
+actually forwarded, and invalid JSON data retains its wire shape. Omitted values remain omitted.
+Discarded opaque/BigInt controls are never serialized, including OpenAI-only cap fields that Gemini's
+SDK omits from its HTTP config. DeepSeek's forwarded modern key still receives a JSON capture even
+though its official dialect does not recognise it as cap evidence. An unserializable surviving control
+refuses with the fixed typed cap-plan error before admission.
 Original identities are retained privately only to bind a measured plan; caller-owned executable
 values are never re-read after admission. Reconciliation preserves current unrelated options,
 except a callable outer `providerOptions.toJSON`: it is executable body replacement and cannot

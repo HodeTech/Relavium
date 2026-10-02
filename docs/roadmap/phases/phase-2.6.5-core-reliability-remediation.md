@@ -2842,3 +2842,14 @@ Twenty-four individual causal negatives fail as intended; complete restored CI p
 6,771 tests and 11 pre-existing skips. The
 [review record](../../reviews/2026-10-02T17-16-04-w7-step-6-round-1-review.md)
 records evidence and limits. **Fresh round 2 is required; step 6 remains open.**
+
+**Step 6 second review checkpoint — 2026-10-02.** Fresh reviewers verified three High findings:
+primitive BigInt serializers bypassed cap capture, Gemini discarded native names were unnecessarily
+serialized/refused and authored output schemas escaped the current input price. Parent replayed each
+before correction. Native BigInt now uses the one key-correct JSON capture; Gemini-discarded controls
+remain inert; the constructed pre-strip request and shared estimator include its structured response
+format. Actual SDK HTTP and parsed-workflow admission tests fail before the fix and pass after it.
+Four separate causal negatives fail as intended; restored full CI and coverage pass 303 suites,
+6,824 tests and 11 pre-existing skips. The
+[second-round record](../../reviews/2026-10-02T17-54-28-w7-step-6-round-2-review.md)
+records the corrections and limitations. **Fresh round 3 is required; step 6 remains open.**

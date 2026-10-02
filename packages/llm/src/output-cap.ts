@@ -90,7 +90,13 @@ function positiveNativeCap(value: unknown): number | undefined {
 }
 
 function immutableJsonCap(field: OutputCapField, value: unknown): unknown {
-  if ((typeof value !== 'object' || value === null) && typeof value !== 'function') return value;
+  // JSON also invokes BigInt.prototype.toJSON for a primitive BigInt.
+  if (
+    (typeof value !== 'object' || value === null) &&
+    typeof value !== 'function' &&
+    typeof value !== 'bigint'
+  )
+    return value;
   try {
     // A holder preserves the property key supplied to toJSON, unlike stringify(value).
     const parsed: unknown = JSON.parse(JSON.stringify({ [field]: value }));
@@ -127,11 +133,13 @@ export function prepareOutputCapPlan(info: OutputCapIdentity): PreparedOutputCap
       : info.maxTokens;
   const mappedValue =
     requested === undefined ? undefined : clampToCeiling(requested, outputCeiling);
-  const shadowed = (field: OutputCapField): boolean =>
-    mappedValue !== undefined &&
-    (info.provider === 'openai' || info.provider === 'deepseek'
-      ? field === 'max_tokens' || field === 'max_completion_tokens'
-      : field === mappedField);
+  const discarded = (field: OutputCapField): boolean =>
+    // Gemini's SDK drops these foreign config fields before serializing the HTTP body.
+    (info.provider === 'gemini' && field !== 'maxOutputTokens') ||
+    (mappedValue !== undefined &&
+      (info.provider === 'openai' || info.provider === 'deepseek'
+        ? field === 'max_tokens' || field === 'max_completion_tokens'
+        : field === mappedField));
   let original: Readonly<Record<string, unknown>> | undefined;
   let providerOptions: Readonly<Record<string, unknown>> | undefined;
   try {
@@ -154,10 +162,12 @@ export function prepareOutputCapPlan(info: OutputCapIdentity): PreparedOutputCap
                 const value = original?.[field];
                 // Discarded executable/opaque controls need no serialization (even a cycle is harmless).
                 const opaque =
-                  (typeof value === 'object' && value !== null) || typeof value === 'function';
+                  (typeof value === 'object' && value !== null) ||
+                  typeof value === 'function' ||
+                  typeof value === 'bigint';
                 return [
                   field,
-                  shadowed(field) && opaque ? undefined : immutableJsonCap(field, value),
+                  discarded(field) && opaque ? undefined : immutableJsonCap(field, value),
                 ];
               }),
             ),
@@ -167,7 +177,7 @@ export function prepareOutputCapPlan(info: OutputCapIdentity): PreparedOutputCap
   }
   const native = providerOptions === undefined ? undefined : { ...providerOptions };
   if (native !== undefined) {
-    for (const field of CAP_FIELDS) if (shadowed(field)) delete native[field];
+    for (const field of CAP_FIELDS) if (discarded(field)) delete native[field];
   }
   let effectiveCap = mappedValue;
   if (effectiveCap === undefined) {

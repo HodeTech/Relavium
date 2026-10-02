@@ -80,8 +80,9 @@ no message body or credential. The chain's cap projection has its canonical home
 
 Both routes may carry `outputModalities` and disjoint `mediaUnitsEstimate`. Text `maxTokens`,
 `providerOptions` and `maxTokensEstimate` have required keys allowing `undefined`. The turn core
-computes input from the current request's system text, messages and advertised tools before
-reasoning stripping; it recomputes after a tool round rather than reusing provider usage.
+computes input from the constructed current request's system text, messages, advertised tools
+and JSON response format/output schema before dialect-specific stripping; it recomputes after a
+tool round rather than reusing provider usage.
 
 All governor evaluation, admission and commitment-restoration entry points consume the whole
 object. The host captures `max_tokens_estimate` once and forwards it through workflow,

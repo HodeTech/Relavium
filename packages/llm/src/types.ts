@@ -544,7 +544,9 @@ export type ModelListing = z.infer<typeof ModelListingSchema>;
 export interface EstimateTokensInput {
   readonly system: string;
   readonly messages: readonly LlmMessage[];
-  readonly tools?: readonly ToolDef[];
+  readonly tools?: readonly ToolDef[] | undefined;
+  /** Authored structured-output schema sent as model input, measured before dialect-specific lowering. */
+  readonly responseFormat?: ResponseFormat | undefined;
 }
 
 /**

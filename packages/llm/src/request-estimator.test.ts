@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ContentPart, MediaPart } from '@relavium/shared';
-import type { ToolDef } from './types.js';
+import type { ResponseFormat, ToolDef } from './types.js';
 import {
   estimateRequestTokens,
   MEDIA_INPUT_TOKENS,
@@ -56,6 +56,64 @@ describe('current-request estimator (ADR-0096)', () => {
     };
     expect(estimate(parts, [tool])).toBe(
       2 + parts.reduce((sum, part) => sum + floor(part), 0) + floor(tool),
+    );
+  });
+
+  it('counts the complete structured response format while an absent/text format adds nothing', () => {
+    const input = { system: 'abcd', messages: [] };
+    const responseFormat: ResponseFormat = {
+      type: 'json',
+      schema: { type: 'object', description: 'x'.repeat(40_000) },
+      name: 'authored-shape',
+      strict: true,
+    };
+    const request = { ...input, responseFormat };
+    expect(estimateRequestTokens(request)).toBe(1 + floor(responseFormat));
+    expect(estimateRequestTokens(input)).toBe(1);
+    const textRequest = { ...input, responseFormat: { type: 'text' as const } };
+    expect(estimateRequestTokens(textRequest)).toBe(1);
+  });
+
+  it('contains unserialisable output schemas without losing the remaining request contributions', () => {
+    const schema = { type: 'object' as const };
+    Object.defineProperty(schema, 'self', { value: schema, enumerable: true });
+    const responseFormats: ResponseFormat[] = [
+      { type: 'json', schema },
+      {
+        get type(): 'json' {
+          throw new Error('private format content');
+        },
+        schema: {},
+      },
+      {
+        type: 'json',
+        schema: {
+          get description(): string {
+            throw new Error('private schema content');
+          },
+        },
+      },
+    ];
+    const part = { type: 'text' as const, text: 'x'.repeat(1000) };
+    for (const responseFormat of responseFormats) {
+      const request = {
+        system: 'abcd',
+        messages: [{ role: 'user' as const, content: [part] }],
+        responseFormat,
+      };
+      expect(estimateRequestTokens(request)).toBe(
+        1 + 2 + floor(part) + UNSERIALIZABLE_INPUT_TOKENS,
+      );
+    }
+    const brokenRequest = {
+      system: 'abcd',
+      messages: [{ role: 'user' as const, content: [part] }],
+      get responseFormat(): ResponseFormat {
+        throw new Error('private format accessor');
+      },
+    };
+    expect(estimateRequestTokens(brokenRequest)).toBe(
+      1 + 2 + floor(part) + UNSERIALIZABLE_INPUT_TOKENS,
     );
   });
 

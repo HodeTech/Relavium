@@ -2191,6 +2191,56 @@ describe('failed-attempt reservations use chain-owned facts (ADR-0096)', () => {
 });
 
 describe('pre-egress current-round request estimation (ADR-0096/0101)', () => {
+  it.each([false, true])(
+    'includes the constructed structured response format on the inline-media=%s path',
+    async (media) => {
+      const responseFormat = {
+        type: 'json' as const,
+        schema: { type: 'object' as const, description: 'x'.repeat(40_000) },
+      };
+      const source = media
+        ? mediaGenerateProvider('gemini', {
+            content: [
+              { type: 'text', text: '{}' },
+              { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 'aW1n' } },
+            ],
+            stopReason: 'stop',
+            usage: { inputTokens: 3, outputTokens: 1 },
+          })
+        : scriptedProvider('gemini', [[{ type: 'text_delta', text: '{}' }, STOP()]]);
+      let request: LlmRequest | undefined;
+      const provider: LlmProvider = {
+        ...source,
+        generate: (req, key) => {
+          request = req;
+          return source.generate(req, key);
+        },
+        stream: (req, key) => {
+          request = req;
+          return source.stream(req, key);
+        },
+      };
+      const seen: PreEgressInfo[] = [];
+      await runAgentTurn(
+        baseParams(provider, {
+          planEntries: [{ provider, model: 'gemini-2.5-flash', maxAttempts: 1 }],
+          responseFormat,
+          ...(media ? { outputModalities: ['text', 'image'] } : {}),
+          preEgress: (info) => {
+            seen.push(info);
+          },
+        }),
+      );
+      expect(seen).toHaveLength(1);
+      expect(request?.responseFormat).toBe(responseFormat);
+      expect(seen[0]?.inputTokensEstimate).toBeGreaterThan(10_000);
+      if (request === undefined) throw new Error('missing constructed request');
+      expect(seen[0]?.inputTokensEstimate).toBe(
+        estimateRequestTokens({ ...request, system: request.system ?? '' }),
+      );
+    },
+  );
+
   it('prices pre-strip input for every fallback and recomputes after the tool loop', async () => {
     const original: LlmMessage[] = [
       {

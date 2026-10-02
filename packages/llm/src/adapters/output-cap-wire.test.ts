@@ -125,6 +125,54 @@ async function call(
 
 describe('wire/admission parity through actual adapter paths (ADR-0101)', () => {
   afterEach(clearCatalogRefresh);
+  for (const path of ['generate', 'stream'] as const) {
+    for (const field of ['max_tokens', 'max_completion_tokens'] as const) {
+      it(`OpenAI ${path}: primitive BigInt ${field} is priced and forwarded from one JSON capture`, async () => {
+        const descriptor = Object.getOwnPropertyDescriptor(BigInt.prototype, 'toJSON');
+        let amount = 200_000;
+        let serializations = 0;
+        try {
+          Object.defineProperty(BigInt.prototype, 'toJSON', {
+            configurable: true,
+            value: (key: string) => {
+              expect(key).toBe(field);
+              serializations++;
+              return amount;
+            },
+          });
+          const { adapter, bodies } = captureAdapter('openai');
+          let reserved: number | undefined;
+          const chain = new FallbackChain(
+            [{ provider: adapter, model: 'gpt-5.4-pro', maxAttempts: 1 }],
+            {
+              preAttempt: (info) => {
+                reserved = outputTokensReservation(info.outputCapPlan, 17);
+                expect(serializations).toBe(1);
+                amount = 1;
+              },
+              keyFor: () => {
+                amount = 300_000;
+                return 'offline-test-key';
+              },
+              sleep: () => Promise.resolve(),
+            },
+          );
+          await call(
+            chain,
+            { model: 'gpt-5.4-pro', messages, providerOptions: { [field]: 1n } },
+            path,
+          );
+          expect(reserved).toBe(200_000);
+          expect(bodies).toHaveLength(1);
+          expect(bodies[0]?.[field]).toBe(200_000);
+          expect(serializations).toBe(1);
+        } finally {
+          if (descriptor === undefined) Reflect.deleteProperty(BigInt.prototype, 'toJSON');
+          else Object.defineProperty(BigInt.prototype, 'toJSON', descriptor);
+        }
+      });
+    }
+  }
   for (const provider of ['openai', 'deepseek', 'anthropic', 'gemini'] as const) {
     for (const path of ['generate', 'stream'] as const) {
       const field =

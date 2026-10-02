@@ -255,4 +255,58 @@ describe('effective wire-cap plans (ADR-0101)', () => {
     expect(outputCapNativeOptions(plan, { max_tokens: cycle })).toEqual({});
     expect(plan.effectiveCap).toBe(17);
   });
+
+  it('captures primitive BigInt serializers once under the native field key', () => {
+    const descriptor = Object.getOwnPropertyDescriptor(BigInt.prototype, 'toJSON');
+    let amount = 200_000;
+    const keys: string[] = [];
+    try {
+      Object.defineProperty(BigInt.prototype, 'toJSON', {
+        configurable: true,
+        value: (key: string) => {
+          keys.push(key);
+          return amount;
+        },
+      });
+      const options = { max_completion_tokens: 1n };
+      const plan = prepareOutputCapPlan(identity('openai', 'official', undefined, options));
+      expect(outputTokensReservation(plan, 17)).toBe(200_000);
+      amount = 1;
+      const staged = prepareOutputCapRequest(
+        { model, messages: [], providerOptions: options, preparedOutputCaps: [plan] },
+        'openai',
+        'official',
+      );
+      expect(staged.plan).toBe(plan);
+      expect(staged.request.providerOptions?.['max_completion_tokens']).toBe(200_000);
+      expect(JSON.parse(JSON.stringify(outputCapNativeOptions(plan, options)))).toEqual({
+        max_completion_tokens: 200_000,
+      });
+      expect(keys).toEqual(['max_completion_tokens']);
+    } finally {
+      if (descriptor === undefined) Reflect.deleteProperty(BigInt.prototype, 'toJSON');
+      else Object.defineProperty(BigInt.prototype, 'toJSON', descriptor);
+    }
+  });
+
+  it('refuses plain surviving BigInt but never serializes discarded BigInt or Gemini foreign controls', () => {
+    const descriptor = Object.getOwnPropertyDescriptor(BigInt.prototype, 'toJSON');
+    try {
+      Reflect.deleteProperty(BigInt.prototype, 'toJSON');
+      expect(() =>
+        prepareOutputCapPlan(identity('openai', 'official', undefined, { max_tokens: 1n })),
+      ).toThrow(InvalidOutputCapPlanError);
+      const shadowed = prepareOutputCapPlan(identity('openai', 'official', 17, { max_tokens: 1n }));
+      expect(outputCapNativeOptions(shadowed, { max_tokens: 1n })).toEqual({});
+      const cycle: Record<string, unknown> = {};
+      cycle['self'] = cycle;
+      const options = { max_tokens: cycle, max_completion_tokens: 1n };
+      const gemini = prepareOutputCapPlan(identity('gemini', 'official', 17, options));
+      expect(gemini.effectiveCap).toBe(17);
+      expect(outputCapNativeOptions(gemini, options)).toEqual({});
+    } finally {
+      if (descriptor === undefined) Reflect.deleteProperty(BigInt.prototype, 'toJSON');
+      else Object.defineProperty(BigInt.prototype, 'toJSON', descriptor);
+    }
+  });
 });

@@ -71,5 +71,11 @@ export function estimateRequestTokens(input: EstimateTokensInput): number {
     for (const part of message.content) tokens += partTokens(part);
   }
   for (const tool of input.tools ?? []) tokens += serializedTokens(tool);
+  try {
+    if (input.responseFormat?.type === 'json') tokens += serializedTokens(input.responseFormat);
+  } catch {
+    // A throwing format accessor is one failed unit; the rest of the request still counts.
+    tokens += UNSERIALIZABLE_INPUT_TOKENS;
+  }
   return tokens;
 }

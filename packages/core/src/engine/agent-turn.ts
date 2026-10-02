@@ -1406,11 +1406,8 @@ async function driveAgentTurn(
               route: 'text',
               maxTokensEstimate: params.maxTokensEstimate,
               inputTokensEstimate: estimateRequestTokens({
+                ...buildRequest(messages, params),
                 system: params.system ?? '',
-                messages,
-                ...(params.tools === undefined || requestsMediaOutput(params)
-                  ? {}
-                  : { tools: params.tools }),
               }),
               ...(params.outputModalities === undefined
                 ? {}

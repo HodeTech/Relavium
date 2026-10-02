@@ -441,3 +441,16 @@ tests bind the implementation instead).
   [agent-session-spec.md](../reference/contracts/agent-session-spec.md), and
   [chat-session.md](../reference/cli/chat-session.md).
 - **Records**: the in-turn continuation deferral in [deferred-tasks.md](../roadmap/deferred-tasks.md).
+
+## Implementation correction — 2026-10-02, W7 step 6 second review
+
+The materialized request includes its authored structured response format/output schema, not only
+system text, messages and tools. A real workflow-to-SDK offline control reproduced a 40 KB schema
+on the wire with no contribution to the new input-price estimate. `EstimateTokensInput` now carries
+the optional seam response format, and the current constructed pre-strip request forwards it to
+the shared estimator. Its JSON form keeps the same serialized-length floor and per-unit fallback;
+a plain-text or absent format adds nothing. A dialect that removes the schema can be conservatively
+overcounted, just as an attempt that strips reasoning already is. The heuristic still does not claim
+a measured provider token count or a physical bound. Canonical details remain in the
+[LLM seam](../reference/shared-core/llm-provider-seam.md#current-request-estimates-and-bound-output-caps)
+and [core hook contract](../reference/shared-core/agent-runner.md#pre-egress-injection-contract).

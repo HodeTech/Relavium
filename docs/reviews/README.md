@@ -86,6 +86,10 @@ added.
   five runtime protections, canonical hook/budget contracts and missing forwarding/wire coverage corrected;
   24 causal negative controls and full restored CI pass; fresh round 2 pending.
 
+- [2026-10-02 — W7 step 6, round 2](2026-10-02T17-54-28-w7-step-6-round-2-review.md):
+  primitive BigInt cap mutation, Gemini discarded-control refusal and omitted output-schema input
+  independently reproduced and corrected; full CI/coverage and four causal negatives pass; fresh round 3 pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and
