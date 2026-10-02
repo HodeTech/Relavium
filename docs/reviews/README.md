@@ -52,6 +52,9 @@ added.
 - [2026-10-02 — W7 step 3, round 5](2026-10-02T06-48-45-w7-step-3-round-5-review.md):
   complete step and earlier corrections cleared; structural persistence and host identity wiring closed.
 
+- [2026-10-02 — W7 step 4, round 1](2026-10-02T08-05-02-w7-step-4-round-1-review.md):
+  pre-mount Ink resume/reseat deletion independently reproduced and corrected; fresh acceptance pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

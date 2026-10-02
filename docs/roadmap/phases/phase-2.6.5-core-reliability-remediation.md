@@ -2124,6 +2124,15 @@ thresholds met. Five controlled mutations independently fail secure-delete, WAL-
 consistent-snapshot and malformed-attribution assertions. Fresh independent acceptance rounds follow the
 implementation commit; step 4 is not closed and all six W7 register items remain open.
 
+**Step 4, review round 1 — 2026-10-02.** Two fresh independent reviewers reproduced premature deletion
+before the actual standalone Ink renderer mounted, on initial resume and reseat. The parent's permanent
+actual-command/driver/SQLite regression failed before the correction. Disclosure now uses a separate
+once-only committed-mount activation hook with a live driver activity predicate, rechecked after delivery.
+Failed mounts, stale callbacks and synchronous exit retain evidence; plain/JSON sinks activate before input
+and terminate without waiting for input after a synchronous stop. Seven focused suites pass 199 tests.
+The [round 1 record](../../reviews/2026-10-02T08-05-02-w7-step-4-round-1-review.md) records the finding and
+correction; full checks and fresh independent corrective acceptance precede closure. All six items remain open.
+
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A
 coding agent cannot remember a file it read in the previous turn and calls the tool again.

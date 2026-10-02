@@ -82,6 +82,10 @@ merged too (PR #85, 2026-08-28).
 > and all earlier corrections, including independent mixed-history projection, YAML, real SQLite
 > boundary and process-crash probes. **Step 3 is closed; step 4 proceeds automatically** with
 > session-result privacy, full-history disclosure snapshots and exact committed-row retention.
+> Step 4's [first acceptance round](../reviews/2026-10-02T08-05-02-w7-step-4-round-1-review.md)
+> independently reproduced pre-mount Ink resume/reseat deletion. The verified correction separates
+> opening from committed-mount activation and carries driver activity through disclosure and teardown;
+> fresh corrective acceptance is required before step 4 closes.
 > It repairs collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.
