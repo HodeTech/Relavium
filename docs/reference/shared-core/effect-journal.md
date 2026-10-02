@@ -261,10 +261,12 @@ the engine-assigned structural call ids completion evidence; completed-turn coun
 - A committed negative-slot `!` command is silent: it is not a model turn.
 
 The active TTY/Home transcript receives the notice; plain/JSON modes use stderr. A standalone TTY driver
-activates disclosure from a committed component mount, separately from opening the session; `render()` returning
-alone does not establish an active transcript. Failed mounts and callbacks after exit cannot consume evidence.
-Activity is rechecked after delivery, including a synchronous exit or reseat. Delivery precedes retention
-(§9), and a failed read, failed notice delivery or lost active-session ownership prevents deletion. A discarded
+activates disclosure after passive terminal-input setup and an initial render flush, separately from opening
+the session. A layout commit or `render()` returning alone does not establish a usable transcript. TTY/Home
+await the disclosure render flush, then recheck active ownership before retention (§9); input stays gated
+until activation completes. Component lifetime and the observed Ink exit/error guard the standalone driver;
+Home also observes its renderer lifetime. Failed setup, read, notice delivery or render acknowledgement, and
+callbacks after exit or a session swap, prevent deletion. Plain/JSON sinks deliver synchronously. A discarded
 Home build cannot consume evidence. A committed incomplete/legacy row is disclosed once after a successful
 sweep; a crash between notice and sweep may disclose it again. Unresolved rows are disclosed on later resumes
 until resolved. No earlier effect is auto-retried. The user must check its target before repeating the message.

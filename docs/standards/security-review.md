@@ -415,7 +415,7 @@ whose only durable evidence disappears during resume. Keychain custody alone add
 | Legacy clearing preserves state/digest/attempt and follows high-water initialization | `session-effect-privacy.test.ts`: real 0016 upgrade, orphan/unresolved/hidden one-shot rows, unchanged run result and next durable key after sweep |
 | Secure deletion AND an after-commit TRUNCATE checkpoint protect post-upgrade freed bytes | Real-file main/WAL scans while the connection remains open; live reader defers erasure, then an empty sweep completes it. Mutations turning secure deletion off or skipping checkpoint both fail the byte assertions |
 | Disclosure reads all history and effect metadata in one owned transaction | `session-effect-disclosure.test.ts`: completed empty final behind compaction, concurrent completion on another SQLite connection, corrupt transcript refusal and native/Drizzle outer-transaction refusal. Removing the owned read transaction fails the snapshot assertion |
-| Notice delivery and activation precede deletion of exactly captured committed evidence | `effect-retention.test.ts`, actual `chat-effect-activation.test.ts`/`drive-home.test.ts` resume/reseat drivers, mounted `chat-app.test.tsx` and `home-effect-activation.test.ts`: failed reads/sinks/mounts, stale callbacks, discarded builds, synchronous exit during publication/delivery and later commits retain evidence |
+| Usable input setup and displayed disclosure precede deletion of exactly captured committed evidence | `effect-retention.test.ts`, actual `chat-effect-activation.test.ts`/`drive-home.test.ts` resume/reseat drivers, mounted `chat-app.test.tsx` and `home-effect-activation.test.ts`: actual Ink non-TTY/raw-mode failures and first disclosure frames; pending/failed render acknowledgement, stale callbacks, discarded builds, exit during publication/delivery/acknowledgement and later commits retain evidence |
 | Captured identity and current-state predicates prevent destructive sweep races | Native SQLite post-read commit, state change, foreign session and same-id replacement controls; all chunks roll back on a late refusal. Removing the captured effect-address predicate deletes the replacement and fails the assertion |
 | Errored, aborted and crashed turns do not silently lose committed effects | Real MCP + session/persister errored/aborted turns, a real SIGKILL after durable settlement before transcript persistence, disclosure once, then a greater durable key and silent completed-turn control |
 | One-shot cleanup requires proven ownership and preserves unresolved effects | Actual `agent-run.test.ts` allocator/host success, failure, abort, teardown rejection and owned setup unwind; a refused collision reservation leaves the prior owner's committed row intact |
@@ -429,7 +429,10 @@ with the two accepted residuals in [deferred-tasks.md](../roadmap/deferred-tasks
 
 [Step 4 round 1](../reviews/2026-10-02T08-05-02-w7-step-4-round-1-review.md) independently reproduced
 premature deletion before the standalone Ink mount. The correction separates session opening from mounted
-activation and propagates driver activity into reconciliation. Fresh corrective acceptance review follows.
+activation and propagates driver activity into reconciliation.
+[Round 2](../reviews/2026-10-02T08-48-12-w7-step-4-round-2-review.md) independently reproduced activation before passive input
+setup and before the notice was drawn. Usable setup, render acknowledgement and observed renderer lifetime
+now guard deletion; actual Ink and Home frame tests verify the boundary. A third fresh acceptance round follows.
 
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 

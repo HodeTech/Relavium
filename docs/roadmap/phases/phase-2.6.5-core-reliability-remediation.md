@@ -2133,6 +2133,16 @@ and terminate without waiting for input after a synchronous stop. Seven focused 
 The [round 1 record](../../reviews/2026-10-02T08-05-02-w7-step-4-round-1-review.md) records the finding and
 correction; full checks and fresh independent corrective acceptance precede closure. All six items remain open.
 
+**Step 4, review round 2 — 2026-10-02.** Both fresh reviewers reproduced deletion before passive Ink
+input setup succeeded and before the disclosure frame was displayed. All three actual-command regressions
+failed against the previous production sources. Activation now awaits usable terminal setup and the notice
+render flush, observes renderer exit/error and revalidates ownership before sweeping. Standalone and Home
+input stay gated; a queued Home message cannot dispatch before acknowledgement or after exit. Plain/JSON
+create their line iterator before awaited activation so piped input remains buffered. Actual Ink and Home
+frames retain the captured rows until displayed. Seven focused suites pass 295 tests; required checks and
+coverage pass (297 suites, 6,487 tests, 11 skipped). The [round 2 record](../../reviews/2026-10-02T08-48-12-w7-step-4-round-2-review.md) records the
+correction. A third fresh independent round and full CI are required before closure; all six items stay open.
+
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A
 coding agent cannot remember a file it read in the previous turn and calls the tool again.

@@ -85,7 +85,11 @@ merged too (PR #85, 2026-08-28).
 > Step 4's [first acceptance round](../reviews/2026-10-02T08-05-02-w7-step-4-round-1-review.md)
 > independently reproduced pre-mount Ink resume/reseat deletion. The verified correction separates
 > opening from committed-mount activation and carries driver activity through disclosure and teardown;
-> fresh corrective acceptance is required before step 4 closes.
+> [Round 2](../reviews/2026-10-02T08-48-12-w7-step-4-round-2-review.md) reproduced activation before passive Ink input setup
+> and before disclosure was drawn. Activation now awaits usable setup and disclosure render acknowledgement,
+> observes renderer exit/error and keeps input gated; actual Ink and Home tests verify the display boundary.
+> Required checks and coverage pass (297 suites, 6,487 passing tests, 11 skipped); a third fresh
+> corrective acceptance round is required before step 4 closes.
 > It repairs collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.
