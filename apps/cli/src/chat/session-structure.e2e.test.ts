@@ -18,6 +18,7 @@ import {
 } from '@relavium/db';
 import { startMcpClient, type McpConnection } from '@relavium/mcp';
 import type { StreamChunk } from '@relavium/llm';
+import type { SessionMessage } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
@@ -222,6 +223,67 @@ describe('session structure through the real CLI host and SQLite', () => {
       messages: [{ role: 'user', content: [{ type: 'text', text: 'read' }] }],
     });
   });
+
+  it.each(['compact', 'trim'] as const)(
+    'preserves legacy bare-user context on real reseat and maps %s without resurrecting dropped text',
+    async (action) => {
+      const original = await fresh([]);
+      const originalPersister = attach(original);
+      originalPersister.close();
+      const rows = [
+        { role: 'user', text: 'legacy context' },
+        { role: 'user', text: 'next question' },
+        { role: 'assistant', text: 'answer' },
+      ] as const;
+      for (const [sequenceNumber, row] of rows.entries()) {
+        const message: SessionMessage = {
+          id: `legacy-${sequenceNumber}`,
+          sessionId: 'session',
+          sequenceNumber,
+          role: row.role,
+          content: [{ type: 'text', text: row.text }],
+          timestamp: new Date(now()).toISOString(),
+        };
+        store.appendMessage(message);
+      }
+      let full = store.loadFull('session');
+      if (full === undefined) throw new Error('missing legacy session');
+      const resumed = await buildResumedChatSession({
+        chat,
+        record: full.session,
+        messages: full.messages,
+        now,
+        providers: scriptedResolver([textTurn('summary')]),
+        onListenerError: () => undefined,
+        startMcpClient: connect,
+        consentGate: () => Promise.resolve(new Map()),
+      });
+      attach(resumed, resumed.nextSequenceNumber);
+      expect(
+        reconstructSessionState(full.session, full.messages).messages.map(
+          (message) => message.role,
+        ),
+      ).toEqual(['user', 'user', 'assistant']);
+      expect(reconstructSessionState(full.session, full.messages).turnCount).toBe(1);
+      if (action === 'compact') {
+        expect((await resumed.session.compact()).kind).toBe('compacted');
+      } else {
+        expect(resumed.session.trimHistory(2).kind).toBe('trimmed');
+      }
+      full = store.loadFull('session');
+      if (full === undefined) throw new Error('missing trimmed legacy session');
+      expect(full.messages.at(-1)?.compaction).toEqual({ droppedThroughSequence: 0 });
+      expect(reconstructSessionState(full.session, full.messages).messages).toEqual([
+        { role: 'user', content: [{ type: 'text', text: 'next question' }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'answer' }] },
+      ]);
+      const exported = sessionToWorkflow(full.session, full.messages);
+      expect(exported.workflow.nodes[1]).toMatchObject({
+        prompt_template: 'legacy context\n\nnext question',
+      });
+      expect(full.messages.filter((message) => message.role === 'assistant')).toHaveLength(1);
+    },
+  );
 
   it('persists a fixed unknown marker after a hostile unresolved name, never granting that name on export', async () => {
     const built = await fresh([call('provider-sentinel', 'unresolved-name-sentinel'), [stop()]]);

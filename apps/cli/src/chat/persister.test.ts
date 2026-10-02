@@ -659,8 +659,8 @@ describe('createSessionPersister', () => {
   });
 
   it('persists an explicit empty terminal when a successful turn produces no assistant text', async () => {
-    // A turn that emits only a stop chunk — zero text_delta, so result.text is empty; the assistantText.length
-    // guard must skip the empty assistant row (mirroring the engine), leaving just the user row.
+    // A turn that emits only a stop chunk still persists an explicit empty terminal. The in-memory
+    // projection retains only its user, while durable completion survives resume and boundary mapping.
     const { built, persister } = await setup(scriptedResolver([[stop('stop')]]));
     persister.start();
     built.session.start();

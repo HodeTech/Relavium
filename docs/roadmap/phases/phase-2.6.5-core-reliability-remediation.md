@@ -2091,7 +2091,15 @@ Every actual dispatch now checks the live latch after asynchronous approval and 
 a refusal releases its prepared claim because dispatch provably never started. An already-started
 effect can still settle. The real jailed-filesystem regression failed before correction. Required
 checks and coverage pass (291 suites, 6,415 passing tests, 11 skipped).
-A fourth round with fresh independent reviewers is pending;
+Full CI exits 0 at `dd50738c`.
+[Round 4](../../reviews/2026-10-02T06-34-39-w7-step-3-round-4-review.md) cleared the admission
+correction and verified that a nontrailing pre-W7 empty-final user row lost its text from resumed
+context and the executable export prompt. The actual old-writer SQLite probe and initial regressions
+reproduced it. One shared compatibility projection now preserves legacy text and its boundary slots,
+without inventing terminals or completed counts; interrupted structural exchanges stay excluded.
+Real reseat/compact/trim tests pin the correct marker and full-history export. Required checks and
+coverage pass (291 suites, 6,422 passing tests, 11 skipped).
+A fifth round with fresh independent reviewers is pending;
 **step 3 is not closed**. The session journal's result privacy and disclosure/sweep remain step 4.
 
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)

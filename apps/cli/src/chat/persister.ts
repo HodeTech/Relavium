@@ -1,6 +1,6 @@
 import {
   resumableMessageSequences,
-  completedSessionTurns,
+  resumableTurnBoundarySequences,
   type AgentDefinition,
   type SessionHandle,
   type SessionStreamHandleEvent,
@@ -160,7 +160,9 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
   // boundary. It EXCLUDES `system` boundary-marker rows (a naive "last N durable rows" would miscount once a
   // prior marker is interleaved — the step-1-review trap). Seeded from the durable transcript on resume.
   const realMessageSeqs: number[] = [];
-  const completedTurnSeqs: number[] = [];
+  // One boundary slot per retained user exchange, including legacy bare-user context.
+  // Legacy slots preserve old compaction/trim behavior; they do not change the hard turn cap.
+  const turnBoundarySeqs: number[] = [];
 
   /** BUILD a REAL transcript row at `seq` — pure, no write and no in-memory mutation. `modelCatalogId`
    *  (assistant rows only) is the already-resolved `model_catalog.id` FK target attributing the row to the model
@@ -195,7 +197,7 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
     keptMessageCount: number,
     keptTurnCount?: number,
   ): SessionMessage | undefined => {
-    const sequences = keptTurnCount === undefined ? realMessageSeqs : completedTurnSeqs;
+    const sequences = keptTurnCount === undefined ? realMessageSeqs : turnBoundarySeqs;
     const keptCount = keptTurnCount ?? keptMessageCount;
     if (keptCount >= sequences.length) return undefined;
     const droppedThroughSequence = sequences[sequences.length - keptCount - 1];
@@ -214,7 +216,7 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
     if (marker?.compaction === undefined) return;
     sequenceNumber += 1;
     const boundary = marker.compaction.droppedThroughSequence;
-    for (const sequences of [realMessageSeqs, completedTurnSeqs]) {
+    for (const sequences of [realMessageSeqs, turnBoundarySeqs]) {
       const keptStart = sequences.findIndex((sequence) => sequence > boundary);
       sequences.splice(0, keptStart < 0 ? sequences.length : keptStart);
     }
@@ -302,7 +304,7 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
     realMessageSeqs.push(user.sequenceNumber);
     const terminal = staged.at(-1);
     if (terminal !== undefined) {
-      completedTurnSeqs.push(terminal.sequenceNumber);
+      turnBoundarySeqs.push(terminal.sequenceNumber);
       if (assistantText.length > 0) realMessageSeqs.push(terminal.sequenceNumber);
     }
     totalInputTokens = nextInput;
@@ -504,9 +506,7 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         // loss (the step-3 review data-loss trap). One shared projection ⇒ the host + engine can never drift.
         const messages = deps.store.loadMessages(deps.sessionId);
         realMessageSeqs.push(...resumableMessageSequences(messages));
-        completedTurnSeqs.push(
-          ...completedSessionTurns(messages).map((turn) => turn.terminal.sequenceNumber),
-        );
+        turnBoundarySeqs.push(...resumableTurnBoundarySequences(messages));
       }
       unsubscribe = deps.handle.subscribe(onEvent);
     },

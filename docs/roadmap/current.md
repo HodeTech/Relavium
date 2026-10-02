@@ -72,7 +72,12 @@ merged too (PR #85, 2026-08-28).
 > unjournaled-tool durability bypass and a stale export introduction. Dispatch admission now checks
 > the live latch after approval/preparation for every actual tool call and releases a proven
 > non-dispatch claim. Both corrections pass checks and coverage (291 suites, 6,415 passing tests,
-> 11 skipped); a fourth fresh corrective review is pending.
+> 11 skipped); full CI passes at `dd50738c`.
+> [Round 4](../reviews/2026-10-02T06-34-39-w7-step-3-round-4-review.md) cleared dispatch admission
+> and verified loss of nontrailing pre-W7 empty-final user text from resume/reseat and export prompts.
+> Legacy context and boundary slots now preserve the old read behaviour without fabricating terminals
+> or completed counts. Required checks and coverage pass (291 suites, 6,422 passing tests,
+> 11 skipped); a fifth fresh corrective review is pending.
 > Step 3 is not closed.
 > It repairs collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
