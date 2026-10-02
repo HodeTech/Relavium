@@ -2865,3 +2865,14 @@ threshold; the original quadratic regex still fails its causal control. Complete
 coverage pass 304 suites, 6,898 tests and 11 pre-existing skips. The
 [third-round record](../../reviews/2026-10-02T18-23-45-w7-step-6-round-3-review.md)
 records evidence and limits. **Fresh round 4 is required; step 6 remains open.**
+
+**Step 6 fourth review checkpoint — 2026-10-02.** Fresh wire review reproduced one High
+refusal/security defect: native option staging and genuine plan binding inspected getters outside
+safe normalization, exposing their private error message before adapter redaction. Parent replay
+confirmed the 15 failing independent cases and 39 passing financial controls. Factory construction,
+native copying, binding/lookup and staging now share a fixed typed, content-free refusal boundary.
+All 46 permanent regressions and all 20 independent wire cases pass; removing each of five guards
+separately breaks its intended regression. Full restored CI and coverage pass 306 suites,
+6,944 tests and 11 pre-existing skips. The
+[fourth-round record](../../reviews/2026-10-02T19-42-38-w7-step-6-round-4-review.md)
+records scope and evidence limits. **Fresh round 5 is required; step 6 remains open.**

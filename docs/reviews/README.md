@@ -94,6 +94,10 @@ added.
   inherited serializers on frozen JSON caps independently reproduced and isolated; full CI/coverage
   and causal negatives pass, intermittent growth measurement repaired without weakening its threshold; fresh round 4 pending.
 
+- [2026-10-02 — W7 step 6, round 4](2026-10-02T19-42-38-w7-step-6-round-4-review.md):
+  throwing cap accessors exposed private errors before safe normalization; fixed helper inspection
+  guards, full CI/coverage and five causal negatives pass; fresh round 5 pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

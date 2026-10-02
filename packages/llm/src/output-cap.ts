@@ -79,6 +79,16 @@ export function isPreparedOutputCapPlan(value: unknown): value is PreparedOutput
   return typeof value === 'object' && value !== null && preparedPlans.has(value);
 }
 
+function guardCapInspection<T>(inspect: () => T): T {
+  try {
+    return inspect();
+  } catch {
+    // Getters, proxy traps and serializers may throw credentials or private request content.
+    // Neither the throwable nor its cause may leave the cap inspection boundary.
+    throw new InvalidOutputCapPlanError();
+  }
+}
+
 function clampToCeiling(value: number, ceiling: number | undefined): number {
   return ceiling === undefined ? value : Math.min(value, ceiling);
 }
@@ -122,6 +132,10 @@ function immutableJsonCap(field: OutputCapField, value: unknown): unknown {
 
 /** The one lowering policy for all adapters and all reservation consumers (ADR-0071/0101). */
 export function prepareOutputCapPlan(info: OutputCapIdentity): PreparedOutputCapPlan {
+  return guardCapInspection(() => captureOutputCapPlan(info));
+}
+
+function captureOutputCapPlan(info: OutputCapIdentity): PreparedOutputCapPlan {
   const outputCeiling =
     info.endpoint === 'custom' ? undefined : catalogModel(info.model)?.maxOutputTokens;
   const mappedField: OutputCapField =
@@ -217,6 +231,13 @@ export function outputCapNativeOptions(
   plan: PreparedOutputCapPlan,
   options: Readonly<Record<string, unknown>> | undefined,
 ): Readonly<Record<string, unknown>> | undefined {
+  return guardCapInspection(() => mergeOutputCapNativeOptions(plan, options));
+}
+
+function mergeOutputCapNativeOptions(
+  plan: PreparedOutputCapPlan,
+  options: Readonly<Record<string, unknown>> | undefined,
+): Readonly<Record<string, unknown>> | undefined {
   if (!isPreparedOutputCapPlan(plan)) throw new InvalidOutputCapPlanError();
   if (options === undefined && plan.nativeOptions === undefined) return undefined;
   const merged = { ...options };
@@ -234,6 +255,10 @@ export function assertOutputCapPlanMatches(
   plan: PreparedOutputCapPlan,
   info: OutputCapIdentity,
 ): void {
+  guardCapInspection(() => checkOutputCapPlanBinding(plan, info));
+}
+
+function checkOutputCapPlanBinding(plan: PreparedOutputCapPlan, info: OutputCapIdentity): void {
   const matches = (expected: Readonly<Record<string, unknown>> | undefined): boolean =>
     CAP_FIELDS.every(
       (field) =>
@@ -254,6 +279,14 @@ export function assertOutputCapPlanMatches(
 
 /** Consume a measured candidate's plan unchanged; a different candidate gets its own bound plan. */
 export function outputCapPlanForRequest(
+  request: LlmRequest,
+  provider: ProviderId,
+  endpoint: EndpointKind,
+): PreparedOutputCapPlan {
+  return guardCapInspection(() => findOutputCapPlanForRequest(request, provider, endpoint));
+}
+
+function findOutputCapPlanForRequest(
   request: LlmRequest,
   provider: ProviderId,
   endpoint: EndpointKind,
@@ -282,6 +315,14 @@ export function outputCapPlanForRequest(
 
 /** Stage the cap copy once before admission/key awaits; the wire uses the same copied controls. */
 export function prepareOutputCapRequest(
+  request: LlmRequest,
+  provider: ProviderId,
+  endpoint: EndpointKind,
+): { readonly request: LlmRequest; readonly plan: PreparedOutputCapPlan } {
+  return guardCapInspection(() => stageOutputCapRequest(request, provider, endpoint));
+}
+
+function stageOutputCapRequest(
   request: LlmRequest,
   provider: ProviderId,
   endpoint: EndpointKind,

@@ -265,6 +265,11 @@ Discarded opaque/BigInt controls are never serialized, including OpenAI-only cap
 SDK omits from its HTTP config. DeepSeek's forwarded modern key still receives a JSON capture even
 though its official dialect does not recognise it as cap evidence. An unserializable surviving control
 refuses with the fixed typed cap-plan error before admission.
+Factory input inspection, native option copying, existing-plan binding/lookup and request staging
+share that content-free refusal boundary. A throwing getter, proxy trap or serializer becomes
+`InvalidOutputCapPlanError`; neither its original message nor its throwable/cause is retained.
+This protects these cap helpers and their adapter/attempt callers, rather than sandboxing arbitrary
+caller objects throughout every request transform.
 Original identities are retained privately only to bind a measured plan; caller-owned executable
 values are never re-read after admission. Reconciliation preserves current unrelated options,
 except a callable outer `providerOptions.toJSON`: it is executable body replacement and cannot

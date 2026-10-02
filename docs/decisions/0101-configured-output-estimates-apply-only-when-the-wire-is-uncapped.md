@@ -298,3 +298,19 @@ admitted cap. This is an enforcement correction to the accepted immutable projec
 generation control or a claim that arbitrary host-wide mutation is sandboxed. The canonical mechanism
 and staged heterogeneous-candidate obligation remain in the
 [seam contract](../reference/shared-core/llm-provider-seam.md#current-request-estimates-and-bound-output-caps).
+
+## Implementation correction — 2026-10-02, W7 step 6 fourth review
+
+Request staging copied native options before the guarded JSON capture. A cap getter throwing
+private content therefore escaped the fixed refusal, including from direct adapters before their
+credential-redaction path. Checking an existing genuine plan had the same unguarded inspection.
+Offline review reproduced both; an exact synthetic credential escaped on both OpenAI paths.
+
+Factory construction, native option copying, binding/lookup and staging now share a private,
+content-free error guard. Inspection exceptions become the existing `InvalidOutputCapPlanError`,
+with neither the original throwable nor its cause retained. Direct adapter and chain cap inspection
+refuses before transport, admission or credential resolution. This enforces the accepted safe,
+immutable capture; cap precedence, native forwarding and rate-only pricing remain unchanged.
+The guard covers these helpers rather than arbitrary caller-object inspection throughout the host.
+The canonical contract remains the
+[seam contract](../reference/shared-core/llm-provider-seam.md#current-request-estimates-and-bound-output-caps).
