@@ -19,7 +19,7 @@ import {
   validateCaptureInput,
 } from '../../packages/llm/dist/adapters/overflow-capture.js';
 
-const HELP = `Usage: pnpm capture:overflow --provider <anthropic|openai|deepseek|gemini>
+const HELP = `Usage: node tools/overflow-capture/capture.mjs --provider <anthropic|openai|deepseek|gemini>
   --model <official-model-id> --input-chars <1024..8388608> --out <new-file.json>
   [--max-output <1..4096>] [--purpose <overflow|context-stop-probe>]
 
@@ -77,8 +77,14 @@ async function main() {
       now: () => new Date().toISOString(),
       signal: caller.signal,
     });
+    const stillOwnsDestination = () => {
+      const current = lstatSync(options.out, { throwIfNoEntry: false });
+      return current?.dev === identity.dev && current.ino === identity.ino;
+    };
+    if (!stillOwnsDestination()) throw new CaptureError('destination_changed');
     writeFileSync(fd, JSON.stringify(artifact, null, 2) + '\n');
     fsyncSync(fd);
+    if (!stillOwnsDestination()) throw new CaptureError('destination_changed');
     saved = true;
     // No model, path, body, key, headers or arbitrary error text is ever printed.
     process.stdout.write(

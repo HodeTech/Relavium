@@ -2037,7 +2037,8 @@ coverage, with a marker-free guard probe; every source-adjacent suite is checked
 Removing the private exclusion, removing the coverage exclusion and switching to a root-only include each
 breaks the guard. `pnpm run ci` and `pnpm coverage` both exit 0. The
 [capture tool procedure](../../runbooks/capture-provider-overflow.md) is available; its tests and offline
-command smoke do not constitute live provider evidence. Two fresh independent review rounds remain pending.
+command smoke do not constitute live provider evidence. [Round 1](../../reviews/2026-10-02T03-04-05-w7-step-1-round-1-review.md)
+verified seven findings; its corrections pass CI and coverage. The second fresh independent round remains pending.
 
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A

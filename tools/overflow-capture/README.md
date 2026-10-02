@@ -6,5 +6,5 @@ Build `@relavium/llm` first. The canonical procedure, bounds and fixture accepta
 [capture-provider-overflow.md](../../docs/runbooks/capture-provider-overflow.md).
 
 `check.mjs` exercises the built command offline through a synthetic fetch preloader. Run
-`pnpm smoke:overflow-capture` after the build; `pnpm ci` includes it. Its responses are command
+`pnpm smoke:overflow-capture` after the build; `pnpm run ci` includes it. Its responses are command
 test data, never live provider fixtures.

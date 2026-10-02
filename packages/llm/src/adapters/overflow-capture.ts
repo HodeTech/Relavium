@@ -35,7 +35,8 @@ export type CaptureFailureCode =
   | 'transport'
   | 'response_limit'
   | 'response_not_json'
-  | 'secret_in_response';
+  | 'secret_in_response'
+  | 'destination_changed';
 
 export class CaptureError extends Error {
   readonly code: CaptureFailureCode;
@@ -177,25 +178,23 @@ export interface CaptureDependencies {
   readonly signal?: AbortSignal;
 }
 
-/** Inspect decoded JSON as well as raw bytes: an escaped key must not evade the refusal. */
+/** Inspect EVERY decoded JSON string, including values overwritten by duplicate object members. */
 function assertSafeBody(body: string, key: string): void {
-  let decoded: unknown;
   try {
-    decoded = JSON.parse(body);
+    JSON.parse(body); // Validate the grammar before scanning its string tokens.
   } catch {
     throw new CaptureError('response_not_json');
   }
-  const pending: unknown[] = [body, decoded];
-  while (pending.length > 0) {
-    const value = pending.pop();
-    if (typeof value === 'string') {
-      if (value.includes(key) || scrubSecrets(value) !== value) {
-        throw new CaptureError('secret_in_response');
-      }
-    } else if (Array.isArray(value)) {
-      for (const child of value) pending.push(child);
-    } else if (typeof value === 'object' && value !== null) {
-      for (const [name, child] of Object.entries(value)) pending.push(name, child);
+  if (body.includes(key) || scrubSecrets(body) !== body) {
+    throw new CaptureError('secret_in_response');
+  }
+  // The alternatives are disjoint: ordinary bytes cannot be quotes or backslashes. The validated JSON
+  // grammar makes each match an independently parseable string. Traversing the parsed object alone loses
+  // overwritten duplicate values while the exact raw body retains them, leaving an escaped-key bypass.
+  for (const token of body.matchAll(/"(?:[^"\\]|\\.)*"/g)) {
+    const value: unknown = JSON.parse(token[0]);
+    if (typeof value !== 'string' || value.includes(key) || scrubSecrets(value) !== value) {
+      throw new CaptureError('secret_in_response');
     }
   }
 }

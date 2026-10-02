@@ -21,6 +21,7 @@ const main = fileURLToPath(new URL('./capture.mjs', import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), 'relavium-capture-check-'));
 const loader = join(dir, 'fake-fetch.mjs');
 const key = 'capture-probe-key-12345'; // Explicitly synthetic; never a live capture fixture.
+const duplicateSecret = `{"duplicate":"${key.replace('capture-', '\\u0063apture-')}","duplicate":"safe"}`;
 const out = join(dir, 'capture.json');
 const marker = join(dir, 'calls');
 const args = [
@@ -42,12 +43,18 @@ globalThis.fetch = async (url, init) => {
   appendFileSync(process.env.CAPTURE_PROBE_MARKER, 'call\\n');
   switch (process.env.CAPTURE_PROBE_MODE) {
     case 'hang': return new Promise(() => {});
+    case 'caller-abort':
+      queueMicrotask(() => process.emit('SIGTERM'));
+      return new Promise(() => {});
+    case 'replacement-success':
     case 'replacement':
       unlinkSync(process.env.CAPTURE_PROBE_OUT);
       writeFileSync(process.env.CAPTURE_PROBE_OUT, 'replacement user file');
+      if (process.env.CAPTURE_PROBE_MODE === 'replacement-success') return new Response('{}', {headers:{'content-type':'application/json'}});
       throw new Error('refused after replacement');
     case 'transport': throw new Error(${JSON.stringify(key)});
     case 'secret': return new Response(JSON.stringify({error:${JSON.stringify(key)}}), {status:400,headers:{'content-type':'application/json'}});
+    case 'duplicate-secret': return new Response(${JSON.stringify(duplicateSecret)}, {status:400,headers:{'content-type':'application/json'}});
     default: return new Response('{"error":{"message":"offline probe, not provider evidence"}}', {status:400,headers:{'content-type':'application/json'}});
   }
 };
@@ -110,6 +117,8 @@ try {
     [args.concat('--url', 'https://evil.example'), key],
     [args, 'two\nkeys'],
     [args, 'x'.repeat(1025)],
+    [args.map((value) => (value === 'claude-example' ? key : value)), key],
+    [args.map((value) => (value === out ? join(dir, key) : value)), key],
   ]) {
     const refused = await run(argv, 'safe', input);
     assert.equal(refused.code, 1);
@@ -144,7 +153,13 @@ try {
   assert.equal(linked.calls, 0);
   assert.equal(readFileSync(target, 'utf8'), 'user file');
   rmSync(out);
-  for (const mode of ['secret', 'transport', 'hang']) {
+  for (const mode of [
+    'secret',
+    'duplicate-secret',
+    'transport',
+    'caller-abort',
+    ...(process.platform === 'win32' ? [] : ['hang']),
+  ]) {
     const refused = await run(args, mode, key, mode === 'hang');
     assert.equal(refused.code, 1);
     assert.equal(refused.calls, 1);
@@ -157,6 +172,11 @@ try {
     'replacement user file',
     'cleanup deleted a replacement file',
   );
+  rmSync(out);
+  const replacedSuccess = await run(args, 'replacement-success');
+  assert.equal(replacedSuccess.code, 1, 'success reported a response at an unowned destination');
+  assert.ok(!replacedSuccess.stdout.includes('capture saved'));
+  assert.equal(readFileSync(out, 'utf8'), 'replacement user file');
   console.log(
     '✓ overflow capture command passed offline stdin, file, secrecy and cancellation checks.',
   );

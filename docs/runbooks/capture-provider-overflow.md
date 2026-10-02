@@ -11,7 +11,7 @@ Offline command tests use synthetic responses and do not satisfy that prerequisi
 ## Prepare
 
 1. Build before piping any credential: `pnpm turbo run build --filter=@relavium/llm`.
-2. Run `pnpm capture:overflow --help`. Select an official model available to your account
+2. Run `node tools/overflow-capture/capture.mjs --help`. Select an official model available to your account
    and look up its input window. Input size here is **characters, not tokens**; the command
    appends a short fixed instruction. Choose a synthetic size exceeding the model's window
    for an overflow capture. Each invocation makes one request and can be billed if accepted.
@@ -22,13 +22,17 @@ Offline command tests use synthetic responses and do not satisfy that prerequisi
    The [keychain contract](../reference/desktop/keychain-and-secrets.md) owns service and
    account naming. Disable shell tracing before running the pipeline.
 
+Invoke the runner directly with Node as shown below. Package-manager script banners echo
+arguments before validation, so a `pnpm run` wrapper would defeat the runner's safe refusal
+when a key is accidentally placed in a model or destination argument.
+
 For macOS, edit the account and model placeholders below before running. `MODEL_ID` is a
 literal placeholder; `anthropic:KEY_ID` must identify your existing keychain entry.
 The `1048576` size is an example, **not a guarantee of overflow** for your chosen model.
 
 ```bash
 security find-generic-password -s relavium -a 'anthropic:KEY_ID' -w |
-  pnpm capture:overflow --provider anthropic --model MODEL_ID \
+  node tools/overflow-capture/capture.mjs --provider anthropic --model MODEL_ID \
     --input-chars 1048576 --out ./anthropic-overflow.json
 ```
 
@@ -73,10 +77,12 @@ it accepts no custom URL, file input, user prompt or tools. It makes one non-str
 with redirects and retries disabled. The input limit is 8,388,608 characters and the requested
 output cap is 1–4,096 tokens (default 64). Stdin must finish within 60 seconds and contain one
 printable key of 8–512 characters, with surrounding whitespace allowed and a 1,024-character
-pipe limit. Headers and response reads share a separate absolute 60-second deadline. Responses
+   pipe limit. Headers and response reads share a separate absolute 60-second deadline. Responses
 must be JSON, at most 1 MiB and at most 16,384 chunks, including empty chunks.
 
-SIGINT/SIGTERM cancels capture. A failed capture removes its reserved file when it still owns
+Catchable SIGINT/SIGTERM signals cancel capture on POSIX. Windows `child.kill()` termination is
+forceful and cannot run the signal handler or file cleanup; inspect any reserved destination
+after such termination. A failed capture removes its reserved file when it still owns
 that file; a replacement file is preserved. Success prints only the HTTP status. Failure prints
 a fixed refusal code, never a response body, key, model, path or arbitrary error cause. A saved
 artifact is evidence to review, not an assertion that the provider rejected the request.

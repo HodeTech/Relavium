@@ -19,7 +19,7 @@
     "coverage": "vitest run --coverage",
     "coverage:enforced": "node tools/coverage-gate/run.mjs",
     "ci": "pnpm lint:test-isolation && turbo run lint typecheck test && pnpm db:sync-check && pnpm typecheck:tools && pnpm lint:tools && turbo run build format:check && pnpm lint:fence-check && pnpm lint:engine-deps && pnpm lint:bundle-closure && pnpm smoke:cli && pnpm smoke:overflow-capture",
-    "lint:test-isolation": "node tools/test-isolation/check.mjs",
+    "lint:test-isolation": "node tools/test-isolation/check.mjs && node tools/test-isolation/check-ownership.mjs",
     "lint:fence-check": "node tools/lint-fixtures/assert-fence.mjs",
     "lint:engine-deps": "node tools/engine-deps/check.mjs",
     "lint:bundle-closure": "node tools/bundle-closure/check.mjs",
@@ -30,7 +30,6 @@
     "lint:tools": "eslint tools --ignore-pattern 'tools/lint-fixtures/**'",
     "db:sync-check": "node tools/db-sync/check.mjs",
     "smoke:cli": "node tools/cli-smoke/check.mjs",
-    "capture:overflow": "node tools/overflow-capture/capture.mjs",
     "smoke:overflow-capture": "node tools/overflow-capture/check.mjs"
   },
   "devDependencies": {

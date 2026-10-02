@@ -157,6 +157,11 @@ jobs:
       - name: Smoke the compiled binary
         run: pnpm smoke:cli
 
+      # The maintainer capture command handles real credentials and paid egress. Exercise its stdin/file/
+      # cancellation boundary offline, through the same script as the local required gate.
+      - name: Smoke the overflow capture command (offline)
+        run: pnpm smoke:overflow-capture
+
   # Supported-floor gate (ADR-0067). TWO floors, deliberately different:
   #   * the PUBLISHED floor is `apps/cli` `engines.node` = `>=22` — the max constraint in the CLI's RUNTIME
   #     dependency closure (`ink@7` / `cli-truncate` / `slice-ansi` → `>=22`); nothing runtime needs more.

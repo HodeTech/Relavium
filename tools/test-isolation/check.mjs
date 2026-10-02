@@ -41,7 +41,16 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  rmdirSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -184,7 +193,7 @@ const fixtures = fixtureDirs.map((dir) => ({
   // gets the pattern it OUGHT to have, which is the fix to paste back into `vitest.config.ts`.
   pattern: patterns.find((p) => plantableDir(p) === dir) ?? `${dir}/**`,
   dir,
-  root: join(repoRoot, dir, FIXTURE_DIR),
+  root: undefined, // Assigned by mkdtemp: cleanup owns only this invocation's freshly-created directory.
   parent: join(repoRoot, dir),
   parentExisted: existsSync(join(repoRoot, dir)),
 }));
@@ -195,7 +204,8 @@ const fixtures = fixtureDirs.map((dir) => ({
  * the SHAPE — a nested workspace layout with its own test and source file — and that is reproducible anywhere.
  */
 function plant(fixture) {
-  rmSync(fixture.root, { recursive: true, force: true }); // self-healing after a Ctrl-C'd earlier run
+  mkdirSync(fixture.parent, { recursive: true });
+  fixture.root = mkdtempSync(join(fixture.parent, `${FIXTURE_DIR}-`));
   const src = join(fixture.root, 'packages', 'probe', 'src');
   mkdirSync(src, { recursive: true });
   // The workspace marker too, so the fixture shape-matches a real second checkout for BOTH assertions: if an
@@ -223,6 +233,7 @@ function plant(fixture) {
 }
 
 function clear(fixture) {
+  if (fixture.root === undefined) return;
   rmSync(fixture.root, { recursive: true, force: true });
   // Do not leave an empty `worktrees/` or `.worktrees/` behind that this guard itself created.
   if (
@@ -230,7 +241,12 @@ function clear(fixture) {
     existsSync(fixture.parent) &&
     readdirSync(fixture.parent).length === 0
   ) {
-    rmSync(fixture.parent, { recursive: true, force: true });
+    try {
+      // Atomic, non-recursive removal: another guard may have created its own probe since readdir.
+      rmdirSync(fixture.parent);
+    } catch (error) {
+      if (!['ENOTEMPTY', 'EEXIST', 'ENOENT'].includes(error.code)) throw error;
+    }
   }
 }
 
@@ -309,12 +325,13 @@ function nestedCheckoutOf(fileRel) {
  * boundary and the same marker file, for none of the cost.
  */
 function selfTestDetector() {
-  const probe = join(repoRoot, PROBE_DIR);
+  const probe = mkdtempSync(join(repoRoot, `${PROBE_DIR}-`));
+  const probeRel = relative(repoRoot, probe).split(sep).join('/');
   try {
     mkdirSync(join(probe, 'packages', 'probe', 'src'), { recursive: true });
     writeFileSync(join(probe, 'pnpm-workspace.yaml'), "packages:\n  - 'packages/*'\n");
-    const inside = `${PROBE_DIR}/packages/probe/src/probe.test.ts`;
-    if (nestedCheckoutOf(inside) !== PROBE_DIR) {
+    const inside = `${probeRel}/packages/probe/src/probe.test.ts`;
+    if (nestedCheckoutOf(inside) !== probeRel) {
       throw new Error(
         `the nested-checkout detector FAILED its own self-test: it did not flag ${inside}, which sits under a` +
           `\n  directory carrying its own pnpm-workspace.yaml. The primary assertion is not working, so a` +

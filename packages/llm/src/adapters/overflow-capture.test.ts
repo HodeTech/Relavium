@@ -129,6 +129,8 @@ describe('bounded, secret-free live response capture', () => {
     JSON.stringify({ error: KEY }),
     JSON.stringify({ [KEY]: 'value' }),
     JSON.stringify({ error: KEY }).replace('capture-', '\\u0063apture-'),
+    '{"duplicate":"\\u0063apture-test-key-12345","duplicate":"safe"}',
+    '{"nested":{"duplicate":"\\u0042earer opaque-token","duplicate":"safe"}}',
     JSON.stringify({ nested: [{ secret: 'Bearer opaque-token' }] }),
     JSON.stringify({ error: 'Basic dXNlcjpwYXNz' }),
     JSON.stringify({ url: 'https://user:password@example.org/path' }),

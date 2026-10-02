@@ -44,7 +44,8 @@ merged too (PR #85, 2026-08-28).
 > [ADR-0100](../decisions/0100-budget-authorization-is-durable-state-with-a-replay-barrier.md) and the
 > [twelve-step W7 plan](phases/phase-2.6.5-core-reliability-remediation.md#w7-pre-implementation-review-and-proposed-execution-plan--2026-10-02).
 > Work remains on `development`; each step closes with two fresh independent Codex review rounds and verified
-> fixes. Step 1's implementation passes `pnpm run ci` and `pnpm coverage`; its independent reviews are pending.
+> fixes. Step 1's implementation and first review corrections pass `pnpm run ci` and `pnpm coverage`;
+> [round 1](../reviews/2026-10-02T03-04-05-w7-step-1-round-1-review.md) verified seven findings, and round 2 is pending.
 > It repairs collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.
