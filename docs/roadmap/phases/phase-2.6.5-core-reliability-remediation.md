@@ -2232,6 +2232,15 @@ The [round 1 record](../../reviews/2026-10-02T15-09-58-w7-adr-0101-revision-roun
 and limits. Fresh draft round 2 is pending; ADR-0101 remains Proposed and no dependent implementation
 has begun. Steps 1–5 stay closed; all six W7 register items remain open.
 
+**Step 6 proposal revision, round 2 — 2026-10-02.** Two fresh reviewers accepted the complete corrected
+proposal and round 1's handoff correction with no actionable finding. They checked the actual hook,
+adapter, governor, host and mutable-catalog paths against all six related ADRs. Required workspace
+checks pass 23 tasks and clean-tree full CI passes at `2b628e1a`. The
+[round 2 record](../../reviews/2026-10-02T15-18-01-w7-adr-0101-revision-round-2-review.md) distinguishes static
+proposal acceptance from future implementation verification. The revised ADR-0101 has been presented
+for maintainer approval; it remains Proposed, with no dependent implementation begun. Steps 1–5
+remain closed and all six W7 register items remain open.
+
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A
 coding agent cannot remember a file it read in the previous turn and calls the tool again.

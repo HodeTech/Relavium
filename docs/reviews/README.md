@@ -79,6 +79,9 @@ added.
 - [2026-10-02 — W7 ADR-0101 mechanism revision, round 1](2026-10-02T15-09-58-w7-adr-0101-revision-round-1-review.md):
   maintainer transport/pricing and consistency findings resolved; construction-to-attempt cap-plan handoff corrected; fresh draft round 2 pending.
 
+- [2026-10-02 — W7 ADR-0101 mechanism revision, round 2](2026-10-02T15-18-01-w7-adr-0101-revision-round-2-review.md):
+  complete revised proposal and handoff correction accepted by fresh reviewers; maintainer approval remains required before implementation.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

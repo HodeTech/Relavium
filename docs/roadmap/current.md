@@ -124,8 +124,11 @@ merged too (PR #85, 2026-08-28).
 > Step 6's independently reviewed [Proposed ADR-0101](../decisions/0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md)
 > resolves a newly identified configured-estimate/native-cap precedence gap. Maintainer approval is pending;
 > [ADR revision round 1](../reviews/2026-10-02T15-09-58-w7-adr-0101-revision-round-1-review.md) records the maintainer's
-> verified transport/pricing findings and the corrected measurement-to-attempt handoff. Fresh draft round 2
-> is pending; no dependent step 6 implementation has begun. Step 1 repaired collection without deleting private artifacts and provides the
+> verified transport/pricing findings and the corrected measurement-to-attempt handoff.
+> [Fresh draft round 2](../reviews/2026-10-02T15-18-01-w7-adr-0101-revision-round-2-review.md) accepted the complete
+> corrected proposal with no actionable findings; full CI passed at `2b628e1a`. The revised proposal has
+> been presented for maintainer approval; no dependent step 6 implementation has begun.
+> Step 1 repaired collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.
 
