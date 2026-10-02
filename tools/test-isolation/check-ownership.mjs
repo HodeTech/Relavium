@@ -144,22 +144,22 @@ try {
   rmSync(concurrent, { recursive: true, force: true });
 }
 
-// Two PASSING guards can both snapshot absent parents. Pause A's first cleanup check while B really
-// removes the empty parent. Delay-only instrumentation covers the old exists/readdir race and the fixed
-// atomic rmdir path; it never deletes a file or invents an error itself.
+// Pause A immediately AFTER its real mkdir and BEFORE mkdtemp. B has already planted its probes and
+// finishes normally during that gap. Only the guard itself performs cleanup: delay-only instrumentation
+// neither deletes a file nor invents an error. Shared parents must survive another invocation's cleanup.
 const cleanup = fixture(
   configText,
   `
 import {existsSync,writeFileSync} from 'node:fs';
 import {setTimeout as delay} from 'node:timers/promises';
 import {join} from 'node:path';
-const role=process.env.GUARD_PROBE_ROLE;
-writeFileSync(join(process.cwd(),role+'-ready'),'1');
-const waitFor=role==='A' ? 'B-ready' : 'A-cleanup';
-const bound=Date.now()+5000;
-while(!existsSync(join(process.cwd(),waitFor))) {
-  if(Date.now()>bound) throw new Error('collector scheduling timeout');
-  await delay(2);
+if(process.env.GUARD_PROBE_ROLE==='B') {
+  writeFileSync(join(process.cwd(),'B-ready'),'1');
+  const bound=Date.now()+5000;
+  while(!existsSync(join(process.cwd(),'A-planting'))) {
+    if(Date.now()>bound) throw new Error('collector scheduling timeout');
+    await delay(2);
+  }
 }
 process.stdout.write('[]');`,
 );
@@ -172,45 +172,31 @@ import {syncBuiltinESMExports} from 'node:module';
 import {join} from 'node:path';
 const root=process.env.GUARD_PROBE_ROOT;
 const role=process.env.GUARD_PROBE_ROLE;
-const rawExists=fs.existsSync;
-const rawRmdir=fs.rmdirSync;
+const rawMkdir=fs.mkdirSync;
 const waitBuf=new Int32Array(new SharedArrayBuffer(4));
-function waitFor(name) {
-  const bound=Date.now()+5000;
-  while(!rawExists(join(root,name))) {
-    if(Date.now()>bound) throw new Error('preload scheduling timeout '+name);
-    Atomics.wait(waitBuf,0,0,2);
-  }
-}
-let mapped=false;
 let delayed=false;
-function delayCleanup(path) {
-  if(role==='A' && !delayed && mapped && path===join(root,'.claude') && rawExists(join(root,'B-ready'))) {
+fs.mkdirSync=function(path,...args) {
+  const result=rawMkdir(path,...args);
+  if(role==='A' && !delayed && path===join(root,'.claude')) {
     delayed=true;
-    fs.writeFileSync(join(root,'A-cleanup'),'1');
-    waitFor('B-closed');
+    fs.writeFileSync(join(root,'A-planting'),'1');
+    const bound=Date.now()+5000;
+    while(!fs.existsSync(join(root,'B-closed'))) {
+      if(Date.now()>bound) throw new Error('preload scheduling timeout');
+      Atomics.wait(waitBuf,0,0,2);
+    }
   }
-}
-fs.existsSync=function(path) {
-  const result=rawExists(path);
-  if(!mapped && path===join(root,'docs/analysis/private')) {
-    mapped=true;
-    fs.writeFileSync(join(root,role+'-mapped'),'1');
-    waitFor(role==='A' ? 'B-mapped' : 'A-mapped');
-  }
-  delayCleanup(path);
   return result;
-};
-fs.rmdirSync=function(path,...args) {
-  delayCleanup(path);
-  return rawRmdir(path,...args);
 };
 syncBuiltinESMExports();`,
 );
 try {
-  const results = await Promise.all([start(cleanup, 'A', preload), start(cleanup, 'B', preload)]);
+  const b = start(cleanup, 'B', preload);
+  for (let i = 0; i < 400 && !existsSync(join(cleanup, 'B-ready')); i += 1) await delay(5);
+  assert.ok(existsSync(join(cleanup, 'B-ready')), 'guard B never reached collection');
+  const results = await Promise.all([start(cleanup, 'A', preload), b]);
   for (const result of results) {
-    assert.equal(result.signal, null, 'successful cleanup probe exceeded its deadline');
+    assert.equal(result.signal, null, 'passing/starting probe exceeded its deadline');
     assert.equal(result.code, 0, result.stderr);
   }
   for (const parent of ['.claude', '.worktrees', 'worktrees', 'docs/analysis/private']) {
@@ -221,7 +207,7 @@ try {
       `passing guard left owned probes in ${parent}`,
     );
   }
-  console.log('✓ passing test-isolation guards tolerate concurrent empty-parent cleanup.');
+  console.log('✓ passing test-isolation guards preserve a starting guard’s shared parents.');
 } finally {
   for (const child of children) {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');

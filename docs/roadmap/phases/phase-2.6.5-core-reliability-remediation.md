@@ -2039,7 +2039,10 @@ breaks the guard. `pnpm run ci` and `pnpm coverage` both exit 0. The
 [capture tool procedure](../../runbooks/capture-provider-overflow.md) is available; its tests and offline
 command smoke do not constitute live provider evidence. [Round 1](../../reviews/2026-10-02T03-04-05-w7-step-1-round-1-review.md)
 verified seven findings. [Round 2](../../reviews/2026-10-02T03-22-32-w7-step-1-round-2-review.md) verified a
-concurrent cleanup race in the fix; the correction and regression pass CI and coverage. A fresh corrective
+concurrent cleanup race in the fix. [Round 3](../../reviews/2026-10-02T03-35-41-w7-step-1-round-3-review.md)
+verified a remaining passing/starting race; cleanup now retains shared parents and deletes only owned
+probes. The new regression fails the reviewed commit and passes the correction; CI and coverage exit 0
+(285 suites, 6,315 passing tests, 11 skipped). A fresh corrective
 review remains pending before step 1 closes.
 
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)

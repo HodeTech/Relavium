@@ -48,7 +48,6 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
-  rmdirSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
@@ -195,7 +194,6 @@ const fixtures = fixtureDirs.map((dir) => ({
   dir,
   root: undefined, // Assigned by mkdtemp: cleanup owns only this invocation's freshly-created directory.
   parent: join(repoRoot, dir),
-  parentExisted: existsSync(join(repoRoot, dir)),
 }));
 
 /**
@@ -235,15 +233,8 @@ function plant(fixture) {
 function clear(fixture) {
   if (fixture.root === undefined) return;
   rmSync(fixture.root, { recursive: true, force: true });
-  // Do not leave an empty `worktrees/` or `.worktrees/` behind that this guard itself created.
-  if (!fixture.parentExisted) {
-    try {
-      // The OS checks emptiness atomically; exists/readdir prechecks race another guard's cleanup.
-      rmdirSync(fixture.parent);
-    } catch (error) {
-      if (!['ENOTEMPTY', 'EEXIST', 'ENOENT'].includes(error.code)) throw error;
-    }
-  }
+  // Parent containers are shared with other invocations. Even an empty parent may be between another
+  // guard's mkdir and mkdtemp; removing it would make that valid invocation fail. Only this root is ours.
 }
 
 /**
