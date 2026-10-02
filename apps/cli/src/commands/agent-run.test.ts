@@ -271,6 +271,41 @@ describe('agentRunCommand (2.Q)', () => {
     expect(out()).toContain('the summary');
   });
 
+  it('does not run an after-turn summariser for a summary-policy one-shot above the automatic threshold', async () => {
+    writeFileSync(agentPath(), `${AGENT_YAML}\nmemory:\n  type: summary\n`);
+    const resolver = scriptedResolver([
+      [
+        { type: 'text_delta', text: 'one reply' },
+        { type: 'stop', stopReason: 'stop', usage: { inputTokens: 9001, outputTokens: 5 } },
+      ],
+    ]);
+    const provider = resolver.resolveProvider('anthropic');
+    if (provider === undefined) throw new Error('missing scripted provider');
+    let calls = 0;
+    const { d, out } = deps('one prompt', {
+      providers: {
+        ...resolver,
+        resolveProvider: (id) =>
+          id === 'anthropic'
+            ? {
+                ...provider,
+                contextLimit: () => 10_000,
+                stream: (request, options) => {
+                  calls += 1;
+                  return provider.stream(request, options);
+                },
+              }
+            : undefined,
+      },
+      onBuilt: (built) => expect(built.session.automaticCompactionAllowed).toBe(true),
+    });
+    expect(await agentRunCommand({ agent: agentPath(), input: [], allowMcpStdio: [] }, d)).toBe(
+      EXIT_CODES.success,
+    );
+    expect(calls).toBe(1);
+    expect(out()).toContain('one reply');
+  });
+
   it('DENIES a governed dispatch in the non-interactive one-shot — no user to approve (ADR-0057)', async () => {
     // agent run shares the full-capability chat-read-write host; a one-shot has no interactive approver, so the
     // fail-closed `ask` regime must deny a governed write (never execute it), restoring the pre-4b safety.

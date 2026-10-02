@@ -6,6 +6,7 @@ import {
   parseWorkflow,
   buildRunPlan,
   reconstructSessionState,
+  completedSessionTurns,
   serializeWorkflow,
   sessionToWorkflow,
 } from '@relavium/core';
@@ -17,7 +18,7 @@ import {
   runMigrations,
 } from '@relavium/db';
 import { startMcpClient, type McpConnection } from '@relavium/mcp';
-import type { StreamChunk } from '@relavium/llm';
+import type { LlmRequest, StreamChunk } from '@relavium/llm';
 import type { SessionMessage } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -26,10 +27,31 @@ import { createSessionPersister } from './persister.js';
 import {
   buildChatSession,
   buildResumedChatSession,
+  swapAgentModel,
   type BuildChatSessionOptions,
   type BuiltChatSession,
 } from './session-host.js';
 import { scriptedResolver, textTurn, stop } from './test-support.js';
+import type { ProviderResolver } from '../engine/providers.js';
+
+function capturingResolver(scripts: StreamChunk[][], requests: LlmRequest[]): ProviderResolver {
+  const resolver = scriptedResolver(scripts);
+  const provider = resolver.resolveProvider('anthropic');
+  if (provider === undefined) throw new Error('missing scripted provider');
+  return {
+    ...resolver,
+    resolveProvider: (id) =>
+      id === 'anthropic'
+        ? {
+            ...provider,
+            stream: (request, options) => {
+              requests.push(request);
+              return provider.stream(request, options);
+            },
+          }
+        : undefined,
+  };
+}
 
 const chat: ResolvedChatConfig = {
   defaultModel: undefined,
@@ -130,6 +152,107 @@ describe('session structure through the real CLI host and SQLite', () => {
       consentGate: () => Promise.resolve(new Map()),
       ...overrides,
     });
+
+  it.each([
+    { memory: 'none', reseat: false },
+    { memory: 'none', reseat: true },
+    { memory: 'window', reseat: false },
+    { memory: 'window', reseat: true },
+  ] as const)(
+    'applies $memory after real SQLite resume (reseat=$reseat), counting empty finals and preserving the archive',
+    async ({ memory, reseat }) => {
+      const agentPath = join(root, 'mcp.agent.yaml');
+      writeFileSync(
+        agentPath,
+        `id: reader\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: Read things.\nmemory:\n  type: ${memory}\n${memory === 'window' ? '  window_size: 2\n' : ''}mcp_servers:\n  - id: fs\n    transport: stdio\n    command: node\n`,
+      );
+      const original = await fresh([textTurn('a1'), call('empty-final'), [stop()], textTurn('a3')]);
+      const originalPersister = attach(original);
+      for (const text of ['q1', 'q2', 'q3']) {
+        originalPersister.beginUserTurn(text);
+        await original.session.sendMessage(text);
+      }
+      originalPersister.close();
+      original.session.cancel();
+      let full = store.loadFull('session');
+      if (full === undefined) throw new Error('missing memory session');
+      const archive = full.messages;
+      store.appendMessage({
+        id: 'restored-summary',
+        sessionId: 'session',
+        sequenceNumber: archive.length,
+        role: 'system',
+        content: [{ type: 'text', text: 'UNTRUSTED_RESTORED_SUMMARY' }],
+        timestamp: new Date(now()).toISOString(),
+        compaction: { droppedThroughSequence: 1 },
+      });
+      full = store.loadFull('session');
+      if (full === undefined) throw new Error('missing memory session after marker');
+      const snapshot = full.session.agentSnapshot;
+      if (snapshot === undefined) throw new Error('missing frozen agent snapshot');
+      const requests: LlmRequest[] = [];
+      const resumed = await buildResumedChatSession({
+        chat,
+        record: reseat
+          ? {
+              ...full.session,
+              agentSnapshot: swapAgentModel(snapshot, 'claude-opus-4-8', 'anthropic'),
+            }
+          : full.session,
+        messages: full.messages,
+        now,
+        providers: capturingResolver([textTurn('a4'), textTurn('a5')], requests),
+        onListenerError: () => undefined,
+        startMcpClient: connect,
+        consentGate: () => Promise.resolve(new Map()),
+      });
+      const resumedPersister = attach(resumed, resumed.nextSequenceNumber);
+      expect(resumed.resumeState.completedTurnSpans).toEqual([
+        { start: 0, end: 1 },
+        { start: 1, end: 3 },
+      ]);
+      for (const text of ['q4', 'q5']) {
+        resumedPersister.beginUserTurn(text);
+        await resumed.session.sendMessage(text);
+      }
+      const wire = requests.map((request) =>
+        request.messages.map((message) => ({
+          role: message.role,
+          text: message.content
+            .filter((part) => part.type === 'text')
+            .map((part) => part.text)
+            .join(''),
+        })),
+      );
+      expect(wire).toEqual(
+        memory === 'none'
+          ? [[{ role: 'user', text: 'q4' }], [{ role: 'user', text: 'q5' }]]
+          : [
+              [
+                { role: 'user', text: 'q2\n\nq3' },
+                { role: 'assistant', text: 'a3' },
+                { role: 'user', text: 'q4' },
+              ],
+              [
+                { role: 'user', text: 'q3' },
+                { role: 'assistant', text: 'a3' },
+                { role: 'user', text: 'q4' },
+                { role: 'assistant', text: 'a4' },
+                { role: 'user', text: 'q5' },
+              ],
+            ],
+      );
+      const model = reseat ? 'claude-opus-4-8' : 'claude-sonnet-4-6';
+      expect(requests.map((request) => request.model)).toEqual([model, model]);
+      const continued = store.loadFull('session');
+      if (continued === undefined) throw new Error('missing continued memory session');
+      expect(continued.messages.slice(0, archive.length)).toEqual(archive);
+      expect(completedSessionTurns(continued.messages, false)).toHaveLength(5);
+      expect(sessionToWorkflow(continued.session, continued.messages).workflow.nodes).toHaveLength(
+        7,
+      );
+    },
+  );
 
   it.each(['errored', 'aborted'] as const)(
     'discloses a committed real MCP effect from an %s turn, then completes under a greater key',

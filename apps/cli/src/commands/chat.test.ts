@@ -474,6 +474,52 @@ describe('chatCommand', () => {
     expect(err()).toContain('/mode: takes a single mode value (got 2).'); // arity enforced, not silently dropped
   });
 
+  it.each(['', 'nope', '0'])(
+    'none refuses /trim %s before its bound check and /compact before progress',
+    async (bound) => {
+      const path = join(cwd, 'memory.agent.yaml');
+      writeFileSync(
+        path,
+        'id: memory\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: Be concise.\nmemory:\n  type: none\n',
+      );
+      const { d, err, store, sessionId } = deps(
+        ['q1', 'q2', '/compact', `/trim ${bound}`, '/exit'],
+        [textTurn('a1'), textTurn('a2')],
+      );
+      expect(await chatCommand({ agent: path }, d)).toBe(4);
+      expect(err()).toContain('Compaction refused: memory: none');
+      expect(err()).toContain('Trim refused: memory: none');
+      expect(err()).not.toContain('compacting: summarizing');
+      expect(err()).not.toContain('set a bound');
+      expect(err()).not.toContain('positive whole number');
+      expect(
+        store.loadFull(sessionId)?.messages.some((message) => message.compaction !== undefined),
+      ).toBe(false);
+      expect(
+        store.loadFull(sessionId)?.messages.filter((message) => message.role === 'user'),
+      ).toHaveLength(2);
+    },
+  );
+
+  it('window refuses /compact but permits message-count /trim', async () => {
+    const path = join(cwd, 'memory.agent.yaml');
+    writeFileSync(
+      path,
+      'id: memory\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: Be concise.\nmemory:\n  type: window\n  window_size: 1\n',
+    );
+    const { d, err, store, sessionId } = deps(
+      ['q1', 'q2', '/compact', '/trim 2', '/exit'],
+      [textTurn('a1'), textTurn('a2')],
+    );
+    expect(await chatCommand({ agent: path }, d)).toBe(4);
+    expect(err()).toContain('Compaction refused: memory: window');
+    expect(err()).not.toContain('compacting: summarizing');
+    expect(err()).toContain('Trimmed 2 older message(s)');
+    expect(
+      store.loadFull(sessionId)?.messages.filter((message) => message.compaction !== undefined),
+    ).toHaveLength(1);
+  });
+
   it('/compact summarises the conversation, reports the notice, and persists a boundary marker (ADR-0062)', async () => {
     const { d, err, store, sessionId } = deps(
       ['q1', 'q2', '/compact', '/exit'],

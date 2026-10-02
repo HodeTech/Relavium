@@ -152,14 +152,21 @@ export function compactionNotice(result: CompactionResult): string {
       return `Compaction failed: ${sanitizeInline(result.message)}. Try /trim for a deterministic bound.`;
     case 'cancelled':
       return 'Compaction cancelled — the conversation is unchanged.';
+    case 'policy_refused':
+      return `Compaction refused: ${result.message}`;
   }
 }
 
 /** The `/trim` result notice (ADR-0062) — a deterministic drop, no LLM call. */
 export function trimNotice(result: TrimResult): string {
-  return result.kind === 'trimmed'
-    ? `✂ Trimmed ${result.droppedMessageCount} older message(s) — keeping the last ${result.keptMessageCount}.`
-    : `Nothing to trim — ${result.messageCount} message(s), already within the bound.`;
+  switch (result.kind) {
+    case 'trimmed':
+      return `✂ Trimmed ${result.droppedMessageCount} older message(s) — keeping the last ${result.keptMessageCount}.`;
+    case 'nothing_to_trim':
+      return `Nothing to trim — ${result.messageCount} message(s), already within the bound.`;
+    case 'policy_refused':
+      return `Trim refused: ${result.message}`;
+  }
 }
 
 /**

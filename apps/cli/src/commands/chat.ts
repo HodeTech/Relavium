@@ -1359,6 +1359,11 @@ export function createChatLineHandler(
     // await, then report the deltas. The engine emits session:compacted (→ the persister writes the boundary
     // marker); this notice is the user-facing report. Never crashes the REPL — a failure is reported as output.
     compactHistory: async () => {
+      const refusal = built.session.compactionRefusal;
+      if (refusal !== undefined) {
+        emitOutput(compactionNotice(refusal));
+        return;
+      }
       // The engine emits `session:compacting` at the start (ADR-0062 §7): on an INTERACTIVE surface the store
       // renders a labeled "Summarizing…" moment off it, so no pre-notice is needed; on a plain/`--json` surface
       // (no live spinner) keep a one-line stderr progress note so the multi-second summary isn't a silent pause.
@@ -1381,6 +1386,11 @@ export function createChatLineHandler(
     // `/trim [n]` (ADR-0062): deterministic drop, no LLM call. Bare `/trim` uses `[chat].max_messages`; an
     // inline `n` overrides it. A missing bound (no arg + no config) is an actionable notice, never a silent no-op.
     trimHistory: (nArg) => {
+      const refusal = built.session.trimRefusal;
+      if (refusal !== undefined) {
+        emitOutput(trimNotice(refusal));
+        return;
+      }
       const trimmed = nArg.trim();
       const n = trimmed.length > 0 ? Number(trimmed) : wiring.chatMaxMessages;
       if (n === undefined) {
