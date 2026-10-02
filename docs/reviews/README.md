@@ -110,6 +110,9 @@ added.
   inherited realized/conservative tail freshness independently reproduced and corrected; 36 permanent
   controls, causal negatives and full CI/coverage pass; fresh round 8 pending.
 
+- [2026-10-02 — W7 step 6, round 8](2026-10-02T22-44-01-w7-step-6-round-8-review.md):
+  clean independent financial/contract acceptance and parent replays; Step 6 closed.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

@@ -1989,7 +1989,7 @@ correction inside its own ADR rather than a rewrite, so the wrong reasoning stay
 
 ### W7 pre-implementation review and proposed execution plan — 2026-10-02
 
-**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–5 are closed after their independent review rounds. Step 6's configured-output-estimate precedence is settled by ADR-0101, approved by the maintainer on 2026-10-02; implementation is in progress.**
+**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–6 are closed after their independent review rounds. Step 6's configured-output-estimate precedence follows ADR-0101, approved by the maintainer on 2026-10-02. Live captures for Step 7 remain pending; independently approved Step 9 proceeds from accepted input pricing.**
 The four Accepted ADRs retain their decisions. Three verified gaps were explicitly resolved before code:
 manual compaction with an unknown window and the budget outcome of idle compaction
 ([ADR-0099](../../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md)),
@@ -2912,3 +2912,15 @@ financial cases and six SDK freshness cases pass after correction. Full CI and c
 309 suites, 6,993 tests and 11 existing skips. The
 [seventh-round record](../../reviews/2026-10-02T22-01-46-w7-step-6-round-7-review.md)
 preserves provenance and evidence limits. **Fresh round 8 is required; step 6 remains open.**
+
+**Step 6 eighth review checkpoint — 2026-10-02.** Both fresh reviewers accepted the complete
+step and all seven corrections with no verified new finding. Financial review passed 54 fresh
+controls and 967 unique permanent tests; contract review passed 120 fresh controls and 1,451
+permanent tests, including 82 actual installed-SDK offline fetch-boundary observations. Permanent
+scopes overlap. The parent read and verified the sealed reports/manifests, replayed all 120/54
+fresh controls and confirmed all 1,017 tracked hashes unchanged. A missing-HOME final-proof
+Git-ignore mismatch is preserved as a corrected harness error. The
+[eighth-round record](../../reviews/2026-10-02T22-44-01-w7-step-6-round-8-review.md)
+records the exact scope and evidence limits. **Steps 1–6 are closed.** Maintainer live captures
+remain required for Step 7 and therefore Step 8; Step 9 proceeds independently from accepted
+input pricing. All six W7 register items remain open.

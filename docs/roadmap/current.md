@@ -128,7 +128,11 @@ merged too (PR #85, 2026-08-28).
 > verified transport/pricing findings and the corrected measurement-to-attempt handoff.
 > [Fresh draft round 2](../reviews/2026-10-02T15-18-01-w7-adr-0101-revision-round-2-review.md) accepted the complete
 > corrected proposal with no actionable findings; full CI passed at `2b628e1a`. The acceptance and runtime
-> obligations remain distinct: proposal review is complete; step 6 implementation is in progress.
+> obligations remain distinct: runtime acceptance is now complete.
+> [Step 6 round 8](../reviews/2026-10-02T22-44-01-w7-step-6-round-8-review.md) accepts the complete step and seven corrections.
+> Both fresh reviewers reported no verified new findings; parent replays pass 120 contract and 54
+> financial controls. **Steps 1–6 are closed; all six W7 register items remain open.**
+> Step 9 proceeds independently from accepted input pricing while live Step 7 captures are pending.
 > Step 1 repaired collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.
