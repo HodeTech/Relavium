@@ -740,7 +740,13 @@ export class BudgetGovernor {
    * amount is deliberately still consuming capacity when it does.
    */
   async flushCommitments(): Promise<void> {
-    await this.#commitmentsInFlight;
+    let observedTail: Promise<void>;
+    do {
+      observedTail = this.#commitmentsInFlight;
+      await observedTail;
+      // A sibling may commit while this await is suspended. Join that new tail too before inspecting the
+      // retained failure or returning to admission; an earlier resolved snapshot is not a durable barrier.
+    } while (observedTail !== this.#commitmentsInFlight);
     const failure = this.#commitmentFailure;
     if (failure !== undefined) {
       // The ERROR is surfaced once (a later flush must not re-report the same broken write as if it were new),

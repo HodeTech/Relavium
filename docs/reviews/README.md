@@ -106,6 +106,10 @@ added.
   budgetless cancellation during a shared ledger wait still resolved credentials; parent-verified
   correction and six permanent B1 controls pass causal negatives and full CI/coverage; fresh round 7 pending.
 
+- [2026-10-02 — W7 step 6, round 7](2026-10-02T22-01-46-w7-step-6-round-7-review.md):
+  inherited realized/conservative tail freshness independently reproduced and corrected; 36 permanent
+  controls, causal negatives and full CI/coverage pass; fresh round 8 pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

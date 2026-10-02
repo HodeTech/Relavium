@@ -231,3 +231,24 @@ preceded the cancellation check. No provider call occurred. The existing settlem
 checks now precede that return, preserving the budgeted path's order. Restoring the previous
 source reproduces only the budgetless cancellation failure; corrected source passes all six.
 This changes neither the durability protocol nor approval policy. Historical text is preserved.
+
+## Implementation correction — 2026-10-02, W7 step 6 seventh review
+
+Both money chains awaited a single captured promise tail. A sibling could append another
+write during that await, then releasing the earlier write allowed a candidate to reach
+credentials and provider egress while the later write remained pending. Independent review
+reproduced this through actual `AgentRunner`/`WorkflowEngine` nodes and, separately, installed
+SDK offline HTTP captures. The faulty methods predate W7; this corrects the existing
+wait-and-observe obligation rather than introducing a financial policy.
+
+The conservative barrier now follows its current tail until it remains unchanged after the
+await. The shared barrier also rechecks its realized tail after conservative flushing, because
+a realized append can occur during that second await. The stable point covers money already
+recorded; subsequent charges meet the next barrier. Failure ownership, once-only reporting,
+sticky broken flags and retained conservative capacity keep their existing semantics.
+
+[Permanent regressions](../../packages/core/src/engine/money-admission-freshness.test.ts)
+cover repeated appends, both cross-chain directions, write success/rejection/cancellation,
+budgeted/budgetless turns, stream/generate selection and real sibling runner-produced money
+rows. Restoring either old method separately breaks its controls; draining realized money only
+before the conservative flush still fails the cross-chain controls. Historical text is preserved.

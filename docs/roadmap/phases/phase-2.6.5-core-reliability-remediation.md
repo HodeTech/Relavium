@@ -2900,3 +2900,15 @@ fails only budgetless cancellation. The independent 191/44 controls still pass. 
 pass 308 suites, 6,957 tests and 11 pre-existing skips. The
 [sixth-round record](../../reviews/2026-10-02T21-16-26-w7-step-6-round-6-review.md)
 preserves attribution and evidence limits. **Fresh round 7 is required; step 6 remains open.**
+
+**Step 6 seventh review checkpoint — 2026-10-02.** Both fresh reviewers independently confirmed
+one High inherited defect: a money barrier awaited a stale promise tail, allowing credential and
+provider egress while another sibling write appended during the wait remained pending. The parent
+replayed helper, actual-SDK and real AgentRunner/WorkflowEngine evidence. Both barriers now follow
+current tails; the shared join also rechecks realized writes after conservative flushing. Thirty-six
+permanent controls have 30 intended failures before correction and all pass afterwards. Restoring
+either old method, or omitting the cross-chain recheck, breaks its regressions. All 109 independent
+financial cases and six SDK freshness cases pass after correction. Full CI and coverage pass
+309 suites, 6,993 tests and 11 existing skips. The
+[seventh-round record](../../reviews/2026-10-02T22-01-46-w7-step-6-round-7-review.md)
+preserves provenance and evidence limits. **Fresh round 8 is required; step 6 remains open.**

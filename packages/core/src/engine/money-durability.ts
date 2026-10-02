@@ -160,12 +160,17 @@ export class MoneyDurability {
    * absorbed fault into a throw, and the barrier is still not merely an await.
    */
   async join(): Promise<void> {
-    if (this.#pending > 0 || this.#failure !== undefined) {
-      await this.#inFlight;
-    }
-    // The conservative half is joined unconditionally when a governor exists — its own barrier is cheap when
-    // nothing is outstanding, and skipping it here is how "await the wrong one" would creep back in.
-    await this.#options.flushConservative?.();
+    let observedTail: Promise<void>;
+    do {
+      observedTail = this.#inFlight;
+      if (this.#pending > 0 || this.#failure !== undefined) {
+        await observedTail;
+      }
+      // The governor drains its current conservative tail. Recheck the realized tail AFTER that await too:
+      // a sibling can record another realized charge while either half is suspended. A single snapshot, or
+      // draining only before the conservative flush, would let the next attempt outrun that new write.
+      await this.#options.flushConservative?.();
+    } while (observedTail !== this.#inFlight);
     const failure = this.#failure;
     if (failure !== undefined) {
       this.#failure = undefined;

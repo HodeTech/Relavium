@@ -97,7 +97,10 @@ Warning admissions await their shared durable warning; a failed write releases e
 
 Before invoking the hook, the turn joins the run's shared realized/conservative money barrier,
 including turns without a budget hook. A pending sibling write blocks admission, credential
-resolution and provider egress; its failure retains the sibling's attribution. Cancellation is
+resolution and provider egress; its failure retains the sibling's attribution. Both chains drain
+their current tails, including writes appended during the wait. The shared barrier rechecks the
+realized tail after conservative flushing so a cross-chain append also blocks continuation.
+Its stable point covers charges already recorded; later charges enter the next barrier. Cancellation is
 checked after that join before the no-hook return, and again after any awaited admission; a
 newly acquired admission is released before cancellation propagates.
 
