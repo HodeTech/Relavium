@@ -85,7 +85,7 @@ async function main() {
     process.off('SIGTERM', abort);
     // Never delete the caller-selected pathname. A stat comparison followed by unlink is not atomic:
     // another process can replace the path between those operations. A failed capture may retain an
-    // empty or partial reserved file; closing our fd cannot remove or overwrite a replacement.
+    // empty, partial or complete file; closing our fd cannot mutate a different file at that path.
     closeSync(fd);
   }
 }
@@ -95,7 +95,7 @@ try {
 } catch (error) {
   const reason = error instanceof CaptureError ? error.code : 'local_io';
   process.stderr.write(
-    `overflow capture refused (${reason}); destination may be empty or partial\n`,
+    `overflow capture refused (${reason}); inspect the destination before reuse\n`,
   );
   process.exitCode = 1;
 }

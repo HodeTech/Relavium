@@ -24,6 +24,9 @@ added.
 - [2026-10-02 — W7 step 1, round 4](2026-10-02T03-43-31-w7-step-1-round-4-review.md):
   collection and probe ownership clear; one verified capture pathname-cleanup race corrected.
 
+- [2026-10-02 — W7 step 1, round 5](2026-10-02T03-50-35-w7-step-1-round-5-review.md):
+  clean corrective review; final wording qualifications adopted and step 1 closed.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

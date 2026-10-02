@@ -1989,7 +1989,7 @@ correction inside its own ADR rather than a rewrite, so the wrong reasoning stay
 
 ### W7 pre-implementation review and proposed execution plan — 2026-10-02
 
-**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Implementation is in progress, starting with step 1.**
+**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Step 1 is closed after five independent review rounds; implementation continues with step 2.**
 The four Accepted ADRs retain their decisions. Three verified gaps were explicitly resolved before code:
 manual compaction with an unknown window and the budget outcome of idle compaction
 ([ADR-0099](../../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md)),
@@ -2045,7 +2045,10 @@ probes. The new regression fails the reviewed commit and passes the correction; 
 (285 suites, 6,315 passing tests, 11 skipped). [Round 4](../../reviews/2026-10-02T03-43-31-w7-step-1-round-4-review.md)
 cleared probe ownership and verified a capture pathname-cleanup race. The runner now closes its
 descriptor without deleting a failed destination; the runbook documents possible empty/partial
-files. A fresh corrective review remains pending before step 1 closes.
+or complete files. [Round 5](../../reviews/2026-10-02T03-50-35-w7-step-1-round-5-review.md)
+cleared the complete step and final corrections. **Step 1 is closed; step 2 proceeds automatically.**
+The maintainer has been asked for the live capture artifact paths; independent steps 2–6 proceed
+while that evidence is pending.
 
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A

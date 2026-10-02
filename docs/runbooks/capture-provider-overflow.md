@@ -83,12 +83,15 @@ must be JSON, at most 1 MiB and at most 16,384 chunks, including empty chunks.
 
 Catchable SIGINT/SIGTERM signals cancel capture on POSIX. Windows `child.kill()` termination is
 forceful and cannot run the signal handler; inspect any reserved destination after termination.
-A failed capture leaves its reserved destination empty or, if local writing failed, partial. It never
+A failed capture may leave an empty, partial or complete artifact (for example, a write can finish
+before fsync, destination identity or close fails). Inspect it before use. The command never
 deletes the caller-selected pathname: checking an inode and then unlinking is not atomic, so such
 cleanup could delete a concurrent replacement. Review a failed destination yourself and choose a
-new path for the next attempt. A replacement is never overwritten or deleted by the command.
-Success prints only the HTTP status. Failure prints a fixed refusal code, never a response body, key, model, path or arbitrary error cause. A saved
-artifact is evidence to review, not an assertion that the provider rejected the request.
+new path for the next attempt. The command never overwrites a replacement that refers to a
+different file/inode; a hard link to the reserved inode still aliases that same object.
+Success prints only the HTTP status. Failure prints a fixed refusal code, never a response body,
+key, model, path or arbitrary error cause. A saved artifact is evidence to review, not an assertion
+that the provider rejected the request.
 
 Request construction follows the official [Anthropic Messages API](https://platform.claude.com/docs/en/api/messages/create),
 [OpenAI Chat Completions API](https://developers.openai.com/api/reference/resources/chat),
