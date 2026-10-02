@@ -14,7 +14,7 @@ import {
   type McpConnection,
 } from '@relavium/mcp';
 import type { AgentSessionRecord, SessionMessage } from '@relavium/shared';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import { createMcpSecretResolver } from '../secrets/mcp-secret.js';
@@ -143,6 +143,35 @@ async function build(overrides: Partial<Parameters<typeof buildChatSession>[0]> 
 }
 
 describe('buildChatSession', () => {
+  it('forwards the same configured fallback into the fresh session and its governor', async () => {
+    const built = await build({
+      chat: { ...EMPTY_CHAT, maxCostMicrocents: 100_000_000, onExceed: 'fail' },
+      maxTokensEstimate: 17,
+    });
+    const governor = built.governor;
+    if (governor === undefined) throw new Error('missing governor');
+    const original = governor.preEgress;
+    const seen: PreEgressInfo[] = [];
+    const spy = vi.spyOn(governor, 'preEgress').mockImplementation((info) => {
+      seen.push(info);
+      return original(info);
+    });
+    try {
+      built.session.start();
+      await built.session.sendMessage('hello');
+      built.session.cancel();
+      const events = await drainHandle(built.handle.events);
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({ route: 'text', maxTokensEstimate: 17 });
+      expect(
+        events.some(
+          (event) => event.type === 'session:turn_completed' && event.error !== undefined,
+        ),
+      ).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
   it('mints the session over the default agent + a handle scoped to the same id', async () => {
     const built = await build({ chat: { ...EMPTY_CHAT, defaultModel: 'claude-sonnet-4-6' } });
     expect(built.sessionId).toBe('sess-test-1');
@@ -656,6 +685,39 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(built.resumeState.cumulativeCostMicrocents).toBe(1234); // carried from the record
     // The persister continues PAST the persisted MAX(sequence_number) = 1.
     expect(built.nextSequenceNumber).toBe(2);
+  });
+
+  it('forwards the same configured fallback into the resumed session and its governor', async () => {
+    const built = await buildResumedChatSession({
+      chat: { ...EMPTY_CHAT, maxCostMicrocents: 100_000_000, onExceed: 'fail' },
+      maxTokensEstimate: 17,
+      record: record(),
+      messages: [],
+      providers: scriptedResolver([textTurn('continued')]),
+      now: () => Date.parse(ISO),
+    });
+    const governor = built.governor;
+    if (governor === undefined) throw new Error('missing governor');
+    const original = governor.preEgress;
+    const seen: PreEgressInfo[] = [];
+    const spy = vi.spyOn(governor, 'preEgress').mockImplementation((info) => {
+      seen.push(info);
+      return original(info);
+    });
+    try {
+      await built.session.sendMessage('hello again');
+      built.session.cancel();
+      const events = await drainHandle(built.handle.events);
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({ route: 'text', maxTokensEstimate: 17 });
+      expect(
+        events.some(
+          (event) => event.type === 'session:turn_completed' && event.error !== undefined,
+        ),
+      ).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('forwards mcpConnectSignal on the RESUMED path, not only the fresh one (ADR-0088 §1.3)', async () => {

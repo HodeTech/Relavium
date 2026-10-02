@@ -188,4 +188,71 @@ describe('effective wire-cap plans (ADR-0101)', () => {
     ).toThrow(InvalidOutputCapPlanError);
     expect(isPreparedOutputCapPlan({ ...staged.plan })).toBe(false);
   });
+
+  it('captures native JSON semantics once, with the original key, through a measured-plan handoff', () => {
+    let amount = 200_000;
+    const keys: string[] = [];
+    const cap = {
+      toJSON: (key: string) => {
+        keys.push(key);
+        return amount;
+      },
+    };
+    const options = { max_completion_tokens: cap };
+    const plan = prepareOutputCapPlan(identity('openai', 'official', undefined, options));
+    amount = 1;
+    const staged = prepareOutputCapRequest(
+      { model, messages: [], providerOptions: options, preparedOutputCaps: [plan] },
+      'openai',
+      'official',
+    );
+    expect(staged.plan).toBe(plan);
+    expect(staged.request.providerOptions?.['max_completion_tokens']).toBe(200_000);
+    expect(outputTokensReservation(plan, 17)).toBe(200_000);
+    expect(keys).toEqual(['max_completion_tokens']);
+    expect(() =>
+      assertOutputCapPlanMatches(plan, {
+        ...identity('openai'),
+        providerOptions: { max_completion_tokens: {} },
+      }),
+    ).toThrow(InvalidOutputCapPlanError);
+    expect(
+      prepareOutputCapPlan(
+        identity('openai', 'official', undefined, { max_tokens: Object(200_000) }),
+      ).effectiveCap,
+    ).toBe(200_000);
+  });
+
+  it('deep-copies invalid native JSON data and preserves omission without retaining executable values', () => {
+    const cap = { nested: [1, { value: 2 }] };
+    const options = { max_tokens: cap, max_completion_tokens: () => 200_000 };
+    const staged = prepareOutputCapRequest(
+      { model, messages: [], providerOptions: options },
+      'openai',
+      'official',
+    );
+    cap.nested.push(3);
+    const captured = staged.plan.providerOptions?.['max_tokens'];
+    expect(captured).toEqual({ nested: [1, { value: 2 }] });
+    expect(Object.isFrozen(captured)).toBe(true);
+    if (typeof captured !== 'object' || captured === null || !('nested' in captured))
+      throw new Error('missing cap snapshot');
+    expect(Object.isFrozen(captured.nested)).toBe(true);
+    expect(staged.plan.providerOptions?.['max_completion_tokens']).toBeUndefined();
+    expect(outputTokensReservation(staged.plan, 17)).toBe(17);
+    expect(JSON.parse(JSON.stringify(outputCapNativeOptions(staged.plan, options)))).toEqual({
+      max_tokens: { nested: [1, { value: 2 }] },
+    });
+  });
+
+  it('refuses unserializable surviving controls without serializing shadowed controls', () => {
+    const cycle: Record<string, unknown> = {};
+    cycle['self'] = cycle;
+    expect(() =>
+      prepareOutputCapPlan(identity('openai', 'official', undefined, { max_tokens: cycle })),
+    ).toThrow(InvalidOutputCapPlanError);
+    const plan = prepareOutputCapPlan(identity('openai', 'official', 17, { max_tokens: cycle }));
+    expect(outputCapNativeOptions(plan, { max_tokens: cycle })).toEqual({});
+    expect(plan.effectiveCap).toBe(17);
+  });
 });

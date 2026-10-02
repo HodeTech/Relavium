@@ -3101,6 +3101,72 @@ describe('chain-owned failure evidence and staged caps (ADR-0096/0101)', () => {
     expect(provider.calls).toHaveLength(1);
   });
 
+  it.each(['generate', 'stream'] as const)(
+    '%s failure observer propagates once and cannot turn a fatal refusal into a retry',
+    async (path) => {
+      const refused = makeLlmError({
+        provider: 'openai',
+        kind: 'bad_request',
+        status: 400,
+        message: 'refused',
+      });
+      const provider = makeProvider({
+        id: 'openai',
+        generate: () => Promise.reject(new LlmProviderError(refused)),
+        stream: () => streamFrom([{ type: 'error', error: refused }]),
+      });
+      const thrown = providerError('openai', 'rate_limit');
+      let observed = 0;
+      const trace: AttemptRecord[] = [];
+      const { options } = makeOptions({
+        onAttempt: (record) => {
+          trace.push(record);
+          observed++;
+          if (observed === 1) throw thrown;
+        },
+      });
+      const chain = new FallbackChain([entry(provider, 'gpt-5.4-pro', 2)], options);
+      await expect(
+        path === 'generate' ? chain.generate(userReq) : collect(chain.stream(userReq)),
+      ).rejects.toBe(thrown);
+      expect(observed).toBe(1);
+      expect(provider.calls).toHaveLength(1);
+      expect(trace).toHaveLength(1);
+      expect(trace[0]?.error).toBe(refused);
+    },
+  );
+
+  it.each(['generate', 'stream'] as const)(
+    '%s pre-provider cancellation observer is outside provider normalization',
+    async (path) => {
+      const controller = new AbortController();
+      const provider = makeProvider({
+        id: 'openai',
+        generate: resolves('ok'),
+        stream: () => streamFrom([STOP_CHUNK]),
+      });
+      const thrown = new Error('consumer cancellation observer');
+      let observed = 0;
+      const { options } = makeOptions({
+        keyFor: () => {
+          controller.abort();
+          return 'test-key';
+        },
+        onAttempt: () => {
+          observed++;
+          throw thrown;
+        },
+      });
+      const chain = new FallbackChain([entry(provider, 'gpt-5.4-pro', 2)], options);
+      const request = { ...userReq, signal: controller.signal };
+      await expect(
+        path === 'generate' ? chain.generate(request) : collect(chain.stream(request)),
+      ).rejects.toBe(thrown);
+      expect(observed).toBe(1);
+      expect(provider.calls).toHaveLength(0);
+    },
+  );
+
   it('reports actual custom-route evidence independently of normalized errors', async () => {
     const fake = makeProvider({
       id: 'openai',

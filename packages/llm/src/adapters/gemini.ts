@@ -745,7 +745,7 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
 /**
  * **Gemini needs no `maxRetries: 0` (#276) — verified, not assumed.** `@google/genai`'s `ApiClient.apiCall`
  * issues a bare `fetch` unless `clientOptions.httpOptions.retryOptions` is supplied at construction, and this
- * adapter never supplies `httpOptions`. So `FallbackChain` is already the sole retry authority on every path
+ * adapter supplies only a pinned base URL, without retry options. So `FallbackChain` is the sole retry authority on every path
  * used here (`generateContent`, `generateContentStream`, `models.list`, `generateImages`, `generateVideos`,
  * `operations.getVideosOperation`).
  *
@@ -754,17 +754,25 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
  * through a different, Stainless-style client that DOES default to `maxRetries: 2`; moving any call to those
  * surfaces silently reopens #276 and would need an explicit 0.
  */
+// Pin both route and backend; SDK environment/global defaults must not change official cap/refund evidence.
+const createSdkClient = (key: string): GoogleGenAI =>
+  new GoogleGenAI({
+    apiKey: key,
+    vertexai: false,
+    httpOptions: { baseUrl: 'https://generativelanguage.googleapis.com' },
+  });
+
 const sdkTransport: GeminiTransport = {
   async generate(request: GeminiRequest, key: string): Promise<GeminiResponse> {
-    const client = new GoogleGenAI({ apiKey: key });
+    const client = createSdkClient(key);
     return client.models.generateContent(request);
   },
   async stream(request: GeminiRequest, key: string): Promise<AsyncIterable<GeminiResponse>> {
-    const client = new GoogleGenAI({ apiKey: key });
+    const client = createSdkClient(key);
     return client.models.generateContentStream(request);
   },
   async listModels(key: string, signal?: AbortSignalLike): Promise<GeminiModelInfo[]> {
-    const client = new GoogleGenAI({ apiKey: key });
+    const client = createSdkClient(key);
     // models.list() returns an auto-paginating Pager<Model>; `for await` follows nextPageToken. Each row is
     // normalized to the vendor-type-free GeminiModelInfo here so no @google/genai Model type crosses the seam.
     const pager = await client.models.list({
@@ -783,11 +791,11 @@ const sdkTransport: GeminiTransport = {
     return rows;
   },
   async generateImages(request: GeminiImageRequest, key: string): Promise<GeminiImageResponse> {
-    const client = new GoogleGenAI({ apiKey: key });
+    const client = createSdkClient(key);
     return client.models.generateImages(request);
   },
   async generateVideos(request: GeminiVideoRequest, key: string): Promise<GeminiVideoOperation> {
-    const client = new GoogleGenAI({ apiKey: key });
+    const client = createSdkClient(key);
     const op = await client.models.generateVideos(request);
     return { name: op.name };
   },
@@ -796,7 +804,7 @@ const sdkTransport: GeminiTransport = {
     key: string,
     signal?: AbortSignalLike,
   ): Promise<GeminiVideoPoll> {
-    const client = new GoogleGenAI({ apiKey: key });
+    const client = createSdkClient(key);
     // getVideosOperation reads ONLY operation.name (verified in the SDK), so a fresh operation carrying
     // just the persisted name re-attaches across a process restart with no in-memory handle (ADR-0045 §3).
     const operation = new GenerateVideosOperation();

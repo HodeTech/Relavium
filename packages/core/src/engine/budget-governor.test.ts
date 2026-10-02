@@ -1366,17 +1366,23 @@ describe('resolved admission pricing (ADR-0096/0101)', () => {
       ...(fallback === undefined ? {} : { defaultMaxTokensEstimate: fallback }),
     });
   }
-  it('refuses a native cap above the catalog ceiling through FINAL governor pricing', () => {
-    const lower = estimateMaxNextCost('gpt-5.4-pro', 200_000);
-    const actual = estimateResolvedNextCost('gpt-5.4-pro', 0, 200_000);
-    expect(actual).toBeGreaterThan(lower);
-    const ledger = governor(Math.round((lower + actual) / 2), 1);
-    expect(
-      ledger.evaluatePreEgress(info({ native: { max_completion_tokens: 200_000 }, fallback: 1 }))
-        .kind,
-    ).toBe('fail');
-    expect(ledger.evaluatePreEgress(info({ maxTokens: 200_000, fallback: 1 })).kind).toBe('allow');
-  });
+  it.each([200_000, Object(200_000), { toJSON: () => 200_000 }])(
+    'refuses a native cap above the catalog ceiling through FINAL governor pricing (%s)',
+    (nativeCap) => {
+      const lower = estimateMaxNextCost('gpt-5.4-pro', 200_000);
+      const actual = estimateResolvedNextCost('gpt-5.4-pro', 0, 200_000);
+      expect(actual).toBeGreaterThan(lower);
+      const ledger = governor(Math.round((lower + actual) / 2), 1);
+      expect(
+        ledger.evaluatePreEgress(
+          info({ native: { max_completion_tokens: nativeCap }, fallback: 1 }),
+        ).kind,
+      ).toBe('fail');
+      expect(ledger.evaluatePreEgress(info({ maxTokens: 200_000, fallback: 1 })).kind).toBe(
+        'allow',
+      );
+    },
+  );
   it('includes current input and therefore refuses a request that output-only pricing would admit', () => {
     const outputOnly = estimateMaxNextCost('gpt-5.4-pro', 1);
     const total = estimateResolvedNextCost('gpt-5.4-pro', 100_000, 1);

@@ -74,6 +74,11 @@ function globalOptions(cwd: string): GlobalOptions {
   return { json: false, color: false, cwd, configPath: undefined, verbosity: 'normal' };
 }
 
+function writeOutputEstimate(cwd: string): void {
+  mkdirSync(join(cwd, '.relavium'), { recursive: true });
+  writeFileSync(join(cwd, '.relavium', 'project.toml'), '[defaults]\nmax_tokens_estimate = 17\n');
+}
+
 /** A headless driver that feeds a fixed line list through the command core (no TTY / ink). */
 function linesDriver(lines: readonly string[]): ChatDriver {
   return async (ctx) => {
@@ -727,6 +732,8 @@ describe('chatCommand', () => {
   });
 
   it('/clear ends the current session (persisted + resumable) and re-drives a FRESH one under a new id (ADR-0062 §7)', async () => {
+    writeOutputEstimate(cwd);
+    const estimates: (number | undefined)[] = [];
     const { d, store } = deps([], [textTurn('hi there')]);
     let closeCount = 0;
     const seen: string[] = [];
@@ -747,12 +754,17 @@ describe('chatCommand', () => {
       { agent: undefined },
       {
         ...d,
+        buildSession: (options) => {
+          estimates.push(options.maxTokensEstimate);
+          return buildChatSession(options);
+        },
         openSessionStore: () => ({ store, db: client.db, close: () => (closeCount += 1) }),
         drive: clearThenExit,
       },
     );
 
     expect(code).toBe(EXIT_CODES.chatEnded);
+    expect(estimates).toEqual([17, 17]);
     expect(seen).toHaveLength(2); // drove the original session, THEN a fresh one after /clear
     const [oldId, freshId] = seen;
     expect(freshId).not.toBe(oldId); // a NEW sessionId — not a re-drive of the same session
@@ -934,6 +946,9 @@ describe('chatCommand', () => {
   });
 
   it('the [preferences].alt_screen preference SURVIVES a /models reseat re-drive (Step-4a threading regression, ADR-0068 §e)', async () => {
+    writeOutputEstimate(cwd);
+    const freshEstimates: (number | undefined)[] = [];
+    const resumedEstimates: (number | undefined)[] = [];
     const { d } = deps([], [textTurn('sonnet reply'), textTurn('opus reply')]);
     seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
     seedCatalogModel(client.db, 'anthropic', 'claude-opus-4-8');
@@ -962,9 +977,19 @@ describe('chatCommand', () => {
         io: interactiveIo,
         global: { ...globalOptions(cwd), configPath: cfg },
         drive: reseatThenExit,
+        buildSession: (options) => {
+          freshEstimates.push(options.maxTokensEstimate);
+          return buildChatSession(options);
+        },
+        buildResumedSession: (options) => {
+          resumedEstimates.push(options.maxTokensEstimate);
+          return buildResumedChatSession(options);
+        },
       },
     );
     expect(alts).toEqual([true, true]); // the reseat rebuild keeps the preference (buildReseatWiring threads it)
+    expect(freshEstimates).toEqual([17]);
+    expect(resumedEstimates).toEqual([17]);
   });
 
   /**
@@ -1741,6 +1766,9 @@ describe('chatResumeCommand (2.N)', () => {
   });
 
   it('/clear from a resumed session rebinds the SNAPSHOT agent into a fresh session (ADR-0062 §7)', async () => {
+    writeOutputEstimate(cwd);
+    const resumedEstimates: (number | undefined)[] = [];
+    const freshEstimates: (number | undefined)[] = [];
     const store = createSessionStore(client.db);
     // Seed a session so 'id-0' has a persisted agent SNAPSHOT (no on-disk agentRef) to resume + rebind on /clear.
     await chatCommand({ agent: undefined }, freshDeps(['hello', '/exit'], [textTurn('hi')], store));
@@ -1758,17 +1786,71 @@ describe('chatResumeCommand (2.N)', () => {
       return { kind: 'exit' };
     };
     const { d } = resumeDeps([], [], store);
-    expect(await chatResumeCommand({ sessionId: 'id-0' }, { ...d, drive: clearThenExit })).toBe(
-      EXIT_CODES.chatEnded,
-    );
+    expect(
+      await chatResumeCommand(
+        { sessionId: 'id-0' },
+        {
+          ...d,
+          drive: clearThenExit,
+          buildSession: (options) => {
+            freshEstimates.push(options.maxTokensEstimate);
+            return buildChatSession(options);
+          },
+          buildResumedSession: (options) => {
+            resumedEstimates.push(options.maxTokensEstimate);
+            return buildResumedChatSession(options);
+          },
+        },
+      ),
+    ).toBe(EXIT_CODES.chatEnded);
 
     expect(seen).toHaveLength(2); // drove the RESUMED session, then a fresh one after /clear
+    expect(resumedEstimates).toEqual([17]);
+    expect(freshEstimates).toEqual([17]);
     const [resumedId, freshId] = seen;
     expect(resumedId).toBe('id-0'); // resume reuses the persisted id (no mint)
     expect(freshId).not.toBe('id-0'); // /clear started a NEW session
     // The fresh session rebinds the resumed session's SNAPSHOT agent — the whole reason the `agent` override
     // exists (a resumed agent has no on-disk `agentRef` to re-resolve).
     expect(store.loadFull(freshId ?? '')?.session.agentSlug).toBe(originalAgent);
+  });
+
+  it('preserves the configured estimate through a resumed-session model reseat', async () => {
+    writeOutputEstimate(cwd);
+    const store = createSessionStore(client.db);
+    await chatCommand({ agent: undefined }, freshDeps(['hello', '/exit'], [textTurn('hi')], store));
+    seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
+    seedCatalogModel(client.db, 'anthropic', 'claude-opus-4-8');
+    const { d } = resumeDeps([], [], store);
+    const estimates: (number | undefined)[] = [];
+    let calls = 0;
+    const drive: ChatDriver = async (ctx) => {
+      ctx.startSession();
+      await ctx.onActivated?.(() => !ctx.shouldStop());
+      if (calls++ === 0) {
+        ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
+        return { kind: ctx.stopReason() };
+      }
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    expect(
+      await chatResumeCommand(
+        { sessionId: 'id-0' },
+        {
+          ...d,
+          ...INERT_HOIST,
+          io: { ...d.io, stdoutIsTty: true },
+          drive,
+          buildResumedSession: (options) => {
+            estimates.push(options.maxTokensEstimate);
+            return buildResumedChatSession(options);
+          },
+        },
+      ),
+    ).toBe(EXIT_CODES.chatEnded);
+    expect(estimates).toEqual([17, 17]);
+    expect(calls).toBe(2);
   });
 
   it('keeps sequence numbers monotonic across THREE resumes (no off-by-one)', async () => {

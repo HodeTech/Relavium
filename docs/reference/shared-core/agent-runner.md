@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-14
+> Last updated: 2026-10-02
 
 - **Related**: [llm-provider-seam.md](llm-provider-seam.md), [tool-registry.md](tool-registry.md), [run-plan.md](run-plan.md), [built-in-tools.md](built-in-tools.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../../decisions/0038-agentrunner-llm-call-boundary.md](../../decisions/0038-agentrunner-llm-call-boundary.md), [../../decisions/0039-same-provider-reasoning-replay.md](../../decisions/0039-same-provider-reasoning-replay.md), [../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md), [../../decisions/0037-engine-tool-execution-boundary.md](../../decisions/0037-engine-tool-execution-boundary.md), [../../standards/error-handling.md](../../standards/error-handling.md)
 
@@ -62,4 +62,41 @@ The runner emits, per [sse-event-schema.md](../contracts/sse-event-schema.md) (e
 - `agent:tool_call` `{ nodeId, model, toolId, toolInput, attemptNumber? }` and `agent:tool_result` `{ nodeId, toolId, success, outputSummary, attemptNumber? }` — **assembled** from the registry's partial `events.call`/`events.result` (the runner adds `type` + `nodeId` + `model`); the registry does not carry them.
 - `cost:updated` `{ nodeId, model, inputTokens, outputTokens, costMicrocents, cumulativeCostMicrocents, attemptNumber? }` — one per **non-skipped** attempt; `attemptNumber` counts non-skipped records. `cumulativeCostMicrocents` is a **placeholder** the engine overwrites authoritatively (it owns the run-wide total).
 
-The runner emits **no** `budget:*` / `run_timeout` (run-level, not in the in-node set). A pure **always-pass pre-egress hook** runs before each **tool-loop turn's** seam call — the coarse [ADR-0028](../../decisions/0028-workflow-resource-governance.md) insertion point **1.AC** fills; the precise *per-attempt* budget gate (a `FallbackChain` makes several egresses per turn) is a chain pre-attempt hook 1.AC adds.
+The runner emits **no** `budget:*` / `run_timeout` (run-level, not in the in-node set). Its
+host-owned pre-egress hook gates each actual provider attempt, including retries, failovers and
+later tool rounds; it runs before credential resolution and provider invocation.
+
+## Pre-egress injection contract
+
+`PreEgressHook(info)` receives the required `PreEgressInfo` union and may return an admission
+lease, synchronously or asynchronously. A refusal prevents that attempt's egress. The hook owns
+no message body or credential. The chain's cap projection has its canonical home in the
+[LLM seam](llm-provider-seam.md#current-request-estimates-and-bound-output-caps).
+
+| Route | Required fields |
+|---|---|
+| `text` | The complete `PreAttemptInfo`: `model`, `provider`, actual `endpoint`, `maxTokens`, `providerOptions`, `outputCapPlan`; plus current-round **pre-strip** `inputTokensEstimate` and `maxTokensEstimate` |
+| `generative-media` | `model`, `provider`, actual `endpoint`; literal zero `inputTokensEstimate`, `maxTokens` and `outputTokensEstimate` |
+
+Both routes may carry `outputModalities` and disjoint `mediaUnitsEstimate`. Text `maxTokens`,
+`providerOptions` and `maxTokensEstimate` have required keys allowing `undefined`. The turn core
+computes input from the current request's system text, messages and advertised tools before
+reasoning stripping; it recomputes after a tool round rather than reusing provider usage.
+
+All governor evaluation, admission and commitment-restoration entry points consume the whole
+object. The host captures `max_tokens_estimate` once and forwards it through workflow,
+fresh/resumed/reseated chat and one-shot session construction, including sessions without a
+money governor. `NodeExecContext.maxTokensEstimate` supplies the workflow value; a directly
+constructed runner can receive it through `AgentRunnerDeps.maxTokensEstimate`.
+
+An admission settles from accountable usage. A usage-less failed attempt releases only with
+positive pre-provider proof, or an actual **official** endpoint's pre-content HTTP status in
+`429, 400, 401, 402, 403, 404, 413, 422`. A returned generation, even empty, and every forwarded
+non-stop/non-error stream chunk establish processing evidence. Custom routes and uncertain
+failures retain the reserved estimate. Chain-owned facts cannot be replaced by an accounting
+or observer exception; observers run once outside provider error normalization.
+
+**W7 step 6, 2026-10-02:** the required hook, current-request financial estimate and cap-plan
+handoff foundation are implemented. Automatic session pre-send/summary handoff remains step 8;
+bounded approval allowances remain step 9, as tracked in the
+[W7 execution plan](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md).

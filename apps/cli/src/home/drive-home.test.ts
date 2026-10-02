@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -345,8 +345,16 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   });
 
   it('startChat builds the default-agent session and persists its row; a clean return ends it', async () => {
+    mkdirSync(join(cwd, '.relavium'), { recursive: true });
+    writeFileSync(join(cwd, '.relavium', 'project.toml'), '[defaults]\nmax_tokens_estimate = 17\n');
+    const estimates: (number | undefined)[] = [];
     let captured: RootAppProps | undefined;
-    const { deps } = makeDeps((p) => (captured = p));
+    const { deps } = makeDeps((p) => (captured = p), {
+      buildSession: (options) => {
+        estimates.push(options.maxTokensEstimate);
+        return buildChatSession(options);
+      },
+    });
     const drivePromise = driveHome(deps);
     const props = captured;
     if (props === undefined) throw new Error('the injected render was never invoked');
@@ -358,6 +366,17 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
 
     const sessions = createSessionStore(client.db);
     expect(sessions.listSessions({ limit: 10 })).toHaveLength(1); // the chat persisted its row
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+
+    props.controller.handleKey('/', {});
+    type(props, 'clear');
+    // The filter also matches /cost's "clears held estimates" description; choose the Clear row.
+    props.controller.handleKey('', { downArrow: true });
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(estimates).toEqual([17, 17]));
+    expect(props.controller.getSnapshot().mode).toBe('chat');
+    expect(estimates).toEqual([17, 17]);
+    expect(sessions.listSessions({ limit: 10 })).toHaveLength(2);
 
     props.controller.handleKey('c', CTRL_C); // chat Ctrl-C ⇒ /cancel ⇒ back to Home
     await flush();
@@ -474,11 +493,23 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   });
 
   it('in-Home /models reseat: the REAL reseatChat resumes the session under the switched model, carrying the transcript (ADR-0059)', async () => {
+    mkdirSync(join(cwd, '.relavium'), { recursive: true });
+    writeFileSync(join(cwd, '.relavium', 'project.toml'), '[defaults]\nmax_tokens_estimate = 17\n');
+    const freshEstimates: (number | undefined)[] = [];
+    const resumedEstimates: (number | undefined)[] = [];
     // Exercises the REAL drive-home reseatChat builder (loadFull → swapAgentModel → buildResumedChatSession → seeded
     // store) end-to-end — not the mocked controller-level test — pinning the build-first swap over the same sessionId.
     let captured: RootAppProps | undefined;
     const { deps } = makeDeps((p) => (captured = p), {
       providers: scriptedResolver([textTurn('sonnet reply'), textTurn('opus reply')]),
+      buildSession: (options) => {
+        freshEstimates.push(options.maxTokensEstimate);
+        return buildChatSession(options);
+      },
+      buildResumedSession: (options) => {
+        resumedEstimates.push(options.maxTokensEstimate);
+        return buildResumedChatSession(options);
+      },
     });
     const drivePromise = driveHome(deps);
     const props = captured;
@@ -517,6 +548,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(reseated?.sessionId).toBe(sessionId); // a reseat CONTINUES the same session (unlike /clear's new id)
     expect(reseated?.store.getSnapshot().state.model).toBe('claude-opus-4-8'); // rebound to the picked model
     expect(reseated?.store.getSnapshot().state.turnCount).toBe(1); // the prior turn carried
+    expect(freshEstimates).toEqual([17]);
+    expect(resumedEstimates).toEqual([17]);
 
     // F1 (2.6.C) — the RENDERED conversation carries too, which is what this test's name always claimed and never
     // checked. Before the fix the reseat seeded `transcript: []`, so on the full-screen renderer (whose viewport

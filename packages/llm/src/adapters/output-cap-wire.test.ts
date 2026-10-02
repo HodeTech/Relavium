@@ -222,6 +222,67 @@ describe('wire/admission parity through actual adapter paths (ADR-0101)', () => 
         );
         expect(bodies[0]?.[field]).toBe(1024);
       });
+
+      it(`${provider} ${path}: native serialization is captured before admission/key awaits`, async () => {
+        let amount = 200_000;
+        let serializations = 0;
+        const options = {
+          [field]: {
+            toJSON: (key: string) => {
+              expect(key).toBe(field);
+              serializations++;
+              return amount;
+            },
+          },
+        };
+        const { adapter, bodies } = captureAdapter(provider);
+        const reservations: number[] = [];
+        const chain = new FallbackChain([{ provider: adapter, model: id, maxAttempts: 1 }], {
+          sleep: () => Promise.resolve(),
+          keyFor: () => {
+            amount = 300_000;
+            return 'test-key';
+          },
+          preAttempt: (info) => {
+            reservations.push(outputTokensReservation(info.outputCapPlan, 17));
+            amount = 1;
+          },
+        });
+        await call(chain, { model: id, messages, providerOptions: options }, path);
+        const expected = provider === 'anthropic' ? 4096 : 200_000;
+        expect(reservations).toEqual([expected]);
+        expect(bodies[0]?.[field]).toBe(expected);
+        expect(serializations).toBe(provider === 'anthropic' ? 0 : 1);
+      });
+
+      it(`${provider} ${path}: an outer serializer cannot replace the mapped body`, async () => {
+        let invoked = false;
+        const { adapter, bodies } = captureAdapter(provider);
+        await call(
+          adapter,
+          {
+            model: id,
+            messages,
+            maxTokens: 17,
+            providerOptions: {
+              toJSON: () => {
+                invoked = true;
+                return { [field]: 200_000 };
+              },
+            },
+          },
+          path,
+        );
+        expect(invoked).toBe(false);
+        expect(bodies[0]?.[field]).toBe(17);
+        expect(bodies[0]).not.toHaveProperty('toJSON');
+        await call(
+          adapter,
+          { model: id, messages, maxTokens: 17, providerOptions: { toJSON: 'ordinary-data' } },
+          path,
+        );
+        expect(bodies[1]?.['toJSON']).toBe('ordinary-data');
+      });
     }
   }
 
@@ -243,6 +304,83 @@ describe('wire/admission parity through actual adapter paths (ADR-0101)', () => 
         );
       expect(bodies.map((body) => body['max_tokens'])).toEqual([200_000, 200_000]);
       expect(bodies.every((body) => !Object.hasOwn(body, 'max_completion_tokens'))).toBe(true);
+    },
+  );
+
+  for (const provider of ['openai', 'deepseek'] as const) {
+    for (const custom of [false, true]) {
+      for (const path of ['generate', 'stream'] as const) {
+        for (const reversed of [false, true]) {
+          it(`${provider}/${custom ? 'custom' : 'official'} ${path}: dual caps in ${reversed ? 'reverse' : 'forward'} order`, async () => {
+            const native = reversed
+              ? { max_completion_tokens: 300_000, max_tokens: 200_000 }
+              : { max_tokens: 200_000, max_completion_tokens: 300_000 };
+            const { adapter, bodies } = captureAdapter(provider, custom);
+            let reserved: number | undefined;
+            const chain = new FallbackChain(
+              [{ provider: adapter, model: 'gpt-5.4-pro', maxAttempts: 1 }],
+              {
+                keyFor: () => 'test-key',
+                sleep: () => Promise.resolve(),
+                preAttempt: (info) => {
+                  reserved = outputTokensReservation(info.outputCapPlan, 17);
+                },
+              },
+            );
+            await call(chain, { model: 'gpt-5.4-pro', messages, providerOptions: native }, path);
+            expect(bodies[0]).toMatchObject(native);
+            expect(reserved).toBe(provider === 'deepseek' && !custom ? 200_000 : 300_000);
+          });
+        }
+      }
+    }
+  }
+
+  it.each(['generate', 'stream'] as const)(
+    'official DeepSeek %s: modern-only native data is forwarded without cap evidence',
+    async (path) => {
+      const { adapter, bodies } = captureAdapter('deepseek');
+      let reserved: number | undefined;
+      const chain = new FallbackChain(
+        [{ provider: adapter, model: 'deepseek-chat', maxAttempts: 1 }],
+        {
+          keyFor: () => 'test-key',
+          sleep: () => Promise.resolve(),
+          preAttempt: (info) => {
+            reserved = outputTokensReservation(info.outputCapPlan, 17);
+          },
+        },
+      );
+      await call(
+        chain,
+        { model: 'deepseek-chat', messages, providerOptions: { max_completion_tokens: 200_000 } },
+        path,
+      );
+      expect(bodies[0]?.['max_completion_tokens']).toBe(200_000);
+      expect(bodies[0]).not.toHaveProperty('max_tokens');
+      expect(reserved).toBe(17);
+    },
+  );
+
+  it.each(['generate', 'stream'] as const)(
+    'Gemini %s: native reservation does not become a thinking budget',
+    async (path) => {
+      const { adapter, bodies } = captureAdapter('gemini');
+      await call(adapter, { model: 'gemini-2.5-pro', messages, reasoningEffort: 'max' }, path);
+      await call(
+        adapter,
+        {
+          model: 'gemini-2.5-pro',
+          messages,
+          reasoningEffort: 'max',
+          providerOptions: { maxOutputTokens: 200_000 },
+        },
+        path,
+      );
+      expect(bodies[0]).not.toHaveProperty('maxOutputTokens');
+      expect(bodies[0]?.['thinkingConfig']).toBeDefined();
+      expect(bodies[1]?.['thinkingConfig']).toEqual(bodies[0]?.['thinkingConfig']);
+      expect(bodies[1]?.['maxOutputTokens']).toBe(200_000);
     },
   );
 });

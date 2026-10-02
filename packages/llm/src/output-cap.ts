@@ -57,6 +57,8 @@ export interface PreparedOutputCapPlan extends OutputCapIdentity {
 }
 
 const preparedPlans = new WeakSet<object>();
+// Original identities are private binding evidence only. Caller-owned objects never reach the wire.
+const originalCapInputs = new WeakMap<object, Readonly<Record<string, unknown>> | undefined>();
 const CAP_FIELDS: readonly OutputCapField[] = [
   'max_tokens',
   'max_completion_tokens',
@@ -87,18 +89,30 @@ function positiveNativeCap(value: unknown): number | undefined {
     : undefined;
 }
 
+function immutableJsonCap(field: OutputCapField, value: unknown): unknown {
+  if ((typeof value !== 'object' || value === null) && typeof value !== 'function') return value;
+  try {
+    // A holder preserves the property key supplied to toJSON, unlike stringify(value).
+    const parsed: unknown = JSON.parse(JSON.stringify({ [field]: value }));
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new InvalidOutputCapPlanError();
+    }
+    const captured: unknown = Object.getOwnPropertyDescriptor(parsed, field)?.value;
+    const pending: unknown[] = [captured];
+    while (pending.length > 0) {
+      const item = pending.pop();
+      if (typeof item !== 'object' || item === null) continue;
+      for (const child of Object.values(item)) pending.push(child);
+      Object.freeze(item);
+    }
+    return captured;
+  } catch {
+    throw new InvalidOutputCapPlanError();
+  }
+}
+
 /** The one lowering policy for all adapters and all reservation consumers (ADR-0071/0101). */
 export function prepareOutputCapPlan(info: OutputCapIdentity): PreparedOutputCapPlan {
-  const providerOptions =
-    info.providerOptions === undefined
-      ? undefined
-      : Object.freeze(
-          Object.fromEntries(
-            CAP_FIELDS.filter((field) => Object.hasOwn(info.providerOptions ?? {}, field)).map(
-              (field) => [field, info.providerOptions?.[field]],
-            ),
-          ),
-        );
   const outputCeiling =
     info.endpoint === 'custom' ? undefined : catalogModel(info.model)?.maxOutputTokens;
   const mappedField: OutputCapField =
@@ -113,15 +127,47 @@ export function prepareOutputCapPlan(info: OutputCapIdentity): PreparedOutputCap
       : info.maxTokens;
   const mappedValue =
     requested === undefined ? undefined : clampToCeiling(requested, outputCeiling);
+  const shadowed = (field: OutputCapField): boolean =>
+    mappedValue !== undefined &&
+    (info.provider === 'openai' || info.provider === 'deepseek'
+      ? field === 'max_tokens' || field === 'max_completion_tokens'
+      : field === mappedField);
+  let original: Readonly<Record<string, unknown>> | undefined;
+  let providerOptions: Readonly<Record<string, unknown>> | undefined;
+  try {
+    original =
+      info.providerOptions === undefined
+        ? undefined
+        : Object.freeze(
+            Object.fromEntries(
+              CAP_FIELDS.filter((field) => Object.hasOwn(info.providerOptions ?? {}, field)).map(
+                (field) => [field, info.providerOptions?.[field]],
+              ),
+            ),
+          );
+    providerOptions =
+      original === undefined
+        ? undefined
+        : Object.freeze(
+            Object.fromEntries(
+              CAP_FIELDS.filter((field) => Object.hasOwn(original ?? {}, field)).map((field) => {
+                const value = original?.[field];
+                // Discarded executable/opaque controls need no serialization (even a cycle is harmless).
+                const opaque =
+                  (typeof value === 'object' && value !== null) || typeof value === 'function';
+                return [
+                  field,
+                  shadowed(field) && opaque ? undefined : immutableJsonCap(field, value),
+                ];
+              }),
+            ),
+          );
+  } catch {
+    throw new InvalidOutputCapPlanError();
+  }
   const native = providerOptions === undefined ? undefined : { ...providerOptions };
-  if (native !== undefined && mappedValue !== undefined) {
-    if (info.provider === 'openai' || info.provider === 'deepseek') {
-      // The mapped field wins; the competing OpenAI-compatible key must not survive.
-      delete native['max_tokens'];
-      delete native['max_completion_tokens'];
-    } else {
-      delete native[mappedField];
-    }
+  if (native !== undefined) {
+    for (const field of CAP_FIELDS) if (shadowed(field)) delete native[field];
   }
   let effectiveCap = mappedValue;
   if (effectiveCap === undefined) {
@@ -149,6 +195,7 @@ export function prepareOutputCapPlan(info: OutputCapIdentity): PreparedOutputCap
     effectiveCap,
   });
   preparedPlans.add(plan);
+  originalCapInputs.set(plan, original);
   return plan;
 }
 
@@ -160,6 +207,8 @@ export function outputCapNativeOptions(
   if (!isPreparedOutputCapPlan(plan)) throw new InvalidOutputCapPlanError();
   if (options === undefined && plan.nativeOptions === undefined) return undefined;
   const merged = { ...options };
+  // Native options are body data. An executable outer serializer can replace the entire mapped body.
+  if (typeof merged['toJSON'] === 'function') delete merged['toJSON'];
   for (const field of CAP_FIELDS) {
     if (Object.hasOwn(plan.nativeOptions ?? {}, field)) merged[field] = plan.nativeOptions?.[field];
     else delete merged[field];
@@ -172,15 +221,19 @@ export function assertOutputCapPlanMatches(
   plan: PreparedOutputCapPlan,
   info: OutputCapIdentity,
 ): void {
+  const matches = (expected: Readonly<Record<string, unknown>> | undefined): boolean =>
+    CAP_FIELDS.every(
+      (field) =>
+        Object.hasOwn(expected ?? {}, field) === Object.hasOwn(info.providerOptions ?? {}, field) &&
+        Object.is(expected?.[field], info.providerOptions?.[field]),
+    );
   if (
     !isPreparedOutputCapPlan(plan) ||
     plan.model !== info.model ||
     plan.provider !== info.provider ||
     plan.endpoint !== info.endpoint ||
     !Object.is(plan.maxTokens, info.maxTokens) ||
-    CAP_FIELDS.some(
-      (field) => !Object.is(plan.providerOptions?.[field], info.providerOptions?.[field]),
-    )
+    (!matches(plan.providerOptions) && !matches(originalCapInputs.get(plan)))
   ) {
     throw new InvalidOutputCapPlanError();
   }
@@ -227,8 +280,18 @@ export function prepareOutputCapRequest(
       : { providerOptions: Object.freeze({ ...request.providerOptions }) }),
   };
   const plan = outputCapPlanForRequest(capCopy, provider, endpoint);
+  const options =
+    capCopy.providerOptions === undefined ? undefined : { ...capCopy.providerOptions };
+  if (options !== undefined) {
+    for (const field of CAP_FIELDS) {
+      if (Object.hasOwn(plan.providerOptions ?? {}, field))
+        options[field] = plan.providerOptions?.[field];
+      else delete options[field];
+    }
+  }
   const staged: LlmRequest = {
     ...capCopy,
+    ...(options === undefined ? {} : { providerOptions: Object.freeze(options) }),
     preparedOutputCaps: [plan],
   };
   return { request: Object.freeze(staged), plan };

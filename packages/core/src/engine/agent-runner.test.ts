@@ -27,6 +27,7 @@ import {
 } from './agent-runner.js';
 import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
 import type { NodeExecContext, NodeStreamEvent } from './node-executor.js';
+import type { PreEgressInfo } from './agent-turn.js';
 
 const CAPS: CapabilityFlags = {
   tools: true,
@@ -243,6 +244,42 @@ describe('createAgentNodeExecutor — dispatch', () => {
       expect(outcome.tokensUsed).toEqual({ input: 3, output: 2, model: 'claude-opus-4-8' });
     }
   });
+
+  it.each([undefined, 17])(
+    'forwards the direct runner fallback and context precedence (context=%s)',
+    async (contextEstimate) => {
+      const seen: PreEgressInfo[] = [];
+      const requests: LlmRequest[] = [];
+      const base = provider([{ type: 'text_delta', text: 'sum' }, STOP]);
+      const p: LlmProvider = {
+        ...base,
+        stream: (request, key) => {
+          requests.push(request);
+          return base.stream(request, key);
+        },
+      };
+      const exec = createAgentNodeExecutor(
+        deps(p, {
+          maxTokensEstimate: contextEstimate === undefined ? 17 : 1,
+          preEgress: (info) => {
+            seen.push(info);
+          },
+        }),
+      );
+      const { ctx } = ctxFor(agentVertex());
+      expect(
+        (
+          await exec.execute({
+            ...ctx,
+            ...(contextEstimate === undefined ? {} : { maxTokensEstimate: contextEstimate }),
+          })
+        ).kind,
+      ).toBe('completed');
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({ route: 'text', maxTokensEstimate: 17 });
+      expect(requests[0]?.maxTokens).toBeUndefined();
+    },
+  );
 
   it('surfaces inline media-out as { text, media } so the engine can de-inline it (1.AG/ADR-0046)', async () => {
     const image: ContentPart = {

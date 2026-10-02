@@ -262,13 +262,26 @@ describe('agentRunCommand (2.Q)', () => {
   const agentPath = (): string => join(cwd, 'coder.agent.yaml');
 
   it('runs one turn from a stdin prompt and prints the reply (exit 0)', async () => {
+    mkdirSync(join(cwd, '.relavium'), { recursive: true });
+    writeFileSync(join(cwd, '.relavium', 'project.toml'), '[defaults]\nmax_tokens_estimate = 17\n');
+    const estimates: (number | undefined)[] = [];
     const { d, out } = deps('summarize this', {
       providers: scriptedResolver([textTurn('the summary')]),
     });
-    expect(await agentRunCommand({ agent: agentPath(), input: [], allowMcpStdio: [] }, d)).toBe(
-      EXIT_CODES.success,
-    );
+    expect(
+      await agentRunCommand(
+        { agent: agentPath(), input: [], allowMcpStdio: [] },
+        {
+          ...d,
+          buildSession: (options) => {
+            estimates.push(options.maxTokensEstimate);
+            return buildChatSession(options);
+          },
+        },
+      ),
+    ).toBe(EXIT_CODES.success);
     expect(out()).toContain('the summary');
+    expect(estimates).toEqual([17]);
   });
 
   it('does not run an after-turn summariser for a summary-policy one-shot above the automatic threshold', async () => {

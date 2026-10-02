@@ -650,7 +650,7 @@ export class FallbackChain {
     // `agent-turn.ts` routes an inline media-out turn (ADR-0046) through `chain.generate()`, so a hung
     // provider on that path waited forever on every surface.
     let deadline: DeadlineScope | undefined;
-    let result: LlmResult;
+    let outcome: GenerateAttempt;
     try {
       const prepared = prepareOutputCapRequest(
         entryReq,
@@ -666,9 +666,7 @@ export class FallbackChain {
       // and `race()` reported `cancelled` for a request that had nonetheless gone out. A cancelled run must
       // not produce provider traffic, let alone a charge.
       if (this.#aborted(entryReq)) {
-        const error = this.#cancelledError(entry.provider.id);
-        this.#emit({ ...record, outcome: 'failed', error });
-        return { status: 'error', error };
+        throw new LlmProviderError(this.#cancelledError(entry.provider.id));
       }
       deadline = this.#openDeadline(entryReq);
       const call = entry.provider.generate(
@@ -679,22 +677,25 @@ export class FallbackChain {
       // and may fail over, which is rule 7's other half rather than an exception to it.
       const raced = deadline === undefined ? undefined : await deadline.race(call);
       if (raced?.outcome === 'deadline') {
-        const error = this.#classifyDeadline(deadline, entry.provider.id);
-        this.#emit({ ...record, outcome: 'failed', error });
-        return { status: 'error', error };
+        throw new LlmProviderError(this.#classifyDeadline(deadline, entry.provider.id));
       }
-      result = raced === undefined ? await call : raced.value;
+      outcome = { status: 'success', result: raced === undefined ? await call : raced.value };
     } catch (err) {
       const error = this.#abortAware(
         this.#errorOf(err, entry.provider.id),
         entryReq,
         entry.provider.id,
       );
-      this.#emit({ ...record, outcome: 'failed', error });
-      return { status: 'error', error };
+      outcome = { status: 'error', error };
     } finally {
       deadline?.dispose();
     }
+    // All observers run outside the provider catch, including abort/deadline/failure observations.
+    if (outcome.status === 'error') {
+      this.#emit({ ...record, outcome: 'failed', error: outcome.error });
+      return outcome;
+    }
+    const result = outcome.result;
     // A returned generation, even empty, was processed. Guard accounting separately from the
     // provider attempt so a tracker/observer cannot forge a refundable HTTP refusal or cause retries.
     const receivedRecord = { ...record, contentReceived: true };
@@ -764,6 +765,7 @@ export class FallbackChain {
     state: StreamAttemptState,
   ): AsyncGenerator<StreamChunk, LlmError | undefined> {
     let usage: Usage | undefined;
+    let failure: LlmError | undefined;
     // Declared outside the `try` so the `finally` can dispose it on EVERY exit path — including success,
     // which is the one most likely to forget. A leaked timer holds the process awake, which on a CLI is a
     // hang the user cannot explain.
@@ -786,7 +788,7 @@ export class FallbackChain {
       // and `race()` reported `cancelled` for a request that had nonetheless gone out. A cancelled run must
       // not produce provider traffic, let alone a charge.
       if (this.#aborted(entryReq)) {
-        return yield* this.#failAttempt(record, this.#cancelledError(entry.provider.id), state);
+        throw new LlmProviderError(this.#cancelledError(entry.provider.id));
       }
       // **The grammar is verified HERE, where the seam is crossed** (ADR-0082 §3). The audited adapters
       // already detect a truncated stream and keep doing so — better-attributed, since an adapter knows it
@@ -806,20 +808,12 @@ export class FallbackChain {
       for (;;) {
         const step = await this.#raceStep(iterator, deadline);
         if (step.kind === 'timeout') {
-          return yield* this.#failAttempt(
-            record,
-            this.#classifyDeadline(deadline, entry.provider.id),
-            state,
-          );
+          throw new LlmProviderError(this.#classifyDeadline(deadline, entry.provider.id));
         }
         if (step.kind === 'done') break;
         const chunk = step.chunk;
         if (chunk.type === 'error') {
-          return yield* this.#failAttempt(
-            record,
-            this.#abortAware(chunk.error, entryReq, entry.provider.id),
-            state,
-          );
+          throw new LlmProviderError(chunk.error);
         }
         if (chunk.type === 'stop') {
           usage = chunk.usage;
@@ -828,10 +822,10 @@ export class FallbackChain {
         yield chunk;
       }
     } catch (err) {
-      return yield* this.#failAttempt(
-        record,
-        this.#abortAware(this.#errorOf(err, entry.provider.id), entryReq, entry.provider.id),
-        state,
+      failure = this.#abortAware(
+        this.#errorOf(err, entry.provider.id),
+        entryReq,
+        entry.provider.id,
       );
     } finally {
       // Every exit path — success, pre-content failure, surfaced failure, an early consumer `break` that
@@ -850,6 +844,7 @@ export class FallbackChain {
       // termination (ADR-0082 §5). `return()` on an already-completed iterator is a no-op.
       void Promise.resolve(iterator?.return?.(undefined)).catch(() => undefined);
     }
+    if (failure !== undefined) return yield* this.#failAttempt(record, failure, state);
     return yield* this.#settleUsage(entry, record, usage, state);
   }
 
@@ -859,8 +854,8 @@ export class FallbackChain {
    * Sits outside the attempt's `try`/`finally` deliberately, but needs its own guard (#W15-9). `#foldUsage`
    * re-throws anything that is not `UnknownModelError` so a money bug is loud: a provider returning
    * non-integer usage trips `assertAccountableUsage`, and a broken overlay or a custom tracker throws. On the
-   * `generate()` path that work sits INSIDE the attempt's try, so the throw reaches the caller classified.
-   * Here it escaped the async generator raw — breaking `#runStreamAttempt`'s own contract ("a terminal
+   * `generate()` path has its own separate fold guard. Here it once escaped the async generator raw —
+   * breaking `#runStreamAttempt`'s own contract ("a terminal
    * failure is surfaced as an `error` chunk, not a throw") and taking down a turn whose content had already
    * been produced and billed for.
    *

@@ -82,6 +82,10 @@ added.
 - [2026-10-02 — W7 ADR-0101 mechanism revision, round 2](2026-10-02T15-18-01-w7-adr-0101-revision-round-2-review.md):
   complete revised proposal and handoff correction accepted by fresh reviewers; maintainer approval remains required before implementation.
 
+- [2026-10-02 — W7 step 6, round 1](2026-10-02T17-16-04-w7-step-6-round-1-review.md):
+  five runtime protections, canonical hook/budget contracts and missing forwarding/wire coverage corrected;
+  24 causal negative controls and full restored CI pass; fresh round 2 pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

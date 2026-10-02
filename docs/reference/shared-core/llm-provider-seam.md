@@ -252,20 +252,26 @@ fallback; a native output envelope is a reservation and cannot become an invente
 
 Plans are factory-created immutable cap projections, guarded at runtime and bound to model, actual
 provider/endpoint, canonical cap and the three native cap fields. `prepareOutputCapRequest` stages a
-cap/options copy before admission and credential awaits. Reconciliation preserves current unrelated
-options. `LlmRequest.preparedOutputCaps` carries a measured candidate's plan through the chain and
+cap/options copy before admission and credential awaits. Surviving non-primitive cap values are
+JSON-lowered once under their original property key, then copied and deeply frozen: boxed numbers
+and `toJSON` results are priced at the numeric value actually forwarded, and invalid JSON data
+retains its wire shape. Omitted values remain omitted. Discarded opaque controls are never
+serialized; an unserializable surviving control refuses with the fixed typed cap-plan error.
+Original identities are retained privately only to bind a measured plan; caller-owned executable
+values are never re-read after admission. Reconciliation preserves current unrelated options,
+except a callable outer `providerOptions.toJSON`: it is executable body replacement and cannot
+override mapped fields. Noncallable data bearing that name is preserved.
+`LlmRequest.preparedOutputCaps` carries a measured candidate's plan through the chain and
 adapter unchanged, including after a catalog refresh; another candidate gets its own bound plan.
 A substituted plan or changed cap/routing binding throws `InvalidOutputCapPlanError`. Neither
 `providerOptions` nor prepared plans enter durable budget quotes or events.
 
 Every `PreAttemptInfo`, on both chain paths, requires `model`, `provider`, `endpoint`, `maxTokens`,
 `providerOptions` and `outputCapPlan`; the two optional values have required keys allowing `undefined`.
-Core's text `PreEgressInfo` adds required current-round **pre-strip** `inputTokensEstimate` and required
-`maxTokensEstimate` (allowing `undefined`). All governor admission, evaluation and restoration methods
-consume this whole object. The separate `generative-media` route explicitly carries zero text input,
-canonical maximum and output estimate, while retaining disjoint media-unit pricing. Hosts freeze and
-forward the same configured fallback through workflow, fresh/resumed/reseated chat and one-shot entry
-points, including sessions without a money governor.
+Core's required text/generative-media hook and host configuration forwarding have their canonical
+home in the [agent-runner injection contract](agent-runner.md#pre-egress-injection-contract).
+Official factories explicitly pin SDK endpoint/backend settings, so ambient SDK environment or
+global defaults cannot redirect the request while retaining official cap/refund identity.
 
 **W7 step 6 implementation, 2026-10-02:** cap lowering, financial estimation, required forwarding and
 handoff foundations are implemented. Session measured pre-send/recovery and each summariser candidate's

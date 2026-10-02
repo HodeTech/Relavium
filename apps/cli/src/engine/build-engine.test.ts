@@ -2,13 +2,74 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { McpCapability } from '@relavium/core';
+import { createInMemoryHost, parseWorkflow, type McpCapability } from '@relavium/core';
+import { estimateResolvedNextCost, type LlmRequest } from '@relavium/llm';
+import type { RunEvent } from '@relavium/shared';
 import { createClient, runMigrations } from '@relavium/db';
 import { buildServerToolDefs } from '@relavium/mcp';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { buildEngine } from './build-engine.js';
 import { createCliHost } from './host.js';
+import { scriptedResolver, textTurn } from '../chat/test-support.js';
+
+describe('buildEngine configured output fallback (ADR-0101)', () => {
+  it.each([undefined, 17])(
+    'binds the fallback into real workflow admission without inventing a wire cap (%s)',
+    async (maxTokensEstimate) => {
+      const model = 'gpt-5.4-mini';
+      const low = estimateResolvedNextCost(model, 100, 17);
+      const high = estimateResolvedNextCost(model, 100, 4096);
+      const cap = Math.round((low + high) / 2);
+      const requests: LlmRequest[] = [];
+      const resolver = scriptedResolver([textTurn('done')], 'openai');
+      const p = resolver.resolveProvider('openai');
+      if (p === undefined) throw new Error('missing provider');
+      const engine = await buildEngine({
+        host: createInMemoryHost(),
+        ...(maxTokensEstimate === undefined ? {} : { maxTokensEstimate }),
+        providers: {
+          ...resolver,
+          resolveProvider: (id) =>
+            id === 'openai'
+              ? {
+                  ...p,
+                  stream: (request, key) => {
+                    requests.push(request);
+                    return p.stream(request, key);
+                  },
+                }
+              : undefined,
+        },
+      });
+      const workflow = parseWorkflow(`schema_version: '1.0'
+workflow:
+  id: configured-admission
+  budget: { max_cost_microcents: ${cap}, on_exceed: fail }
+  agents:
+    - { id: worker, model: ${model}, provider: openai, system_prompt: inspect }
+  nodes:
+    - { id: start, type: input }
+    - { id: work, type: agent, agent_ref: worker, prompt_template: go }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: work }
+    - { from: work, to: out }
+`);
+      const handle = engine.start({ workflow });
+      const events: RunEvent[] = [];
+      for await (const event of handle.events) events.push(event);
+      expect(requests).toHaveLength(maxTokensEstimate === undefined ? 0 : 1);
+      expect(events.some((event) => event.type === 'run:completed')).toBe(
+        maxTokensEstimate !== undefined,
+      );
+      expect(events.some((event) => event.type === 'run:failed')).toBe(
+        maxTokensEstimate === undefined,
+      );
+      if (maxTokensEstimate !== undefined) expect(requests[0]?.maxTokens).toBeUndefined();
+    },
+  );
+});
 
 /**
  * Wiring-level coverage for the 2.S media deps `buildEngine` threads into `AgentRunnerDeps`

@@ -1321,7 +1321,9 @@ export interface OpenAiAdapterDeps {
 export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
   const providerId: OpenAiProviderId = deps.providerId ?? 'openai';
   const supports = providerId === 'deepseek' ? DEEPSEEK_SUPPORTS : OPENAI_SUPPORTS;
-  const baseURL = deps.baseURL ?? (providerId === 'deepseek' ? DEEPSEEK_BASE_URL : undefined);
+  // Pin the classified route: the SDK otherwise accepts an unvalidated OPENAI_BASE_URL at call time.
+  const baseURL =
+    deps.baseURL ?? (providerId === 'deepseek' ? DEEPSEEK_BASE_URL : 'https://api.openai.com/v1');
   // Validate caller-supplied base URLs at construction time: HTTPS-only, no internal addresses.
   if (deps.baseURL !== undefined) {
     assertHttpsBaseUrl(deps.baseURL);
@@ -1342,7 +1344,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
   const createClient = (key: string, maxRetries = deps.maxRetries ?? 0): OpenAI =>
     new OpenAI({
       apiKey: key,
-      ...(baseURL === undefined ? {} : { baseURL }),
+      baseURL,
       ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
       // ALWAYS passed, never conditionally: an absent option means the SDK's own default (2), which is
       // exactly the pre-emption #276 is about. Explicit beats implicit. Floored, because a negative value

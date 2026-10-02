@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -418,6 +418,11 @@ describe('gateCommand', () => {
   });
 
   it('wires the same media host + catalog resolveMediaSurface on a gate-resumed run (2.S)', async () => {
+    mkdirSync(join(root, '.relavium'), { recursive: true });
+    writeFileSync(
+      join(root, '.relavium', 'project.toml'),
+      '[defaults]\nmax_tokens_estimate = 17\n',
+    );
     // Seed a generative model into the SHARED db so the gate-path catalog (over opened.db) resolves it.
     const dbDeps = { uuid: () => randomUUID(), now: () => Date.now() };
     const providerId = createProviderStore(db, dbDeps).upsert({
@@ -459,6 +464,7 @@ describe('gateCommand', () => {
     // A gate-resumed run gets the same three media ports + the catalog routing as a fresh `run` — never
     // silently text-only.
     expect(captured?.host?.mediaStore).toBeDefined();
+    expect(captured?.maxTokensEstimate).toBe(17);
     expect(captured?.host?.mediaReferences).toBeDefined();
     expect(captured?.host?.mediaWrite).toBeDefined();
     expect(captured?.resolveMediaSurface?.('gpt-image-1')).toBe('generative');

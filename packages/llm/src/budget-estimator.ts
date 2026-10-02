@@ -50,11 +50,10 @@ export function estimateResolvedNextCost(
     throw new InvalidTokenEstimateError();
   }
   const rates = worstCaseRates(priceModel(modelId, overlay));
-  const cost = Math.round(
-    (Math.max(0, inputTokensEstimate) * rates.input +
-      Math.max(0, outputTokensReservation) * rates.output) /
-      TOKENS_PER_MTOK,
-  );
+  // Realized cost rounds each token class separately; combining first can under-reserve a microcent.
+  const cost =
+    Math.round((inputTokensEstimate * rates.input) / TOKENS_PER_MTOK) +
+    Math.round((outputTokensReservation * rates.output) / TOKENS_PER_MTOK);
   if (!Number.isSafeInteger(cost) || cost < 0) throw new InvalidTokenEstimateError();
   return cost;
 }

@@ -2830,3 +2830,15 @@ with its intended assertion; every restored source control passed. Required work
 and build pass; coverage passes 301 suites/6,710 tests, 11 skipped. A pre-existing expression timing test
 failed once under concurrent checks and passed isolated and the final workspace run. **Implementation
 review rounds are pending; step 6 and all six W7 register items remain open.**
+
+**Step 6 first review checkpoint — 2026-10-02.** Two independent reviewers found five runtime
+defects, missing canonical hook/budget landing and incomplete permanent boundary coverage. Parent
+reproduction confirmed each finding. Cap JSON values are now captured once for pricing and wire,
+outer executable body replacement is filtered, official SDK routes/backend are pinned, observer
+faults cannot become provider retries and rate-only pricing matches realized per-class rounding.
+The required core hook now lives in its [runner contract](../../reference/shared-core/agent-runner.md#pre-egress-injection-contract).
+All CLI/session/runner forwarding paths and the actual native/thinking matrix have permanent controls.
+Twenty-four individual causal negatives fail as intended; complete restored CI passes 302 suites,
+6,771 tests and 11 pre-existing skips. The
+[review record](../../reviews/2026-10-02T17-16-04-w7-step-6-round-1-review.md)
+records evidence and limits. **Fresh round 2 is required; step 6 remains open.**

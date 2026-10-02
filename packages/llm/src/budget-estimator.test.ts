@@ -8,6 +8,7 @@ import {
 import { InvalidTokenEstimateError } from './errors.js';
 import { catalogPricing } from './catalog/pricing.js';
 import type { ModelPricing } from './pricing.js';
+import { cost } from './cost-tracker.js';
 
 describe('estimateMaxNextCost', () => {
   it('estimates output-only worst case at maxTokens', () => {
@@ -176,6 +177,24 @@ describe('user-pricing overlay (2.5.G S10, ADR-0065 §2)', () => {
 });
 
 describe('estimateResolvedNextCost — both terms without a second cap policy', () => {
+  it('rounds each token class exactly as realized cost, including half-microcent boundaries', () => {
+    const base = catalogPricing('gpt-5.4-pro');
+    if (base === undefined) throw new Error('missing fixture price');
+    const overlay = new Map<string, ModelPricing>([
+      [
+        'fractional',
+        {
+          ...base,
+          contextTiers: [],
+          inputPerMtokMicrocents: 10_500_000,
+          outputPerMtokMicrocents: 30_500_000,
+          cachedInputPerMtokMicrocents: 10_500_000,
+        },
+      ],
+    ]);
+    expect(cost('fractional', { inputTokens: 3, outputTokens: 3 }, overlay).microcents).toBe(124);
+    expect(estimateResolvedNextCost('fractional', 3, 3, overlay)).toBe(124);
+  });
   it('prices input even with zero output and never catalog-clamps a native reservation', () => {
     const model = catalogPricing('gpt-5.4-pro');
     if (model === undefined) throw new Error('missing fixture price');

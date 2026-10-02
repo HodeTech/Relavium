@@ -248,3 +248,21 @@ steps 6, 8 and 9, with runtime acceptance still required.
   no vendor SDK type or wire error string enters the engine.
 - Cap plans have a bounded snapshot/validation cost. Keep them ephemeral, resolve each attempt's
   ceiling once and refuse mismatches; do not persist arbitrary native options or freeze the catalog.
+
+## Implementation correction — 2026-10-02, W7 step 6 first review
+
+The accepted **forwarded value** and immutable-projection requirements apply to wire JSON, not an
+opaque JavaScript object's identity. Offline actual-adapter review reproduced boxed numbers and
+native cap `toJSON` values that were priced as uncapped yet serialized as a numeric cap, including
+a value changed during credential resolution. Surviving opaque controls now undergo one
+property-key-correct JSON capture before admission; that deeply frozen data supplies both pricing
+and wire lowering. Discarded controls are not serialized. An executable outer native `toJSON`
+cannot replace the whole mapped body; ordinary noncallable data retains its wire behaviour.
+This enforces the existing cap authority and does not introduce a generation control.
+
+The same review found SDK ambient endpoint/backend overrides underneath instances classified as
+official. Official factories now explicitly pin their intended SDK route and backend; only the
+existing validated custom-factory path can select another endpoint. Canonical details and tests
+live in the [seam contract](../reference/shared-core/llm-provider-seam.md#current-request-estimates-and-bound-output-caps)
+and adapter test suites. Required core hook transport has its single home in the
+[agent-runner contract](../reference/shared-core/agent-runner.md#pre-egress-injection-contract).

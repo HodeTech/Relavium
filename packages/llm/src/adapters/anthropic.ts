@@ -875,6 +875,8 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
   const createClient = (key: string, maxRetries = deps.maxRetries ?? 0): Anthropic =>
     new Anthropic({
       apiKey: key,
+      // Keep the official factory route independent of ANTHROPIC_BASE_URL.
+      baseURL: 'https://api.anthropic.com',
       ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
       // ALWAYS passed, never conditionally: an absent option means the SDK's own default (2), which is
       // exactly the pre-emption #276 is about. Explicit beats implicit. Floored, because a negative value
