@@ -7,6 +7,7 @@ import type { SessionStreamHandleEvent } from '@relavium/core';
 import type { ProviderId, StreamChunk } from '@relavium/llm';
 import {
   createClient,
+  createEffectJournalStore,
   createModelCatalogStore,
   createProviderStore,
   createSessionStore,
@@ -1062,6 +1063,64 @@ describe('chatCommand', () => {
     expect(rows?.session.status).toBe('ended');
   });
 
+  it('the standalone reseat discloses on the new active transcript before consuming committed evidence', async () => {
+    const { d, store, err } = deps([], [textTurn('first reply')]);
+    let driveCount = 0;
+    const drive: ChatDriver = async (ctx) => {
+      if (driveCount++ === 0) {
+        ctx.startSession();
+        await ctx.processLine('first');
+        const turn = store.reserveEffectTurnKey(ctx.handle.sessionId);
+        const journal = createEffectJournalStore(client.db, {
+          uuid: () => 'reseat-effect',
+          now: () => 0,
+        });
+        const identity = {
+          scope: `session:${encodeURIComponent(ctx.handle.sessionId)}:${String(turn)}`,
+          slot: 0,
+          toolId: 'run_command',
+        };
+        journal.prepare(
+          identity,
+          { kind: 'session', sessionId: ctx.handle.sessionId, turn },
+          { providerAttempt: 1, toolCallId: `session-tool:${String(turn)}:0` },
+          3,
+          'digest',
+        );
+        journal.settle(identity, 'committed');
+        ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
+        return { kind: ctx.stopReason() };
+      }
+      expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toHaveLength(1);
+      expect(
+        ctx.store
+          .getSnapshot()
+          .state.transcript.some((entry) => entry.text.includes('external effect')),
+      ).toBe(false);
+      ctx.startSession();
+      expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toEqual([]);
+      expect(
+        ctx.store
+          .getSnapshot()
+          .state.transcript.some(
+            (entry) =>
+              entry.role === 'notice' &&
+              entry.text.includes('landed in a turn that did not complete'),
+          ),
+      ).toBe(true);
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    expect(
+      await chatCommand(
+        { agent: undefined },
+        { ...d, ...INERT_HOIST, io: { ...d.io, stdoutIsTty: true }, drive },
+      ),
+    ).toBe(EXIT_CODES.chatEnded);
+    expect(driveCount).toBe(2);
+    expect(err()).not.toContain('external effect');
+  });
+
   it('/models reseat: rebinds the model on the SAME session, carrying the transcript + per-turn attribution (ADR-0059)', async () => {
     const { d, store } = deps([], [textTurn('sonnet reply'), textTurn('opus reply')]);
     // Seed both models into the catalog so attribution resolves the model string → the FK-target UUID.
@@ -1486,6 +1545,71 @@ describe('chatResumeCommand (2.N)', () => {
       err,
     };
   }
+
+  it.each([false, true])(
+    'discloses and sweeps only after the resumed driver activates (interactive=%s)',
+    async (interactive) => {
+      const store = createSessionStore(client.db);
+      expect(
+        await chatCommand(
+          { agent: undefined },
+          freshDeps(['hello', '/exit'], [textTurn('done')], store),
+        ),
+      ).toBe(EXIT_CODES.chatEnded);
+      const turn = store.reserveEffectTurnKey('id-0');
+      let id = 0;
+      const journal = createEffectJournalStore(client.db, {
+        uuid: () => `resume-effect-${String(++id)}`,
+        now: () => 0,
+      });
+      const identity = { scope: `session:id-0:${String(turn)}`, slot: 0, toolId: 'run_command' };
+      journal.prepare(
+        identity,
+        { kind: 'session', sessionId: 'id-0', turn },
+        { providerAttempt: 1, toolCallId: `session-tool:${String(turn)}:0` },
+        3,
+        'digest',
+      );
+      journal.settle(identity, 'committed', 'synthetic private result');
+      const { d, err } = resumeDeps([], [], store);
+      let activated = false;
+      const drive: ChatDriver = (ctx) => {
+        expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toHaveLength(1);
+        expect(err()).not.toContain('external effect');
+        ctx.startSession();
+        activated = true;
+        expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toEqual([]);
+        if (interactive) {
+          expect(
+            ctx.store
+              .getSnapshot()
+              .state.transcript.some(
+                (entry) =>
+                  entry.role === 'notice' &&
+                  entry.text.includes('landed in a turn that did not complete'),
+              ),
+          ).toBe(true);
+          expect(err()).not.toContain('external effect');
+        } else expect(err()).toContain('landed in a turn that did not complete');
+        return Promise.resolve({ kind: 'exit' });
+      };
+      expect(
+        await chatResumeCommand(
+          { sessionId: 'id-0' },
+          {
+            ...d,
+            ...INERT_HOIST,
+            io: { ...d.io, stdoutIsTty: interactive, stdinIsTty: interactive },
+            drive,
+          },
+        ),
+      ).toBe(EXIT_CODES.chatEnded);
+      expect(activated).toBe(true);
+      const again = resumeDeps([], [], store, 'second');
+      expect(await chatResumeCommand({ sessionId: 'id-0' }, again.d)).toBe(EXIT_CODES.chatEnded);
+      expect(again.err()).not.toContain('external effect');
+    },
+  );
 
   /**
    * `/cost` READS THE DB (ADR-0070 §7) — the central change of the breakdown, and it had NO coverage.

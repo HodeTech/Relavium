@@ -3,7 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 
-import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
+import {
+  createClient,
+  createEffectJournalStore,
+  createSessionStore,
+  runMigrations,
+  type DbClient,
+} from '@relavium/db';
 import { REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -524,6 +530,92 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
 
     props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ clean exit
     expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  it('the REAL Home reseat activates disclosure before sweeping and does not disclose the committed row again', async () => {
+    let captured: RootAppProps | undefined;
+    let buildChecks = 0;
+    const { deps } = makeDeps(
+      (props) => {
+        captured = props;
+      },
+      {
+        providers: scriptedResolver([textTurn('first reply')]),
+        buildResumedSession: async (options) => {
+          const built = await buildResumedChatSession(options);
+          expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toHaveLength(
+            buildChecks === 0 ? 2 : 1,
+          );
+          buildChecks++;
+          return built;
+        },
+      },
+    );
+    const running = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('render was not invoked');
+    type(props, 'first');
+    props.controller.handleKey('', ENTER);
+    await flush();
+    const sessionId = props.controller.getSnapshot().session?.sessionId;
+    if (sessionId === undefined) throw new Error('missing active session');
+    const turn = createSessionStore(client.db).reserveEffectTurnKey(sessionId);
+    let next = 0;
+    const journal = createEffectJournalStore(client.db, {
+      uuid: () => `home-effect-${String(++next)}`,
+      now: () => 0,
+    });
+    for (const [slot, state] of [
+      [0, 'committed'],
+      [1, 'ambiguous'],
+    ] as const) {
+      const identity = {
+        scope: `session:${encodeURIComponent(sessionId)}:${String(turn)}`,
+        slot,
+        toolId: 'run_command',
+      };
+      journal.prepare(
+        identity,
+        { kind: 'session', sessionId, turn },
+        { providerAttempt: 1, toolCallId: `session-tool:${String(turn)}:${String(slot)}` },
+        3,
+        'digest',
+      );
+      journal.settle(identity, state, 'synthetic private result');
+    }
+    const pick = async (model: string) => {
+      props.controller.handleKey('/', {});
+      type(props, 'models');
+      props.controller.handleKey('', ENTER);
+      await flush();
+      type(props, model);
+      props.controller.handleKey('', ENTER);
+      if (props.controller.getSnapshot().modelPicker?.phase === 'effort')
+        props.controller.handleKey('', ENTER);
+      await flush();
+    };
+    await pick('claude-opus-4-8');
+    expect(client.sqlite.prepare('SELECT state FROM run_effects').all()).toEqual([
+      { state: 'ambiguous' },
+    ]);
+    const notices = () =>
+      props.controller
+        .getSnapshot()
+        .session?.store.getSnapshot()
+        .state.transcript.filter(
+          (entry) => entry.role === 'notice' && entry.text.includes('external effect'),
+        ) ?? [];
+    expect(notices()).toHaveLength(1);
+    expect(notices()[0]?.text).toContain('landed in a turn that did not complete');
+    await pick('claude-sonnet-4-6');
+    expect(buildChecks).toBe(2);
+    expect(notices()).toHaveLength(2);
+    expect(notices().at(-1)?.text).toContain('ambiguous');
+    expect(notices().at(-1)?.text).not.toContain('landed in a turn that did not complete');
+    props.controller.handleKey('c', CTRL_C);
+    await flush();
+    props.controller.handleKey('c', CTRL_C);
+    expect(await running).toBe(0);
   });
 
   it('a reseat notice fired DURING the build is buffered and flushed into the transcript, not lost to stderr (review M5/bot)', async () => {

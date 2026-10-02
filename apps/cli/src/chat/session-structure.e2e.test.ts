@@ -131,6 +131,78 @@ describe('session structure through the real CLI host and SQLite', () => {
       ...overrides,
     });
 
+  it.each(['errored', 'aborted'] as const)(
+    'discloses a committed real MCP effect from an %s turn, then completes under a greater key',
+    async (mode) => {
+      const error: StreamChunk = {
+        type: 'error',
+        error: {
+          kind: 'auth',
+          retryable: false,
+          provider: 'anthropic',
+          message: 'synthetic refusal',
+        },
+      };
+      const built = await fresh(
+        [call('first-provider-id'), mode === 'errored' ? [error] : [stop()]],
+        {
+          startMcpClient: () =>
+            startMcpClient([
+              {
+                id: 'fs',
+                open: () =>
+                  Promise.resolve({
+                    ...connection,
+                    callTool: () => {
+                      return Promise.resolve({
+                        content: [{ type: 'text', text: 'SYNTHETIC_PRIVATE_TOOL_RESULT' }],
+                        isError: false,
+                      });
+                    },
+                  }),
+              },
+            ]),
+        },
+      );
+      const persister = attach(built);
+      const unsubscribe = built.handle.subscribe((event) => {
+        if (mode === 'aborted' && event.type === 'agent:tool_result') built.session.abort();
+      });
+      persister.beginUserTurn('first');
+      await built.session.sendMessage('first');
+      unsubscribe();
+      expect(store.loadMessages('session')).toEqual([]);
+      const journal = createEffectJournalStore(client.db, { uuid: () => 'unused', now });
+      const first = journal.readSessionDisclosureSnapshot('session');
+      expect(first.disclosures).toEqual([
+        { toolId: 'mcp_fs_read', state: 'committed', reason: 'turn_incomplete' },
+      ]);
+      expect(journal.sweepCommittedForSession('session', first.committed).deleted).toBe(1);
+      expect(journal.readSessionDisclosureSnapshot('session').disclosures).toEqual([]);
+      // The aborted stream need not consume its next provider response; use a fresh resumed host instead.
+      persister.close();
+      built.session.cancel();
+      const full = store.loadFull('session');
+      if (full === undefined) throw new Error('missing session');
+      const resumed = await buildResumedChatSession({
+        record: full.session,
+        messages: full.messages,
+        chat,
+        now,
+        providers: scriptedResolver([call('new-provider-id'), [stop()]]),
+        startMcpClient: connect,
+        consentGate: () => Promise.resolve(new Map()),
+      });
+      const next = attach(resumed, 0);
+      next.beginUserTurn('second');
+      await resumed.session.sendMessage('second');
+      expect(journal.readSessionDisclosureSnapshot('session').disclosures).toEqual([]);
+      expect(client.sqlite.prepare('SELECT scope, result_json FROM run_effects').all()).toEqual([
+        { scope: 'session:session:2', result_json: null },
+      ]);
+    },
+  );
+
   it('persists resolved MCP structure with exact per-call attempt joins and no raw strings', async () => {
     const built = await fresh([call('provider-sentinel-1'), call('provider-sentinel-2'), [stop()]]);
     const persister = attach(built);
@@ -180,6 +252,17 @@ describe('session structure through the real CLI host and SQLite', () => {
         return row.scope;
       }),
     ).toEqual(['session:session:1', 'session:session:1']);
+    expect(
+      client.sqlite
+        .prepare('SELECT COUNT(*) AS retained FROM run_effects WHERE result_json IS NOT NULL')
+        .get(),
+    ).toEqual({ retained: 0 });
+    expect(
+      createEffectJournalStore(client.db, {
+        uuid: () => 'unused',
+        now,
+      }).readSessionDisclosureSnapshot('session').disclosures,
+    ).toEqual([]);
     const exported = sessionToWorkflow(full.session, full.messages);
     expect(exported.workflow.nodes[1]).toMatchObject({ tools: ['mcp_fs_read'] });
     expect(parseWorkflow(serializeWorkflow(exported)).workflow.nodes).toEqual(

@@ -27,6 +27,7 @@ import { makePlainPrinter } from './chat.js';
 import { sanitizeInline, sanitizeUntrustedInline, stringifyJsonLine } from '../render/sanitize.js';
 import { createEffectJournalPort, createEffectJournalStore } from '@relavium/db';
 import { openSessionStore } from '../history/session-open.js';
+import { sweepOneShotSessionEffects } from '../engine/effect-retention.js';
 
 /**
  * `relavium agent run <agent>` (2.Q) — invoke a single agent **one-shot** (non-interactive) on the same
@@ -208,10 +209,13 @@ export async function agentRunCommand(
     throw cause;
   }
   let handedOff = false;
+  let ownedEffectSessionId: string | undefined;
   try {
-    built.attachEffectTurnAllocator((id) =>
-      journalStore.store.reserveOneShotEffectTurnKey(id, Date.now()),
-    );
+    built.attachEffectTurnAllocator((id) => {
+      const key = journalStore.store.reserveOneShotEffectTurnKey(id, Date.now());
+      ownedEffectSessionId = id;
+      return key;
+    });
     built.attachEffectJournal((correlation) =>
       createEffectJournalPort(
         createEffectJournalStore(journalStore.db, { uuid: randomUUID, now: Date.now }),
@@ -229,7 +233,12 @@ export async function agentRunCommand(
     try {
       if (!handedOff) await built.closeMcp?.();
     } finally {
-      journalStore.close();
+      try {
+        if (ownedEffectSessionId !== undefined)
+          sweepOneShotSessionEffects(deps.io, journalStore.db, ownedEffectSessionId);
+      } finally {
+        journalStore.close();
+      }
     }
   }
 }

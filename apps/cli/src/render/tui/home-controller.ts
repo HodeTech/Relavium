@@ -95,6 +95,8 @@ import { FORCE_TEARDOWN_MS } from './tui-constants.js';
 
 /** The chat session the Home builds + drives on a submit — the imperative pieces `driveHome` wires + tears down. */
 export interface HomeChatSession {
+  /** Called once AFTER active publication; discarded builds must never consume disclosure evidence. */
+  readonly onActivated?: (isActive: () => boolean) => void;
   /** The chat view store the chat region projects (already subscribed to the live stream by `driveHome`). */
   readonly store: ChatStoreController;
   /** Handle one line (a slash command or a message) — the shared `createChatLineHandler` semantics. */
@@ -297,6 +299,27 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   let tearingDown: HomeChatSession | undefined;
   let activeTeardown: Promise<void> | undefined; // the in-flight teardown of `tearingDown`, so a signal can await it
   let buildInFlight: Promise<HomeChatSession> | undefined; // a `loading`-state build, so a signal can reap it
+  const activatedSessions = new WeakSet<HomeChatSession>();
+  const activateSession = (session: HomeChatSession): boolean => {
+    const isActive = (): boolean => !exiting && state.session === session && state.mode === 'chat';
+    // Publishing state synchronously notifies subscribers; one may exit or supersede this session.
+    if (!isActive()) return false;
+    if (!activatedSessions.has(session)) {
+      activatedSessions.add(session);
+      try {
+        session.onActivated?.(isActive);
+      } catch {
+        if (isActive()) {
+          try {
+            session.store.notice('warning: session effect disclosure could not be completed.');
+          } catch {
+            // A failed notice sink must not create an unhandled build-resolution rejection.
+          }
+        }
+      }
+    }
+    return isActive();
+  };
   // A monotonic token: a `/doctor` run captures it at start and lands its report only if it is still current —
   // any prompt edit / submit (which bumps it) invalidates a stale in-flight run so an old report can't reappear.
   let doctorRunId = 0;
@@ -459,6 +482,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           shellCommand: undefined,
           attachments: [], // pending `@`/`!` attachments must not leak into the fresh conversation
         });
+        activateSession(fresh);
       },
       () => {
         if (buildInFlight === build) buildInFlight = undefined;
@@ -536,6 +560,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           shellCommand: undefined,
           attachments: [], // pending `@`/`!` attachments must not leak into the reseated conversation
         });
+        activateSession(next);
       },
       () => {
         if (buildInFlight === build) buildInFlight = undefined;
@@ -618,7 +643,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           return;
         }
         set({ session: built, mode: 'chat' });
-        sendChatLine(built, trimmed); // the first turn streams in the chat region
+        if (activateSession(built)) sendChatLine(built, trimmed);
       },
       (err: unknown) => {
         if (buildInFlight === build) buildInFlight = undefined;

@@ -71,13 +71,13 @@ const SURFACES: readonly {
     file: 'commands/chat.ts',
     what: '`relavium chat` / `chat-resume` / the `/clear` re-drive',
     needle: /attachEffectJournal\(\(correlation/,
-    discloseNeedle: /unresolvedEffectNotice\(/,
+    discloseNeedle: /reconcileResumedSessionEffects\(/,
   },
   {
     file: 'home/drive-home.tsx',
     what: 'the bare-`relavium` Home',
     needle: /attachEffectJournal\(\(correlation/,
-    discloseNeedle: /unresolvedEffectNotice\(/,
+    discloseNeedle: /reconcileResumedSessionEffects\(/,
   },
 ];
 

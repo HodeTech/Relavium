@@ -64,10 +64,7 @@ import {
   type ChatBudgetWarning,
 } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
-import {
-  sweepCommittedSessionEffects,
-  unresolvedEffectNotice,
-} from '../engine/effect-retention.js';
+import { reconcileResumedSessionEffects } from '../engine/effect-retention.js';
 import { createModelCatalogPort, type ModelCatalogPort } from '../engine/model-catalog-port.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import { loadUserPricingOverlay, readUserPricingOverlay } from '../engine/pricing-overlay.js';
@@ -789,19 +786,6 @@ export async function chatResumeCommand(
         `note: this session has ${turns} turns, at or over the ${cap}-turn cap — new turns will be refused (turn_limit). Raise [chat].max_turns to continue it.\n`,
       );
     }
-    // **A session DISCLOSES and does not block** (effect-journal.md §8). A chat has no operator queue and no
-    // run to pause, so refusing to resume it would halt a conversation over a row nobody can act on from
-    // inside the REPL. Tier 3's actual guarantee — never auto-retried, because nothing re-dispatches a
-    // session's prior turns — is unchanged; what changes is that the fact reaches the one person who can go
-    // look at the target. Best-effort by design: a journal read that fails must not cost the user their
-    // session, which is the opposite of the run path's fail-closed answer and for the opposite reason.
-    // §8's disclosure, on stderr so `--json` stdout stays a clean event stream. The sentence is built in
-    // the shared module so the Home surface — which must route it into the transcript instead — cannot drift.
-    const effectNotice = unresolvedEffectNotice(opened.db, resumed.sessionId, sanitizeInline);
-    if (effectNotice !== undefined) deps.io.writeErr(`${effectNotice}\n`);
-    // …and retention (§9): a past turn can never be resumed, so its COMMITTED rows have no reader left.
-    // `turns` is exclusive, so the turn the user is about to take is untouched.
-    sweepCommittedSessionEffects(deps.io, opened.db, resumed.sessionId, turns);
   } catch (err) {
     // A pre-loop fault (not-found, no snapshot, build failure, or a post-build setup throw) must not strand the
     // open db handle NOR the spawned MCP children — tear BOTH down (a reject in one must not skip the other), and
@@ -859,7 +843,7 @@ export async function chatResumeCommand(
   });
 
   // A resumed session already landed at idle inside `AgentSession.resume`; calling start() would throw and
-  // re-emitting `session:started` would double a terminal-less lifecycle event — so startSession is a no-op.
+  // re-emitting `session:started` would double a lifecycle event. Disclose only once the driver is active.
   return runReplLoop(
     {
       built,
@@ -867,7 +851,17 @@ export async function chatResumeCommand(
       store,
       persister,
       doctorProbes,
-      startSession: () => {},
+      startSession: () =>
+        reconcileResumedSessionEffects({
+          io: deps.io,
+          db: opened.db,
+          sessionId: built.sessionId,
+          sanitize: sanitizeInline,
+          deliverNotice: (text) => {
+            if (chatIsInteractive(deps.io, deps.global)) store.notice(text);
+            else deps.io.writeErr(`${text}\n`);
+          },
+        }),
       intro,
       modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
       altScreen: config.altScreen,
@@ -1853,8 +1847,18 @@ async function buildReseatWiring(
     persister: seeded.persister,
     doctorProbes,
     // A resumed session already landed at idle inside AgentSession.resume; start() would throw + re-emitting
-    // session:started would double a terminal-less lifecycle event — so startSession is a no-op (like chat-resume).
-    startSession: () => {},
+    // session:started would double a lifecycle event. Wait for the reseated driver's live notice sink.
+    startSession: () =>
+      reconcileResumedSessionEffects({
+        io: deps.io,
+        db: deps.opened.db,
+        sessionId: resumed.sessionId,
+        sanitize: sanitizeInline,
+        deliverNotice: (text) => {
+          if (chatIsInteractive(deps.io, deps.global)) seeded.store.notice(text);
+          else deps.io.writeErr(`${text}\n`);
+        },
+      }),
     intro: modelSwitchNotice(loaded.session.agentSnapshot.model, target.modelId),
     // The picker's `boundModel` is now the SWITCHED model — a further reseat marks it as the ✓ "you are here".
     modelPicker: buildChatModelsPort(

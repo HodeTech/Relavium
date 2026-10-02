@@ -28,7 +28,7 @@ import {
 } from '../chat/session-host.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import { onceEffortNotice } from '../chat/effort-notice.js';
-import { unresolvedEffectNotice } from '../engine/effect-retention.js';
+import { reconcileResumedSessionEffects } from '../engine/effect-retention.js';
 import { sanitizeInline } from '../render/sanitize.js';
 import type { DoctorProbes } from '../chat/doctor.js';
 import {
@@ -555,22 +555,6 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         // throw and re-emitting session:started would double a terminal-less lifecycle event.
         if (opts.open) {
           built.session.start();
-        } else {
-          // A RESUMED session: §8's disclosure, and §9's retention for the turns it can no longer resume.
-          // Into the TRANSCRIPT, never raw stderr — the alt buffer would swallow a stderr line after one
-          // frame, which is the same reasoning `onBudgetWarning` and `onEffortWithheld` already follow.
-          const effectNotice = unresolvedEffectNotice(
-            opened.db,
-            built.session.sessionId,
-            sanitizeInline,
-          );
-          if (effectNotice !== undefined) store.notice(effectNotice);
-          // §9's retention is deliberately NOT run here. The sweep needs the resumed turn count as its
-          // exclusive bound, and this builder does not carry `resumeState` — the reseat path two hundred
-          // lines below does. Sweeping without a bound would delete the live turn's committed rows, which
-          // is the one thing §9 forbids, so the Home defers to `chat-resume`'s sweep over the same
-          // `history.db`. The rows are session-scoped and the sweep is idempotent, so nothing is lost —
-          // only deferred until the next `chat-resume` of that session.
         }
         // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the session's fs-scope tier.
         const mentionFs = assembleToolEnv({
@@ -605,6 +589,19 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           stopReason,
           sessionId: built.sessionId,
           teardown,
+          ...(opts.open
+            ? {}
+            : {
+                onActivated: (isActive: () => boolean) =>
+                  reconcileResumedSessionEffects({
+                    io: deps.io,
+                    db: opened.db,
+                    sessionId: built.sessionId,
+                    sanitize: sanitizeInline,
+                    deliverNotice: (text) => store.notice(text),
+                    isActive,
+                  }),
+              }),
           onAbort,
           onModeChange,
           // ADR-0066 §5: the in-Home `/models` effort sub-step + `/effort` push the SESSION override (no reseat).
