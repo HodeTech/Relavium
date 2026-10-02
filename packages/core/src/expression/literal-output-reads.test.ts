@@ -67,7 +67,7 @@ describe('literalOutputReads — what it SEES', () => {
 });
 
 describe('literalOutputReads — the match is linear, not quadratic', () => {
-  it('does not backtrack super-linearly on a long whitespace run', () => {
+  it('does not backtrack super-linearly on a long whitespace run', { timeout: 60_000 }, () => {
     // `outputs\s*\??\.?\s*\[` put two independently-optional characters between two `\s*`, so a
     // whitespace run with no `[` after it could be split at every position. Measured before the fix:
     // 8.6 ms at 4 K, 39 ms at 8 K, 115 ms at 16 K, 514 ms at 32 K — and the parser accepts a 2 MiB source
@@ -80,9 +80,31 @@ describe('literalOutputReads — the match is linear, not quadratic', () => {
     };
     // Bounded on the SHAPE of the growth, not on a wall-clock number a slow machine could breach: the
     // quadratic form grew ~4.5× per doubling, so anything near linear passes and the defect cannot.
-    time(evil(8_000)); // warm
-    const small = Math.max(time(evil(16_000)), 0.05);
-    const large = time(evil(64_000));
+    const smallInput = evil(16_000);
+    const largeInput = evil(64_000);
+    time(smallInput); // warm both sizes before sampling
+    time(largeInput);
+    const smallSamples: number[] = [];
+    const largeSamples: number[] = [];
+    // A single scheduling/GC pause is not evidence of quadratic growth. Alternate order and use
+    // medians, retaining the same sizes and ratio threshold that reject the original regex.
+    for (let sample = 0; sample < 5; sample++) {
+      if (sample % 2 === 0) {
+        smallSamples.push(time(smallInput));
+        largeSamples.push(time(largeInput));
+      } else {
+        largeSamples.push(time(largeInput));
+        smallSamples.push(time(smallInput));
+      }
+    }
+    const median = (samples: number[]): number => {
+      samples.sort((a, b) => a - b);
+      const middle = samples[2];
+      if (middle === undefined) throw new Error('missing performance sample');
+      return middle;
+    };
+    const small = Math.max(median(smallSamples), 0.05);
+    const large = median(largeSamples);
     expect(large / small).toBeLessThan(12); // quadratic would be ~16×
   });
 });
