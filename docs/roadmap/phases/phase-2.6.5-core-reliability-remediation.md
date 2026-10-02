@@ -2965,3 +2965,18 @@ Full `pnpm run ci` and sequential `pnpm coverage` exit 0 (314 suites, 7,143 pass
 11 existing skips; line/branch/function coverage 95.88%/92.85%/96.57%). Fresh round 3
 precedes Step 9 closure. Steps 7–8, 10–11 and all six register items remain pending; no residual
 was deferred.
+
+
+**Step 9 round 3 correction — 2026-10-03.** [Fresh complete-step review](../../reviews/2026-10-03T01-57-14-w7-step-9-round-3-review.md)
+verified three High mechanisms: admission loss before parking, admission loss before poll
+accounting, and a stale terminal total during pricing cancellation. The engine now captures
+before fallible host work, conserves unsettled E before removing a faulted job, and joins
+active accounting before terminal totals while retaining immediate abort and exactly-once
+settlement. Parent controls also repair park/timer callback cancellation registrations.
+Sixty permanent host/settlement regressions include actual durable terminal assertions.
+Five actual-source causal negatives fail only their expected controls, with byte-for-byte
+restoration; seven restored focused files pass 321 tests. Full `pnpm run ci` and sequential
+`pnpm coverage` exit 0 (315 suites, 7,152 passing tests, 11 existing skips; line/branch/function
+coverage 95.88%/92.85%/96.57%).
+Fresh round 4 precedes closure; Steps 7–8, 10–11 and all six register items remain pending.
+No residual was deferred.

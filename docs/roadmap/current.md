@@ -133,8 +133,8 @@ merged too (PR #85, 2026-08-28).
 > Both fresh reviewers reported no verified new findings; parent replays pass 120 contract and 54
 > financial controls. **Steps 1–6 are closed; all six W7 register items remain open.**
 > Step 9's quote/debit foundation is implemented, with [candidate preflight and parent causal controls](../reviews/2026-10-02T23-40-16-w7-step-9-foundation-preflight-review.md).
-> Full CI/coverage pass after the round 2 correction (314 suites, 7,143 passing tests, 11 existing skips); fresh committed-step reviews
-> precede acceptance. [Round 1](../reviews/2026-10-03T00-25-08-w7-step-9-round-1-review.md) verified and corrected two caller settlement findings; [Round 2](../reviews/2026-10-03T01-10-45-w7-step-9-round-2-review.md) verified and corrected the async consumer and cancellation teardown; fresh round 3 precedes closure. Durable workflow activation
+> Full CI/coverage pass after the round 3 correction (315 suites, 7,152 passing tests, 11 existing skips); fresh committed-step reviews
+> precede acceptance. [Round 1](../reviews/2026-10-03T00-25-08-w7-step-9-round-1-review.md) verified and corrected two caller settlement findings; [Round 2](../reviews/2026-10-03T01-10-45-w7-step-9-round-2-review.md) verified and corrected the async consumer and cancellation teardown; [Round 3](../reviews/2026-10-03T01-57-14-w7-step-9-round-3-review.md) verified and corrected park/poll host admission loss and the reentrant durable-total race; fresh round 4 precedes closure. Durable workflow activation
 > remains Step 10. Live Step 7 captures, and therefore Step 8, remain pending.
 > Step 1 repaired collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).

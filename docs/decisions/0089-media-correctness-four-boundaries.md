@@ -339,3 +339,15 @@ existing poll backstop classifies it. Terminal cleanup continues across every pa
 when one accounting path faults, preserving cancellation and earlier-failure precedence.
 Known actual, callback reentry and delivery faults remain exactly-once. No estimate becomes
 an actual media price. See the [runner contract](../reference/shared-core/agent-runner.md#dispatch-allowance-foundation).
+
+## W7 step 9 host-fault and reentrant terminal correction — 2026-10-03
+
+Fresh review reproduced admission loss before parking and before the poll accounting helper.
+The transferred admission is now captured before the host clock/date work and conservatively
+finished until its parked record takes ownership; the poll backstop retains any unsettled
+safe estimate before removing that record. Park-time and timer-installation cancellation
+controls prevent registrations after their cleanup. A pricing callback that cancels while
+known actual is being folded now joins that accounting completion before the durable terminal
+total is captured, preserving immediate abort and exactly-once settlement. Missing evidence
+remains conservative, never an invented actual price. These are consumer corrections to the
+existing policy; durable allowance activation remains Step 10.

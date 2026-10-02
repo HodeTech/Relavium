@@ -151,6 +151,12 @@ the transferred admission before the poll backstop handles them. Its early exact
 prevents callback reentry from billing twice. Terminal accounting guards each job independently
 so one fault cannot skip the remaining jobs or timer/lease/stream cleanup; cancellation and an
 earlier failure retain precedence. Conservative commitments remain separate from actual cost.
+The exact submitted admission is captured before fallible park-time clock/date work; until
+the parked record owns it, failure conserves E. The poll backstop similarly conserves an
+unsettled admission before removing its job. Park-time cancellation prevents registration
+after terminal cleanup, and timer installation disposes a handle if its callback has already
+cleared that job. Immediate cancellation and the early exactly-once marker remain, while
+terminal accounting joins any active cost fold before capturing the durable total.
 
 A consumed positive allowance, a prospective E larger than the remainder, an unsafe E or a real
 overdraw closes later admission with `budget_exceeded`; it cannot produce a new pause or retry.

@@ -199,3 +199,20 @@ other paid jobs, timers, ownership or the event stream. Cancellation and an earl
 keep their precedence. Known zero/under-spend/overrun still reconcile actual cost; an already
 settled delivery fault cannot manufacture a second commitment. Conservative E remains separate
 from actual spend. This completes the adjacent caller correction without changing authorization.
+
+## W7 step 9 handover and terminal-total correction — 2026-10-03
+
+A third independent review found two earlier host-fault gaps: parking read the clock before
+consuming the transferred admission, and the poll backstop cleared a job before conserving
+its held reservation. The engine now owns the exact submission before fallible host work,
+retains safe E if transfer fails, and finishes any unsettled admission before deleting a
+faulted poll job. Once the map owns the admission, ordinary reconciliation remains its only
+consumer. Park-time cancellation cannot register a job after terminal cleanup, and timer
+installation disposes a handle whose job was cleared during its callback.
+
+The same review found cancellation during pricing could snapshot a terminal before the
+already-running actual-cost fold completed. Immediate cancellation and the early exactly-once
+marker remain; terminal accounting joins that explicit completion before taking its total.
+Known actual stays actual and retained E stays conservative. These repair the existing
+consumer obligations without changing authorization or claiming recovery from permanently
+broken hosts. See the [runner contract](../reference/shared-core/agent-runner.md#dispatch-allowance-foundation).

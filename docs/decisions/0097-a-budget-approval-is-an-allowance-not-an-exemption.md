@@ -371,3 +371,14 @@ or timer/lease/stream cleanup. Reentrant callbacks cannot bill twice, and known-
 reconciliation and cancellation/earlier-failure precedence remain intact. This is a caller
 integration repair to the existing foundation; Step 10 still owns durable activation and
 process-local allowance lifetime wiring.
+
+## W7 step 9 earlier consumer gaps and durable totals — 2026-10-03
+
+The third full-step review found paid admissions orphaned on park/poll host faults and a
+stale terminal total on reentrant pricing cancellation. The engine now captures ownership
+before fallible parking, conserves unsettled E before the poll backstop removes a job, and
+joins active accounting before terminal totals while retaining immediate abort and the
+early duplicate guard. Parent controls also cover cancellation during park/timer callbacks.
+No allowance amount, eligibility or strict-cap rule changes; all repairs stay within the
+foundation's actual/conservative distinction. Step 10 still owns authoritative durable
+activation, acknowledgement, replay and native process-lifetime wiring.

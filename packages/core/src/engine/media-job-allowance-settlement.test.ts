@@ -4,7 +4,7 @@ import { prepareOutputCapPlan, type LlmProvider, type ModelPricing } from '@rela
 import type { MediaStore, RunEvent } from '@relavium/shared';
 import { createAgentNodeExecutor } from './agent-runner.js';
 import { BudgetGovernor, type GovernorEventDraft } from './budget-governor.js';
-import { createInMemoryHost } from './execution-host.js';
+import { createInMemoryHost, InMemoryRunStore } from './execution-host.js';
 import { WorkflowEngine } from './engine.js';
 import { parseWorkflow } from '../parser.js';
 
@@ -174,7 +174,8 @@ async function runParked(
     preEgress: (info) =>
       governor.checkPreEgress(info, info.model === SIBLING_MODEL ? siblingToken : token),
   });
-  const baseHost = createInMemoryHost({ mediaStore: mediaStore() });
+  const durableStore = new InMemoryRunStore();
+  const baseHost = createInMemoryHost({ mediaStore: mediaStore(), store: durableStore });
   let pastDeadline = false;
   const host = {
     ...baseHost,
@@ -300,6 +301,7 @@ async function runParked(
     process.off('unhandledRejection', onRejected);
   }
   return {
+    persisted: durableStore.eventsFor(handle.runId),
     governor,
     token,
     siblingToken,
@@ -357,7 +359,14 @@ for (const terminal of ['done', 'cancel'] as const) {
     const test = await runParked(terminal, 'known', { reenter: true });
     expect(test.timedOut).toBe(false);
     expect(test.rejected).toEqual([]);
-    expect(test.events.at(-1)?.type).toBe('run:cancelled');
+    expect(test.events.at(-1)).toMatchObject({
+      type: 'run:cancelled',
+      cumulativeCostMicrocents: 21,
+    });
+    expect(test.persisted.at(-1)).toMatchObject({
+      type: 'run:cancelled',
+      cumulativeCostMicrocents: 21,
+    });
     expect(test.governor.dispatchAllowanceState(test.token)).toMatchObject({
       remaining: 42,
       inFlight: false,

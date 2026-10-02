@@ -433,6 +433,10 @@ class RunExecution {
   readonly #gateTimers = new Map<string, () => void>();
   /** Parked async media jobs by nodeId (1.AG Section D) — the engine-owned poll/checkpoint/resume/cancel loop. */
   readonly #pendingMediaJobs = new Map<string, ParkedMediaJob>();
+  /** An accounting callback can cancel synchronously; completion must precede the terminal total. */
+  #mediaAccountingDepth = 0;
+  #mediaAccountingDone: Promise<void> | undefined;
+  #finishMediaAccounting: (() => void) | undefined;
   /** Disarm callbacks for armed media-job poll timers, by nodeId — disarmed on settle/cancel (ADR-0045 §4). */
   readonly #mediaJobTimers = new Map<string, () => void>();
   /** The run-level wall-clock timeout timer, when a `timeout_ms` is configured (ADR-0028). */
@@ -2699,52 +2703,63 @@ class RunExecution {
     if (state !== undefined) {
       state.status = 'paused';
     }
-    const startedAt = this.#host.clock.now();
-    const deadlineAt = new Date(
-      Date.parse(startedAt) + (job.deadlineMs ?? MEDIA_JOB_POLL_DEFAULTS.deadlineMs),
-    ).toISOString();
-    // Consume the exact submission object before the first await. The runner's WeakMap never crosses persistence;
-    // after this point the parked-job record owns the lease through poll, cancel, failure and completion.
+    // Capture before any host callback or date conversion can fail. Until the map accepts this exact
+    // submission, this local scope owns its already-paid admission and must conservatively finish it.
     const admission = takeMediaJobAdmission(job);
-    this.#pendingMediaJobs.set(vertex.id, {
-      jobId: job.jobId,
-      provider: job.provider,
-      model: job.model,
-      modality: job.modality,
-      units: job.units,
-      deadlineAt,
-      // Derive from the SAME `startedAt` that is persisted on `media_job:submitted`, so the resume-side
-      // recompute (from the checkpoint slot) yields an identical value (M2).
-      submittedAtMs: Date.parse(startedAt) - this.#startEpochMs,
-      backoffMs: MEDIA_JOB_POLL_DEFAULTS.pollInitialMs,
-      ...(admission === undefined ? {} : { admission }),
-    });
-    await this.#emitDurable({
-      type: 'media_job:submitted',
-      runId: this.runId,
-      nodeId: vertex.id,
-      jobId: job.jobId,
-      provider: job.provider,
-      model: job.model,
-      modality: job.modality,
-      startedAt,
-      deadlineAt,
-      // ADR-0074 §3 — freeze the money basis at submit time. `units` is the authored volume this submission was
-      // priced on, and `acceptedCostMicrocents` is what the admission actually reserved (0 when the model was
-      // unpriced and the allow-degrade path held no admission). Resume restores from these instead of
-      // re-deriving, so neither a workflow edit nor a price change can move an accepted commitment.
-      units: job.units,
-      // ADR-0074 §3. `0` means "the gate RAN and reserved nothing" — an unpriced model's allow-degrade path.
-      // Under H3's approved bypass NO hook runs at all (`#runAttempt` passes `preEgress: undefined`), so there
-      // is no priced basis to freeze, and emitting `0` would claim one. That is not a cosmetic difference: on
-      // resume the frozen branch would call `reserveAcceptedCost(model, 0)`, reserve NOTHING, and skip
-      // `registerLegacyMediaJob` — so a job deliberately submitted OVER the cap would come back holding no
-      // reservation and no hold, letting a sibling spend headroom that is still owed. Omitting it routes the
-      // resume through the legacy branch, which re-prices AND fails closed — the conservative answer, and the
-      // one the pre-§3 code already gave.
-      ...(budgetApproved ? {} : { acceptedCostMicrocents: admission?.reservedMicrocents ?? 0 }),
-    });
-    this.#armMediaPoll(vertex.id);
+    let transferred = false;
+    try {
+      const startedAt = this.#host.clock.now();
+      const deadlineAt = new Date(
+        Date.parse(startedAt) + (job.deadlineMs ?? MEDIA_JOB_POLL_DEFAULTS.deadlineMs),
+      ).toISOString();
+      // The clock can re-enter cancellation. Do not register a job after terminal cleanup has run.
+      // An abort with cleanup still pending must transfer normally so that sweep can reconcile known actual.
+      if (this.#settled) return;
+      this.#pendingMediaJobs.set(vertex.id, {
+        jobId: job.jobId,
+        provider: job.provider,
+        model: job.model,
+        modality: job.modality,
+        units: job.units,
+        deadlineAt,
+        // Derive from the SAME `startedAt` that is persisted on `media_job:submitted`, so the resume-side
+        // recompute (from the checkpoint slot) yields an identical value (M2).
+        submittedAtMs: Date.parse(startedAt) - this.#startEpochMs,
+        backoffMs: MEDIA_JOB_POLL_DEFAULTS.pollInitialMs,
+        ...(admission === undefined ? {} : { admission }),
+      });
+      transferred = true;
+      await this.#emitDurable({
+        type: 'media_job:submitted',
+        runId: this.runId,
+        nodeId: vertex.id,
+        jobId: job.jobId,
+        provider: job.provider,
+        model: job.model,
+        modality: job.modality,
+        startedAt,
+        deadlineAt,
+        // ADR-0074 §3 — freeze the money basis at submit time. `units` is the authored volume this submission was
+        // priced on, and `acceptedCostMicrocents` is what the admission actually reserved (0 when the model was
+        // unpriced and the allow-degrade path held no admission). Resume restores from these instead of
+        // re-deriving, so neither a workflow edit nor a price change can move an accepted commitment.
+        units: job.units,
+        // ADR-0074 §3. `0` means "the gate RAN and reserved nothing" — an unpriced model's allow-degrade path.
+        // Under H3's approved bypass NO hook runs at all (`#runAttempt` passes `preEgress: undefined`), so there
+        // is no priced basis to freeze, and emitting `0` would claim one. That is not a cosmetic difference: on
+        // resume the frozen branch would call `reserveAcceptedCost(model, 0)`, reserve NOTHING, and skip
+        // `registerLegacyMediaJob` — so a job deliberately submitted OVER the cap would come back holding no
+        // reservation and no hold, letting a sibling spend headroom that is still owed. Omitting it routes the
+        // resume through the legacy branch, which re-prices AND fails closed — the conservative answer, and the
+        // one the pre-§3 code already gave.
+        ...(budgetApproved ? {} : { acceptedCostMicrocents: admission?.reservedMicrocents ?? 0 }),
+      });
+      this.#armMediaPoll(vertex.id);
+    } finally {
+      // After transfer the normal job/terminal consumer owns reconciliation; retaining here too would
+      // turn a later timer or delivery fault into a second charge.
+      if (!transferred) admission?.settleAtReservedEstimate({ nodeId: vertex.id });
+    }
   }
 
   /** Arm (or re-arm) the one-shot poll timer for a parked media job via the INJECTED host timer (never an
@@ -2758,6 +2773,12 @@ class RunExecution {
     const disarm = this.#host.setTimer(job.backoffMs, () => {
       void this.#pollMediaJob(nodeId);
     });
+    // Timer installation can synchronously re-enter cancellation or clear this job. Its handle did not
+    // exist during that cleanup, so dispose it here rather than storing a post-terminal timer.
+    if (this.#settled || this.#pendingMediaJobs.get(nodeId) !== job) {
+      disarm();
+      return;
+    }
     this.#mediaJobTimers.set(nodeId, disarm);
   }
 
@@ -2797,6 +2818,12 @@ class RunExecution {
     // Mark before the first side effect. A terminal/error path may re-enter while a sink is unwinding; the provider
     // has only one submitted job, so the engine must never manufacture a second billed addend for it.
     job.costAccounted = true;
+    this.#mediaAccountingDepth += 1;
+    if (this.#mediaAccountingDepth === 1) {
+      this.#mediaAccountingDone = new Promise<void>((resolve) => {
+        this.#finishMediaAccounting = resolve;
+      });
+    }
     // Capture and clear before pricing can re-enter terminal cleanup. This job already crossed egress:
     // missing pricing retains its accepted estimate; a pricing/unsafe-actual fault must also finish that
     // hold before the poll backstop or terminal sweep handles the error.
@@ -2826,6 +2853,14 @@ class RunExecution {
       // original fault loud; no fabricated zero or unsafe actual may substitute for the accepted estimate.
       admission?.settleAtReservedEstimate({ nodeId });
       throw error;
+    } finally {
+      this.#mediaAccountingDepth -= 1;
+      if (this.#mediaAccountingDepth === 0) {
+        const finish = this.#finishMediaAccounting;
+        this.#finishMediaAccounting = undefined;
+        this.#mediaAccountingDone = undefined;
+        finish?.();
+      }
     }
   }
 
@@ -2925,6 +2960,12 @@ class RunExecution {
       await this.#applyMediaJobStatus(vertex, job, status);
     } catch {
       if (!this.#settled) {
+        // A pre-accounting clock/timer fault must conserve the paid reservation before dropping the job.
+        // Mark and detach before the lifetime callback can re-enter terminal cleanup.
+        job.costAccounted = true;
+        const admission = job.admission;
+        delete job.admission;
+        admission?.settleAtReservedEstimate({ nodeId });
         this.#clearMediaJob(nodeId);
         this.#failNodeInternal(nodeId, 'the media job poll loop failed while settling the node');
         // Drive the loop so `#step` observes `#failure` and settles `run:failed`. Unlike `#onOutcome` (whose
@@ -3373,6 +3414,10 @@ class RunExecution {
       disarm();
     }
     this.#gateTimers.clear();
+    // Abort and the exactly-once guard stay immediate. A pricing callback may have entered this settle
+    // while its cost addend is still being computed; join that explicit completion before taking totals.
+    const accounting = this.#mediaAccountingDone;
+    if (accounting !== undefined) await accounting;
     // A paid media job still pending at the terminal (a cancel, or a sibling's failure abandoning it) was
     // billed by the provider even though its output is discarded — emit its lone cost addend before clearing
     // (ADR-0045 §5, the local-only-cancel cost-integrity caveat). run:completed never reaches here with a
