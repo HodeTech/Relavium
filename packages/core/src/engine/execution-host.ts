@@ -766,6 +766,7 @@ export function createInMemoryEffectJournalStore(): {
             // what SQLite refuses — or refused what it replays — would make every core test over the gate
             // vacuous; this repo has been bitten by exactly that divergence before.
             if (
+              correlation.kind === 'run' &&
               held.state === 'committed' &&
               held.argsKey === argsKey &&
               held.resultJson !== undefined
@@ -804,7 +805,10 @@ export function createInMemoryEffectJournalStore(): {
           }
           {
             // Serialized on the way in, as `resultJson: JSON.stringify(result)` does in the SQLite store.
-            const resultJson = result === undefined ? undefined : JSON.stringify(result);
+            const resultJson =
+              correlation.kind === 'session' || result === undefined
+                ? undefined
+                : JSON.stringify(result);
             rows.set(key(scope, slot, toolId), {
               ...row,
               state,
@@ -860,7 +864,9 @@ export function createInMemoryEffectJournalStore(): {
         tier: row.tier,
         state: row.state,
         ...(row.attempt === undefined ? {} : { attempt: { ...row.attempt } }),
-        ...(row.resultJson === undefined ? {} : { result: JSON.parse(row.resultJson) as unknown }),
+        ...(row.scope.startsWith('session:') || row.resultJson === undefined
+          ? {}
+          : { result: JSON.parse(row.resultJson) as unknown }),
       })),
   };
 }
