@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -358,6 +358,42 @@ describe('session structure through the real CLI host and SQLite', () => {
     await built.session.sendMessage('read');
     expect(persister.durabilityFailure).toBeDefined();
     expect(dispatch).not.toHaveBeenCalled();
+    expect(egress).toHaveBeenCalledTimes(1);
+    expect(client.sqlite.prepare('SELECT id FROM run_effects').all()).toEqual([]);
+    expect(store.loadMessages('session')).toEqual([]);
+  });
+
+  it('refuses an unjournaled overwrite after attempt cost persistence fails', async () => {
+    const agentRef = join(root, 'write.agent.yaml');
+    writeFileSync(
+      agentRef,
+      'id: writer\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: Write things.\ntools: [write_file]\n',
+    );
+    const providers = scriptedResolver([
+      [
+        { type: 'tool_call_start', id: 'provider', name: 'write_file' },
+        {
+          type: 'tool_call_delta',
+          id: 'provider',
+          argsJsonDelta: '{"path":"out.txt","content":"private-output"}',
+        },
+        { type: 'tool_call_end', id: 'provider' },
+        stop('tool_use'),
+      ],
+      textTurn('never'),
+    ]);
+    const provider = providers.resolveProvider('anthropic');
+    if (provider === undefined) throw new Error('missing scripted provider');
+    const egress = vi.spyOn(provider, 'stream');
+    const built = await fresh([], { providers, agentRef });
+    const persister = attach(built);
+    vi.spyOn(store, 'recordSessionCost').mockImplementation(() => {
+      throw new Error('synthetic-private-store-token');
+    });
+    persister.beginUserTurn('write');
+    await built.session.sendMessage('write');
+    expect(persister.durabilityFailure).toBeDefined();
+    expect(existsSync(join(root, 'out.txt'))).toBe(false);
     expect(egress).toHaveBeenCalledTimes(1);
     expect(client.sqlite.prepare('SELECT id FROM run_effects').all()).toEqual([]);
     expect(store.loadMessages('session')).toEqual([]);

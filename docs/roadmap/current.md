@@ -67,7 +67,12 @@ merged too (PR #85, 2026-08-28).
 > checks and coverage (291 suites, 6,406 passing tests, 11 skipped); full CI passes at `4045272c`.
 > [Round 2](../reviews/2026-10-02T05-48-54-w7-step-3-round-2-review.md) verified a cached-command
 > durability bypass and a missing tool name on recovered filesystem denial. Both corrections pass
-> checks and coverage (291 suites, 6,410 passing tests, 11 skipped); fresh corrective review is pending.
+> checks and coverage (291 suites, 6,410 passing tests, 11 skipped); full CI passes at `e95a6010`.
+> [Round 3](../reviews/2026-10-02T06-10-38-w7-step-3-round-3-review.md) independently verified an
+> unjournaled-tool durability bypass and a stale export introduction. Dispatch admission now checks
+> the live latch after approval/preparation for every actual tool call and releases a proven
+> non-dispatch claim. Both corrections pass checks and coverage (291 suites, 6,415 passing tests,
+> 11 skipped); a fourth fresh corrective review is pending.
 > Step 3 is not closed.
 > It repairs collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).

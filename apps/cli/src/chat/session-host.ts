@@ -18,6 +18,7 @@ import {
   type SessionResumeState,
   type ToolDef,
   type ToolHost,
+  type ToolRegistry,
   ToolExecutionError,
   unwiredEffectJournal,
 } from '@relavium/core';
@@ -363,7 +364,24 @@ function buildSessionRuntime(
   const baseHost: ToolHost = opts.toolHost ?? factoryEnv.host;
   // Conditional spread ⇒ the inbound-MCP arm is a true MERGE onto fs/process, never a replace (the prior bug).
   const host: ToolHost = mcp === undefined ? baseHost : { ...baseHost, mcp: mcp.capability };
-  const registry = createToolRegistry({ tools, host });
+  const assertDurableDispatch = (toolId: string): void => {
+    if (durabilityProbe() !== undefined)
+      throw new ToolExecutionError(toolId, SESSION_DURABILITY_FAILURE, undefined, {
+        retryable: false,
+      });
+  };
+  const innerRegistry = createToolRegistry({ tools, host });
+  const registry: ToolRegistry = {
+    ...innerRegistry,
+    dispatch: (call, ctx) =>
+      innerRegistry.dispatch(call, {
+        ...ctx,
+        beforeDispatch: (toolId) => {
+          ctx.beforeDispatch?.(toolId);
+          assertDurableDispatch(toolId);
+        },
+      }),
+  };
   // The chat `ToolPolicy` (ADR-0055's single source) extended with the `[chat].allowed_commands` /
   // `allowed_command_globs` `!`-shell allowlist (2.5.D, ADR-0061). Absent/empty ⇒ the factory default (`{}`) ⇒
   // `run_command` denied (the secure `empty ⇒ disabled` symmetry). Threaded into `SessionDeps.toolPolicy`, it is
@@ -409,17 +427,12 @@ function buildSessionRuntime(
     effects: (correlation: EffectCorrelation): EffectDispatchPort => {
       const port = effectJournal?.(correlation);
       return {
-        prepare: (slot, toolId, tier, redactedArgs, targetIdempotencyKey, callAttempt) => {
+        prepare: async (slot, toolId, tier, redactedArgs, targetIdempotencyKey, callAttempt) => {
           // A cached idle-command key is not a durability acknowledgement. Check at the actual effect
           // boundary, including when cost persistence failed after this model attempt was admitted.
           // Settling/discarding an existing claim must remain possible after a failure: that records what
           // already happened rather than admitting another effect.
-          if (durabilityProbe() !== undefined)
-            return Promise.reject(
-              new ToolExecutionError(toolId, SESSION_DURABILITY_FAILURE, undefined, {
-                retryable: false,
-              }),
-            );
+          assertDurableDispatch(toolId);
           return (port ?? unwiredEffectJournal()).prepare(
             slot,
             toolId,

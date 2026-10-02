@@ -147,8 +147,10 @@ field on [the completed-turn event](sse-event-schema.md#session-event-namespace)
 structure; streaming tool inputs and result summaries never feed transcript persistence.
 The persister commits the entire exchange and session totals atomically. A failure latches
 and stops later model/command egress. Admission checks the live latch at each provider attempt and
-effect preparation, including a cached idle-command key and a cost-write failure after provider
-admission. Settling or discarding an already-prepared effect remains available to record its outcome.
+effect preparation, and immediately before every actual tool dispatch, including unjournaled tools,
+a cached idle-command key and a cost-write failure after provider admission. The dispatch check runs
+after asynchronous approval and preparation. Its refusal proves dispatch never started and releases
+any prepared claim. Settling or discarding an already-started effect remains available to record its outcome.
 Errors and aborts commit no transcript; their billed cost remains real.
 
 Resume, model reseat, export and boundary mapping share `completedSessionTurns`. A tool-call row
@@ -199,12 +201,14 @@ in Phase 1; the steering channel narrative lives in
 Per [ADR-0026](../../decisions/0026-session-export-to-workflow.md), a session exports to a
 `.relavium.yaml` **scaffold** that the author reviews before committing:
 
-- the session's assistant turns become a **linear chain of `agent` nodes**, in order, carrying the
-  agent binding and resolved prompts. **Today no node carries `tools`**: the persister records no tool parts, so
-  the union below is always empty. [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md)
-  §1 and §3 persist the tool structure in `W7`, and this bullet widens when that lands;
-- the **text transcript is preserved in the workflow's durable `metadata` field** — a schema field that survives parse → serialize round-trips (not fragile comments), with secrets already excluded by
-  the no-interpolation rule above);
+- completed logical turns become a **linear chain of `agent` nodes**, in order, carrying the
+  agent binding, resolved prompts and the deduplicated union of resolved structural tool names,
+  per [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §1 and §3.
+  An empty terminal assistant text still completes a turn; tool preambles do not create extra nodes;
+- the **full transcript is preserved in the workflow's durable `metadata` field**, including
+  content-free tool structure and user/terminal assistant text. It survives parse → serialize
+  round-trips. Tool arguments/results are excluded, while user-authored and assistant text can
+  contain sensitive content. Prompt interpolation neutralisation does not redact that text;
 - parallel / conditional / loop structure is **not** auto-inferred — the author adds it on the canvas.
 
 The export **produces** the format owned by [workflow-yaml-spec.md](workflow-yaml-spec.md); the

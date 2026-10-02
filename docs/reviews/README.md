@@ -41,6 +41,10 @@ added.
   cached command identity bypassed the durability latch and filesystem denials lost their tool name;
   both verified and corrected, fresh corrective review pending.
 
+- [2026-10-02 — W7 step 3, round 3](2026-10-02T06-10-38-w7-step-3-round-3-review.md):
+  unjournaled tools bypassed the live durability guard and the export introduction was stale;
+  both independently verified and corrected, fresh corrective review pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

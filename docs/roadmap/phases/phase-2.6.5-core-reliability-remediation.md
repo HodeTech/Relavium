@@ -2084,7 +2084,14 @@ at `4045272c`. [Round 2](../../reviews/2026-10-02T05-48-54-w7-step-3-round-2-rev
 a cached-command durability bypass and loss of the resolved tool name on a recovered filesystem
 denial. A live effect-prepare guard and registry-verified name fallback correct both, with regressions
 that failed before correction. Required checks and coverage pass (291 suites, 6,410 passing tests,
-11 skipped). A third round with fresh independent reviewers is pending;
+11 skipped); full CI exits 0 at `e95a6010`.
+[Round 3](../../reviews/2026-10-02T06-10-38-w7-step-3-round-3-review.md) independently verified
+that unjournaled tools bypassed the durability guard and the canonical export introduction was stale.
+Every actual dispatch now checks the live latch after asynchronous approval and preparation;
+a refusal releases its prepared claim because dispatch provably never started. An already-started
+effect can still settle. The real jailed-filesystem regression failed before correction. Required
+checks and coverage pass (291 suites, 6,415 passing tests, 11 skipped).
+A fourth round with fresh independent reviewers is pending;
 **step 3 is not closed**. The session journal's result privacy and disclosure/sweep remain step 4.
 
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
