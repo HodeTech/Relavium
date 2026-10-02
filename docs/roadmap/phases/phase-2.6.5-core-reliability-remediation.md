@@ -2154,6 +2154,16 @@ permanent output controls failed before their corrections; seven focused suites 
 checks, build and coverage pass (297 suites, 6,497 tests, 11 skipped). The
 [round 3 record](../../reviews/2026-10-02T09-24-27-w7-step-4-round-3-review.md) records evidence and limits. Full checks, CI and a fourth fresh independent round precede closure; all six items stay open.
 
+**Step 4, review round 4 — 2026-10-02.** Fresh reviewers verified native headless stderr writes acknowledged
+before delivery and an inline notice consumed during Ctrl-Z suspension with no disclosure frame. The parent
+independently reproduced both. Stderr now has a required acknowledged-write port; native completion/state and
+error/close ownership guard deletion. Terminal ownership serialises notice insertion/flush with suspension,
+and detachment wakes pending operations. Reconciliation refuses omitted publication and discarded delivery
+failures. Nine focused suites pass 217 tests, including actual delayed native command delivery; independent
+owned-worker real STOP/CONT controls pass. The [round 4 record](../../reviews/2026-10-02T10-04-04-w7-step-4-round-4-review.md)
+records evidence and limits. Workspace checks, build and coverage pass (298 suites, 6,514 tests, 11 skipped).
+Full CI and a fifth fresh independent round precede closure; all six items remain open.
+
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A
 coding agent cannot remember a file it read in the previous turn and calls the tool again.

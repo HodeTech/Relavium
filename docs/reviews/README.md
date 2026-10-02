@@ -61,6 +61,9 @@ added.
 - [2026-10-02 — W7 step 4, round 3](2026-10-02T09-24-27-w7-step-4-round-3-review.md):
   incomplete-turn attribution and unwritable Ink output independently reproduced and corrected; fresh acceptance pending.
 
+- [2026-10-02 — W7 step 4, round 4](2026-10-02T10-04-04-w7-step-4-round-4-review.md):
+  native headless delivery and inline Ctrl-Z disclosure independently reproduced and corrected; fresh acceptance pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

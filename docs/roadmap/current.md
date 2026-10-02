@@ -94,7 +94,12 @@ merged too (PR #85, 2026-08-28).
 > flush acknowledgement of unwritable output. Completion now uses the shared structural projector;
 > rendered disclosure checks the actual Ink output and its lifetime. Required checks, build and coverage
 > pass (297 suites, 6,497 passing tests, 11 skipped); a fourth fresh acceptance round is required.
-> Step 4 and all six register items remain open.
+> [Round 4](../reviews/2026-10-02T10-04-04-w7-step-4-round-4-review.md) verified headless stderr enqueueing mistaken for delivery
+> and inline disclosure lost during Ctrl-Z suspension. Native stderr callbacks now acknowledge delivery;
+> notice publication and render acknowledgement share terminal ownership with suspension. Nine focused suites
+> pass 217 tests, including delayed native delivery and independent real STOP/CONT controls.
+> Required workspace checks, build and coverage pass (298 suites, 6,514 tests, 11 skipped). Full CI
+> and a fifth fresh acceptance round are required. Step 4 and all six items remain open.
 > It repairs collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.

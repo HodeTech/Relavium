@@ -415,7 +415,7 @@ whose only durable evidence disappears during resume. Keychain custody alone add
 | Legacy clearing preserves state/digest/attempt and follows high-water initialization | `session-effect-privacy.test.ts`: real 0016 upgrade, orphan/unresolved/hidden one-shot rows, unchanged run result and next durable key after sweep |
 | Secure deletion AND an after-commit TRUNCATE checkpoint protect post-upgrade freed bytes | Real-file main/WAL scans while the connection remains open; live reader defers erasure, then an empty sweep completes it. Mutations turning secure deletion off or skipping checkpoint both fail the byte assertions |
 | Disclosure reads all history and effect metadata in one owned transaction | `session-effect-disclosure.test.ts`: completed empty final behind compaction, concurrent completion on another SQLite connection, corrupt transcript refusal, schema-valid missing/orphan/abandoned terminals, shared completed-turn proof and native/Drizzle outer-transaction refusal. Removing the owned read transaction fails the snapshot assertion |
-| Usable input setup and displayed disclosure precede deletion of exactly captured committed evidence | `effect-retention.test.ts`, actual `chat-effect-activation.test.ts`/`drive-home.test.ts` resume/reseat drivers, mounted `chat-app.test.tsx` and `home-effect-activation.test.ts`: actual normal Ink non-TTY/raw-mode failures, first disclosure frames and output close/error before/during acknowledgement; pending/failed render acknowledgement, stale callbacks, discarded builds, exit during publication/delivery/acknowledgement and later commits retain evidence |
+| Usable input setup and displayed disclosure precede deletion of exactly captured committed evidence | `effect-retention.test.ts`, actual `chat-effect-activation.test.ts`/`drive-home.test.ts` resume/reseat drivers, mounted `chat-app.test.tsx` and `home-effect-activation.test.ts`: actual normal Ink non-TTY/raw-mode failures, first disclosure frames and output close/error before/during acknowledgement; pending/failed render acknowledgement, native stderr callback/state/error/close and delayed-delivery controls, raw Ctrl-Z ownership on inline/full-screen Ink, omitted publication, discarded delivery failures, stale callbacks, discarded builds, exit during publication/delivery/acknowledgement and later commits retain evidence |
 | Captured identity and current-state predicates prevent destructive sweep races | Native SQLite post-read commit, state change, foreign session and same-id replacement controls; all chunks roll back on a late refusal. Removing the captured effect-address predicate deletes the replacement and fails the assertion |
 | Errored, aborted and crashed turns do not silently lose committed effects | Real MCP + session/persister errored/aborted turns, a real SIGKILL after durable settlement before transcript persistence, disclosure once, then a greater durable key and silent completed-turn control |
 | One-shot cleanup requires proven ownership and preserves unresolved effects | Actual `agent-run.test.ts` allocator/host success, failure, abort, teardown rejection and owned setup unwind; a refused collision reservation leaves the prior owner's committed row intact |
@@ -436,7 +436,11 @@ now guard deletion; actual Ink and Home frame tests verify the boundary.
 [Round 3](../reviews/2026-10-02T09-24-27-w7-step-4-round-3-review.md) then verified schema-valid incomplete-call
 attribution and unwritable-output acknowledgement. Completion now uses the shared structural projector;
 render acknowledgement observes the exact Ink output and its lifetime. Pending Node error delivery retains
-its owned sink through safe listener release. A fourth fresh acceptance round follows.
+its owned sink through safe listener release.
+[Round 4](../reviews/2026-10-02T10-04-04-w7-step-4-round-4-review.md) verified headless native stderr delivery failures and an inline
+notice consumed during Ctrl-Z suspension without any disclosure frame. Native stderr acknowledgement now
+precedes deletion; terminal ownership covers notice insertion and render acknowledgement across suspension.
+Real owned-worker STOP/CONT controls pass. A fifth fresh acceptance round follows.
 
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 
