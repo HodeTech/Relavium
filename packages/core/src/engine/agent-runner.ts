@@ -743,7 +743,10 @@ async function executeGenerativeMedia(
 
     const outcome = buildGenerativeOutcome(ctx, node, primary, modality.modality, units, result, {
       resolvePrice: deps.resolvePrice,
-      onRealizedCost: (realizedMicrocents: number) => admission?.settle(realizedMicrocents),
+      onRealizedCost: (realized) => {
+        if (realized.priced) admission?.settle(realized.costMicrocents);
+        else admission?.settleAtReservedEstimate({ nodeId: node.id });
+      },
     });
     if (outcome.kind === 'media_job') {
       retainMediaJobAdmission(outcome.job, admission);
@@ -756,9 +759,11 @@ async function executeGenerativeMedia(
     }
     return outcome;
   } finally {
-    // A synchronous completion settles actual cost before its event; a known pre-egress credential/cancel failure
-    // releases. Async ownership was transferred above. All ambiguous post-egress paths settled conservatively.
-    admission?.release();
+    // Pricing/outcome construction can throw after the provider accepted the request. Retain E unless actual
+    // settlement already consumed the lease; idempotence also prevents a throwing event sink from double billing.
+    // Only proven pre-egress failures refund. An async job's admission was transferred and cleared above.
+    if (egressStarted) admission?.settleAtReservedEstimate({ nodeId: node.id });
+    else admission?.release();
   }
 }
 
@@ -796,7 +801,7 @@ function buildGenerativeOutcome(
   /** The money seam, grouped: the user-pricing overlay and the realized-cost sink always travel together. */
   costing: {
     readonly resolvePrice: PricingOverlay | undefined;
-    readonly onRealizedCost: (costMicrocents: number) => void;
+    readonly onRealizedCost: (realized: ReturnType<typeof realizedMediaCost>) => void;
   },
 ): NodeOutcome {
   const { resolvePrice, onRealizedCost } = costing;
@@ -844,7 +849,7 @@ function buildGenerativeOutcome(
   const realized = realizedMediaCost(primary.model, modality, units, resolvePrice);
   // Settle before emitting to the engine: if a synchronous event sink faults after provider success, the admission
   // cannot be released as though the charged generation never happened.
-  onRealizedCost(realized.costMicrocents);
+  onRealizedCost(realized);
   ctx.emit({
     type: 'cost:updated',
     nodeId: node.id,

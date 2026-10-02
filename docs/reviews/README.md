@@ -116,6 +116,9 @@ added.
 - [2026-10-02 — W7 step 9, foundation preflight](2026-10-02T23-40-16-w7-step-9-foundation-preflight-review.md):
   two verified candidate corrections, complete quote/debit foundation and parent causal controls; committed-step acceptance pending.
 
+- [2026-10-03 — W7 step 9, round 1](2026-10-03T00-25-08-w7-step-9-round-1-review.md):
+  unsafe actual text settlement and post-provider generative refunds reproduced and corrected; fresh round 2 pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

@@ -316,3 +316,15 @@ Two further clauses of `CR-53`'s acceptance are open and named there for the sam
 returns whole base64 for generated media (`packages/llm` is untouched, so only the `url` carrier streams), and
 **delivery** (`resolveForEgress` / `readRange`) still materializes a whole object. §2's decision — carrier
 decides, and a `url` with no streaming hook is refused — landed in full; its reach is one direction, not both.
+
+## W7 step 9 generative settlement correction — 2026-10-03
+
+Review found that synchronous generative output's realized-cost callback discarded the priced
+flag before settling its admission. A missing model or output rate consequently refunded the
+reservation through a zero that was explicitly unpriced. The callback now carries the complete
+realized result: a known price, including genuine zero, reconciles actual cost; a gap retains
+the admission estimate. Post-provider pricing/outcome exceptions also retain any unsettled
+admission before propagating. An event-sink fault after known settlement cannot duplicate the
+conservative charge, and async jobs retain their transferred admission. These are caller
+corrections to the existing gap and conservative-accounting policies, not a new fallback price.
+See the [runner contract](../reference/shared-core/agent-runner.md#dispatch-allowance-foundation).

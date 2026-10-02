@@ -349,3 +349,14 @@ This foundation does not activate from the legacy H3 boolean. Step 10 still owns
 persistence, observed acknowledgement, checkpoint correction, pre-claim refusal, predecessor replay
 barriers and live/cross-process activation; Step 11 owns safe confirmation. The current canonical
 implementation boundary is the [runner contract](../reference/shared-core/agent-runner.md#dispatch-allowance-foundation).
+
+## W7 step 9 financial review correction — 2026-10-03
+
+Fresh committed-step review reproduced an orphaned text admission after unsafe actual
+settlement and refunded generative admissions after post-provider pricing loss/failure. The
+callers now retain safe E and finish the owned slot before propagating an accounting failure;
+unpriced synchronous media retains E while preserving its explicit unpriced outcome. Known
+zero/underspend, proven pre-egress release, already settled event-sink failures and async
+ownership transfer keep their distinct behaviour. This repairs integration with the foundation
+without changing A, eligibility, strict refusal or the Step 10 authorization boundary. E remains
+a conservative commitment, never a fabricated actual.

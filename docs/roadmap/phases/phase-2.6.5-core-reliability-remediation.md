@@ -2938,3 +2938,18 @@ focused checks pass 279 tests. Full `pnpm run ci` and sequential `pnpm coverage`
 95.87%/92.75%/96.57%). Fresh independent committed-step rounds precede closure. The legacy H3 boolean does not activate this foundation: authoritative durable
 authorization, checkpoint/replay and live/cross-process wiring remain Step 10; safe approval is
 Step 11. Maintainer live captures for Steps 7–8 remain pending. All six register items remain open.
+
+
+**Step 9 round 1 correction — 2026-10-03.** [Fresh committed-step review](../../reviews/2026-10-03T00-25-08-w7-step-9-round-1-review.md)
+verified an orphaned text admission after unsafe actual settlement and refunded media admissions
+after post-provider pricing loss/failure. Callers now retain safe E and finish their owned slot
+before propagating accounting faults; unpriced media keeps its explicit gap rather than settling
+as free. Eighteen permanent tests distinguish those paths from known zero/underspend,
+pre-egress refund, event-sink failure after actual settlement and async ownership transfer. Three
+causal negatives fail with the expected assertions; restored focused checks pass 297 tests.
+The existing literal-scan growth guard now samples equal process-CPU batches without changing
+its sizes/threshold; restoring the original quadratic regex still fails that assertion. Full
+`pnpm run ci` and sequential `pnpm coverage` exit 0 (313 suites, 7,092 passing tests, 11 existing
+skips; line/branch/function coverage 95.88%/92.82%/96.57%). Fresh round 2 precedes Step 9 closure;
+Steps 7–8, 10–11 and all six
+register items remain pending. No new residual was deferred.

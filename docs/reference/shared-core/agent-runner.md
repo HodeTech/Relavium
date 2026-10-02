@@ -139,6 +139,14 @@ before the settlement's host predicate runs. Late actuals remain global truth bu
 revive a replacement owner. Lifetime is rechecked after pricing, durability/legacy holds, notices
 and warning awaits; failed warning writes release the admission.
 
+A rejected unsafe actual text settlement retains safe E with its attempt attribution before
+propagating the accounting error, so the admission cannot remain orphaned in flight. Generative
+settlement carries the priced flag: unknown model/modality pricing retains E while publishing
+the existing unpriced result; a known zero reconciles as genuinely free. Post-provider
+pricing/outcome exceptions retain any still-owned admission. Already settled event-sink failures
+do not duplicate conservative spend; proven pre-egress key/cancel failures refund, and async
+jobs transfer their held admission. Conservative commitments remain separate from actual cost.
+
 A consumed positive allowance, a prospective E larger than the remainder, an unsafe E or a real
 overdraw closes later admission with `budget_exceeded`; it cannot produce a new pause or retry.
 An originally zero allowance still admits a genuinely free call and ordinary non-strict unpriced

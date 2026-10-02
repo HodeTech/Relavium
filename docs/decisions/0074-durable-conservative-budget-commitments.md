@@ -174,3 +174,16 @@ ignore-unknown promise unfulfilled anyway.
 - **Keep the commitment process-local until node/session completion.** Rejected: a crash before that boundary reopens the cap.
 - **Reprice an async job on resume.** Rejected: current catalog/workflow state is not evidence of the price or volume accepted by a prior provider submission.
 - **Fix workflows but leave resumed chat unprotected.** Rejected: both surfaces share the governor; a safety guarantee that disappears after `chat-resume` is not a first-class cost cap.
+
+## W7 step 9 caller settlement correction — 2026-10-03
+
+Independent review reproduced two caller gaps around the safe actual-settlement guard and
+existing synchronous media accounting. A rejected actual text settlement now retains its
+admission's safe estimate, with the recorded node/attempt attribution, before propagating the
+accounting failure. Generative completion carries its priced flag into settlement: missing model
+or modality pricing retains the estimate rather than treating an unpriced zero as a free call.
+Any still-owned post-egress admission is conservatively finished on cleanup; only proven
+pre-egress failure refunds it. Already settled or transferred admissions remain idempotent.
+This implements the existing conservative commitment policy; it does not invent a realized
+charge or make unsafe actual arithmetic authoritative. See the
+[runner contract](../reference/shared-core/agent-runner.md#dispatch-allowance-foundation).

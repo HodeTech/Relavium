@@ -1303,7 +1303,18 @@ async function driveAgentTurn(
         attemptNumber: nonSkippedAttempts,
       });
     } else {
-      admission?.settle(record.cost.costMicrocents);
+      try {
+        admission?.settle(record.cost.costMicrocents);
+      } catch (error) {
+        // Settlement rejects an unsafe actual before consuming the lease. This observer already took the
+        // attempt's admission, so outer cleanup cannot recover it: retain E here before propagating the fault.
+        // A lease already settled before another callback fault makes this conservative fallback a no-op.
+        admission?.settleAtReservedEstimate({
+          nodeId: params.nodeId,
+          attemptNumber: nonSkippedAttempts,
+        });
+        throw error;
+      }
     }
     params.emit({
       type: 'cost:updated',

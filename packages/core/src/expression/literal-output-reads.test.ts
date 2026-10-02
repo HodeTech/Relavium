@@ -74,9 +74,13 @@ describe('literalOutputReads — the match is linear, not quadratic', () => {
     // while plan build is synchronous, so no deadline or cancel can interrupt it. Now ~6 ms at 128 K.
     const evil = (n: number): string => `run${' '.repeat(n)}.outputs${' '.repeat(n)}x`;
     const time = (text: string): number => {
-      const started = process.hrtime.bigint();
-      literalOutputReads(text);
-      return Number(process.hrtime.bigint() - started) / 1e6;
+      // Other Vitest workers can deschedule this process for several scans' worth of wall time. Count its
+      // own CPU work instead, batching three scans to stay above the sampling resolution. The batch count
+      // is identical at both sizes; sizes and the ratio threshold still reject the quadratic regex.
+      const started = process.cpuUsage();
+      for (let scan = 0; scan < 3; scan++) literalOutputReads(text);
+      const elapsed = process.cpuUsage(started);
+      return (elapsed.user + elapsed.system) / 3000;
     };
     // Bounded on the SHAPE of the growth, not on a wall-clock number a slow machine could breach: the
     // quadratic form grew ~4.5× per doubling, so anything near linear passes and the defect cannot.

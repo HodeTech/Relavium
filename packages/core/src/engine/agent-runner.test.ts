@@ -1284,11 +1284,38 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
     const exec = createAgentNodeExecutor(
       genDeps(generativeProvider(), {
         preEgress: () => admission,
+        resolvePrice: new Map([
+          [
+            AGENT.model,
+            {
+              provider: AGENT.provider,
+              nativeId: AGENT.model,
+              displayName: 'known media settlement',
+              contextWindowTokens: 10000,
+              maxOutputTokens: 1000,
+              inputPerMtokMicrocents: 0,
+              outputPerMtokMicrocents: 0,
+              cachedInputPerMtokMicrocents: 0,
+              mediaOutputRates: { image: 7 },
+            },
+          ],
+        ]),
       }),
     );
 
-    expect((await exec.execute(ctxFor(genVertex()).ctx)).kind).toBe('completed');
-    expect(settlements).toHaveLength(1);
+    const ctx = ctxFor(genVertex()).ctx;
+    expect(
+      (
+        await exec.execute({
+          ...ctx,
+          emit: (event) => {
+            if (event.type === 'cost:updated') expect(settlements).toEqual([7]);
+            ctx.emit(event);
+          },
+        })
+      ).kind,
+    ).toBe('completed');
+    expect(settlements).toEqual([7]);
     expect(releases).toBe(0);
   });
 
