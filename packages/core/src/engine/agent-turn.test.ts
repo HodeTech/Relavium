@@ -15,6 +15,7 @@ import { ADMISSION_CEILINGS } from '../limits.js';
 import type { CommitmentOrigin } from './budget-governor.js';
 import {
   ToolCancelledError,
+  ToolDispatchError,
   ToolExecutionError,
   ToolPolicyError,
   ToolUnavailableError,
@@ -1131,6 +1132,33 @@ describe('runAgentTurn — tool loop', () => {
       expect(JSON.stringify(result.toolHistory)).not.toContain('provider-id');
     },
   );
+
+  it('retains a registered call name when a recoverable host denial carries no tool id', async () => {
+    class ScopeDenial extends ToolDispatchError {
+      readonly code = 'tool_denied';
+      readonly runErrorCode = 'tool_denied';
+      readonly retryable = false;
+      constructor() {
+        super('out of scope', undefined, undefined, true);
+      }
+    }
+    const registry = stubRegistry(() => {
+      throw new ScopeDenial();
+    });
+    const provider = scriptedProvider('anthropic', [
+      toolUseTurn('c1'),
+      [{ type: 'text_delta', text: 'recovered' }, STOP()],
+    ]);
+    const result = await runAgentTurn(
+      baseParams(provider, {
+        registry,
+        sessionToolCallId: () => 'session-tool:42:0',
+        limits: { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true },
+      }),
+    );
+    expect(result.toolHistory[0]?.call.name).toBe('echo');
+    expect(result.toolHistory[0]?.result.outcome).toBe('denied');
+  });
 
   it('does NOT recover a NON-scope tool_denied (a guardrail denial) even with recoverToolFailures (Step 14)', async () => {
     // The taxonomy split: only a SCOPE denial (recoverable) is fed back — a guardrail/grant denial (`not_granted`,

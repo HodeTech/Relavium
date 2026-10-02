@@ -997,9 +997,8 @@ async function dispatchToolCalls(
         const name =
           err instanceof ToolDispatchError &&
           err.code !== 'unknown_tool' &&
-          err.toolId !== undefined &&
-          params.registry.has(err.toolId)
-            ? err.toolId
+          params.registry.has(err.toolId ?? call.name)
+            ? (err.toolId ?? call.name)
             : 'unknown_tool';
         history.push(
           sessionToolHistoryEntry(

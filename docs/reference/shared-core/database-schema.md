@@ -752,7 +752,9 @@ An optional result `media` array contains strict handle-only media metadata (`ty
 `source`, optional `byteLength` / `durationMs`). It has no filename or transcript field. Sizes are
 non-negative safe integers. Names have the admitted tool charset `[a-zA-Z0-9_-]`, at most 128
 characters; the registry outcome, not syntax alone, establishes resolution. The completed-turn
-producer derives these fields from actual registry outcomes: a recovered policy denial remains
+producer derives these fields from actual registry outcomes. A recovered host error without its
+own tool id retains the exact call name only after verifying registry membership; unresolved names
+still use the fixed marker. A recovered policy denial remains
 `denied`, while another recovered dispatch failure is `error`. An unrecovered failure has no
 completed-turn transcript. Byte measurement preserves native JSON encoding, including string/key
 escaping, and counts deeply nested plain JSON iteratively when native serialization exceeds the
