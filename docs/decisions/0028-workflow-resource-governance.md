@@ -115,3 +115,18 @@ timeout and concurrency cap, wired to the existing human-gate seam for the pause
 - The concurrency cap can slow a wide fan-out; it is configurable so authors trade throughput
   against rate-limit/cost risk explicitly.
 - More run outcomes/events (`budget:*`, `run:timeout`) for every surface to render.
+
+## Implementation correction — 2026-10-02, W7 step 6 fifth review
+
+A verified pre-existing callback window violated the live-admission projection: a non-strict
+partial-media notice could synchronously re-enter the governor after headroom evaluation but
+before reservation insertion. Two 600-microcent admissions then passed a 1,000-microcent cap;
+the ordinary sequential control refused the second call. The parent independently replayed
+current source and the pre-step governor, with the latter's runtime LLM import rebound to current
+helpers rather than claiming a frozen predecessor binary.
+
+Allow/warn reservations now enter the ledger before any host callback as well as before any
+warning await. Refused calls keep their notice without reserving; warning-write failure still
+releases each admission. The [canonical hook contract](../reference/shared-core/agent-runner.md#pre-egress-injection-contract)
+and permanent reentry controls record this enforcement correction. The budget policy and
+staged dispatch-owned allowance decision remain unchanged.

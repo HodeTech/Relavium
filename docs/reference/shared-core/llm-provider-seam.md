@@ -293,6 +293,9 @@ global defaults cannot redirect the request while retaining official cap/refund 
 handoff foundations are implemented. Session measured pre-send/recovery and each summariser candidate's
 automatic handoff remain step 8; frozen allowance consumers remain step 9. This section does not claim
 those later entry points have shipped merely because the seam now supports them.
+Step 6 also leaves the existing [CR-82 usage-normalization defect](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#cr-82--missing-or-partial-usage-can-be-read-as-zero--high)
+open for W8: an adapter can turn missing usage into zero and reopen reserved headroom. Retaining
+an attempt with absent usage cannot detect an adapter-invented zero usage value.
 
 > **`CapabilityFlags` is per-PROVIDER; a second, per-MODEL axis sits beside it (`CR-51`,
 > [ADR-0071](../../decisions/0071-models-dev-as-the-model-metadata-source.md) amendment).** The catalog's
@@ -868,8 +871,9 @@ Two streaming subtleties the adapters must handle:
 
 #### Stricter usage-capture rules in managed mode (Phase 2)
 
-In Phase 1 (BYOK) the worst case for a missing usage chunk is a slightly
-inaccurate local cost estimate. In **managed** mode (Phase 2,
+In Phase 1 (BYOK), missing usage affects the local cost ledger and budget capacity; the
+[current estimate contract](#current-request-estimates-and-bound-output-caps) records its
+known adapter-normalization limitation. In **managed** mode (Phase 2,
 [../../architecture/managed-inference.md](../../architecture/managed-inference.md))
 the same `Usage` shape becomes a **billing record**, so the gateway tightens the
 capture rules — without changing the seam types:

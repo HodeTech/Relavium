@@ -2876,3 +2876,16 @@ separately breaks its intended regression. Full restored CI and coverage pass 30
 6,944 tests and 11 pre-existing skips. The
 [fourth-round record](../../reviews/2026-10-02T19-42-38-w7-step-6-round-4-review.md)
 records scope and evidence limits. **Fresh round 5 is required; step 6 remains open.**
+
+**Step 6 fifth review checkpoint — 2026-10-02.** A separate approved-step-9 mechanism preflight
+found a pre-existing global-admission window; the parent and financial reviewer independently
+reproduced synchronous partial-pricing notice reentry admitting 600 + 600 under a 1,000 cap.
+Allow/warn reservations now enter the ledger before host callbacks; refused calls retain their
+notice, and warning-write failures release both reentrant admissions. Seven permanent controls
+have five intended failures before correction and all pass afterwards; restoring the old ordering
+reproduces those failures. The 116 wire and 44 financial probes still pass, with the latter's
+known CR-82 observation explicitly separated from acceptance. CR-82 remains assigned to W8;
+the living usage contract now states the adapter-normalization limitation. Full restored CI and
+coverage pass 307 suites, 6,951 tests and 11 pre-existing skips. The
+[fifth-round record](../../reviews/2026-10-02T20-36-23-w7-step-6-round-5-review.md)
+records evidence and scope. **Fresh round 6 is required; step 6 remains open.**

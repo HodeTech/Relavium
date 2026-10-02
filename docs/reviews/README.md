@@ -98,6 +98,10 @@ added.
   throwing cap accessors exposed private errors before safe normalization; fixed helper inspection
   guards, full CI/coverage and five causal negatives pass; fresh round 5 pending.
 
+- [2026-10-02 — W7 step 6, round 5](2026-10-02T20-36-23-w7-step-6-round-5-review.md):
+  pre-existing reentrant notice overbooking independently reproduced and corrected; known CR-82
+  usage limitation qualified; full restored CI and coverage pass, fresh round 6 pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

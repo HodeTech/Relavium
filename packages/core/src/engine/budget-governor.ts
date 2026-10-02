@@ -535,8 +535,8 @@ export class BudgetGovernor {
         ? {}
         : { unpricedModalities: estimateResult.unpricedModalities };
     // This is the admission-control invariant: a later concurrent branch sees every already-authorized worst-case
-    // call, not merely the last durable `cost:updated` snapshot. There is deliberately no await between this read
-    // and the ledger insertion in `checkPreEgress` below.
+    // call, not merely the last durable `cost:updated` snapshot. There is deliberately no await or host callback
+    // between this read and the ledger insertion in `checkPreEgress` below.
     const projected =
       this.#cumulativeCostMicrocents +
       this.#conservativeCostMicrocents +
@@ -605,7 +605,8 @@ export class BudgetGovernor {
 
   /**
    * Atomically admit one true provider attempt: price it against realized spend plus all live reservations, insert
-   * its reservation before the first await, then emit a re-armable warning or throw the typed fail/pause outcome.
+   * its reservation before any host notice or warning write, then emit a re-armable warning or throw the typed
+   * fail/pause outcome. Earlier durability/legacy-job barriers complete before evaluating headroom.
    * The returned admission MUST be settled, conservatively committed, or released exactly once by the attempt owner.
    */
   async checkPreEgress(info: PreEgressInfo): Promise<BudgetAdmission | undefined> {
@@ -614,7 +615,8 @@ export class BudgetGovernor {
     // point a crash between a possibly-billable call and its durable record would reopen the cap; awaiting here is
     // what closes that window, and it throws if the write failed rather than admitting more spend against a cap
     // whose state will not survive. It runs BEFORE `#evaluate` so the projection also sees the settled ledger —
-    // and deliberately not between `#evaluate` and `#admit`, where an await would break admission control.
+    // and deliberately not between `#evaluate` and `#admit`, where an await or reentrant host callback would
+    // break admission control.
     // Guarded so the common case (nothing outstanding) pays no microtask at all; see `#pendingCommitments`.
     if (this.#pendingCommitments > 0 || this.#commitmentFailure !== undefined) {
       await this.flushCommitments();
@@ -657,6 +659,12 @@ export class BudgetGovernor {
     }
     const evaluation = this.#evaluate(info);
     const { result } = evaluation;
+    // Reserve BEFORE calling a host. A synchronous partial-pricing notice can re-enter this governor just as
+    // an awaited operation can interleave a sibling: it must see this admission, including on the warn arm.
+    const admission =
+      result.kind === 'allow' || result.kind === 'warn'
+        ? this.#admit(model, evaluation.estimateMicrocents)
+        : undefined;
     // A partial pricing gap (ADR-0089 §4): the verdict below stands on its own — the cap WAS applied to the
     // priced part — and this only adds the sentence the user is owed. Announced before the verdict is acted on,
     // because a `fail` arm throws and would otherwise swallow it. Deduped per (model, modality) for the same
@@ -664,7 +672,7 @@ export class BudgetGovernor {
     if (evaluation.unpricedModalities !== undefined) {
       this.#noticeUnpricedModalities(model, evaluation.unpricedModalities);
     }
-    if (result.kind === 'allow') return this.#admit(model, evaluation.estimateMicrocents);
+    if (result.kind === 'allow') return admission;
     if (result.kind === 'unpriced') {
       // Once per model — a standing condition, not an event (a `loop` over an unpriced model must not repeat it
       // every iteration). The engine cannot print; the host is told and decides where the sentence goes.
@@ -681,7 +689,6 @@ export class BudgetGovernor {
       return undefined;
     }
     if (result.kind === 'warn') {
-      const admission = this.#admit(model, evaluation.estimateMicrocents);
       try {
         await this.#emitWarning(result);
         return admission;

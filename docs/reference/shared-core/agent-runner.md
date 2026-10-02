@@ -90,6 +90,11 @@ fresh/resumed/reseated chat and one-shot session construction, including session
 money governor. `NodeExecContext.maxTokensEstimate` supplies the workflow value; a directly
 constructed runner can receive it through `AgentRunnerDeps.maxTokensEstimate`.
 
+The governor inserts an accepted priced reservation synchronously after evaluation and before
+any host notice or warning write. A reentrant partial-pricing notice therefore sees that live
+reservation. Non-strict fail/pause verdicts reserve nothing and still announce their partial-pricing gap.
+Warning admissions await their shared durable warning; a failed write releases each admission.
+
 An admission settles from accountable usage. A usage-less failed attempt releases only with
 positive pre-provider proof, or an actual **official** endpoint's pre-content HTTP status in
 `429, 400, 401, 402, 403, 404, 413, 422`. A returned generation, even empty, and every forwarded
