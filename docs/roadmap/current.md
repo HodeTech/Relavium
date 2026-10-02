@@ -114,6 +114,10 @@ merged too (PR #85, 2026-08-28).
 > actual request, workflow-node and SQLite resume/reseat controls pass. Workspace checks, build and coverage
 > pass (299 suites, 6,567 passing tests, 11 skipped). Later measured pre-send/recovery and revised compaction
 > outcomes remain staged. Step 5 and all six W7 register items remain open.
+> [Step 5 round 1](../reviews/2026-10-02T12-00-17-w7-step-5-round-1-review.md) accepted the implementation:
+> both reviewers passed 347 focused tests; parent-rerun controls passed 390 state/history cases and 86
+> actual CLI/SQLite cases. Matched source-head operational controls pass; exact pre-step engine controls
+> fail as expected. Adjacent working-context/durable-history wording is corrected; fresh round 2 is pending.
 > It repairs collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.

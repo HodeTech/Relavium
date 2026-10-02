@@ -70,6 +70,9 @@ added.
 - [2026-10-02 — W7 step 4, round 6](2026-10-02T10-57-58-w7-step-4-round-6-review.md):
   complete step and five correction rounds accepted; inherited native stdio exit qualification verified; step 4 closed.
 
+- [2026-10-02 — W7 step 5, round 1](2026-10-02T12-00-17-w7-step-5-round-1-review.md):
+  memory implementation accepted with independent lifecycle/SQLite/CLI controls; adjacent context/archive wording clarified; fresh round 2 pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

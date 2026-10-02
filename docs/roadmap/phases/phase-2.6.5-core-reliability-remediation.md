@@ -2196,8 +2196,12 @@ including restored-summary exclusion, empty finals, completion-sink rollback, ma
 high-usage summary-policy one-shot with no after-turn summariser. Required workspace checks pass
 (23 tasks), build passes (6 tasks), and coverage exits 0 (299 suites, 6,567 passing tests, 11 skipped;
 all configured thresholds met). Canonical memory, session API, config and chat contracts and dated
-ADR-0095/ADR-0062 landing notes are updated. **Fresh independent review rounds are pending;
-step 5 and all six W7 register items remain open.**
+ADR-0095/ADR-0062 landing notes are updated.
+[Round 1](../../reviews/2026-10-02T12-00-17-w7-step-5-round-1-review.md) accepted the implementation
+with no material finding; an adjacent lifecycle-row ambiguity was clarified. Both reviewers passed
+347 focused tests; the parent reproduced 390 state/history cases, 86 actual CLI/SQLite cases and
+matched source-head/pre-step operational controls. **Fresh round 2 is pending; step 5 and all six
+W7 register items remain open.**
 
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A
