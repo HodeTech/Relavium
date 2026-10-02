@@ -125,6 +125,10 @@ added.
 - [2026-10-03 — W7 step 9, round 3](2026-10-03T01-57-14-w7-step-9-round-3-review.md):
   park/poll host admission loss and stale reentrant terminal total corrected; fresh round 4 pending.
 
+- [2026-10-03 — W7 step 9, round 4](2026-10-03T02-40-53-w7-step-9-round-4-review.md):
+  complete foundation accepted after independent native-loader controls, verified sealed evidence
+  and parent replay; harness isolation exception recorded; Step 9 closed.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

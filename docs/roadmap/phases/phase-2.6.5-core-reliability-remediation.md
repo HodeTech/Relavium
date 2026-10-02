@@ -1989,7 +1989,7 @@ correction inside its own ADR rather than a rewrite, so the wrong reasoning stay
 
 ### W7 pre-implementation review and proposed execution plan — 2026-10-02
 
-**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–6 are closed after their independent review rounds. Step 6's configured-output-estimate precedence follows ADR-0101, approved by the maintainer on 2026-10-02. Live captures for Step 7 remain pending; independently approved Step 9 proceeds from accepted input pricing.**
+**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–6 and 9 are closed after their independent review rounds. Step 6's configured-output-estimate precedence follows ADR-0101, approved by the maintainer on 2026-10-02. Live captures for Step 7 remain pending; independently approved Step 10 proceeds from the accepted Step 9 foundation.**
 The four Accepted ADRs retain their decisions. Three verified gaps were explicitly resolved before code:
 manual compaction with an unknown window and the budget outcome of idle compaction
 ([ADR-0099](../../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md)),
@@ -2980,3 +2980,16 @@ restoration; seven restored focused files pass 321 tests. Full `pnpm run ci` and
 coverage 95.88%/92.85%/96.57%).
 Fresh round 4 precedes closure; Steps 7–8, 10–11 and all six register items remain pending.
 No residual was deferred.
+
+**Step 9 round 4 acceptance — 2026-10-03.** [Fresh full-step review](../../reviews/2026-10-03T02-40-53-w7-step-9-round-4-review.md)
+accepts the complete foundation and three correction rounds with no new finding. Financial
+and contract reviewers independently pass 467 and 317 distinct cases respectively; their
+overlapping totals are not summed. The parent reruns all 70 fresh cases with strict compilation
+and independently verifies 21 raw persisted two-job terminal artifacts. Removing the accounting
+join in an external source copy yields exactly two expected stale-total failures (21 rather
+than 47). Both complete sealed inventories and all 1,030 tracked source hash/byte pairs are
+verified; reviewers and parent leave zero owned workers. The prior Vite bundle-loader transient
+write outside an owned root is explicitly recorded; final acceptance runs use corrected owned
+dependency directories and native config loading. No tracked implementation changed after the
+green full CI/coverage at `8fb51f42`. **Step 9 is closed; Step 10 proceeds automatically.**
+Live Steps 7–8, Steps 10–11 and all six register items remain pending; no residual was deferred.
