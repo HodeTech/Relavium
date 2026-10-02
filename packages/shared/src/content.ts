@@ -643,7 +643,11 @@ const durableReasoningPartSchema = z.object({
 // ADR-0095: session persistence refuses extra fields rather than silently stripping raw tool values or
 // continuation tokens. Reuse the existing media shape/refinement; run/event/IPC durable parts stay intact.
 const sessionMediaPartObjectSchema = durableMediaPartObjectSchema
-  .extend({ source: z.discriminatedUnion('kind', [handleSourceSchema.strict()]) })
+  .extend({
+    source: z.discriminatedUnion('kind', [handleSourceSchema.strict()]),
+    byteLength: nonNegativeInt.max(Number.MAX_SAFE_INTEGER).optional(),
+    durationMs: positiveInt.max(Number.MAX_SAFE_INTEGER).optional(),
+  })
   .strict();
 
 export const SessionNonToolContentPartSchema = z

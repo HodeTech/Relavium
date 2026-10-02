@@ -54,7 +54,10 @@ merged too (PR #85, 2026-08-28).
 > destination. [Round 5](../reviews/2026-10-02T03-50-35-w7-step-1-round-5-review.md) cleared the
 > complete step and final corrections; step 1 is closed. Step 2's structural store boundary and
 > durable effect-turn allocator pass the required checks and root coverage (289 suites, 6,367 passing
-> tests, 11 skipped); committed-migration CI and two fresh review rounds are pending.
+> tests, 11 skipped); full CI passed at `1927daa1`.
+> [Round 1](../reviews/2026-10-02T04-29-12-w7-step-2-round-1-review.md) verified nested-transaction
+> key reuse and unsafe session media metadata. Both are corrected; checks and coverage pass
+> (289 suites, 6,374 passing tests, 11 skipped). The second fresh review round is pending.
 > It repairs collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.

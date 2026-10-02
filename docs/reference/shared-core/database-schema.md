@@ -759,7 +759,9 @@ a positive turn key and a non-negative whole-turn slot. No provider- or model-ch
 of it. The key is separate from the reconstructed hard-turn-cap counter. The host allocates it in
 one `BEGIN IMMEDIATE` transaction, advancing `effect_turn_high_water` before dispatch; errors,
 aborts, crashes and missing transcript writes do not return a key. Exhaustion or an invalid persisted
-mark fails closed. Open-time initialization, under the migration lock, seeds legacy rows from all
+mark fails closed. Reservation must own its outer commit: an already-open transaction is refused
+with `transaction_active`, because a savepoint release cannot prevent an outer rollback from erasing
+an issued key. Open-time initialization, under the migration lock, seeds legacy rows from all
 historical terminal assistant rows (empty text counts; tool preambles do not), ignoring compaction,
 and from the greatest retained session effect scope key before any cleanup. Subsequent journal
 sweeps cannot lower it. Allocation repeats initialization for a new session whose mark is still zero.

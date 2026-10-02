@@ -362,7 +362,10 @@ export interface SessionTurnWrite {
 }
 
 export interface SessionStore {
-  /** Single-writer durable effect identity; independent of transcript projection and max_turns. */
+  /**
+   * Single-writer durable effect identity; independent of transcript projection and max_turns.
+   * Owns its outer commit and refuses transaction_active if called inside any open transaction.
+   */
   reserveEffectTurnKey: (sessionId: string) => number;
   /** Insert a new `agent_sessions` row. */
   createSession: (record: AgentSessionRecord) => void;

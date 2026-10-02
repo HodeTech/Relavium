@@ -132,6 +132,35 @@ describe('the complete session store boundary (ADR-0095)', () => {
     expect(store.loadMessages('s1')[0]?.content).toEqual([{ type: 'text', text: secret }]);
   });
 
+  it.each(['byteLength', 'durationMs'] as const)(
+    'refuses unsafe tool-media %s on write and read, while retaining the maximum safe integer',
+    (field) => {
+      const media = {
+        type: 'media' as const,
+        mimeType: 'audio/wav',
+        source: { kind: 'handle' as const, ref: `media://sha256-${'a'.repeat(64)}` },
+        [field]: Number.MAX_SAFE_INTEGER,
+      };
+      const valid = { ...result, media: [media] };
+      const unsafe = {
+        ...result,
+        media: [{ ...media, [field]: Number.MAX_SAFE_INTEGER + 1 }],
+      };
+      refused(() => store.appendMessage(message(0, 'tool', [unsafe])));
+      expect(store.loadMessages('s1')).toEqual([]);
+      store.appendMessage(message(0, 'tool', [valid]));
+      expect(store.loadMessages('s1')[0]?.content).toEqual([valid]);
+      client.db
+        .update(sessionMessages)
+        .set({ contentParts: JSON.stringify([unsafe]) })
+        .where(eq(sessionMessages.id, 'm0'))
+        .run();
+      refused(() => {
+        store.loadMessages('s1');
+      });
+    },
+  );
+
   it.each(['content', 'toolCalls', 'toolCallId', 'name', 'finishReason'] as const)(
     'refuses corrupt %s metadata on read',
     (field) => {

@@ -27,6 +27,9 @@ added.
 - [2026-10-02 — W7 step 1, round 5](2026-10-02T03-50-35-w7-step-1-round-5-review.md):
   clean corrective review; final wording qualifications adopted and step 1 closed.
 
+- [2026-10-02 — W7 step 2, round 1](2026-10-02T04-29-12-w7-step-2-round-1-review.md):
+  nested-transaction key reuse and unsafe session media metadata verified and corrected; fresh round 2 pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

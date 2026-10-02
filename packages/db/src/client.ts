@@ -21,8 +21,10 @@ import { initializeSessionEffectTurnKeys } from './session-effect-turns.js';
  * encryption-at-rest (ADR-0005) is applied by the desktop's Rust setup hook, not here.
  */
 
-/** A Drizzle handle bound to the full Relavium schema. */
-export type Db = BetterSQLite3Database<typeof schema>;
+/** A schema-bound Drizzle handle, including its public native-client transaction-state port. */
+export type Db = BetterSQLite3Database<typeof schema> & {
+  readonly $client: Database.Database;
+};
 
 /**
  * The handle a `db.transaction(...)` callback receives — the one a transaction body must issue its statements

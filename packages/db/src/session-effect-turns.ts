@@ -8,8 +8,8 @@ import { agentSessions, runEffects, sessionMessages } from './schema.js';
 type Executor = Db | Parameters<Parameters<Db['transaction']>[0]>[0];
 
 export class SessionEffectTurnError extends Error {
-  readonly code: 'session_missing' | 'history_invalid' | 'key_exhausted';
-  constructor(code: 'session_missing' | 'history_invalid' | 'key_exhausted') {
+  readonly code: 'session_missing' | 'history_invalid' | 'key_exhausted' | 'transaction_active';
+  constructor(code: SessionEffectTurnError['code']) {
     super('session effect-turn key could not be allocated');
     this.name = 'SessionEffectTurnError';
     this.code = code;
@@ -98,6 +98,10 @@ export function initializeSessionEffectTurnKeys(db: Db): void {
 
 /** Allocate before dispatch. Gaps are intentional: a failed, aborted or crashed turn never returns its key. */
 export function reserveSessionEffectTurnKey(db: Db, sessionId: string): number {
+  // A nested better-sqlite3 transaction is only a SAVEPOINT. Returning from it would issue a key
+  // that an outer rollback could erase and then reissue. Even an outer BEGIN IMMEDIATE cannot
+  // make that key durable before this method returns, so reservation must own the outer commit.
+  if (db.$client.inTransaction) throw new SessionEffectTurnError('transaction_active');
   return withBusyRetry(() =>
     db.transaction(
       (tx) => {

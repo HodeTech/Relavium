@@ -90,6 +90,31 @@ describe('durable session effect-turn high-water mark (ADR-0098)', () => {
     expect(store.reserveEffectTurnKey('s1')).toBe(2);
   });
 
+  it.each(['deferred', 'immediate', 'exclusive'] as const)(
+    'refuses issuance inside an outer %s transaction before any key can escape a rollback',
+    (behavior) => {
+      runMigrations(client.db);
+      const store = createSessionStore(client.db);
+      store.createSession(record);
+      const rollback = new Error('owned transaction rollback');
+      expect(() =>
+        client.db.transaction(
+          () => {
+            expect(client.sqlite.inTransaction).toBe(true);
+            refusal(() => store.reserveEffectTurnKey('s1'), 'transaction_active');
+            expect(key()).toBe(0);
+            throw rollback;
+          },
+          { behavior },
+        ),
+      ).toThrow(rollback);
+      expect(client.sqlite.inTransaction).toBe(false);
+      expect(key()).toBe(0);
+      expect(store.reserveEffectTurnKey('s1')).toBe(1);
+      expect(store.reserveEffectTurnKey('s1')).toBe(2);
+    },
+  );
+
   it('fails closed at exhaustion without changing the mark', () => {
     runMigrations(client.db);
     const store = createSessionStore(client.db);

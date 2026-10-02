@@ -92,6 +92,24 @@ describe('session structural content (ADR-0095)', () => {
     ).toBe(false);
   });
 
+  it.each(['byteLength', 'durationMs'] as const)(
+    'bounds session media %s to safe integers without narrowing generic durable media',
+    (field) => {
+      const media = { type: 'media', mimeType: 'audio/wav', source: handle };
+      const valid = { ...media, [field]: Number.MAX_SAFE_INTEGER };
+      const unsafe = { ...media, [field]: Number.MAX_SAFE_INTEGER + 1 };
+      expect(SessionContentPartSchema.safeParse(valid).success).toBe(true);
+      expect(SessionToolResultPartSchema.safeParse({ ...result, media: [valid] }).success).toBe(
+        true,
+      );
+      expect(SessionContentPartSchema.safeParse(unsafe).success).toBe(false);
+      expect(SessionToolResultPartSchema.safeParse({ ...result, media: [unsafe] }).success).toBe(
+        false,
+      );
+      expect(DurableContentPartSchema.safeParse(unsafe).success).toBe(true);
+    },
+  );
+
   it('does not narrow generic durable run/event/IPC tool parts', () => {
     expect(
       DurableContentPartSchema.safeParse({

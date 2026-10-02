@@ -2056,8 +2056,12 @@ persister connections remain step 3. Migration 0017 adds one column without rebu
 The 0016 upgrade, historical empty-final/compaction floor, post-sweep/reopen identity, stale flush,
 exhaustion, corrupt mark and exact session-scope tests pass. Two real processes issue 200 unique keys.
 Required lint/typecheck/test, build/format, seam/purity/dependency/tools/smoke checks pass; root coverage
-exits 0 (289 suites, 6,367 passing tests, 11 skipped). The full committed-migration CI gate and two
-fresh independent review rounds are required before step 2 closes. All six W7 items remain open.
+exits 0 (289 suites, 6,367 passing tests, 11 skipped). Full CI exited 0 at `1927daa1`.
+[Round 1](../../reviews/2026-10-02T04-29-12-w7-step-2-round-1-review.md) verified that an outer
+transaction rollback could erase an issued key, and that session media admitted unsafe integers.
+Allocation now refuses an open transaction; session-only media metadata has safe-integer ceilings.
+Required checks and coverage pass after correction (289 suites, 6,374 passing tests, 11 skipped).
+A second fresh independent review round is required before step 2 closes. All six W7 items remain open.
 
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A
