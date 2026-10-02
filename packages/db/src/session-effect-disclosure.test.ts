@@ -151,6 +151,67 @@ setInterval(() => {}, 1000);
     }
   });
 
+  it.each(['missing-terminal', 'orphan-call', 'abandoned'] as const)(
+    'discloses a schema-valid call without completed-turn proof (%s)',
+    (mode) => {
+      const identity = effect(1);
+      store().settle(identity, 'committed');
+      const session = createSessionStore(client.db);
+      const callId = 'session-tool:1:0';
+      const messages = [
+        ...(mode === 'orphan-call'
+          ? []
+          : [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'unfinished' }] }]),
+        {
+          role: 'assistant' as const,
+          content: [{ type: 'tool_call' as const, id: callId, name: 'run_command', argsBytes: 2 }],
+        },
+        ...(mode === 'orphan-call'
+          ? []
+          : [
+              {
+                role: 'tool' as const,
+                content: [
+                  {
+                    type: 'tool_result' as const,
+                    toolCallId: callId,
+                    resultBytes: 2,
+                    outcome: 'ok' as const,
+                  },
+                ],
+              },
+            ]),
+        ...(mode === 'abandoned'
+          ? [
+              {
+                role: 'user' as const,
+                content: [{ type: 'text' as const, text: 'different turn' }],
+              },
+              {
+                role: 'assistant' as const,
+                content: [{ type: 'text' as const, text: 'completed later' }],
+              },
+            ]
+          : []),
+      ];
+      messages.forEach((message, sequenceNumber) =>
+        session.appendMessage({
+          ...message,
+          id: `partial-${String(sequenceNumber)}`,
+          sessionId: 's1',
+          sequenceNumber,
+          timestamp,
+        }),
+      );
+      const snapshot = store().readSessionDisclosureSnapshot('s1');
+      expect(snapshot.disclosures).toEqual([
+        { toolId: 'run_command', state: 'committed', reason: 'unattributable' },
+      ]);
+      expect(snapshot.committed).toHaveLength(1);
+      expect(client.db.select().from(runEffects).all()).toHaveLength(1);
+    },
+  );
+
   it('joins ALL history after compaction and distinguishes incomplete, legacy, command and unresolved effects', () => {
     const finished = effect(2);
     store().settle(finished, 'committed', 'not retained');

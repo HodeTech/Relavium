@@ -19,6 +19,7 @@ import { and, asc, eq, gte, lt, or } from 'drizzle-orm';
 
 import {
   canonicalJson,
+  completedSessionTurns,
   EffectTransitionError,
   EFFECT_STATES,
   EFFECT_TIERS,
@@ -355,20 +356,29 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
           .all();
         const calls = new Map<string, string>();
         const duplicates = new Set<string>();
-        for (const row of tx
+        const history = tx
           .select()
           .from(sessionMessages)
           .where(eq(sessionMessages.sessionId, sessionId))
           .orderBy(asc(sessionMessages.sequenceNumber))
-          .all()) {
-          // Atomic completed-turn writes make structural ids durable completion evidence. Compaction and
-          // trim change only the working projection, so their boundaries MUST NOT filter this history.
-          for (const part of fromSessionMessageRow(row).content) {
+          .all()
+          .map(fromSessionMessageRow);
+        for (const message of history) {
+          for (const part of message.content) {
             if (part.type !== 'tool_call') continue;
             if (calls.has(part.id)) duplicates.add(part.id);
             calls.set(part.id, part.name);
           }
         }
+        // Schema-valid rows can still be unfinished, orphaned or abandoned. Only the shared
+        // structural projector proves completion; working compaction/trim boundaries never filter it.
+        const completedCalls = new Set(
+          completedSessionTurns(history, false).flatMap((turn) =>
+            turn.messages.flatMap((message) =>
+              message.content.flatMap((part) => (part.type === 'tool_call' ? [part.id] : [])),
+            ),
+          ),
+        );
         const committed: CapturedSessionEffect[] = [];
         const disclosures: SessionEffectDisclosure[] = [];
         for (const row of rows) {
@@ -393,6 +403,8 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
           ) {
             disclosures.push({ toolId: row.toolId, state, reason: 'unattributable' });
           } else if (id !== undefined && calls.has(id) && calls.get(id) !== row.toolId) {
+            disclosures.push({ toolId: row.toolId, state, reason: 'unattributable' });
+          } else if (id !== undefined && calls.has(id) && !completedCalls.has(id)) {
             disclosures.push({ toolId: row.toolId, state, reason: 'unattributable' });
           } else if (id === undefined || !calls.has(id)) {
             disclosures.push({ toolId: row.toolId, state, reason: 'turn_incomplete' });
