@@ -169,6 +169,8 @@ to the reconstructed hard turn cap. The final bare user still rolls back, and in
 exchanges stay excluded. Legacy prefix text without a later terminal remains resumed context and
 export metadata; it does not invent an exported node. Explicit empty-terminal turns retain their
 ordinary distinct identity. No historical row is rewritten.
+The legacy rollback is a read projection: a later append can make a previously trailing bare user
+nontrailing, preserving the old archive's ambiguity rather than permanently deleting its text.
 
 > **Relationship to the run `messages` table.** A session's messages are persisted in
 > **`session_messages`**, bound to a **session** — distinct from the existing per-step run `messages`

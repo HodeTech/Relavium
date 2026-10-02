@@ -77,8 +77,11 @@ merged too (PR #85, 2026-08-28).
 > and verified loss of nontrailing pre-W7 empty-final user text from resume/reseat and export prompts.
 > Legacy context and boundary slots now preserve the old read behaviour without fabricating terminals
 > or completed counts. Required checks and coverage pass (291 suites, 6,422 passing tests,
-> 11 skipped); a fifth fresh corrective review is pending.
-> Step 3 is not closed.
+> 11 skipped); full CI passes at `6d5b3f0b`.
+> [Round 5](../reviews/2026-10-02T06-48-45-w7-step-3-round-5-review.md) cleared the complete step
+> and all earlier corrections, including independent mixed-history projection, YAML, real SQLite
+> boundary and process-crash probes. **Step 3 is closed; step 4 proceeds automatically** with
+> session-result privacy, full-history disclosure snapshots and exact committed-row retention.
 > It repairs collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.

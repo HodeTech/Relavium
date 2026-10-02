@@ -49,6 +49,9 @@ added.
   nontrailing pre-W7 empty-final user text lost from resumed context and exported prompts;
   compatibility and boundary seeds corrected, fresh corrective review pending.
 
+- [2026-10-02 — W7 step 3, round 5](2026-10-02T06-48-45-w7-step-3-round-5-review.md):
+  complete step and earlier corrections cleared; structural persistence and host identity wiring closed.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

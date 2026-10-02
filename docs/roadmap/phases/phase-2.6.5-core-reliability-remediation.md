@@ -2099,8 +2099,17 @@ reproduced it. One shared compatibility projection now preserves legacy text and
 without inventing terminals or completed counts; interrupted structural exchanges stay excluded.
 Real reseat/compact/trim tests pin the correct marker and full-history export. Required checks and
 coverage pass (291 suites, 6,422 passing tests, 11 skipped).
-A fifth round with fresh independent reviewers is pending;
-**step 3 is not closed**. The session journal's result privacy and disclosure/sweep remain step 4.
+Full CI exits 0 at `6d5b3f0b`.
+[Round 5](../../reviews/2026-10-02T06-48-45-w7-step-3-round-5-review.md) cleared the complete
+step and all corrections. Independent checks covered 45,056 mixed-history/boundary projections,
+133 export round-trips, 648 real SQLite/persister operations and additional durability/crash probes.
+**Step 3 is closed; step 4 proceeds automatically.** Its detailed sequence is result suppression
+and no replay in both stores; secure clearing after high-water initialisation; one owned read
+snapshot joining all structural history; disclosure through the accepted active surface before
+paired identity/ID committed-row deletion and checkpoint; and owned one-shot teardown. Outer
+transactions are refused at snapshot/maintenance boundaries, Home revalidates reentrant activation,
+and busy checkpoints preserve the Accepted deferred-erasure residual. No new ADR decision is needed.
+The session journal's result privacy and disclosure/sweep remain step 4. All six W7 items remain open.
 
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A
