@@ -55,6 +55,7 @@ export interface BuildEngineOptions {
    * unit estimate is used. Media still folds at 0 until a verified catalog rate lands (never fabricated).
    */
   readonly mediaCostEstimate?: MediaCostEstimate;
+  readonly maxTokensEstimate?: number;
   /**
    * The inbound MCP wiring (2.R Step 3b) — the discovered namespaced `ToolDef`s + the `McpCapability` to route
    * `tools/call`. Absent ⇒ the registry/host carry built-ins only. The defs are composed into BOTH the registry
@@ -196,6 +197,9 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
   const endpointKind = providers.endpointKind;
   return new WorkflowEngine({
     host,
+    ...(options.maxTokensEstimate === undefined
+      ? {}
+      : { maxTokensEstimate: options.maxTokensEstimate }),
     executor: createStandardNodeExecutor({ sandbox, agent, humanGate: {} }),
     // ADR-0080: forwarded, not defaulted. A caller that omits it gets a run whose effectful dispatches are
     // REFUSED — loudly — rather than one that silently dispatches unrecorded effects.
@@ -204,11 +208,7 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
     // The same overlay for the workflow PRE-EGRESS budget governor (2.5.G S10) — so `budget.max_cost_microcents`
     // is enforced on a user-priced model, closing the ADR-0064 §6 cost-cap gap for the run path.
     ...(options.resolvePrice === undefined ? {} : { resolvePrice: options.resolvePrice }),
-    // ADR-0071 §7: the adapter clamps an authored `max_tokens` to the model's ceiling on an OFFICIAL endpoint and
-    // not on a custom one. The pre-egress estimate must make the same call, or it prices a request we never send —
-    // assume official on a gateway and it under-authorizes, waving through the call the governor exists to stop.
-    // Keyed on the ROUTING provider the governor threads per attempt, not the model's catalog provider — a custom
-    // gateway serving another provider's model id would otherwise be mis-read as official and under-clamped (M2).
+    // Deprecated host-API compatibility only; admission uses the actual factory-bound plan (ADR-0101).
     ...(endpointKind === undefined ? {} : { resolveEndpoint: endpointKind }),
     // ADR-0071 §K7: a workflow turn ran on a model we could not price, so `budget.max_cost_microcents` did not
     // apply to it. `run.ts` routes this to stderr (never stdout — `--json`); `budget.strict_cost_cap` is the

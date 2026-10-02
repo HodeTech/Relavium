@@ -2812,3 +2812,21 @@ across the remaining database stores. It is listed here only so nobody schedules
 
 The realized-cost ledger is **no longer scoped out** — it is this phase's [prerequisite](#prerequisite), for the
 file-overlap reason recorded there.
+
+
+**Step 6 implementation checkpoint — 2026-10-02.** One pure estimator accounts for complete serialized
+non-media units, fixed sourced media assumptions and conservative per-unit serialization failure. Every
+text tool round forwards current pre-strip input and frozen configured output fallback. All adapters and
+admission consume the same factory-bound cap plan; native above-ceiling controls retain their full rate-only
+price and uncapped estimates insert no wire limit. Chain-owned content/route evidence permits only exact
+proven official pre-content HTTP refunds; a processed empty generation still counts as received.
+The canonical [seam contract](../../reference/shared-core/llm-provider-seam.md#current-request-estimates-and-bound-output-caps)
+states the figures, limitations, migrated API and the later step 8/9 consumers that remain staged.
+
+Parent break verification removed seven individual guarantees: known-cap precedence, final governor
+no-reclamp, current-round input, custom-route conservative settlement, native option forwarding,
+configured fallback forwarding and generated-response evidence. Every targeted negative control failed
+with its intended assertion; every restored source control passed. Required workspace lint/typecheck/test
+and build pass; coverage passes 301 suites/6,710 tests, 11 skipped. A pre-existing expression timing test
+failed once under concurrent checks and passed isolated and the final workspace run. **Implementation
+review rounds are pending; step 6 and all six W7 register items remain open.**

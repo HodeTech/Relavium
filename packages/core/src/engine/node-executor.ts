@@ -202,6 +202,7 @@ export interface NodeExecContext {
    * attempt is gated before egress.
    */
   readonly preEgress?: import('./agent-turn.js').PreEgressHook;
+  readonly maxTokensEstimate?: number;
   /**
    * The run's money-durability port (ADR-0076 / ADR-0077) — the realized-cost ledger's START hook and the
    * single barrier the turn core joins at.

@@ -544,6 +544,9 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   // fail-loud exit-2 CliError, cause stripped) before the session is live.
   const built = await (deps.buildSession ?? buildChatSession)({
     chat: config.chat,
+    ...(config.maxTokensEstimate === undefined
+      ? {}
+      : { maxTokensEstimate: config.maxTokensEstimate }),
     // **Consent before any stdio MCP spawn** (ADR-0084 §1). `chat --agent` is the ordinary way an imported
     // agent is opened, which is the case the gate exists for — and the one the first wiring missed by
     // covering only `relavium run`. No `--allow-mcp-stdio` here: a chat is interactive by construction, so
@@ -635,6 +638,9 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   // shared with `chat-resume` via createClearRebuild so it cannot drift.
   const rebuild = createClearRebuild({
     chat: config.chat,
+    ...(config.maxTokensEstimate === undefined
+      ? {}
+      : { maxTokensEstimate: config.maxTokensEstimate }),
     agent: built.agent,
     projectConfigDir,
     now,
@@ -655,6 +661,9 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   // just-ended session from the SHARED db, so it does not close over `built.agent` (the reseat swaps the model).
   const reseatRebuild = createReseatRebuild({
     chat: config.chat,
+    ...(config.maxTokensEstimate === undefined
+      ? {}
+      : { maxTokensEstimate: config.maxTokensEstimate }),
     now,
     uuid,
     providers,
@@ -735,6 +744,9 @@ export async function chatResumeCommand(
     resolvePrice = readUserPricingOverlay(opened.db);
     const resumed = await (deps.buildResumedSession ?? buildResumedChatSession)({
       chat: config.chat,
+      ...(config.maxTokensEstimate === undefined
+        ? {}
+        : { maxTokensEstimate: config.maxTokensEstimate }),
       // Consent before any stdio MCP spawn (ADR-0084 §1) — every path that opens an agent, not only `run`.
       consentGate: createConsentGate({
         io: deps.io,
@@ -817,6 +829,9 @@ export async function chatResumeCommand(
   // `built.agent` is the frozen snapshot agent (no on-disk ref), passed verbatim. Same shared contract as `chat`.
   const rebuild = createClearRebuild({
     chat: config.chat,
+    ...(config.maxTokensEstimate === undefined
+      ? {}
+      : { maxTokensEstimate: config.maxTokensEstimate }),
     agent: built.agent,
     projectConfigDir,
     now,
@@ -836,6 +851,9 @@ export async function chatResumeCommand(
   // Reloads the just-ended session (which may itself already be a resume), so it needs no captured agent.
   const reseatRebuild = createReseatRebuild({
     chat: config.chat,
+    ...(config.maxTokensEstimate === undefined
+      ? {}
+      : { maxTokensEstimate: config.maxTokensEstimate }),
     now,
     uuid,
     providers,
@@ -1515,6 +1533,7 @@ export function createChatLineHandler(
  */
 interface FreshChatWiringDeps {
   readonly chat: BuildChatSessionOptions['chat'];
+  readonly maxTokensEstimate?: number;
   readonly agent: AgentDefinition;
   readonly cwd: string;
   readonly projectConfigDir: string | undefined;
@@ -1547,6 +1566,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
   const resolvePrice = readUserPricingOverlay(deps.opened.db);
   const built = await deps.buildSession({
     chat: deps.chat,
+    ...(deps.maxTokensEstimate === undefined ? {} : { maxTokensEstimate: deps.maxTokensEstimate }),
     agent: deps.agent,
     agentRef: deps.agent.id, // ignored when `agent` is set, but the option key is required
     cwd: deps.cwd,
@@ -1651,6 +1671,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
  */
 function createClearRebuild(params: {
   readonly chat: BuildChatSessionOptions['chat'];
+  readonly maxTokensEstimate?: number;
   readonly agent: AgentDefinition;
   readonly projectConfigDir: string | undefined;
   readonly now: () => number;
@@ -1667,6 +1688,9 @@ function createClearRebuild(params: {
 }): (oldSessionId: string) => Promise<ReplWiring> {
   const wiringDeps: FreshChatWiringDeps = {
     chat: params.chat,
+    ...(params.maxTokensEstimate === undefined
+      ? {}
+      : { maxTokensEstimate: params.maxTokensEstimate }),
     agent: params.agent,
     cwd: params.global.cwd,
     projectConfigDir: params.projectConfigDir,
@@ -1759,6 +1783,7 @@ function seedResumedWiring(
  *  fresh, and swaps the bound model (so it has no fixed `agent` — the agent is loaded from the just-ended record). */
 interface ReseatWiringDeps {
   readonly chat: BuildChatSessionOptions['chat'];
+  readonly maxTokensEstimate?: number;
   readonly now: () => number;
   readonly uuid: () => string;
   readonly providers: ProviderResolver;
@@ -1824,6 +1849,7 @@ async function buildReseatWiring(
   const resolvePrice = readUserPricingOverlay(deps.opened.db);
   const resumed = await deps.buildResumedSession({
     chat: deps.chat,
+    ...(deps.maxTokensEstimate === undefined ? {} : { maxTokensEstimate: deps.maxTokensEstimate }),
     record,
     messages: loaded.messages,
     now: deps.now,
@@ -1907,6 +1933,7 @@ async function buildReseatWiring(
  */
 function createReseatRebuild(params: {
   readonly chat: BuildChatSessionOptions['chat'];
+  readonly maxTokensEstimate?: number;
   readonly now: () => number;
   readonly uuid: () => string;
   readonly providers: ProviderResolver;
@@ -1925,6 +1952,9 @@ function createReseatRebuild(params: {
 ) => Promise<ReplWiring> {
   const wiringDeps: ReseatWiringDeps = {
     chat: params.chat,
+    ...(params.maxTokensEstimate === undefined
+      ? {}
+      : { maxTokensEstimate: params.maxTokensEstimate }),
     onListenerError: (note: string) => emitLiveNotice(params.io, note),
     now: params.now,
     uuid: params.uuid,

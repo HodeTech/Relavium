@@ -673,6 +673,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           defaultProvider,
           reasoningEffort: effectiveChat?.reasoningEffort ?? config.chat.reasoningEffort,
         },
+        ...(config.maxTokensEstimate === undefined
+          ? {}
+          : { maxTokensEstimate: config.maxTokensEstimate }),
         agentRef: undefined, // the built-in default agent (zero-config first run)
         cwd: deps.global.cwd,
         projectConfigDir,
@@ -737,6 +740,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         noteToStore(budgetWarningText(warning));
       const built = await (deps.buildResumedSession ?? buildResumedChatSession)({
         chat: config.chat,
+        ...(config.maxTokensEstimate === undefined
+          ? {}
+          : { maxTokensEstimate: config.maxTokensEstimate }),
         consentGate: createConsentGate({
           io: deps.io,
           global: deps.global,

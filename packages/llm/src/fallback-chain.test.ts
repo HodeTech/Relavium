@@ -9,6 +9,7 @@ import {
   withEntryModel,
   withFallback,
   type AttemptRecord,
+  type PreAttemptInfo,
   type FallbackChainOptions,
   type FallbackPlanEntry,
 } from './fallback-chain.js';
@@ -1081,7 +1082,9 @@ describe('FallbackChain — backoff and cooldown', () => {
     });
     const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
 
-    await expect(chain.generate(userReq)).rejects.toThrow('cumulative overflowed');
+    await expect(chain.generate(userReq)).rejects.toThrow(
+      'cost accounting failed after a successful generated attempt',
+    );
   });
 
   it('a cancel landing in the preAttempt gap does not wait for the provider deadline (generate)', async () => {
@@ -3008,5 +3011,116 @@ describe('FallbackChain — the grammar and the deadline are wired', () => {
       ).toThrow('attemptTimeoutMs');
     }
     await Promise.resolve();
+  });
+});
+
+describe('chain-owned failure evidence and staged caps (ADR-0096/0101)', () => {
+  it.each(['generate', 'stream'] as const)(
+    '%s copies native cap controls before admission and credential awaits',
+    async (path) => {
+      const native = { max_tokens: 200_000 };
+      const provider = makeProvider({
+        id: 'openai',
+        generate: resolves('ok'),
+        stream: () => streamFrom([{ type: 'text_delta', text: 'ok' }, STOP_CHUNK]),
+      });
+      const seen: PreAttemptInfo[] = [];
+      const { options, trace } = makeOptions({
+        preAttempt: (info) => {
+          seen.push(info);
+          native.max_tokens = 1;
+        },
+        keyFor: () => {
+          native.max_tokens = 2;
+          return 'test-key';
+        },
+      });
+      const chain = new FallbackChain([entry(provider, 'gpt-5.4-pro')], options);
+      const req = { ...userReq, providerOptions: native };
+      if (path === 'generate') await chain.generate(req);
+      else await collect(chain.stream(req));
+      expect(seen).toHaveLength(1);
+      expect(Object.hasOwn(seen[0] ?? {}, 'maxTokens')).toBe(true);
+      expect(Object.hasOwn(seen[0] ?? {}, 'providerOptions')).toBe(true);
+      expect(seen[0]?.providerOptions?.['max_tokens']).toBe(200_000);
+      expect(provider.calls[0]?.providerOptions?.['max_tokens']).toBe(200_000);
+      expect(provider.calls[0]?.preparedOutputCaps?.[0]).toBe(seen[0]?.outputCapPlan);
+      expect(trace[0]?.contentReceived).toBe(true);
+      expect(trace[0]?.customEndpoint).toBe(false);
+    },
+  );
+
+  it('a tracker that throws a 429 after an EMPTY generation cannot cause a refund or another attempt', async () => {
+    const provider = makeProvider({
+      id: 'openai',
+      generate: () =>
+        Promise.resolve({ content: [], stopReason: 'stop', usage: USAGE, raw: undefined }),
+    });
+    let trackerCalls = 0;
+    const tracker = new CostTracker();
+    tracker.record = () => {
+      trackerCalls++;
+      throw new LlmProviderError(
+        makeLlmError({
+          provider: 'openai',
+          kind: 'rate_limit',
+          status: 429,
+          message: 'private tracker text',
+        }),
+      );
+    };
+    const { options, trace } = makeOptions({ costTracker: tracker });
+    const chain = new FallbackChain([entry(provider, 'gpt-5.4-pro', 3)], options);
+    const error = await rejectedError(chain.generate(userReq));
+    expect(error).toMatchObject({ kind: 'unknown', retryable: false });
+    expect(error).not.toHaveProperty('status');
+    expect(error.message).not.toContain('private tracker text');
+    expect(provider.calls).toHaveLength(1);
+    expect(trackerCalls).toBe(1);
+    expect(trace).toHaveLength(1);
+    expect(trace[0]).toMatchObject({
+      outcome: 'failed',
+      contentReceived: true,
+      customEndpoint: false,
+    });
+  });
+
+  it('a throwing success observer is reported once and cannot impersonate a provider retry', async () => {
+    const provider = makeProvider({ id: 'openai', generate: resolves('ok') });
+    let observed = 0;
+    const thrown = providerError('openai', 'rate_limit');
+    const { options } = makeOptions({
+      onAttempt: () => {
+        observed++;
+        throw thrown;
+      },
+    });
+    const chain = new FallbackChain([entry(provider, 'gpt-5.4-pro', 3)], options);
+    await expect(chain.generate(userReq)).rejects.toBe(thrown);
+    expect(observed).toBe(1);
+    expect(provider.calls).toHaveLength(1);
+  });
+
+  it('reports actual custom-route evidence independently of normalized errors', async () => {
+    const fake = makeProvider({
+      id: 'openai',
+      stream: () =>
+        streamFrom([
+          {
+            type: 'error',
+            error: makeLlmError({
+              provider: 'openai',
+              kind: 'bad_request',
+              status: 400,
+              message: 'bad',
+            }),
+          },
+        ]),
+    });
+    const provider = { ...fake.provider, customEndpoint: true };
+    const { options, trace } = makeOptions();
+    const chain = new FallbackChain([{ provider, model: 'gpt-5.4-pro', maxAttempts: 1 }], options);
+    await collect(chain.stream(userReq));
+    expect(trace[0]).toMatchObject({ customEndpoint: true, contentReceived: false });
   });
 });

@@ -14,6 +14,8 @@ export type LlmConfigErrorCode =
   | 'unknown_model'
   | 'unsupported_tool_schema'
   | 'unsupported_capability'
+  | 'invalid_output_cap_plan'
+  | 'invalid_token_estimate'
   | 'invalid_base_url';
 
 /** Base for the seam's thrown config errors — narrow on `code`, never on `message`. */
@@ -133,5 +135,14 @@ export class UnsupportedCapabilityError extends LlmConfigError {
     this.capability = capability;
     this.detail = detail;
     this.modelId = modelId;
+  }
+}
+
+/** Invalid finite token/cost arithmetic is refused before it can authorize paid egress. */
+export class InvalidTokenEstimateError extends LlmConfigError {
+  readonly code = 'invalid_token_estimate';
+  constructor() {
+    super('token estimates must be finite and non-negative, with a safe integer cost');
+    this.name = 'InvalidTokenEstimateError';
   }
 }

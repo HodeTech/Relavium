@@ -11,7 +11,11 @@ import type {
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { catalogModel, modelAccepts } from '../catalog/lookup.js';
-import { cappedMaxTokens } from '../output-cap.js';
+import {
+  outputCapNativeOptions,
+  outputCapPlanForRequest,
+  prepareOutputCapRequest,
+} from '../output-cap.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import {
   GEMINI_WIRE,
@@ -701,11 +705,12 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
   }
   // The output cap, held at or below the model's own ceiling (ADR-0071 §7) — down, never up: a cap BELOW the
   // ceiling is the author's deliberate budget, and raising it would spend their money for them.
-  const maxOutputTokens = cappedMaxTokens(req.maxTokens, req.model);
+  const capPlan = outputCapPlanForRequest(req, PROVIDER, 'official');
+  const maxOutputTokens = capPlan.mappedValue;
   if (maxOutputTokens !== undefined) {
     config['maxOutputTokens'] = maxOutputTokens;
   }
-  applyThinkingConfig(config, req, maxOutputTokens);
+  applyThinkingConfig(config, req, maxOutputTokens ?? capPlan.outputCeiling);
   if (req.outputModalities !== undefined && req.outputModalities.some((m) => m !== 'text')) {
     // Lower the node's non-text output_modalities to Gemini `responseModalities` (inline media-out,
     // 1.AG/ADR-0046). The per-modality capability gate (assertMediaCapabilities) has already rejected an
@@ -727,7 +732,7 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
     req.providerOptions === undefined
       ? config
       : {
-          ...stripTransportKeys(req.providerOptions),
+          ...stripTransportKeys(outputCapNativeOptions(capPlan, req.providerOptions) ?? {}),
           ...config, // mapped fields win
         };
   return { model: req.model, contents: toGeminiContents(req.messages), config: merged };
@@ -1202,6 +1207,7 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
     id: PROVIDER,
     supports: GEMINI_SUPPORTS,
     async generate(req: LlmRequest, key: string): Promise<LlmResult> {
+      req = prepareOutputCapRequest(req, PROVIDER, 'official').request;
       assertSupported(PROVIDER, GEMINI_SUPPORTS, req); // fail fast on an unsupported feature
       assertMediaCapabilities(PROVIDER, GEMINI_SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       try {
@@ -1226,6 +1232,7 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
       }
     },
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
+      req = prepareOutputCapRequest(req, PROVIDER, 'official').request;
       assertSupported(PROVIDER, GEMINI_SUPPORTS, req); // fail fast on an unsupported feature
       assertStreamable(PROVIDER, GEMINI_SUPPORTS);
       assertMediaCapabilities(PROVIDER, GEMINI_SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
@@ -1309,7 +1316,7 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
       return geminiPollVideo(transport, jobId, key, signal);
     },
     // ADR-0062 context-compaction seam — the shared defaults (Gemini's countTokens endpoint could specialize
-    // estimateTokens later; real usage is authoritative, so the heuristic is only a pre-first-turn fallback).
+    // estimateTokens later; current requests drive live context estimates, usage drives realized billing).
     ...CONTEXT_SEAM_DEFAULTS,
   };
 }

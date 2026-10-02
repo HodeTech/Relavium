@@ -965,7 +965,7 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
 
   it('gates pre-egress with maxTokens:0 + the media estimate → budget_exceeded (no generateMedia egress)', async () => {
     let called = false;
-    let info: { maxTokens?: number; mediaUnitsEstimate?: unknown } | undefined;
+    let info: import('./agent-turn.js').PreEgressInfo | undefined;
     const provider = generativeProvider();
     const wrapped: LlmProvider = {
       ...provider,
@@ -987,6 +987,9 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
     expect(called).toBe(false); // gate fails before any provider egress
     // The gate pins the TOKEN estimate to 0 (a generative call emits none) + carries the authored media volume.
     expect(info?.maxTokens).toBe(0);
+    expect(info?.inputTokensEstimate).toBe(0);
+    expect(info?.route).toBe('generative-media');
+    if (info?.route === 'generative-media') expect(info.outputTokensEstimate).toBe(0);
     expect(info?.mediaUnitsEstimate).toEqual([{ modality: 'image', units: 2 }]);
   });
 

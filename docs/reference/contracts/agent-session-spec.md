@@ -105,6 +105,16 @@ a failed, aborted or cancelled turn creates none.
 `development`. The later measured pre-send/recovery entry points and revised multi-pass/budget
 compaction outcomes remain staged; this section does not claim they have landed.
 
+### Financial request inputs
+
+`SessionDeps.maxTokensEstimate` is an optional estimate-only fallback copied at construction. CLI
+fresh/resumed/reseated chat and one-shot entry points pass the resolved config value, including when
+no budget governor exists. The shared turn core estimates every current tool round before cross-provider
+reasoning stripping and forwards required cap-plan/request identity, input estimate and the same frozen
+fallback to admission. The canonical estimator, cap precedence, handoff and failure-evidence contract
+lives in [llm-provider-seam.md](../shared-core/llm-provider-seam.md#current-request-estimates-and-bound-output-caps).
+Measured session context and multi-pass compaction remain later W7 step 8 work.
+
 ### Hard turn cap
 
 A session carries a **hard turn cap** — a finite DoS fail-safe on the number of turns it will run (engine

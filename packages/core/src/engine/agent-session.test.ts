@@ -2658,3 +2658,23 @@ describe('AgentSession — the ADR-0082 deadline ports actually reach the chain'
     });
   }
 });
+
+describe('frozen configured output fallback (ADR-0101)', () => {
+  it('captures the construction value for main turns independently of a governor', async () => {
+    const seen: Array<number | undefined> = [];
+    const { deps } = harness([textTurn('one'), textTurn('two')], {
+      maxTokensEstimate: 17,
+      preEgress: (info) => {
+        seen.push(info.route === 'text' ? info.maxTokensEstimate : undefined);
+      },
+    });
+    const s = session(deps);
+    // Ports remain callable, but changing the host's scalar after construction cannot change this instance.
+    Object.defineProperty(deps, 'maxTokensEstimate', { value: 1, configurable: true });
+    s.start();
+    await s.sendMessage('first');
+    await s.sendMessage('second');
+    expect(seen).toEqual([17, 17]);
+    s.cancel();
+  });
+});

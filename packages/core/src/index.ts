@@ -225,7 +225,13 @@ export type {
   ResolveEffortTiers,
 } from './engine/reasoning-effort.js';
 export { DEFAULT_AGENT_TURN_LIMITS } from './engine/agent-turn.js';
-export type { AgentTurnLimits, PreEgressHook } from './engine/agent-turn.js';
+export type {
+  AgentTurnLimits,
+  PreEgressHook,
+  PreEgressInfo,
+  TextPreEgressInfo,
+  GenerativePreEgressInfo,
+} from './engine/agent-turn.js';
 
 // Budget governor (1.AC) — the pre-egress cost gate a surface wires behind the `PreEgressHook` seam and
 // whose typed cap errors the run/session loops classify (ADR-0028). Exported so a surface can construct the

@@ -25,6 +25,11 @@ import type {
 import { requestSupportReason } from './capabilities.js';
 import { catalogModel } from './catalog/lookup.js';
 import { acceptedTiers } from './reasoning-wire.js';
+import {
+  prepareOutputCapRequest,
+  type OutputCapIdentity,
+  type PreparedOutputCapPlan,
+} from './output-cap.js';
 
 export type { BackoffStrategy };
 
@@ -90,6 +95,10 @@ export type AttemptOutcome = 'succeeded' | 'failed' | 'skipped';
  * `LlmError.cause` (the run-event error shape is only `{ code, message, retryable }`).
  */
 export interface AttemptRecord {
+  /** Chain-observed content/processed response, never an adapter-supplied error flag. */
+  readonly contentReceived: boolean;
+  /** The actual entry's endpoint classification, captured by the chain. */
+  readonly customEndpoint: boolean;
   /**
    * 1-based **positional** index of this record in the current `generate`/`stream` call's trace —
    * it counts skipped entries too, so it is NOT the run-event spec's per-real-call "retry attempt"
@@ -130,15 +139,11 @@ export interface AttemptRecord {
  * In 1.AC this is where the pre-egress budget governor runs; a rejected hook aborts the attempt
  * and is surfaced as a fatal chain error.
  */
-export type PreAttemptHook = (info: {
-  readonly model: string;
-  readonly maxTokens?: number;
-  /** The provider THIS attempt targets — the routing provider, which on a failover differs from the primary.
-   *  The pre-egress endpoint estimate must key on it (not the model's catalog provider): a custom gateway
-   *  serving another provider's model id is `custom` at the wire yet `official` by catalog, and the mismatch
-   *  under-authorizes real spend (review M2). */
-  readonly provider: ProviderId;
-}) => void | Promise<void>;
+export interface PreAttemptInfo extends OutputCapIdentity {
+  readonly outputCapPlan: PreparedOutputCapPlan;
+}
+
+export type PreAttemptHook = (info: PreAttemptInfo) => void | Promise<void>;
 
 /** Dependencies injected into a {@link FallbackChain} — all timing is injectable so tests are deterministic. */
 export interface FallbackChainOptions {
@@ -645,13 +650,15 @@ export class FallbackChain {
     // `agent-turn.ts` routes an inline media-out turn (ADR-0046) through `chain.generate()`, so a hung
     // provider on that path waited forever on every surface.
     let deadline: DeadlineScope | undefined;
+    let result: LlmResult;
     try {
-      const maxTokens = entryReq.maxTokens;
-      await this.#options.preAttempt?.({
-        model: entry.model,
-        provider: entry.provider.id,
-        ...(maxTokens === undefined ? {} : { maxTokens }),
-      });
+      const prepared = prepareOutputCapRequest(
+        entryReq,
+        entry.provider.id,
+        record.customEndpoint ? 'custom' : 'official',
+      );
+      entryReq = prepared.request;
+      await this.#options.preAttempt?.({ ...prepared.plan, outputCapPlan: prepared.plan });
       const key = await this.#resolveKey(entry.provider.id);
       // **Re-check the caller AFTER credential resolution, BEFORE the seam call.** `#resolveKey` is I/O — a
       // keychain read, and in Phase 2 a network one — so a cancel landing inside it used to be invisible
@@ -676,9 +683,7 @@ export class FallbackChain {
         this.#emit({ ...record, outcome: 'failed', error });
         return { status: 'error', error };
       }
-      const result = raced === undefined ? await call : raced.value;
-      this.#emitSuccess(record, entry.model, result.usage);
-      return { status: 'success', result };
+      result = raced === undefined ? await call : raced.value;
     } catch (err) {
       const error = this.#abortAware(
         this.#errorOf(err, entry.provider.id),
@@ -690,6 +695,29 @@ export class FallbackChain {
     } finally {
       deadline?.dispose();
     }
+    // A returned generation, even empty, was processed. Guard accounting separately from the
+    // provider attempt so a tracker/observer cannot forge a refundable HTTP refusal or cause retries.
+    const receivedRecord = { ...record, contentReceived: true };
+    if (result.usage === undefined) {
+      this.#emitSuccess(receivedRecord, entry.model, undefined);
+      return { status: 'success', result };
+    }
+    let folded: FoldedUsage;
+    try {
+      folded = this.#foldUsage(entry.model, result.usage);
+    } catch (cause) {
+      const error = makeLlmError({
+        provider: entry.provider.id,
+        kind: 'unknown',
+        message: 'cost accounting failed after a successful generated attempt',
+        cause,
+      });
+      this.#emit({ ...receivedRecord, outcome: 'failed', error });
+      return { status: 'error', error };
+    }
+    // The observer is consumer code: its exception propagates once, outside the provider catch.
+    this.#emitFolded(receivedRecord, result.usage, folded);
+    return { status: 'success', result };
   }
 
   /**
@@ -721,7 +749,7 @@ export class FallbackChain {
     error: LlmError,
     state: StreamAttemptState,
   ): Generator<StreamChunk, LlmError | undefined> {
-    this.#emit({ ...record, outcome: 'failed', error });
+    this.#emit({ ...record, contentReceived: state.committed, outcome: 'failed', error });
     if (state.committed) {
       yield { type: 'error', error: committed(error) };
       return undefined;
@@ -744,12 +772,13 @@ export class FallbackChain {
     // EVERY exit, and a `let` inside the `try` would not be in scope there.
     let iterator: AsyncIterator<StreamChunk> | undefined;
     try {
-      const maxTokens = entryReq.maxTokens;
-      await this.#options.preAttempt?.({
-        model: entry.model,
-        provider: entry.provider.id,
-        ...(maxTokens === undefined ? {} : { maxTokens }),
-      });
+      const prepared = prepareOutputCapRequest(
+        entryReq,
+        entry.provider.id,
+        record.customEndpoint ? 'custom' : 'official',
+      );
+      entryReq = prepared.request;
+      await this.#options.preAttempt?.({ ...prepared.plan, outputCapPlan: prepared.plan });
       const key = await this.#resolveKey(entry.provider.id);
       // **Re-check the caller AFTER credential resolution, BEFORE the seam call.** `#resolveKey` is I/O — a
       // keychain read, and in Phase 2 a network one — so a cancel landing inside it used to be invisible
@@ -845,6 +874,7 @@ export class FallbackChain {
     usage: Usage | undefined,
     state: StreamAttemptState,
   ): Generator<StreamChunk, undefined> {
+    record = { ...record, contentReceived: state.committed };
     if (usage === undefined) {
       this.#emitSuccess(record, entry.model, undefined); // nothing to fold
       return undefined;
@@ -1387,6 +1417,8 @@ class ChainRun {
     this.#attemptNumber += 1;
     return {
       attemptNumber: this.#attemptNumber,
+      contentReceived: false,
+      customEndpoint: entry.provider.customEndpoint === true,
       provider: entry.provider.id,
       model: entry.model,
       outcome: extra?.outcome ?? 'failed',

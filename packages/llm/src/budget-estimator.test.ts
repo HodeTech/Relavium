@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { estimateMaxNextCost, estimateMediaCost } from './budget-estimator.js';
+import {
+  estimateMaxNextCost,
+  estimateResolvedNextCost,
+  estimateMediaCost,
+} from './budget-estimator.js';
+import { InvalidTokenEstimateError } from './errors.js';
 import { catalogPricing } from './catalog/pricing.js';
 import type { ModelPricing } from './pricing.js';
 
@@ -168,4 +173,55 @@ describe('user-pricing overlay (2.5.G S10, ADR-0065 §2)', () => {
       unpricedModalities: ['image'],
     });
   });
+});
+
+describe('estimateResolvedNextCost — both terms without a second cap policy', () => {
+  it('prices input even with zero output and never catalog-clamps a native reservation', () => {
+    const model = catalogPricing('gpt-5.4-pro');
+    if (model === undefined) throw new Error('missing fixture price');
+    const inputRate = Math.max(
+      model.inputPerMtokMicrocents,
+      ...(model.contextTiers ?? []).map((t) => t.inputPerMtokMicrocents),
+    );
+    const outputRate = Math.max(
+      model.outputPerMtokMicrocents,
+      ...(model.contextTiers ?? []).map((t) => t.outputPerMtokMicrocents),
+    );
+    const resolved = estimateResolvedNextCost('gpt-5.4-pro', 1000, 200_000);
+    expect(resolved).toBe(Math.round((1000 * inputRate + 200_000 * outputRate) / 1_000_000));
+    expect(estimateResolvedNextCost('gpt-5.4-pro', 1000, 0)).toBeGreaterThan(0);
+    expect(resolved).toBeGreaterThan(estimateMaxNextCost('gpt-5.4-pro', 200_000));
+  });
+
+  it('uses the highest non-cached input/output tiers and the user overlay', () => {
+    const base = catalogPricing('gpt-5.4-pro');
+    if (base === undefined) throw new Error('missing fixture price');
+    const overlay = new Map<string, ModelPricing>([
+      [
+        'test',
+        {
+          ...base,
+          inputPerMtokMicrocents: 10,
+          outputPerMtokMicrocents: 20,
+          cachedInputPerMtokMicrocents: 1,
+          contextTiers: [
+            { aboveContextTokens: 100, inputPerMtokMicrocents: 30, outputPerMtokMicrocents: 40 },
+          ],
+        },
+      ],
+    ]);
+    expect(estimateResolvedNextCost('test', 1_000_000, 1_000_000, overlay)).toBe(70);
+  });
+
+  it.each([NaN, Infinity, -1])(
+    'refuses invalid arithmetic (%s) rather than authorizing zero',
+    (invalid) => {
+      expect(() => estimateResolvedNextCost('gpt-5.4-pro', invalid, 1)).toThrow(
+        InvalidTokenEstimateError,
+      );
+      expect(() => estimateResolvedNextCost('gpt-5.4-pro', 1, invalid)).toThrow(
+        InvalidTokenEstimateError,
+      );
+    },
+  );
 });

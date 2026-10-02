@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { AgentTurnError } from './agent-turn.js';
+import { AgentTurnError, type PreEgressInfo } from './agent-turn.js';
 import {
   estimateMaxNextCost,
+  estimateResolvedNextCost,
+  InvalidOutputCapPlanError,
+  prepareOutputCapPlan,
+  type MediaUnitsEstimate,
   type EndpointKind,
   type PricingOverlay,
   type ProviderId,
@@ -21,6 +25,47 @@ import {
 } from './budget-governor.js';
 
 describe('BudgetGovernor', () => {
+  const fixtureConfig = new WeakMap<
+    BudgetGovernor,
+    {
+      defaultMaxTokensEstimate?: number;
+      resolveEndpoint?: (provider: ProviderId) => EndpointKind;
+    }
+  >();
+
+  /** Historical ledger tests isolate output/media pricing with zero input; request-path tests below price input. */
+  function requestInfo(
+    governor: BudgetGovernor,
+    model: string,
+    maxTokens: number | undefined,
+    mediaUnitsEstimate?: readonly MediaUnitsEstimate[],
+    provider: ProviderId = 'anthropic',
+  ): PreEgressInfo {
+    const config = fixtureConfig.get(governor);
+    const endpoint = config?.resolveEndpoint?.(provider) ?? 'official';
+    const media = mediaUnitsEstimate === undefined ? {} : { mediaUnitsEstimate };
+    if (maxTokens === 0)
+      return {
+        route: 'generative-media',
+        model,
+        provider,
+        endpoint,
+        inputTokensEstimate: 0,
+        maxTokens: 0,
+        outputTokensEstimate: 0,
+        ...media,
+      };
+    const identity = { model, maxTokens, provider, endpoint, providerOptions: undefined };
+    return {
+      ...identity,
+      route: 'text',
+      inputTokensEstimate: 0,
+      maxTokensEstimate: config?.defaultMaxTokensEstimate,
+      outputCapPlan: prepareOutputCapPlan(identity),
+      ...media,
+    };
+  }
+
   const budget: Budget = { max_cost_microcents: 1_000_000, on_exceed: 'warn' };
 
   function makeGovernor(
@@ -68,6 +113,7 @@ describe('BudgetGovernor', () => {
         return overrides.emitOutcome?.(event) ?? Promise.resolve();
       },
     });
+    fixtureConfig.set(governor, overrides);
     return { governor, emitted, warnings, unpriced, unpricedCalls };
   }
 
@@ -83,16 +129,16 @@ describe('BudgetGovernor', () => {
       // Before ADR-0089 the media estimate contributed a silent 0 here, the projection stayed under the cap,
       // and this call was ADMITTED — a strict cap waving through paid image generation. Restore the `continue`
       // in `estimateMediaCost` and this assertion goes green on an `allow`, which is the break-verification.
-      await expect(governor.checkPreEgress('claude-haiku-4-5', 0, IMAGE_TURN)).rejects.toThrow(
-        BudgetExceededError,
-      );
-      await expect(governor.checkPreEgress('claude-haiku-4-5', 0, IMAGE_TURN)).rejects.toThrow(
-        /has no image rate/,
-      );
+      await expect(
+        governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 0, IMAGE_TURN)),
+      ).rejects.toThrow(BudgetExceededError);
+      await expect(
+        governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 0, IMAGE_TURN)),
+      ).rejects.toThrow(/has no image rate/);
       // The remedy has to be in the sentence: a refusal the user cannot act on is an outage, not a cap.
-      await expect(governor.checkPreEgress('claude-haiku-4-5', 0, IMAGE_TURN)).rejects.toThrow(
-        /relavium models pricing/,
-      );
+      await expect(
+        governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 0, IMAGE_TURN)),
+      ).rejects.toThrow(/relavium models pricing/);
     });
 
     it('refuses on the strict path even though the TOKEN side is priced and well under the cap', async () => {
@@ -101,12 +147,14 @@ describe('BudgetGovernor', () => {
       const { governor } = makeGovernor({
         budget: { max_cost_microcents: 1_000_000_000, on_exceed: 'fail', strict_cost_cap: true },
       });
-      await expect(governor.checkPreEgress('claude-haiku-4-5', 10, IMAGE_TURN)).rejects.toThrow(
-        /has no image rate/,
-      );
+      await expect(
+        governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 10, IMAGE_TURN)),
+      ).rejects.toThrow(/has no image rate/);
       // …and the same model with NO media requested is admitted, so the refusal is about the modality, not
       // the model. (Without this the test would also pass if strict simply blocked `claude-haiku-4-5`.)
-      await expect(governor.checkPreEgress('claude-haiku-4-5', 10)).resolves.not.toThrow();
+      await expect(
+        governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 10)),
+      ).resolves.not.toThrow();
     });
 
     it('ALLOWS with a once-per-modality notice when strict_cost_cap is off (ADR-0028 H4 holds)', async () => {
@@ -114,17 +162,19 @@ describe('BudgetGovernor', () => {
         budget: { max_cost_microcents: 1_000_000_000, on_exceed: 'fail' },
       });
       await expect(
-        governor.checkPreEgress('claude-haiku-4-5', 10, IMAGE_TURN),
+        governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 10, IMAGE_TURN)),
       ).resolves.not.toThrow();
       expect(unpricedCalls).toEqual([{ model: 'claude-haiku-4-5', modalities: ['image'] }]);
 
       // A standing condition of the model, not an event: the second and third identical calls stay silent.
-      await governor.checkPreEgress('claude-haiku-4-5', 10, IMAGE_TURN);
-      await governor.checkPreEgress('claude-haiku-4-5', 10, IMAGE_TURN);
+      await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 10, IMAGE_TURN));
+      await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 10, IMAGE_TURN));
       expect(unpricedCalls).toHaveLength(1);
 
       // …but a DIFFERENT modality on the same model is a different sentence, and is said.
-      await governor.checkPreEgress('claude-haiku-4-5', 10, [{ modality: 'audio', units: 30 }]);
+      await governor.checkPreEgress(
+        requestInfo(governor, 'claude-haiku-4-5', 10, [{ modality: 'audio', units: 30 }]),
+      );
       expect(unpricedCalls).toEqual([
         { model: 'claude-haiku-4-5', modalities: ['image'] },
         { model: 'claude-haiku-4-5', modalities: ['audio'] },
@@ -141,7 +191,9 @@ describe('BudgetGovernor', () => {
         budget: { max_cost_microcents: 1_000_000_000, on_exceed: 'fail', strict_cost_cap: true },
       });
       await expect(
-        governor.checkPreEgress('claude-haiku-4-5', 10, [{ modality: 'video', units: 0 }]),
+        governor.checkPreEgress(
+          requestInfo(governor, 'claude-haiku-4-5', 10, [{ modality: 'video', units: 0 }]),
+        ),
       ).rejects.toThrow(/has no video rate/);
     });
 
@@ -153,10 +205,14 @@ describe('BudgetGovernor', () => {
         budget: { max_cost_microcents: 1_000_000, on_exceed: 'warn', strict_cost_cap: true },
       });
       await expect(
-        governor.checkPreEgress('claude-haiku-4-5', 0, [{ modality: 'image', units: 4 }]),
+        governor.checkPreEgress(
+          requestInfo(governor, 'claude-haiku-4-5', 0, [{ modality: 'image', units: 4 }]),
+        ),
       ).rejects.toThrow(/--provider PROVIDER_ID --image USD_PER_IMAGE/);
       await expect(
-        governor.checkPreEgress('claude-haiku-4-5', 0, [{ modality: 'audio', units: 4 }]),
+        governor.checkPreEgress(
+          requestInfo(governor, 'claude-haiku-4-5', 0, [{ modality: 'audio', units: 4 }]),
+        ),
       ).rejects.toThrow(/--audio USD_PER_SECOND/);
     });
 
@@ -169,14 +225,16 @@ describe('BudgetGovernor', () => {
         budget: { max_cost_microcents: 1_000_000, on_exceed: 'warn', strict_cost_cap: true },
       });
       const modality = await governor
-        .checkPreEgress('claude-haiku-4-5', 0, [{ modality: 'image', units: 1 }])
+        .checkPreEgress(
+          requestInfo(governor, 'claude-haiku-4-5', 0, [{ modality: 'image', units: 1 }]),
+        )
         .then(() => undefined)
         .catch((e: unknown) => (e instanceof BudgetExceededError ? e.reason : undefined));
       expect(modality).toBe('unpriced_modality');
 
       // …and a wholly unpriced MODEL still reports the other one.
       const model = await governor
-        .checkPreEgress('evil-unknown-model', 10)
+        .checkPreEgress(requestInfo(governor, 'evil-unknown-model', 10))
         .then(() => undefined)
         .catch((e: unknown) => (e instanceof BudgetExceededError ? e.reason : undefined));
       expect(model).toBe('unpriced_model');
@@ -190,7 +248,9 @@ describe('BudgetGovernor', () => {
         budget: { max_cost_microcents: 1_000_000, on_exceed: 'warn', strict_cost_cap: true },
       });
       const err = await governor
-        .checkPreEgress('claude-haiku-4-5', 0, [{ modality: 'image', units: 1 }])
+        .checkPreEgress(
+          requestInfo(governor, 'claude-haiku-4-5', 0, [{ modality: 'image', units: 1 }]),
+        )
         .then(() => undefined)
         .catch((e: unknown) => (e instanceof Error ? e.message : ''));
       expect(err).toBeDefined();
@@ -205,7 +265,9 @@ describe('BudgetGovernor', () => {
         budget: { max_cost_microcents: 1_000_000, on_exceed: 'warn', strict_cost_cap: true },
       });
       await expect(
-        governor.checkPreEgress('evil; rm -rf ~', 0, [{ modality: 'image', units: 1 }]),
+        governor.checkPreEgress(
+          requestInfo(governor, 'evil; rm -rf ~', 0, [{ modality: 'image', units: 1 }]),
+        ),
         // An unknown id takes the unpriced-MODEL branch; the escaping is the same on both remedies.
       ).rejects.toThrow(/Price it with `relavium models pricing 'evil; rm -rf ~'`/);
     });
@@ -223,10 +285,10 @@ describe('BudgetGovernor', () => {
         emit: () => Promise.resolve(),
       });
       await expect(
-        governor.checkPreEgress('claude-haiku-4-5', 10, IMAGE_TURN),
+        governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 10, IMAGE_TURN)),
       ).resolves.not.toThrow();
       await expect(
-        governor.checkPreEgress('claude-haiku-4-5', 10, IMAGE_TURN),
+        governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 10, IMAGE_TURN)),
       ).resolves.not.toThrow();
       expect(calls).toBe(1);
     });
@@ -235,7 +297,9 @@ describe('BudgetGovernor', () => {
   it('allows a call whose estimate stays within the cap', async () => {
     const { governor, warnings } = makeGovernor();
     governor.updateCost(0);
-    const admission = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+    const admission = await governor.checkPreEgress(
+      requestInfo(governor, 'claude-haiku-4-5', 1000),
+    );
     expect(admission).toBeDefined();
     admission?.release();
     expect(warnings).toHaveLength(0);
@@ -244,7 +308,7 @@ describe('BudgetGovernor', () => {
   it('dedupes an unchanged overage, then re-arms after realized spend with the projected threshold', async () => {
     const { governor, warnings } = makeGovernor();
     governor.updateCost(900_000);
-    const first = await governor.checkPreEgress('claude-sonnet-4-6', 10_000);
+    const first = await governor.checkPreEgress(requestInfo(governor, 'claude-sonnet-4-6', 10_000));
     expect(warnings).toHaveLength(1);
     expect(warnings[0]?.spentMicrocents).toBe(900_000);
     // The estimate carries the projection far beyond the cap, so the advisory percentage describes the proposed
@@ -252,7 +316,9 @@ describe('BudgetGovernor', () => {
     expect(warnings[0]?.thresholdPct).toBe(100);
 
     // The same standing condition is one notice, even though warn mode admits both calls.
-    const duplicate = await governor.checkPreEgress('claude-sonnet-4-6', 10_000);
+    const duplicate = await governor.checkPreEgress(
+      requestInfo(governor, 'claude-sonnet-4-6', 10_000),
+    );
     expect(warnings).toHaveLength(1);
     duplicate?.release();
 
@@ -260,7 +326,9 @@ describe('BudgetGovernor', () => {
     // for a long-lived session, rather than leaving it permanently silent after its first overage.
     first?.settle(100_000);
     governor.updateCost(1_000_000); // mirrors the authoritative engine/session cost event after settlement
-    const continued = await governor.checkPreEgress('claude-sonnet-4-6', 10_000);
+    const continued = await governor.checkPreEgress(
+      requestInfo(governor, 'claude-sonnet-4-6', 10_000),
+    );
     expect(warnings).toHaveLength(2);
     expect(warnings[1]?.spentMicrocents).toBe(1_000_000);
     expect(warnings[1]?.thresholdPct).toBe(100);
@@ -285,14 +353,14 @@ describe('BudgetGovernor', () => {
         // A durable sink can synchronously call back into the governor (for example through an event listener).
         // The in-flight promise must already be installed, or this becomes recursive duplicate emission/egress.
         if (reentrant === undefined) {
-          reentrant = governor.checkPreEgress('claude-haiku-4-5', 1000);
+          reentrant = governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
         }
         return pendingEmission;
       },
     });
     governor.updateCost(Math.floor(estimatedCallCost / 2) + 1);
 
-    const outer = governor.checkPreEgress('claude-haiku-4-5', 1000);
+    const outer = governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
     await Promise.resolve(); // enter the deferred durable sink
     expect(emits).toBe(1);
     if (reentrant === undefined || resolveEmission === undefined) {
@@ -332,8 +400,8 @@ describe('BudgetGovernor', () => {
     });
     governor.updateCost(Math.floor(estimatedCallCost / 2) + 1);
 
-    const first = governor.checkPreEgress('claude-haiku-4-5', 1000);
-    const second = governor.checkPreEgress('claude-haiku-4-5', 1000);
+    const first = governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
+    const second = governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
     await Promise.resolve();
     if (rejectEmission === undefined) throw new Error('expected the warning sink to be pending');
     rejectEmission(new Error('durable warning sink failed'));
@@ -342,7 +410,7 @@ describe('BudgetGovernor', () => {
 
     // Both failed callers released their separate reservations. A below-cap retry must not see a ghost lease.
     governor.updateCost(0);
-    const retry = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+    const retry = await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
     expect(retry).toBeDefined();
     retry?.release();
   });
@@ -367,8 +435,8 @@ describe('BudgetGovernor', () => {
 
     // First call is under the cap and holds a live reservation. The second crosses the cap and starts a durable
     // warning write. Settling the first with real spend re-arms the latch WHILE that write is still in flight.
-    const first = await governor.checkPreEgress('claude-haiku-4-5', 1000);
-    const warning = governor.checkPreEgress('claude-haiku-4-5', 1000);
+    const first = await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
+    const warning = governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
     await Promise.resolve();
     first?.settle(estimatedCallCost);
     if (resolveEmission === undefined)
@@ -377,7 +445,9 @@ describe('BudgetGovernor', () => {
     const warningAdmission = await warning;
     warningAdmission?.release();
 
-    const continued = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+    const continued = await governor.checkPreEgress(
+      requestInfo(governor, 'claude-haiku-4-5', 1000),
+    );
     expect(emits).toBe(2);
     continued?.release();
   });
@@ -391,15 +461,15 @@ describe('BudgetGovernor', () => {
       },
     });
 
-    const first = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+    const first = await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
     expect(first).toBeDefined();
-    await expect(governor.checkPreEgress('claude-haiku-4-5', 1000)).rejects.toBeInstanceOf(
-      BudgetExceededError,
-    );
+    await expect(
+      governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000)),
+    ).rejects.toBeInstanceOf(BudgetExceededError);
 
     // A failed/cancelled attempt has no attributable charge, so its reservation releases capacity for the next one.
     first?.release();
-    const retry = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+    const retry = await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
     expect(retry).toBeDefined();
     retry?.release();
   });
@@ -410,7 +480,7 @@ describe('BudgetGovernor', () => {
       budget: { max_cost_microcents: estimatedCallCost + 100_000, on_exceed: 'fail' },
     });
 
-    const first = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+    const first = await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
     expect(first).toBeDefined();
     first?.settle(100_000);
     first?.settle(999_999); // idempotent: an accidental second completion cannot inflate the ledger
@@ -419,7 +489,7 @@ describe('BudgetGovernor', () => {
     // The reservation is gone, but its actual charge remains. The later authoritative sync is the same total,
     // not a second charge, so a next call exactly at the cap is still admitted.
     governor.updateCost(100_000);
-    const next = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+    const next = await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
     expect(next).toBeDefined();
     next?.release();
   });
@@ -484,13 +554,13 @@ describe('BudgetGovernor', () => {
       const held: (readonly string[])[] = [];
       const { governor } = makeGovernor({ onLegacyMediaJobHold: (ids) => held.push(ids) });
       governor.registerLegacyMediaJob('gen-1');
-      const pending = governor.checkPreEgress('claude-haiku-4-5', 1000);
+      const pending = governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
       await Promise.resolve();
       expect(held).toEqual([['gen-1']]); // announced BEFORE the first await, naming what to wait for
       governor.clearLegacyMediaJob('gen-1');
       await pending;
       // Not announced when there is nothing to hold.
-      await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
       expect(held).toHaveLength(1);
     });
 
@@ -501,7 +571,7 @@ describe('BudgetGovernor', () => {
         },
       });
       governor.registerLegacyMediaJob('gen-1');
-      const pending = governor.checkPreEgress('claude-haiku-4-5', 1000);
+      const pending = governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
       governor.clearLegacyMediaJob('gen-1');
       await expect(pending).resolves.toBeDefined();
     });
@@ -515,10 +585,12 @@ describe('BudgetGovernor', () => {
       governor.registerLegacyMediaJob('gen-1');
 
       let admitted = false;
-      const pending = governor.checkPreEgress('claude-haiku-4-5', 1000).then((a) => {
-        admitted = true;
-        return a;
-      });
+      const pending = governor
+        .checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000))
+        .then((a) => {
+          admitted = true;
+          return a;
+        });
       await Promise.resolve();
       await Promise.resolve();
       expect(admitted).toBe(false); // held, not failed
@@ -534,10 +606,12 @@ describe('BudgetGovernor', () => {
       const { governor } = makeGovernor();
       governor.registerLegacyMediaJob('gen-1');
       let admitted = false;
-      const pending = governor.checkPreEgress('claude-haiku-4-5', 1000).then((a) => {
-        admitted = true;
-        return a;
-      });
+      const pending = governor
+        .checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000))
+        .then((a) => {
+          admitted = true;
+          return a;
+        });
       await Promise.resolve();
       governor.registerLegacyMediaJob('gen-2');
       governor.clearLegacyMediaJob('gen-1');
@@ -558,10 +632,12 @@ describe('BudgetGovernor', () => {
       governor.registerLegacyMediaJob('gen-1');
       governor.registerLegacyMediaJob('gen-2');
       let settled = false;
-      const pending = governor.checkPreEgress('claude-haiku-4-5', 1000).then((a) => {
-        settled = true;
-        return a;
-      });
+      const pending = governor
+        .checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000))
+        .then((a) => {
+          settled = true;
+          return a;
+        });
       await Promise.resolve();
       expect(settled).toBe(false);
 
@@ -583,7 +659,9 @@ describe('BudgetGovernor', () => {
   describe('durable conservative commitments (ADR-0074 §1/§2)', () => {
     it('emits budget:estimate_committed with the identity, the delta, and a cumulative that INCLUDES it', async () => {
       const { governor, emitted } = makeGovernor();
-      const admission = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      const admission = await governor.checkPreEgress(
+        requestInfo(governor, 'claude-haiku-4-5', 1000),
+      );
       admission?.settleAtReservedEstimate({ nodeId: 'g', attemptNumber: 2 });
       await governor.flushCommitments();
 
@@ -603,7 +681,9 @@ describe('BudgetGovernor', () => {
 
     it('OMITS nodeId/attemptNumber for a session turn, which has neither', async () => {
       const { governor, emitted } = makeGovernor();
-      const admission = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      const admission = await governor.checkPreEgress(
+        requestInfo(governor, 'claude-haiku-4-5', 1000),
+      );
       admission?.settleAtReservedEstimate(); // no origin — the chat path
       await governor.flushCommitments();
 
@@ -619,7 +699,9 @@ describe('BudgetGovernor', () => {
       // each event's own delta, and that they add up to what the governor holds.
       const { governor, emitted } = makeGovernor();
       for (let i = 0; i < 3; i += 1) {
-        const admission = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+        const admission = await governor.checkPreEgress(
+          requestInfo(governor, 'claude-haiku-4-5', 1000),
+        );
         admission?.settleAtReservedEstimate({ nodeId: 'g' });
       }
       await governor.flushCommitments();
@@ -643,14 +725,18 @@ describe('BudgetGovernor', () => {
               })
             : Promise.resolve(),
       });
-      const admission = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      const admission = await governor.checkPreEgress(
+        requestInfo(governor, 'claude-haiku-4-5', 1000),
+      );
       admission?.settleAtReservedEstimate({ nodeId: 'g' });
 
       let admitted = false;
-      const next = governor.checkPreEgress('claude-haiku-4-5', 1000).then((a) => {
-        admitted = true;
-        return a;
-      });
+      const next = governor
+        .checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000))
+        .then((a) => {
+          admitted = true;
+          return a;
+        });
       await Promise.resolve();
       await Promise.resolve();
       expect(admitted).toBe(false); // still blocked on the durable write
@@ -670,7 +756,9 @@ describe('BudgetGovernor', () => {
             ? Promise.reject(new Error('disk full'))
             : Promise.resolve(),
       });
-      const admission = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      const admission = await governor.checkPreEgress(
+        requestInfo(governor, 'claude-haiku-4-5', 1000),
+      );
       admission?.settleAtReservedEstimate({ nodeId: 'g' });
 
       // Capacity NOT reopened — the conservative debit stands even though its write failed.
@@ -699,11 +787,11 @@ describe('BudgetGovernor', () => {
           return Promise.resolve();
         },
       });
-      const a = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      const a = await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
       a?.settleAtReservedEstimate({ nodeId: 'g' });
       // The barrier rejects for the first, but the chain must not be poisoned.
       await expect(governor.flushCommitments()).rejects.toBeInstanceOf(CommitmentDurabilityError);
-      const b = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      const b = await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
       b?.settleAtReservedEstimate({ nodeId: 'h' });
       await governor.flushCommitments();
       expect(emitted.filter((e) => e.type === 'budget:estimate_committed')).toHaveLength(2);
@@ -723,14 +811,14 @@ describe('BudgetGovernor', () => {
           return Promise.resolve();
         },
       });
-      const a = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      const a = await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
       a?.settleAtReservedEstimate({ nodeId: 'g' });
 
       // Classified, not escaped raw.
       await expect(governor.flushCommitments()).rejects.toBeInstanceOf(CommitmentDurabilityError);
       // And the governor still WORKS: a later admission and commitment go through.
       mode = 'ok';
-      const b = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      const b = await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
       expect(b).toBeDefined();
       b?.settleAtReservedEstimate({ nodeId: 'h' });
       await governor.flushCommitments();
@@ -746,7 +834,7 @@ describe('BudgetGovernor', () => {
             ? Promise.reject(new Error('disk full'))
             : Promise.resolve(),
       });
-      const a = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      const a = await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
       a?.settleAtReservedEstimate({ nodeId: 'branch-b' });
       const thrown = await governor.flushCommitments().catch((err: unknown) => err);
       expect(thrown).toBeInstanceOf(CommitmentDurabilityError);
@@ -764,19 +852,19 @@ describe('BudgetGovernor', () => {
           return failNext ? Promise.reject(new Error('disk full')) : Promise.resolve();
         },
       });
-      const a = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      const a = await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
       a?.settleAtReservedEstimate({ nodeId: 'g' });
       await expect(governor.flushCommitments()).rejects.toBeInstanceOf(CommitmentDurabilityError);
 
       // A SECOND failure is still reported — proving the barrier is still being entered.
-      const b = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      const b = await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
       b?.settleAtReservedEstimate({ nodeId: 'h' });
       await expect(governor.flushCommitments()).rejects.toBeInstanceOf(CommitmentDurabilityError);
 
       // And a clean write afterwards does not throw — the flag REPORTS, it does not permanently block, because
       // the safety property (the debit still consuming capacity in memory) holds regardless.
       failNext = false;
-      const c = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      const c = await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
       c?.settleAtReservedEstimate({ nodeId: 'i' });
       await expect(governor.flushCommitments()).resolves.toBeUndefined();
       // …but the owner is still marked, which is what a surface reads to qualify the amount it renders.
@@ -792,7 +880,9 @@ describe('BudgetGovernor', () => {
         expect(governor.conservativeCostMicrocents).toBe(0);
       }
       governor.restoreConservativeCost(900);
-      const admission = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      const admission = await governor.checkPreEgress(
+        requestInfo(governor, 'claude-haiku-4-5', 1000),
+      );
       admission?.settleAtReservedEstimate({ nodeId: 'g' });
       await governor.flushCommitments();
       const [commit] = emitted.filter((e) => e.type === 'budget:estimate_committed');
@@ -822,9 +912,9 @@ describe('BudgetGovernor', () => {
         },
       });
       governor.restoreConservativeCost(estimatedCallCost);
-      await expect(governor.checkPreEgress('claude-haiku-4-5', 1000)).rejects.toBeInstanceOf(
-        BudgetExceededError,
-      );
+      await expect(
+        governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000)),
+      ).rejects.toBeInstanceOf(BudgetExceededError);
     });
 
     it('releaseConservativeCommitments clears it — a user decision, never an engine heuristic', async () => {
@@ -837,14 +927,16 @@ describe('BudgetGovernor', () => {
         },
       });
       governor.restoreConservativeCost(estimatedCallCost);
-      await expect(governor.checkPreEgress('claude-haiku-4-5', 1000)).rejects.toBeInstanceOf(
-        BudgetExceededError,
-      );
+      await expect(
+        governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000)),
+      ).rejects.toBeInstanceOf(BudgetExceededError);
 
       expect(governor.releaseConservativeCommitments()).toBe(estimatedCallCost);
       expect(governor.conservativeCostMicrocents).toBe(0);
       // Capacity is genuinely back, so the same call now passes.
-      await expect(governor.checkPreEgress('claude-haiku-4-5', 1000)).resolves.toBeDefined();
+      await expect(
+        governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000)),
+      ).resolves.toBeDefined();
     });
   });
 
@@ -857,14 +949,14 @@ describe('BudgetGovernor', () => {
       },
     });
 
-    const first = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+    const first = await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
     first?.settleAtReservedEstimate();
     // A usage-less provider attempt has no corresponding durable cost event. An unrelated/older zero total must
     // not erase its bounded debit and allow a second worst-case request through the cap.
     governor.updateCost(0);
-    await expect(governor.checkPreEgress('claude-haiku-4-5', 1000)).rejects.toBeInstanceOf(
-      BudgetExceededError,
-    );
+    await expect(
+      governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000)),
+    ).rejects.toBeInstanceOf(BudgetExceededError);
   });
 
   it('restores a priced reservation for egress already submitted before a checkpoint resume', async () => {
@@ -876,11 +968,13 @@ describe('BudgetGovernor', () => {
       },
     });
 
-    const restored = governor.reserveCommittedEgress('claude-haiku-4-5', 1000);
-    expect(restored).toBeDefined();
-    await expect(governor.checkPreEgress('claude-haiku-4-5', 1000)).rejects.toBeInstanceOf(
-      BudgetExceededError,
+    const restored = governor.reserveCommittedEgress(
+      requestInfo(governor, 'claude-haiku-4-5', 1000),
     );
+    expect(restored).toBeDefined();
+    await expect(
+      governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000)),
+    ).rejects.toBeInstanceOf(BudgetExceededError);
     restored?.release();
   });
 
@@ -902,15 +996,17 @@ describe('BudgetGovernor', () => {
     });
     governor.updateCost(Math.floor(estimatedCallCost / 2) + 1); // pushes the next call into warn mode
 
-    await expect(governor.checkPreEgress('claude-haiku-4-5', 1000)).rejects.toThrow(
-      'durable warning sink failed',
-    );
+    await expect(
+      governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000)),
+    ).rejects.toThrow('durable warning sink failed');
 
     // Restore a below-cap authoritative state. A leaked reservation would turn this otherwise-allowed call back
     // into warn mode and invoke the sink a second time.
     shouldFail = false;
     governor.updateCost(0);
-    const admission = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+    const admission = await governor.checkPreEgress(
+      requestInfo(governor, 'claude-haiku-4-5', 1000),
+    );
     expect(emits).toBe(1);
     admission?.release();
   });
@@ -918,15 +1014,17 @@ describe('BudgetGovernor', () => {
   it('fails when on_exceed is fail', async () => {
     const { governor } = makeGovernor({ budget: { ...budget, on_exceed: 'fail' } });
     governor.updateCost(900_000);
-    await expect(governor.checkPreEgress('claude-sonnet-4-6', 10_000)).rejects.toBeInstanceOf(
-      BudgetExceededError,
-    );
+    await expect(
+      governor.checkPreEgress(requestInfo(governor, 'claude-sonnet-4-6', 10_000)),
+    ).rejects.toBeInstanceOf(BudgetExceededError);
   });
 
   it('the BudgetExceededError carries the spent / limit / projected cost figures', async () => {
     const { governor } = makeGovernor({ budget: { ...budget, on_exceed: 'fail' } });
     governor.updateCost(900_000);
-    const err = await governor.checkPreEgress('claude-sonnet-4-6', 10_000).catch((e: unknown) => e);
+    const err = await governor
+      .checkPreEgress(requestInfo(governor, 'claude-sonnet-4-6', 10_000))
+      .catch((e: unknown) => e);
     if (!(err instanceof BudgetExceededError)) throw new Error('expected a BudgetExceededError'); // narrow (no `as`)
     expect(err.spentMicrocents).toBe(900_000);
     expect(err.limitMicrocents).toBe(1_000_000);
@@ -940,7 +1038,9 @@ describe('BudgetGovernor', () => {
   it('pauses when on_exceed is pause_for_approval', async () => {
     const { governor } = makeGovernor({ budget: { ...budget, on_exceed: 'pause_for_approval' } });
     governor.updateCost(900_000);
-    const err = await governor.checkPreEgress('claude-sonnet-4-6', 10_000).catch((e: unknown) => e);
+    const err = await governor
+      .checkPreEgress(requestInfo(governor, 'claude-sonnet-4-6', 10_000))
+      .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(BudgetPauseError);
     if (!(err instanceof BudgetPauseError)) throw new Error('expected a BudgetPauseError'); // narrow (no `as`)
     const gate = err.toGateRequest();
@@ -950,14 +1050,16 @@ describe('BudgetGovernor', () => {
     expect(gate.limitMicrocents).toBe(1_000_000);
   });
 
-  it('uses the default max_tokens_estimate when maxTokens is omitted', async () => {
+  it('uses the configured estimate only when the wire is uncapped', async () => {
     const { governor, warnings } = makeGovernor({
       budget: { ...budget, on_exceed: 'warn' },
       defaultMaxTokensEstimate: 1,
     });
     // At exactly the cap minus the default estimate, the call is allowed.
-    governor.updateCost(1_000_000 - 500); // haiku output is 500_000_000 micro-cents/MTok
-    const admission = await governor.checkPreEgress('claude-haiku-4-5', undefined);
+    governor.updateCost(1_000_000 - estimateResolvedNextCost('gpt-5.4-mini', 0, 1));
+    const admission = await governor.checkPreEgress(
+      requestInfo(governor, 'gpt-5.4-mini', undefined, undefined, 'openai'),
+    );
     admission?.release();
     expect(warnings).toHaveLength(0);
   });
@@ -965,7 +1067,9 @@ describe('BudgetGovernor', () => {
   it('clamps thresholdPct to [0, 100]', async () => {
     const { governor, warnings } = makeGovernor();
     governor.updateCost(2_000_000);
-    const admission = await governor.checkPreEgress('claude-sonnet-4-6', 1000);
+    const admission = await governor.checkPreEgress(
+      requestInfo(governor, 'claude-sonnet-4-6', 1000),
+    );
     admission?.release();
     expect(warnings[0]?.thresholdPct).toBe(100);
   });
@@ -977,7 +1081,9 @@ describe('BudgetGovernor', () => {
       budget: { max_cost_microcents: 0, on_exceed: 'fail' },
     });
     governor.updateCost(5_000_000);
-    await expect(governor.checkPreEgress('claude-sonnet-4-6', 10_000)).resolves.toBeUndefined();
+    await expect(
+      governor.checkPreEgress(requestInfo(governor, 'claude-sonnet-4-6', 10_000)),
+    ).resolves.toBeUndefined();
     expect(warnings).toHaveLength(0);
   });
 
@@ -989,7 +1095,9 @@ describe('BudgetGovernor', () => {
       budget: { ...budget, on_exceed: 'fail' },
     });
     governor.updateCost(900_000);
-    await expect(governor.checkPreEgress('my-self-hosted-model', 10_000)).resolves.toBeUndefined();
+    await expect(
+      governor.checkPreEgress(requestInfo(governor, 'my-self-hosted-model', 10_000)),
+    ).resolves.toBeUndefined();
     expect(warnings).toHaveLength(0); // it did not exceed — nothing WAS billed
     // …but it is UNPRICED, so the cap could not apply, and that is said once (ADR-0071 §K7): a cap that silently
     // does not apply is a false sense of safety.
@@ -1004,7 +1112,7 @@ describe('BudgetGovernor', () => {
         budget: { ...budget, on_exceed: 'fail', strict_cost_cap: true },
       });
       for (const model of ['my-self-hosted-model', 'unlisted-first-party-model']) {
-        const result = governor.evaluatePreEgress(model, 10_000);
+        const result = governor.evaluatePreEgress(requestInfo(governor, model, 10_000));
         expect(result.kind).toBe('fail');
         if (result.kind === 'fail') {
           expect(result.error.message).toContain('no price');
@@ -1020,15 +1128,19 @@ describe('BudgetGovernor', () => {
         budget: { ...budget, on_exceed: 'fail', strict_cost_cap: true },
       });
       governor.updateCost(0);
-      expect(governor.evaluatePreEgress('claude-haiku-4-5', 1000).kind).toBe('allow');
+      expect(governor.evaluatePreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000)).kind).toBe(
+        'allow',
+      );
     });
 
     it('does not fabricate an over-cap projection for an unpriced strict refusal while another lease is live', async () => {
       const { governor } = makeGovernor({
         budget: { ...budget, on_exceed: 'fail', strict_cost_cap: true },
       });
-      const live = await governor.checkPreEgress('claude-haiku-4-5', 1000);
-      const result = governor.evaluatePreEgress('unlisted-first-party-model', 1000);
+      const live = await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
+      const result = governor.evaluatePreEgress(
+        requestInfo(governor, 'unlisted-first-party-model', 1000),
+      );
       expect(result.kind).toBe('fail');
       if (result.kind === 'fail') {
         expect(result.error.spentMicrocents).toBe(0);
@@ -1042,9 +1154,11 @@ describe('BudgetGovernor', () => {
       const { governor, unpriced } = makeGovernor({ budget: { ...budget, on_exceed: 'fail' } });
       // `evaluatePreEgress` classifies; `checkPreEgress` is what APPLIES the result and fires the sink. Drive the
       // applying path, so the "with a notice" in this test's name is actually asserted.
-      expect(governor.evaluatePreEgress('my-self-hosted-model', 10_000).kind).toBe('unpriced');
+      expect(
+        governor.evaluatePreEgress(requestInfo(governor, 'my-self-hosted-model', 10_000)).kind,
+      ).toBe('unpriced');
       await expect(
-        governor.checkPreEgress('my-self-hosted-model', 10_000),
+        governor.checkPreEgress(requestInfo(governor, 'my-self-hosted-model', 10_000)),
       ).resolves.toBeUndefined();
       expect(unpriced).toEqual(['my-self-hosted-model']);
     });
@@ -1054,7 +1168,7 @@ describe('BudgetGovernor', () => {
         budget: { max_cost_microcents: 0, on_exceed: 'fail', strict_cost_cap: true },
       });
       await expect(
-        governor.checkPreEgress('unlisted-first-party-model', 10_000),
+        governor.checkPreEgress(requestInfo(governor, 'unlisted-first-party-model', 10_000)),
       ).resolves.toBeUndefined();
       expect(unpriced).toEqual([]);
     });
@@ -1062,9 +1176,9 @@ describe('BudgetGovernor', () => {
 
   it('notifies UNPRICED only once per model — a loop must not repeat it every turn', async () => {
     const { governor, unpriced } = makeGovernor();
-    await governor.checkPreEgress('my-self-hosted-model', 1000);
-    await governor.checkPreEgress('my-self-hosted-model', 1000);
-    await governor.checkPreEgress('another-unpriced-one', 1000);
+    await governor.checkPreEgress(requestInfo(governor, 'my-self-hosted-model', 1000));
+    await governor.checkPreEgress(requestInfo(governor, 'my-self-hosted-model', 1000));
+    await governor.checkPreEgress(requestInfo(governor, 'another-unpriced-one', 1000));
     expect(unpriced).toEqual(['my-self-hosted-model', 'another-unpriced-one']); // deduped per model
   });
 
@@ -1079,8 +1193,12 @@ describe('BudgetGovernor', () => {
       },
     });
 
-    await expect(governor.checkPreEgress('my-self-hosted-model', 1000)).resolves.toBeUndefined();
-    await expect(governor.checkPreEgress('my-self-hosted-model', 1000)).resolves.toBeUndefined();
+    await expect(
+      governor.checkPreEgress(requestInfo(governor, 'my-self-hosted-model', 1000)),
+    ).resolves.toBeUndefined();
+    await expect(
+      governor.checkPreEgress(requestInfo(governor, 'my-self-hosted-model', 1000)),
+    ).resolves.toBeUndefined();
     expect(notices).toBe(1);
   });
 
@@ -1090,11 +1208,13 @@ describe('BudgetGovernor', () => {
     // wiring: the governor accepts the estimate and never crashes/over-blocks on a media-output turn.
     const { governor } = makeGovernor();
     governor.updateCost(0);
-    const tokenOnly = governor.evaluatePreEgress('claude-haiku-4-5', 1000);
-    const withMedia = governor.evaluatePreEgress('claude-haiku-4-5', 1000, [
-      { modality: 'image', units: 4 },
-      { modality: 'audio', units: 30 },
-    ]);
+    const tokenOnly = governor.evaluatePreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
+    const withMedia = governor.evaluatePreEgress(
+      requestInfo(governor, 'claude-haiku-4-5', 1000, [
+        { modality: 'image', units: 4 },
+        { modality: 'audio', units: 30 },
+      ]),
+    );
     expect(withMedia).toEqual(tokenOnly); // media adds 0 (unrated model) — decision unchanged
     expect(withMedia.kind).toBe('allow');
   });
@@ -1103,7 +1223,9 @@ describe('BudgetGovernor', () => {
     const { governor } = makeGovernor({ budget: { ...budget, on_exceed: 'fail' } });
     governor.updateCost(900_000);
     await expect(
-      governor.checkPreEgress('my-self-hosted-model', 10_000, [{ modality: 'image', units: 2 }]),
+      governor.checkPreEgress(
+        requestInfo(governor, 'my-self-hosted-model', 10_000, [{ modality: 'image', units: 2 }]),
+      ),
     ).resolves.toBeUndefined();
   });
 
@@ -1133,15 +1255,17 @@ describe('BudgetGovernor', () => {
         resolvePrice: OVERLAY,
       });
       governor.updateCost(0);
-      await expect(governor.checkPreEgress('acme-custom-1', 10_000)).rejects.toBeInstanceOf(
-        BudgetExceededError,
-      );
+      await expect(
+        governor.checkPreEgress(requestInfo(governor, 'acme-custom-1', 10_000)),
+      ).rejects.toBeInstanceOf(BudgetExceededError);
     });
 
     it('the SAME model WITHOUT the overlay degrades to allow (proves the overlay is what closes the gap)', async () => {
       const { governor } = makeGovernor({ budget: { ...budget, on_exceed: 'fail' } });
       governor.updateCost(0);
-      await expect(governor.checkPreEgress('acme-custom-1', 10_000)).resolves.toBeUndefined();
+      await expect(
+        governor.checkPreEgress(requestInfo(governor, 'acme-custom-1', 10_000)),
+      ).resolves.toBeUndefined();
     });
 
     it('a user-priced model UNDER the cap is allowed (no false positive)', async () => {
@@ -1151,7 +1275,9 @@ describe('BudgetGovernor', () => {
         resolvePrice: OVERLAY,
       });
       governor.updateCost(0);
-      const admission = await governor.checkPreEgress('acme-custom-1', 1_000);
+      const admission = await governor.checkPreEgress(
+        requestInfo(governor, 'acme-custom-1', 1_000),
+      );
       expect(admission).toBeDefined();
       admission?.release();
       expect(warnings).toHaveLength(0);
@@ -1182,23 +1308,89 @@ describe('BudgetGovernor', () => {
 
       // On its own API (official) → clamped to the ceiling → under the cap → allow.
       expect(
-        governor.evaluatePreEgress('deepseek-v4-flash', HUGE, undefined, 'deepseek').kind,
+        governor.evaluatePreEgress(
+          requestInfo(governor, 'deepseek-v4-flash', HUGE, undefined, 'deepseek'),
+        ).kind,
       ).toBe('allow');
       // Through the custom 'openai' gateway → unclamped → over the cap → fail. Keying on the catalog provider
       // ('deepseek') would have wrongly clamped THIS path and waved the overspend through (the M2 defect).
-      expect(governor.evaluatePreEgress('deepseek-v4-flash', HUGE, undefined, 'openai').kind).toBe(
-        'fail',
-      );
+      expect(
+        governor.evaluatePreEgress(
+          requestInfo(governor, 'deepseek-v4-flash', HUGE, undefined, 'openai'),
+        ).kind,
+      ).toBe('fail');
     });
 
-    it('omitting the provider (a media-only gate) defaults to official — a harmless no-op at maxTokens 0', () => {
+    it('a generative-media gate explicitly carries zero text input and output', () => {
       const { governor } = makeGovernor({
         budget: { ...budget, on_exceed: 'fail' },
         resolveEndpoint,
       });
       governor.updateCost(0);
-      // maxTokens 0 → token estimate 0 regardless of endpoint, so the absent provider cannot mis-authorize.
-      expect(governor.evaluatePreEgress('deepseek-v4-flash', 0).kind).toBe('allow');
+      // The explicit media route contributes no text cost regardless of endpoint.
+      expect(governor.evaluatePreEgress(requestInfo(governor, 'deepseek-v4-flash', 0)).kind).toBe(
+        'allow',
+      );
     });
+  });
+});
+
+describe('resolved admission pricing (ADR-0096/0101)', () => {
+  function info(
+    over: {
+      input?: number;
+      maxTokens?: number;
+      native?: Record<string, unknown>;
+      fallback?: number;
+    } = {},
+  ): PreEgressInfo {
+    const identity = {
+      model: 'gpt-5.4-pro',
+      provider: 'openai' as const,
+      endpoint: 'official' as const,
+      maxTokens: over.maxTokens,
+      providerOptions: over.native,
+    };
+    return {
+      ...identity,
+      route: 'text',
+      inputTokensEstimate: over.input ?? 0,
+      maxTokensEstimate: over.fallback,
+      outputCapPlan: prepareOutputCapPlan(identity),
+    };
+  }
+  function governor(cap: number, fallback?: number): BudgetGovernor {
+    return new BudgetGovernor({
+      budget: { max_cost_microcents: cap, on_exceed: 'fail' },
+      emit: () => Promise.resolve(),
+      ...(fallback === undefined ? {} : { defaultMaxTokensEstimate: fallback }),
+    });
+  }
+  it('refuses a native cap above the catalog ceiling through FINAL governor pricing', () => {
+    const lower = estimateMaxNextCost('gpt-5.4-pro', 200_000);
+    const actual = estimateResolvedNextCost('gpt-5.4-pro', 0, 200_000);
+    expect(actual).toBeGreaterThan(lower);
+    const ledger = governor(Math.round((lower + actual) / 2), 1);
+    expect(
+      ledger.evaluatePreEgress(info({ native: { max_completion_tokens: 200_000 }, fallback: 1 }))
+        .kind,
+    ).toBe('fail');
+    expect(ledger.evaluatePreEgress(info({ maxTokens: 200_000, fallback: 1 })).kind).toBe('allow');
+  });
+  it('includes current input and therefore refuses a request that output-only pricing would admit', () => {
+    const outputOnly = estimateMaxNextCost('gpt-5.4-pro', 1);
+    const total = estimateResolvedNextCost('gpt-5.4-pro', 100_000, 1);
+    const ledger = governor(Math.round((outputOnly + total) / 2));
+    expect(ledger.evaluatePreEgress(info({ input: 100_000, maxTokens: 1 })).kind).toBe('fail');
+    expect(ledger.evaluatePreEgress(info({ maxTokens: 1 })).kind).toBe('allow');
+  });
+  it('refuses a dropped configured fallback even when the effective native cap is known', () => {
+    const ledger = governor(1_000_000_000, 17);
+    expect(() => ledger.evaluatePreEgress(info({ native: { max_tokens: 1 } }))).toThrow(
+      InvalidOutputCapPlanError,
+    );
+    expect(ledger.evaluatePreEgress(info({ native: { max_tokens: 1 }, fallback: 17 })).kind).toBe(
+      'allow',
+    );
   });
 });

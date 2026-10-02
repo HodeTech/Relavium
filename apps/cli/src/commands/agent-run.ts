@@ -133,6 +133,9 @@ export async function agentRunCommand(
   const built = await (async (): Promise<BuiltChatSession> => {
     const b = await (deps.buildSession ?? buildChatSession)({
       chat: config.chat,
+      ...(config.maxTokensEstimate === undefined
+        ? {}
+        : { maxTokensEstimate: config.maxTokensEstimate }),
       // **Consent before any stdio MCP spawn** (ADR-0084 §1). A one-shot `agent run` opens an agent artifact
       // — often an imported one — which is exactly the case the gate exists for; `--fixture` replays offline
       // and declares no servers, so the gate never fires there.

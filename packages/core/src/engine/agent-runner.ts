@@ -193,6 +193,7 @@ export interface AgentRunnerDeps {
   readonly limits?: AgentTurnLimits;
   /** Pre-egress budget hook (default no-op; 1.AC fills it). */
   readonly preEgress?: PreEgressHook;
+  readonly maxTokensEstimate?: number;
   /** The user-pricing overlay (2.5.G S10, ADR-0065 §2) — host-injected into the turn's realized cost tracker so a
    *  workflow run's user-priced model is folded into cost governance. Absent ⇒ static-only. */
   readonly resolvePrice?: PricingOverlay;
@@ -439,6 +440,9 @@ async function executeAgent(
       registry: deps.registry,
       dispatchContext,
       limits: deps.limits ?? DEFAULT_AGENT_TURN_LIMITS,
+      ...((ctx.maxTokensEstimate ?? deps.maxTokensEstimate) === undefined
+        ? {}
+        : { maxTokensEstimate: ctx.maxTokensEstimate ?? deps.maxTokensEstimate }),
       ...(preEgress === undefined ? {} : { preEgress }),
       // Straight from the ctx, with no `deps` fallback — the ledger belongs to a RUN and only the run loop can
       // supply it. A host wiring a runner directly gets no ledger, which is correct: there is no run to
@@ -533,7 +537,13 @@ function buildChatTurnOutcome(
  */
 async function acquireGenerativeAdmission(
   preEgress: NodeExecContext['preEgress'],
-  req: { readonly model: string; readonly modality: MediaBilledModality; readonly units: number },
+  req: {
+    readonly model: string;
+    readonly provider: ProviderId;
+    readonly endpoint: import('@relavium/llm').EndpointKind;
+    readonly modality: MediaBilledModality;
+    readonly units: number;
+  },
 ): Promise<
   | { kind: 'admitted'; admission: BudgetAdmission | undefined }
   | { kind: 'refused'; outcome: NodeOutcome }
@@ -546,8 +556,13 @@ async function acquireGenerativeAdmission(
     // caller has one shape to reason about.
     const admission =
       (await preEgress({
+        route: 'generative-media',
         model: req.model,
+        provider: req.provider,
+        endpoint: req.endpoint,
         maxTokens: 0,
+        inputTokensEstimate: 0,
+        outputTokensEstimate: 0,
         outputModalities: [req.modality],
         mediaUnitsEstimate: [{ modality: req.modality, units: req.units }],
       })) ?? undefined;
@@ -616,6 +631,8 @@ async function executeGenerativeMedia(
   // single modality (singleBilledModality), so the budget governor's media addend resolves the same rate.
   const gated = await acquireGenerativeAdmission(ctx.preEgress ?? deps.preEgress, {
     model: primary.model,
+    provider: primary.provider.id,
+    endpoint: primary.provider.customEndpoint === true ? 'custom' : 'official',
     modality: modality.modality,
     units,
   });

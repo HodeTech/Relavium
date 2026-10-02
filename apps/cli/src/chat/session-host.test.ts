@@ -1,3 +1,5 @@
+import { prepareOutputCapPlan } from '@relavium/llm';
+import type { PreEgressInfo } from '@relavium/core';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1038,7 +1040,7 @@ describe('swapAgentModel (ADR-0059 model-switch rule)', () => {
 describe('buildGovernorWiring', () => {
   // Seed the governor's cumulative directly via updateCost so the pre-egress projection trips the cap
   // regardless of model pricing — exercising the real fail/pause/warn behavior, not just the wiring shape.
-  const OVER_CAP = { model: 'claude-sonnet-4-6', maxTokens: 1000 } as const;
+  const OVER_CAP = requestInfo({ model: 'claude-sonnet-4-6', maxTokens: 1000 });
 
   it('is unbounded (no governor) when the cost cap is absent or 0', () => {
     expect(buildGovernorWiring(EMPTY_CHAT)).toBeUndefined();
@@ -1057,10 +1059,12 @@ describe('buildGovernorWiring', () => {
         return Promise.resolve();
       });
 
-      const admission = await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+      const admission = await wiring?.preEgress(
+        requestInfo({ model: 'claude-haiku-4-5', maxTokens: 1000 }),
+      );
       admission?.settleAtReservedEstimate();
       // The barrier is what forces the write to have completed — the next pre-egress check awaits it.
-      await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+      await wiring?.preEgress(requestInfo({ model: 'claude-haiku-4-5', maxTokens: 1000 }));
 
       expect(written).toHaveLength(1);
       expect(written[0]?.model).toBe('claude-haiku-4-5');
@@ -1083,11 +1087,13 @@ describe('buildGovernorWiring', () => {
       // `settleAtReservedEstimate()` on `undefined` is a silent no-op. And the typed `toBeInstanceOf` matters
       // because a bare `.toThrow()` would also pass on a tripped cap.
       const wiring = wiringWithCap();
-      const admission = await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+      const admission = await wiring?.preEgress(
+        requestInfo({ model: 'claude-haiku-4-5', maxTokens: 1000 }),
+      );
       expect(admission).toBeDefined(); // pins that the emit path is reachable AT ALL
       admission?.settleAtReservedEstimate();
       await expect(
-        wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 }),
+        wiring?.preEgress(requestInfo({ model: 'claude-haiku-4-5', maxTokens: 1000 })),
       ).rejects.toBeInstanceOf(CommitmentDurabilityError);
       expect(wiring?.conservativeState().durabilityBroken).toBe(true);
       // …and the debit is NOT rolled back: the provider may already have billed it.
@@ -1099,9 +1105,11 @@ describe('buildGovernorWiring', () => {
       // long-lived chat's cap with no way out". Shipping the persistence without the release would BE that.
       const wiring = wiringWithCap();
       wiring?.attachConservativeWriter(() => Promise.resolve());
-      const admission = await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+      const admission = await wiring?.preEgress(
+        requestInfo({ model: 'claude-haiku-4-5', maxTokens: 1000 }),
+      );
       admission?.settleAtReservedEstimate();
-      await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+      await wiring?.preEgress(requestInfo({ model: 'claude-haiku-4-5', maxTokens: 1000 }));
 
       const held = wiring?.conservativeState().microcents ?? 0;
       expect(held).toBeGreaterThan(0);
@@ -1133,10 +1141,10 @@ describe('buildGovernorWiring', () => {
     // A model neither the catalog nor a user prices — the pre-egress estimate throws, and the governor degrades to
     // allow. It must not reject (an unpriced self-hosted model is not a failure) but it must SAY so, once.
     await expect(
-      wiring?.preEgress({ model: 'my-self-hosted-model', maxTokens: 1000 }),
+      wiring?.preEgress(requestInfo({ model: 'my-self-hosted-model', maxTokens: 1000 })),
     ).resolves.toBeUndefined();
     await expect(
-      wiring?.preEgress({ model: 'my-self-hosted-model', maxTokens: 1000 }),
+      wiring?.preEgress(requestInfo({ model: 'my-self-hosted-model', maxTokens: 1000 })),
     ).resolves.toBeUndefined();
     expect(notes).toHaveLength(1); // deduped per model
     expect(notes[0]).toContain('my-self-hosted-model');
@@ -1151,7 +1159,7 @@ describe('buildGovernorWiring', () => {
       strictCostCap: true,
     });
     await expect(
-      wiring?.preEgress({ model: 'my-self-hosted-model', maxTokens: 1000 }),
+      wiring?.preEgress(requestInfo({ model: 'my-self-hosted-model', maxTokens: 1000 })),
     ).rejects.toBeInstanceOf(BudgetExceededError);
   });
 
@@ -1500,3 +1508,20 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     expect(built.agent.tools).toEqual(['read_file', 'http_request']); // the ORIGINAL keeps the author's grant
   });
 });
+
+/** These ledger fixtures deliberately isolate output reservations from prompt input. */
+function requestInfo(input: { model: string; maxTokens: number }): PreEgressInfo {
+  const identity = {
+    ...input,
+    provider: 'anthropic' as const,
+    endpoint: 'official' as const,
+    providerOptions: undefined,
+  };
+  return {
+    ...identity,
+    route: 'text',
+    inputTokensEstimate: 0,
+    maxTokensEstimate: undefined,
+    outputCapPlan: prepareOutputCapPlan(identity),
+  };
+}

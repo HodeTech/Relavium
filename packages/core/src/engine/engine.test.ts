@@ -1,4 +1,4 @@
-import type { MediaJobStatus } from '@relavium/llm';
+import { prepareOutputCapPlan, type MediaJobStatus } from '@relavium/llm';
 import { describe, expect, it } from 'vitest';
 
 import { collectDurableMediaHandles } from '@relavium/shared';
@@ -6085,6 +6085,18 @@ describe('WorkflowEngine — an abort always breaks the legacy media-job hold (A
             model: 'claude-haiku-4-5',
             maxTokens: 100,
             provider: 'anthropic',
+            endpoint: 'official',
+            providerOptions: undefined,
+            route: 'text',
+            inputTokensEstimate: 0,
+            maxTokensEstimate: ctx.maxTokensEstimate,
+            outputCapPlan: prepareOutputCapPlan({
+              model: 'claude-haiku-4-5',
+              maxTokens: 100,
+              provider: 'anthropic',
+              endpoint: 'official',
+              providerOptions: undefined,
+            }),
           });
           released = true;
           return { kind: 'completed', output: 'sib' };
@@ -6123,4 +6135,20 @@ describe('WorkflowEngine — an abort always breaks the legacy media-job hold (A
     expect(released).toBe(true); // the abort is what let the suspended sibling through
     expect(events.some((e) => e.type === 'run:cancelled')).toBe(true);
   });
+});
+
+it('forwards the frozen configured output fallback into actual node execution (ADR-0101)', async () => {
+  const seen: Array<number | undefined> = [];
+  const engine = engineWith(
+    {
+      work: (ctx) => {
+        seen.push(ctx.maxTokensEstimate);
+        return { kind: 'completed', output: 'done' };
+      },
+    },
+    undefined,
+    { maxTokensEstimate: 17 },
+  );
+  await drain(engine.start({ workflow: workflow(SEQUENTIAL) }));
+  expect(seen).toEqual([17]);
 });

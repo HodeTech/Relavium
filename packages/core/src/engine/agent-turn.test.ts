@@ -1,4 +1,4 @@
-import { LlmProviderError, makeLlmError } from '@relavium/llm';
+import { LlmProviderError, makeLlmError, estimateRequestTokens } from '@relavium/llm';
 import type {
   CapabilityFlags,
   LlmMessage,
@@ -35,6 +35,7 @@ import {
   DEFAULT_AGENT_TURN_LIMITS,
   runAgentTurn,
   type AgentTurnParams,
+  type PreEgressInfo,
   type ChainCapabilities,
   codeForLlmError,
   foldRetryable,
@@ -2073,5 +2074,180 @@ describe('media attachments are delivered on a synthesized user message (`CR-50`
     // The message after the tool result is whatever the loop would normally send — never an empty
     // `user` turn. An extra blank message costs tokens on every tool call in every session.
     expect(continuation[toolAt + 1]).toBeUndefined();
+  });
+});
+
+describe('failed-attempt reservations use chain-owned facts (ADR-0096)', () => {
+  const refundable = [429, 400, 401, 402, 403, 404, 413, 422];
+  const uncertain = [408, 409, 418, 499, 500, 502, 503, 529];
+  for (const custom of [false, true]) {
+    it.each([...refundable, ...uncertain])(
+      `pre-content HTTP %s, custom=${custom}`,
+      async (status) => {
+        let releases = 0;
+        let commitments = 0;
+        const error = makeLlmError({
+          provider: 'anthropic',
+          kind: 'bad_request',
+          message: 'refused',
+          status,
+        });
+        const provider = {
+          ...scriptedProvider('anthropic', [[{ type: 'error', error }]]),
+          customEndpoint: custom,
+        };
+        await expect(
+          runAgentTurn(
+            baseParams(provider, {
+              preEgress: () => ({
+                settle: () => {
+                  throw new Error('unexpected realized usage');
+                },
+                release: () => {
+                  releases++;
+                },
+                settleAtReservedEstimate: () => {
+                  commitments++;
+                },
+              }),
+            }),
+          ),
+        ).rejects.toBeInstanceOf(AgentTurnError);
+        expect(releases).toBe(!custom && refundable.includes(status) ? 1 : 0);
+        expect(commitments).toBe(custom || !refundable.includes(status) ? 1 : 0);
+      },
+    );
+  }
+
+  it.each([
+    { type: 'text_delta', text: '' },
+    { type: 'reasoning_start', id: 'r' },
+    { type: 'reasoning_delta', id: 'r', text: '' },
+    { type: 'tool_call_start', id: 't', name: 'echo' },
+  ] satisfies StreamChunk[])(
+    'even an empty $type prevents a status-based refund',
+    async (chunk) => {
+      let releases = 0;
+      let commitments = 0;
+      const error = makeLlmError({
+        provider: 'anthropic',
+        kind: 'rate_limit',
+        message: 'refused',
+        status: 429,
+      });
+      const provider = scriptedProvider('anthropic', [[chunk, { type: 'error', error }]]);
+      await expect(
+        runAgentTurn(
+          baseParams(provider, {
+            preEgress: () => ({
+              settle: () => undefined,
+              release: () => {
+                releases++;
+              },
+              settleAtReservedEstimate: () => {
+                commitments++;
+              },
+            }),
+          }),
+        ),
+      ).rejects.toBeInstanceOf(AgentTurnError);
+      expect(releases).toBe(0);
+      expect(commitments).toBe(1);
+    },
+  );
+
+  it.each(['timeout', 'transport', 'cancelled', 'unknown'] as const)(
+    'a %s without positive refusal evidence keeps the reservation',
+    async (kind) => {
+      let releases = 0;
+      let commitments = 0;
+      const provider = scriptedProvider('anthropic', [
+        [
+          {
+            type: 'error',
+            error: makeLlmError({ provider: 'anthropic', kind, message: 'failed' }),
+          },
+        ],
+      ]);
+      await expect(
+        runAgentTurn(
+          baseParams(provider, {
+            preEgress: () => ({
+              settle: () => undefined,
+              release: () => {
+                releases++;
+              },
+              settleAtReservedEstimate: () => {
+                commitments++;
+              },
+            }),
+          }),
+        ),
+      ).rejects.toBeInstanceOf(AgentTurnError);
+      expect(releases).toBe(0);
+      expect(commitments).toBe(1);
+    },
+  );
+});
+
+describe('pre-egress current-round request estimation (ADR-0096/0101)', () => {
+  it('prices pre-strip input for every fallback and recomputes after the tool loop', async () => {
+    const original: LlmMessage[] = [
+      {
+        role: 'assistant',
+        content: [{ type: 'reasoning', text: 'r'.repeat(4000), signature: 'private-signature' }],
+      },
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+    ];
+    const primary = scriptedProvider('anthropic', [
+      [
+        {
+          type: 'error',
+          error: makeLlmError({ provider: 'anthropic', kind: 'overloaded', message: 'busy' }),
+        },
+      ],
+      [{ type: 'text_delta', text: 'done' }, STOP()],
+    ]);
+    const fallbackCalls: LlmRequest[] = [];
+    const fallbackBase = scriptedProvider('openai', [
+      [
+        { type: 'tool_call_start', id: 't', name: 'echo' },
+        { type: 'tool_call_delta', id: 't', argsJsonDelta: '{"v":1}' },
+        { type: 'tool_call_end', id: 't' },
+        STOP('tool_use'),
+      ],
+    ]);
+    const fallback = {
+      ...fallbackBase,
+      stream: (req: LlmRequest, key: string) => {
+        fallbackCalls.push(req);
+        return fallbackBase.stream(req, key);
+      },
+    };
+    const seen: PreEgressInfo[] = [];
+    await runAgentTurn(
+      baseParams(primary, {
+        messages: original,
+        planEntries: [
+          { provider: primary, model: 'claude-opus-4-8', maxAttempts: 1 },
+          { provider: fallback, model: 'gpt-5.4-mini', maxAttempts: 1 },
+        ],
+        maxTokensEstimate: 17,
+        preEgress: (info) => {
+          seen.push(info);
+        },
+      }),
+    );
+    const expected = estimateRequestTokens({ system: '', messages: original });
+    expect(seen.map((info) => info.provider)).toEqual(['anthropic', 'openai', 'anthropic']);
+    expect(seen[0]?.inputTokensEstimate).toBe(expected);
+    expect(seen[1]?.inputTokensEstimate).toBe(expected);
+    expect(seen[2]?.inputTokensEstimate).toBeGreaterThan(expected);
+    expect(seen.every((info) => info.route === 'text' && info.maxTokensEstimate === 17)).toBe(true);
+    expect(
+      fallbackCalls[0]?.messages
+        .flatMap((message) => message.content)
+        .some((part) => part.type === 'reasoning'),
+    ).toBe(false);
   });
 });

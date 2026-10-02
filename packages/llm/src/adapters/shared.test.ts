@@ -455,62 +455,14 @@ describe('encodeMediaJobId / decodeMediaJobId (opaque async-media-job bijection,
 });
 
 describe('context/token helpers + adapter seam methods (ADR-0062)', () => {
-  it('estimateRequestTokens: ~chars/4 over system + text parts + per-message overhead', () => {
-    // system 'abcd' (4) + 1 message: envelope (8) + 'hello' (5) = 17 chars ⇒ ceil(17/4) = 5.
-    expect(
-      estimateRequestTokens({
-        system: 'abcd',
-        messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
-      }),
-    ).toBe(5);
-    // A non-text part is charged a nominal 256: envelope (8) + 256 = 264 ⇒ ceil(264/4) = 66.
-    expect(
-      estimateRequestTokens({
-        system: '',
-        messages: [
-          { role: 'assistant', content: [{ type: 'tool_call', id: 'c', name: 'f', args: {} }] },
-        ],
-      }),
-    ).toBe(66);
-    // Tools contribute their serialized length; never throws (an estimate always exists).
-    expect(
-      estimateRequestTokens({ system: '', messages: [], tools: [{ name: 't', parameters: {} }] }),
-    ).toBeGreaterThan(0);
-  });
-
-  it('estimateRequestTokens: adversarial inputs (empty, mixed/empty-text parts, CJK under-count)', () => {
-    // Empty context needs no compaction — a well-defined 0, not NaN.
-    expect(estimateRequestTokens({ system: '', messages: [] })).toBe(0);
-    // Mixed text + non-text in one message: envelope (8) + 'hi' (2) + 256 (media) = 266 ⇒ ceil(266/4) = 67.
-    expect(
-      estimateRequestTokens({
-        system: '',
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: 'hi' },
-              { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 'aQ==' } },
-            ],
-          },
-        ],
-      }),
-    ).toBe(67);
-    // An empty-text part contributes only the envelope: 8 ⇒ ceil(8/4) = 2.
-    expect(
-      estimateRequestTokens({
-        system: '',
-        messages: [{ role: 'user', content: [{ type: 'text', text: '' }] }],
-      }),
-    ).toBe(2);
-    // KNOWN imprecision pinned (ADR-0062): chars/4 UNDER-counts CJK (~1 token/char), so the estimate is a
-    // pre-first-turn FALLBACK only — real provider usage is authoritative once a turn completes. 8 CJK chars
-    // ⇒ envelope (8) + 8 = 16 ⇒ 4 tokens, versus a real ~8. This test documents the gap, not a correctness bug.
-    const cjk = estimateRequestTokens({
-      system: '',
-      messages: [{ role: 'user', content: [{ type: 'text', text: '八文字のテキスト' }] }],
-    });
-    expect(cjk).toBe(4);
+  it('every adapter delegates to the same live request estimator', () => {
+    const input = {
+      system: 'abcd',
+      messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hello' }] }],
+    };
+    for (const adapter of [anthropicAdapter, openaiAdapter, deepseekAdapter, geminiAdapter]) {
+      expect(adapter.estimateTokens?.(input)).toBe(estimateRequestTokens(input));
+    }
   });
 
   it('contextLimitFor: catalog window for a canonical id, undefined for an unrated/custom model', () => {

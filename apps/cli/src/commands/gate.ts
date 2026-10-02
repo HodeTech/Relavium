@@ -329,6 +329,9 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
         runLeases: createRunLeasePort(store),
       }),
       resolveMediaSurface: wiring.resolveMediaSurface,
+      ...(wiring.maxTokensEstimate === undefined
+        ? {}
+        : { maxTokensEstimate: wiring.maxTokensEstimate }),
       ...(wiring.mediaCostEstimate === undefined
         ? {}
         : { mediaCostEstimate: wiring.mediaCostEstimate }),

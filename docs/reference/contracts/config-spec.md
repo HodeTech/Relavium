@@ -155,7 +155,7 @@ A config file is committed to a repository; a grant is not.
 [defaults]
 model = "claude-sonnet-4-6"        # default model for agents that omit one
 fs_scope = "sandboxed"             # sandboxed | project | full (see filesystem tiers)
-max_tokens_estimate = 4096         # per-call output-token estimate the pre-egress budget governor uses when a node/session omits maxTokens (ADR-0028) — not the model's absolute max, which would over-block
+max_tokens_estimate = 4096         # estimate-only output fallback when the final wire request is uncapped (ADR-0101); never overrides an authored/mapped or surviving native cap, and never inserts a generation limit
 media_job_poll_initial_ms = 5000   # async media-job (generateMedia LRO) first-poll delay + backoff base (1.AG/ADR-0045 §7)
 media_job_poll_max_ms = 30000      # backoff cap: poll interval = min(initial × 2^(n-1), max), no jitter
 media_job_deadline_ms = 1800000    # abandon a job past this (from submit) as a retryable timeout (30 min)

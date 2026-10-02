@@ -1,31 +1,16 @@
 import type { MediaBilledModality } from '@relavium/shared';
 
 import { priceModel, worstCaseRates, type MediaCost, type PricingOverlay } from './cost-tracker.js';
+import { InvalidTokenEstimateError } from './errors.js';
 import { cappedMaxTokens, type EndpointKind } from './output-cap.js';
 
 const TOKENS_PER_MTOK = 1_000_000;
 
 /**
- * Pre-egress worst-case cost estimate for a single LLM call.
- *
- * The estimate prices only the **output** side at the model's declared `maxTokens`
- * (or a configured default), because the engine does not tokenize the prompt locally.
- * This is intentionally conservative: it may block slightly early rather than overshoot.
- *
- * **The estimate must price the request the WIRE will carry**
- * ([ADR-0071](../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §7). The adapter holds an
- * authored cap to the model's own output ceiling, so the cap the estimate reasons about is the clamped one —
- * otherwise `gemini-2.5-pro` with `max_tokens: 200000` (ceiling 65 536) is pre-authorized for three times the
- * spend the model can physically produce, and `on_exceed: fail` kills the run over money that could never leave
- * the account.
- *
- * `endpoint` is not decoration, and getting it wrong is the same bug pointing the other way. The adapter does NOT
- * clamp a custom `base_url` (it may serve anything under a familiar id), so estimating a custom endpoint AS IF it
- * clamped produces an estimate BELOW what the wire can spend — and a governor that under-authorizes waves through
- * a call it should have stopped. Absent ⇒ `'official'`, matching the adapter's own default for an un-overridden
- * endpoint; a host that registers a custom `base_url` must say so.
- *
- * All figures are integer micro-cents.
+ * Compatibility output-only pricing for canonical authored caps (ADR-0071).
+ * This path clamps against a current official catalog ceiling. Admission and allowance consumers
+ * use estimateResolvedNextCost after binding an effective wire-cap plan (ADR-0096/0101), including
+ * current-request input. Never pass a surviving native cap through this compatibility wrapper.
  */
 export function estimateMaxNextCost(
   modelId: string,
@@ -44,6 +29,34 @@ export function estimateMaxNextCost(
   // know which side of a 200k/272k threshold this turn will land on — and on a SAFETY control, guessing the cheap
   // side is the guess that lets money escape.
   return Math.round((capped * worstCaseRates(p).output) / TOKENS_PER_MTOK);
+}
+
+/**
+ * Rate-only admission/allowance pricing (ADR-0096/0101). Inputs are already resolved; there is
+ * deliberately no catalog-cap lookup here. Native caps may exceed a catalog's output ceiling.
+ * Both terms use the highest context tier and NON-cached input, including user pricing overlays.
+ */
+export function estimateResolvedNextCost(
+  modelId: string,
+  inputTokensEstimate: number,
+  outputTokensReservation: number,
+  overlay?: PricingOverlay,
+): number {
+  if (
+    ![inputTokensEstimate, outputTokensReservation].every(
+      (value) => Number.isFinite(value) && value >= 0,
+    )
+  ) {
+    throw new InvalidTokenEstimateError();
+  }
+  const rates = worstCaseRates(priceModel(modelId, overlay));
+  const cost = Math.round(
+    (Math.max(0, inputTokensEstimate) * rates.input +
+      Math.max(0, outputTokensReservation) * rates.output) /
+      TOKENS_PER_MTOK,
+  );
+  if (!Number.isSafeInteger(cost) || cost < 0) throw new InvalidTokenEstimateError();
+  return cost;
 }
 
 /** One element of the pre-egress media estimate: a billed modality + its assumed unit count (a count for

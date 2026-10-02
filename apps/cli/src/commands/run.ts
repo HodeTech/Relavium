@@ -368,6 +368,9 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
           runLeases: createRunLeasePort(history.store),
         }),
         resolveMediaSurface: wiring.resolveMediaSurface,
+        ...(wiring.maxTokensEstimate === undefined
+          ? {}
+          : { maxTokensEstimate: wiring.maxTokensEstimate }),
         ...(wiring.mediaCostEstimate === undefined
           ? {}
           : { mediaCostEstimate: wiring.mediaCostEstimate }),

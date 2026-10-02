@@ -303,6 +303,7 @@ export interface SessionDeps {
   readonly maxTurns?: number;
   /** Pre-egress budget hook (default no-op; 1.AC fills it — ADR-0028). */
   readonly preEgress?: PreEgressHook;
+  readonly maxTokensEstimate?: number;
   /**
    * The user-pricing overlay (2.5.G S10, ADR-0065 §2) — host-injected (like {@link keyFor}) from the
    * `model_catalog` `source='user'` rows, threaded into the turn's REALIZED cost tracker so a user-priced model
@@ -561,6 +562,7 @@ export class AgentSession {
   #abortingTurn = false;
   /** Monotonic counter for the synthetic `run_command` tool-call id of a `!`-shell dispatch ({@link runUserCommand}). */
   #userCommandSeq = 0;
+  readonly #maxTokensEstimate: number | undefined;
   #effectTurnKey: number | undefined;
   #lastEffectTurnKey = 0;
   /** Memoized provider fallback plan (the agent binding is fixed for the session). */
@@ -616,6 +618,7 @@ export class AgentSession {
       (this.#memory === undefined && params.deps.autoCompact !== false);
     this.#context = params.context;
     this.#deps = params.deps;
+    this.#maxTokensEstimate = params.deps.maxTokensEstimate;
     const max = params.deps.maxTurns;
     this.#maxTurns = max === undefined || max <= 0 ? DEFAULT_SESSION_MAX_TURNS : max;
     this.#limits = params.deps.limits ?? DEFAULT_AGENT_TURN_LIMITS;
@@ -1262,6 +1265,9 @@ export class AgentSession {
         dispatchContext: this.#buildDispatchContext(new Set(), undefined),
         limits: this.#limits,
         ...(this.#deps.preEgress === undefined ? {} : { preEgress: this.#deps.preEgress }),
+        ...(this.#maxTokensEstimate === undefined
+          ? {}
+          : { maxTokensEstimate: this.#maxTokensEstimate }),
         ...(this.#deps.resolvePrice === undefined ? {} : { resolvePrice: this.#deps.resolvePrice }),
       });
       const summary = result.text.trim();
@@ -1499,6 +1505,9 @@ export class AgentSession {
       sessionToolCallId: (slot) => createSessionToolCallId(this.#reserveEffectTurnKey(), slot),
       limits: this.#limits,
       ...(this.#deps.preEgress === undefined ? {} : { preEgress: this.#deps.preEgress }),
+      ...(this.#maxTokensEstimate === undefined
+        ? {}
+        : { maxTokensEstimate: this.#maxTokensEstimate }),
       ...(this.#deps.resolvePrice === undefined ? {} : { resolvePrice: this.#deps.resolvePrice }),
     });
   }

@@ -407,7 +407,7 @@ describe('runCommand', () => {
     mkdirSync(join(root, '.relavium'), { recursive: true });
     writeFileSync(
       join(root, '.relavium', 'project.toml'),
-      '[defaults.media_cost_estimate]\nimage = 5\naudio = 9\n',
+      '[defaults]\nmax_tokens_estimate = 17\n[defaults.media_cost_estimate]\nimage = 5\naudio = 9\n',
     );
     const client = createClient(':memory:');
     runMigrations(client.db);
@@ -432,6 +432,7 @@ describe('runCommand', () => {
       );
       expect(code).toBe(EXIT_CODES.success);
       expect(captured?.mediaCostEstimate).toEqual({ image: 5, audio: 9 });
+      expect(captured?.maxTokensEstimate).toBe(17);
     } finally {
       client.sqlite.close();
     }

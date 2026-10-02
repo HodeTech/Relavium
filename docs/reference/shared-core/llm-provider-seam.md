@@ -48,6 +48,7 @@ interface LlmRequest {
   outputModalities?: OutputModality[]; // request media output on the INLINE path (ADR-0031); default ['text']
   signal?: AbortSignalLike;      // cancellation — the structural, platform-free signal contract from @relavium/shared (a real AbortSignal satisfies it); host-injected transport (desktop aborts the Rust llm_stream egress, ADR-0018)
   providerOptions?: Record<string, unknown>; // typed escape hatch (caching, reasoning, etc.)
+  preparedOutputCaps?: PreparedOutputCapPlan[]; // ephemeral candidate-specific cap snapshots; factory-created, never serialized
 }
 
 // The output-modality vocabulary (OWNED by @relavium/shared constants.ts, ADR-0031). `document`
@@ -163,6 +164,7 @@ type StreamChunk =
 
 interface LlmProvider {
   readonly id: 'anthropic' | 'openai' | 'gemini' | 'deepseek';
+  readonly customEndpoint?: boolean; // actual adapter-factory identity; absent means official
   generate(req: LlmRequest, key: string): Promise<LlmResult>;
   stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk>;
   readonly supports: CapabilityFlags;  // { tools, streaming, parallelToolCalls, vision, promptCache, reasoning, media } — vision is the derived alias of media.input.image (ADR-0031)
@@ -175,7 +177,7 @@ interface LlmProvider {
   // ADR-0062 context-compaction: per-provider token/context vocabulary, in Relavium/Zod seam types only (no vendor type crosses).
   contextLimit?(model: string): number | undefined;      // the model's context window in tokens; undefined for an unrated/custom model (engine then skips auto-compaction)
   managesOwnContext?(): boolean;                          // provider bounds context itself ⇒ engine skips compaction; false for all current providers
-  estimateTokens?(input: EstimateTokensInput): number;   // { system, messages, tools? } → a per-provider estimate; a pre-first-turn FALLBACK only (real usage is authoritative)
+  estimateTokens?(input: EstimateTokensInput): number;   // { system, messages, tools? } → a prospective request estimate; actual usage remains authoritative for realized billing
   // ADR-0064 live model catalog: return the models this `key` can reach, each mapped INSIDE the adapter to a
   // Relavium ModelListing (no vendor models.list() type crosses). OPTIONAL (a provider without a list endpoint
   // omits it → host degrades to static-only). Bounded + abortable + secret-free; one bad row is dropped, a
@@ -200,6 +202,75 @@ interface CapabilityFlags {
   };
 }
 ```
+
+### Current-request estimates and bound output caps
+
+[ADR-0096](../../decisions/0096-a-request-is-measured-before-it-is-sent.md)
+and [ADR-0101](../../decisions/0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md)
+separate prospective request size from realized usage. `estimateRequestTokens` is pure and exported
+from `@relavium/llm`; adapter `estimateTokens` defaults delegate to it. It sums `ceil(system.length / 4)`,
+two tokens per message, and the complete serialized-length/4 floor of each text, reasoning, tool-call,
+tool-result body and tool definition. Escaping, opaque args/results and continuation signatures count.
+Only actual media parts and the typed `tool_result.media` attachments use fixed per-part charges:
+media-looking objects nested inside opaque values remain ordinary serialized data.
+
+| Input part | Tokens per part | Basis, checked 2026-10-02 |
+|---|---:|---|
+| Image | 48,169 | Derived from GPT-4o mini's 2,833 base plus eight 5,667-token tiles under the documented high/auto resize rule: [OpenAI vision](https://developers.openai.com/api/docs/guides/images-vision#calculating-costs) |
+| Document | 80,000 | **Ten-page assumption**: round up ten times 3,000 typical text tokens plus 4,784 visual tokens. Sources: [Anthropic PDF](https://platform.claude.com/docs/en/build-with-claude/pdf-support#estimate-your-costs), [Anthropic vision](https://platform.claude.com/docs/en/build-with-claude/vision#resolution-and-token-cost) |
+| Audio | 20,000 | **Ten-minute assumption**: round up 600 seconds times 32 tokens/second; [Gemini media resolution](https://ai.google.dev/gemini-api/docs/generate-content/media-resolution) |
+| Video | 200,000 | **Ten-minute assumption with headroom** over approximately 300 tokens/second in static high-resolution mode; [Gemini video](https://ai.google.dev/gemini-api/docs/video-understanding#technical-details-about-videos) |
+
+Carrier kind and base64 length do not change these charges. They are conservative heuristics, **not
+physical upper bounds** on PDF pages, clip durations, custom services or provider tokenization; CJK and
+other inputs can be undercounted. Cycles, BigInt and throwing serialization/inspection receive a finite
+1,048,576-token fallback per affected unit (4 Mi serialized characters / 4); other units still count.
+Shared references that serialize normally retain their complete repeated floor. Synchronous JavaScript
+cannot interrupt a non-terminating getter or `toJSON`; this helper promises no such liveness guarantee.
+
+`prepareOutputCapPlan` in `output-cap.ts` owns field selection, captured official catalog clamping,
+mapped-field precedence and surviving native-cap evidence. All three adapter implementations use
+that same plan to lower both `generate` and `stream`. Official OpenAI maps authored caps to
+`max_completion_tokens`; official DeepSeek and custom OpenAI-compatible routes map to `max_tokens`;
+Gemini maps to `maxOutputTokens`; Anthropic's required absent-cap default is 4096, clamped to the
+captured official ceiling. A mapped cap wins its colliding native fields. With no mapped cap, valid
+finite positive integer native controls survive unchanged and reserve their greatest recognized value.
+Official OpenAI recognizes both keys, official DeepSeek only `max_tokens`, custom OpenAI-compatible
+routes both, and Gemini `maxOutputTokens`. Keeping two native OpenAI keys is a conservative accounting
+envelope for an upstream-invalid request, not a valid precedence rule. Invalid native values remain
+on the wire but supply no cap evidence. No estimate inserts a new wire limit.
+
+`outputTokensReservation(plan, configuredFallback)` uses the effective wire cap first. Only an uncapped
+request uses the configured estimate or the shared 4096 estimate default, clamped against a captured
+**official** ceiling. Custom and unknown-model requests do not borrow another service's ceiling.
+`estimateResolvedNextCost` then prices the resolved input and output independently at highest-tier
+non-cached input/output rates, with user overlays, and performs **no second catalog clamp**. Invalid
+non-finite/negative token estimates or unsafe cost arithmetic throw `InvalidTokenEstimateError`.
+The output-only `estimateMaxNextCost` remains a compatibility helper for canonical authored caps;
+native caps must never pass through it. Gemini's uncapped thinking control keeps its existing catalog
+fallback; a native output envelope is a reservation and cannot become an invented thinking budget.
+
+Plans are factory-created immutable cap projections, guarded at runtime and bound to model, actual
+provider/endpoint, canonical cap and the three native cap fields. `prepareOutputCapRequest` stages a
+cap/options copy before admission and credential awaits. Reconciliation preserves current unrelated
+options. `LlmRequest.preparedOutputCaps` carries a measured candidate's plan through the chain and
+adapter unchanged, including after a catalog refresh; another candidate gets its own bound plan.
+A substituted plan or changed cap/routing binding throws `InvalidOutputCapPlanError`. Neither
+`providerOptions` nor prepared plans enter durable budget quotes or events.
+
+Every `PreAttemptInfo`, on both chain paths, requires `model`, `provider`, `endpoint`, `maxTokens`,
+`providerOptions` and `outputCapPlan`; the two optional values have required keys allowing `undefined`.
+Core's text `PreEgressInfo` adds required current-round **pre-strip** `inputTokensEstimate` and required
+`maxTokensEstimate` (allowing `undefined`). All governor admission, evaluation and restoration methods
+consume this whole object. The separate `generative-media` route explicitly carries zero text input,
+canonical maximum and output estimate, while retaining disjoint media-unit pricing. Hosts freeze and
+forward the same configured fallback through workflow, fresh/resumed/reseated chat and one-shot entry
+points, including sessions without a money governor.
+
+**W7 step 6 implementation, 2026-10-02:** cap lowering, financial estimation, required forwarding and
+handoff foundations are implemented. Session measured pre-send/recovery and each summariser candidate's
+automatic handoff remain step 8; frozen allowance consumers remain step 9. This section does not claim
+those later entry points have shipped merely because the seam now supports them.
 
 > **`CapabilityFlags` is per-PROVIDER; a second, per-MODEL axis sits beside it (`CR-51`,
 > [ADR-0071](../../decisions/0071-models-dev-as-the-model-metadata-source.md) amendment).** The catalog's
@@ -830,6 +901,14 @@ followed by each authored `fallback_chain` entry:
   MODEL's, and a `tool_call` part is unconditionally replayed where a `reasoning`
   part is optional — but the **call itself survives**: it is the conversation the
   next model still needs, so only the token goes.
+- `AttemptRecord` carries chain-owned `contentReceived` and `customEndpoint` independently of
+  `LlmError`. Any streamed content chunk, including an empty delta or reasoning/tool start, counts;
+  a resolved non-streaming response counts even when empty. After a provider is engaged, core releases
+  a failed usage-less reservation only with explicit no-content evidence on an official route and
+  status **429, 400, 401, 402, 403, 404, 413 or 422**. Custom, missing or uncertain evidence, other
+  statuses, transport failures and timeouts retain conservative commitment. Existing proven
+  pre-provider failures still release. Accounting failures after a resolved generation use a fixed
+  non-retryable `unknown` error; a consumer observer exception propagates once.
 - Surface **per-attempt usage** to the injected `CostTracker` (against that
   attempt's model) so cost stays accurate across a failover, and report each
   attempt (succeeded / failed / skipped) via an `onAttempt` observer so the

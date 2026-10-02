@@ -1,3 +1,5 @@
+import { prepareOutputCapPlan } from '@relavium/llm';
+import type { PreEgressInfo } from '@relavium/core';
 import { reconstructSessionState, unwrapUntrusted } from '@relavium/core';
 import type { StreamChunk } from '@relavium/llm';
 import {
@@ -158,11 +160,13 @@ describe('createSessionPersister', () => {
     });
     persister.start();
 
-    const admission = await governor?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+    const admission = await governor?.preEgress(
+      requestInfo({ model: 'claude-haiku-4-5', maxTokens: 1000 }),
+    );
     expect(admission).toBeDefined(); // pins that the emit path is reachable at all (a priced model)
     admission?.settleAtReservedEstimate();
     // The §2 barrier is what forces the durable write to have completed before the next admission.
-    await governor?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+    await governor?.preEgress(requestInfo({ model: 'claude-haiku-4-5', maxTokens: 1000 }));
 
     const total = store.loadSession(built.sessionId)?.totalConservativeMicrocents ?? 0;
     expect(total).toBeGreaterThan(0);
@@ -1041,3 +1045,20 @@ describe('createSessionPersister', () => {
     });
   });
 });
+
+/** These ledger fixtures deliberately isolate output reservations from prompt input. */
+function requestInfo(input: { model: string; maxTokens: number }): PreEgressInfo {
+  const identity = {
+    ...input,
+    provider: 'anthropic' as const,
+    endpoint: 'official' as const,
+    providerOptions: undefined,
+  };
+  return {
+    ...identity,
+    route: 'text',
+    inputTokensEstimate: 0,
+    maxTokensEstimate: undefined,
+    outputCapPlan: prepareOutputCapPlan(identity),
+  };
+}

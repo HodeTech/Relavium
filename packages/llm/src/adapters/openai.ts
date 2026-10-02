@@ -20,7 +20,12 @@ import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import { catalogModel, catalogModelIds, modelAccepts } from '../catalog/lookup.js';
 import { isNonChatModelId } from '../model-kind.js';
-import { cappedMaxTokens, type EndpointKind } from '../output-cap.js';
+import {
+  outputCapNativeOptions,
+  outputCapPlanForRequest,
+  prepareOutputCapRequest,
+  type EndpointKind,
+} from '../output-cap.js';
 import { DEEPSEEK_WIRE, acceptedTiers, openAiWireValue } from '../reasoning-wire.js';
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
@@ -893,7 +898,12 @@ function buildCommonBody(
   ) {
     body.temperature = req.temperature;
   }
-  const maxTokens = applyOutputCap(body, req, provider, endpoint);
+  const capPlan = outputCapPlanForRequest(req, provider, endpoint);
+  if (capPlan.mappedValue !== undefined) {
+    if (capPlan.mappedField === 'max_completion_tokens')
+      body.max_completion_tokens = capPlan.mappedValue;
+    else body.max_tokens = capPlan.mappedValue;
+  }
   applyReasoningControl(body, req, provider, scope);
   if (req.stopSequences !== undefined) {
     body.stop = req.stopSequences;
@@ -917,11 +927,7 @@ function buildCommonBody(
   // So the two cap keys are reconciled explicitly. Whichever field we mapped wins outright; the other is dropped.
   // If the caller mapped NO cap and reached for a cap through `providerOptions`, theirs stands untouched — that is
   // the §10a escape hatch, and the way an exotic gateway asks for the field its server actually implements.
-  const escape = { ...req.providerOptions };
-  if (maxTokens !== undefined) {
-    delete escape['max_tokens'];
-    delete escape['max_completion_tokens'];
-  }
+  const escape = { ...outputCapNativeOptions(capPlan, req.providerOptions) };
   // A param the live API has PROVABLY rejected for this (endpoint, model) is dropped from the escape hatch too.
   // The escape hatch is spread BEFORE the mapped body, so withholding the mapped field is not enough on its own:
   // with `body` omitting the key there is nothing left to shadow an override of that SAME key, and it sails through
@@ -932,35 +938,6 @@ function buildCommonBody(
     if (hasLearnedRejection(provider, scope, req.model, param)) delete escape[param];
   }
   return { ...escape, ...body };
-}
-
-/**
- * THE OUTPUT CAP — the field NAME is a dialect, and the VALUE is clamped (ADR-0071 §7/§10a). Sets it on `body`
- * and RETURNS the capped value, because the escape-hatch reconciliation in {@link buildCommonBody} must know
- * whether a cap was mapped in order to drop a caller's competing cap key.
- *
- * Name: OpenAI's official Chat Completions deprecated `max_tokens` in favour of `max_completion_tokens`, and its
- * reasoning models REJECT the old field outright — the second half of the maintainer's "max tokens errors". But
- * this same adapter serves every custom OpenAI-compatible `base_url` (LM Studio, Ollama, vLLM, LiteLLM, an
- * enterprise gateway) and DeepSeek, most of which implement only the legacy field. Switching globally would
- * trade one broken population for another, so the rule is by ENDPOINT, not by provider: OpenAI's own API gets
- * the modern field, everything else keeps `max_tokens`.
- *
- * Value: capped at the model's published output ceiling, DOWN and never up — an authored `max_tokens: 200000` on
- * a model whose limit is 64 000 is a 400 on every single turn, not an ambitious request.
- */
-function applyOutputCap(
-  body: OpenAiCompatibleBody,
-  req: LlmRequest,
-  provider: ProviderId,
-  endpoint: EndpointKind,
-): number | undefined {
-  const capField = outputCapField(provider, endpoint);
-  const maxTokens = cappedMaxTokens(req.maxTokens, req.model, endpoint);
-  if (maxTokens !== undefined) {
-    body[capField] = maxTokens;
-  }
-  return maxTokens;
 }
 
 /**
@@ -1019,17 +996,6 @@ function applyReasoningControl(
     // they agree by construction rather than by two people remembering the same rule.
     body.thinking = DEEPSEEK_THINKING[req.reasoningEffort];
   }
-}
-
-/** The output-cap field this endpoint takes (ADR-0071 §10a). ONE place decides it, so no caller can send both. */
-function outputCapField(
-  provider: ProviderId,
-  endpoint: EndpointKind,
-): 'max_tokens' | 'max_completion_tokens' {
-  // OpenAI's own Chat Completions deprecated `max_tokens`, and its reasoning models reject it outright. Every other
-  // OpenAI-compatible server — DeepSeek's API, LM Studio, Ollama, vLLM, LiteLLM, an enterprise gateway — implements
-  // the legacy field, and most implement only that.
-  return provider === 'openai' && endpoint === 'official' ? 'max_completion_tokens' : 'max_tokens';
 }
 
 /** Lower a canonical `responseFormat: json` to OpenAI's `response_format`: DeepSeek supports only
@@ -1389,8 +1355,10 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
 
   return {
     id: providerId,
+    customEndpoint: endpoint === 'custom',
     supports,
     async generate(req: LlmRequest, key: string): Promise<LlmResult> {
+      req = prepareOutputCapRequest(req, providerId, endpoint).request;
       assertSupported(providerId, supports, req); // fail fast, never silently drop an unsupported feature
       assertMediaCapabilities(providerId, supports, req); // per-modality input/output gate (ADR-0031, 1.AE)
       const client = createClient(key);
@@ -1426,6 +1394,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       }
     },
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
+      req = prepareOutputCapRequest(req, providerId, endpoint).request;
       assertSupported(providerId, supports, req); // fail fast on an unsupported feature or no streaming
       assertStreamable(providerId, supports);
       assertMediaCapabilities(providerId, supports, req); // per-modality input/output gate (ADR-0031, 1.AE)
@@ -1554,7 +1523,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       return pollMediaJobSora(createClient(key), jobId, providerId, signal, key);
     },
     // ADR-0062 context-compaction seam — the shared defaults (covers both OpenAI and DeepSeek via this one
-    // factory; real usage is authoritative, so the estimate is only a pre-first-turn fallback).
+    // factory; current requests drive live context estimates, usage drives realized billing).
     ...CONTEXT_SEAM_DEFAULTS,
   };
 }

@@ -77,6 +77,7 @@ const SESSION_DURABILITY_FAILURE =
 export interface BuildChatSessionOptions {
   /** The resolved `[chat]` block (default model, fs scope, turn cap, cost cap). */
   readonly chat: ResolvedChatConfig;
+  readonly maxTokensEstimate?: number;
   /** `--agent <ref>` (path or bare id); `undefined` ⇒ the built-in default agent over `[chat].default_model`. */
   readonly agentRef: string | undefined;
   /**
@@ -271,6 +272,7 @@ const DEFAULT_FS_SCOPE = 'sandboxed' as const;
 type SessionRuntimeOptions = Pick<
   BuildChatSessionOptions,
   | 'chat'
+  | 'maxTokensEstimate'
   | 'now'
   | 'providers'
   | 'toolHost'
@@ -402,6 +404,7 @@ function buildSessionRuntime(
     opts.resolvePrice,
     providers.endpointKind,
     opts.onUnpriced,
+    opts.maxTokensEstimate,
   );
   // The session event sink (1.W): a draft → bus → stamped sequenceNumber/timestamp. Hoisted so a SURFACE
   // event (the in-REPL `/export`'s `session:exported`, 2.Q) can ride the same monotonic per-session counter.
@@ -413,6 +416,7 @@ function buildSessionRuntime(
   let effectJournal: ((correlation: EffectCorrelation) => EffectDispatchPort) | undefined;
 
   const deps: SessionDeps = {
+    ...(opts.maxTokensEstimate === undefined ? {} : { maxTokensEstimate: opts.maxTokensEstimate }),
     reserveEffectTurnKey: (id) => {
       if (effectTurnAllocator === undefined)
         throw new Error('session effect allocator is not attached');
@@ -775,6 +779,7 @@ export interface BuiltResumedChatSession extends BuiltChatSession {
 export interface BuildResumedChatSessionOptions {
   /** The resolved `[chat]` block (turn cap, cost cap) — applied to the resumed session's deps. */
   readonly chat: ResolvedChatConfig;
+  readonly maxTokensEstimate?: number;
   /**
    * Sink for a WITHHELD reasoning tier (ADR-0071 §6) — see {@link BuildChatSessionOptions.onEffortWithheld}. A
    * RESUMED session is where a stale tier is likeliest: the snapshot carries the tier the agent was authored
@@ -1012,6 +1017,7 @@ export function buildGovernorWiring(
   resolvePrice?: PricingOverlay,
   endpointKind?: (id: ProviderId) => EndpointKind,
   onUnpriced?: (note: string) => void,
+  maxTokensEstimate?: number,
 ): GovernorWiring | undefined {
   const cap = chat.maxCostMicrocents;
   if (cap === undefined || cap <= 0) return undefined;
@@ -1025,14 +1031,11 @@ export function buildGovernorWiring(
   let writeCommitment: ((c: SessionConservativeCommitment) => Promise<void>) | undefined;
   const governor = new BudgetGovernor({
     budget,
+    ...(maxTokensEstimate === undefined ? {} : { defaultMaxTokensEstimate: maxTokensEstimate }),
     // The ADR-0065 §2 user-pricing overlay — so the PRE-EGRESS estimate can price a user-priced (otherwise
     // unknown) model and enforce the cost cap on it. Omit ⇒ an unknown model degrades to `allow` loudly.
     ...(resolvePrice === undefined ? {} : { resolvePrice }),
-    // ADR-0071 §7: the adapter clamps an authored `max_tokens` to the model's ceiling on an OFFICIAL endpoint and
-    // not on a custom one. The estimate must make the same call — assume official on a gateway and it lands BELOW
-    // what the wire can spend, so the governor under-authorizes and waves through the call it exists to stop.
-    // Keyed on the ROUTING provider the governor threads per attempt, not the model's catalog provider — a custom
-    // gateway serving another provider's model id would otherwise be mis-read as official and under-clamped (M2).
+    // Deprecated host-API compatibility only; admission uses the actual factory-bound plan (ADR-0101).
     ...(endpointKind === undefined ? {} : { resolveEndpoint: endpointKind }),
     // ADR-0071 §K7: a turn ran on a model we could not price, so the cap did not apply to it. Say so, once — a cost
     // cap that silently does not apply is a false sense of safety. `strict_cost_cap` is the block-instead option.
@@ -1082,8 +1085,7 @@ export function buildGovernorWiring(
     },
   });
   return {
-    preEgress: (info) =>
-      governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate, info.provider),
+    preEgress: (info) => governor.checkPreEgress(info),
     updateCost: (cumulative) => governor.updateCost(cumulative),
     restoreConservativeCost: (microcents) => governor.restoreConservativeCost(microcents),
     flushBudgetCommitments: () => governor.flushCommitments(),

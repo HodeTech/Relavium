@@ -41,6 +41,7 @@ import {
   CostTracker,
   FallbackChain,
   LlmProviderError,
+  estimateRequestTokens,
   type AttemptRecord,
   type FallbackChainOptions,
   type FallbackPlanEntry,
@@ -49,6 +50,9 @@ import {
   type LlmRequest,
   type MediaUnitsEstimate,
   type PricingOverlay,
+  type PreAttemptInfo,
+  type PreparedOutputCapPlan,
+  type EndpointKind,
   type ProviderId,
   type ResponseFormat,
   type StreamChunk,
@@ -126,16 +130,33 @@ export const DEFAULT_AGENT_TURN_LIMITS: AgentTurnLimits = {
  * or releases it only when no egress can be attributed. The hook runs at FallbackChain's real attempt boundary;
  * there is deliberately no speculative loop-top reservation.
  */
-export type PreEgressHook = (info: {
-  readonly model: string;
-  readonly maxTokens?: number;
-  /** The routing provider for this call — forwarded to the budget governor's endpoint estimate so it keys on the
-   *  ACTUAL provider (custom base_url ⇒ `custom`, no clamp), not the model's catalog provider (review M2). Optional:
-   *  a media-only gate (`maxTokens: 0`) omits it harmlessly, since the token estimate is 0 regardless of endpoint. */
-  readonly provider?: ProviderId;
+export interface TextPreEgressInfo extends PreAttemptInfo {
+  readonly route: 'text';
+  readonly inputTokensEstimate: number;
+  readonly maxTokensEstimate: number | undefined;
   readonly outputModalities?: readonly OutputModality[];
   readonly mediaUnitsEstimate?: readonly MediaUnitsEstimate[];
-}) => void | BudgetAdmission | Promise<void | BudgetAdmission>;
+}
+
+export interface GenerativePreEgressInfo {
+  readonly route: 'generative-media';
+  readonly model: string;
+  readonly provider: ProviderId;
+  readonly endpoint: EndpointKind;
+  readonly inputTokensEstimate: 0;
+  readonly maxTokens: 0;
+  readonly outputTokensEstimate: 0;
+  readonly outputModalities?: readonly OutputModality[];
+  readonly mediaUnitsEstimate?: readonly MediaUnitsEstimate[];
+}
+
+// Exactly the accepted upstream refusal list; 408, other 4xx and uncertain failures stay committed.
+const PRE_CONTENT_REFUSAL_STATUSES = new Set([429, 400, 401, 402, 403, 404, 413, 422]);
+
+export type PreEgressInfo = TextPreEgressInfo | GenerativePreEgressInfo;
+export type PreEgressHook = (
+  info: PreEgressInfo,
+) => void | BudgetAdmission | Promise<void | BudgetAdmission>;
 
 /**
  * The chain capabilities the host supplies (the platform-level subset of {@link FallbackChainOptions}).
@@ -181,6 +202,10 @@ export interface AgentTurnParams {
   /** Per-turn generation knobs (node-over-agent precedence is resolved by the caller). */
   readonly temperature?: number;
   readonly maxTokens?: number;
+  /** Same frozen uncapped fallback supplied to context measurement and the governor. */
+  readonly maxTokensEstimate?: number;
+  /** Measured candidate plans for the first constructed request, never a vendor option. */
+  readonly preparedOutputCaps?: readonly PreparedOutputCapPlan[];
   /** Normalized reasoning-effort tier (ADR-0066) — passed onto every chain attempt's `LlmRequest.reasoningEffort`;
    *  each adapter maps it to the provider's native control. Gated to a reasoning-capable primary model by the caller. */
   readonly reasoningEffort?: ReasoningEffort;
@@ -460,6 +485,9 @@ function buildRequest(messages: readonly LlmMessage[], params: AgentTurnParams):
     ...(params.responseFormat === undefined ? {} : { responseFormat: params.responseFormat }),
     ...(params.temperature === undefined ? {} : { temperature: params.temperature }),
     ...(params.maxTokens === undefined ? {} : { maxTokens: params.maxTokens }),
+    ...(params.preparedOutputCaps === undefined || messages.length !== params.messages.length
+      ? {}
+      : { preparedOutputCaps: [...params.preparedOutputCaps] }),
     // ADR-0066: the normalized reasoning-effort tier onto every attempt's request (the adapter maps it natively).
     ...(params.reasoningEffort === undefined ? {} : { reasoningEffort: params.reasoningEffort }),
     // Lower the node's requested non-text output onto the request (1.AF/D15) so the FallbackChain
@@ -1103,6 +1131,7 @@ async function dispatchToolUseTurn(
  * turn-core tracker); this wrapper reads it on the failure path.
  */
 export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnResult> {
+  params = Object.freeze({ ...params });
   const acc: TurnUsageAccumulator = { input: 0, output: 0, engaged: false };
   try {
     return await driveAgentTurn(params, acc);
@@ -1216,7 +1245,7 @@ async function driveAgentTurn(
     const admission = takeAttemptAdmission();
     if (!providerMayHaveEngaged) {
       // A successful pre-attempt check followed by a credential failure/cancellation never reached a provider.
-      // This is the one path where the held admission is conclusively safe to release after the hook returned.
+      // Proven pre-provider failure: the held admission is safe to release after the hook returned.
       admission?.release();
       return;
     }
@@ -1224,6 +1253,17 @@ async function driveAgentTurn(
     nonSkippedAttempts += 1;
     usage.engaged = true; // a non-skipped attempt RAN — mark engaged even if it then errored at zero usage
     if (record.usage === undefined) {
+      const status = record.error?.status;
+      if (
+        record.outcome === 'failed' &&
+        record.contentReceived === false &&
+        record.customEndpoint === false &&
+        status !== undefined &&
+        PRE_CONTENT_REFUSAL_STATUSES.has(status)
+      ) {
+        admission?.release();
+        return;
+      }
       // A clean EOF and a partial-stream failure can both omit terminal usage AFTER provider egress. Dropping the
       // reservation would silently reopen cap capacity for money that may already be owed, so fail closed at the
       // bounded estimate. A credential/materialization failure before the true attempt boundary never reaches here.
@@ -1339,11 +1379,7 @@ async function driveAgentTurn(
     ...(preEgress === undefined && params.money === undefined
       ? {}
       : {
-          preAttempt: async (info: {
-            readonly model: string;
-            readonly provider: ProviderId;
-            readonly maxTokens?: number;
-          }) => {
+          preAttempt: async (info: PreAttemptInfo) => {
             // **Barrier B1 (ADR-0077)** — before the next egress admission, and before the governor call, so a
             // run whose ledger write did not land admits nothing further. It awaits AND observes: `join()`
             // throws the retained failure rather than returning, which is the only way a caller here can see
@@ -1367,6 +1403,15 @@ async function driveAgentTurn(
             throwIfAborted(params.signal);
             const nextAdmission = await preEgress({
               ...info,
+              route: 'text',
+              maxTokensEstimate: params.maxTokensEstimate,
+              inputTokensEstimate: estimateRequestTokens({
+                system: params.system ?? '',
+                messages,
+                ...(params.tools === undefined || requestsMediaOutput(params)
+                  ? {}
+                  : { tools: params.tools }),
+              }),
               ...(params.outputModalities === undefined
                 ? {}
                 : { outputModalities: params.outputModalities }),

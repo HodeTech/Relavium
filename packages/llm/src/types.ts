@@ -18,6 +18,7 @@ import {
   StopReasonSchema,
 } from '@relavium/shared';
 import type { AbortSignalLike, LlmProviderId } from '@relavium/shared';
+import { isPreparedOutputCapPlan, type PreparedOutputCapPlan } from './output-cap.js';
 
 /**
  * The **`LLMProvider` seam** — the provider-agnostic boundary every multi-LLM call in Relavium
@@ -339,6 +340,8 @@ export const LlmRequestSchema = z.object({
   stopSequences: z.array(z.string()).optional(),
   signal: abortSignalLikeSchema.optional(),
   providerOptions: z.record(z.string(), z.unknown()).optional(), // typed escape hatch
+  // Ephemeral, Relavium-owned measured candidate plans, never forwarded as vendor options.
+  preparedOutputCaps: z.array(z.custom<PreparedOutputCapPlan>(isPreparedOutputCapPlan)).optional(),
 });
 export type LlmRequest = z.infer<typeof LlmRequestSchema>;
 
@@ -534,9 +537,9 @@ export type ModelListing = z.infer<typeof ModelListingSchema>;
 
 /**
  * Input to {@link LlmProvider.estimateTokens} (ADR-0062) — a prospective request the engine has NOT yet
- * sent. Expressed in seam types only (no vendor type crosses — CLAUDE.md #4). Used only as a pre-first-turn
- * FALLBACK: once a turn has completed, the engine prefers the real provider `usage` as the authoritative
- * context-size signal, so this estimate's imprecision never drives a live decision.
+ * sent. Expressed in seam types only (no vendor type crosses — CLAUDE.md #4). The constructed request,
+ * rather than a previous response's usage, is the input to live context decisions (ADR-0096).
+ * Realized usage remains authoritative for billing, never a substitute for prospective request size.
  */
 export interface EstimateTokensInput {
   readonly system: string;
@@ -581,10 +584,9 @@ export interface LlmProvider {
    */
   managesOwnContext?(): boolean;
   /**
-   * A per-provider token estimate for a prospective request (ADR-0062) — a FALLBACK the engine uses only
-   * before any turn has reported real `usage`. An adapter MAY specialize with a native tokenizer; the real
-   * adapters share a character-based heuristic today (real usage is authoritative, so precision here is
-   * secondary).
+   * A per-provider heuristic for a prospective request (ADR-0096). Current constructed requests,
+   * rather than previous response usage, drive context decisions. A missing/invalid estimator is
+   * handled by the session's entry-point policy; realized billing always uses actual usage.
    */
   estimateTokens?(input: EstimateTokensInput): number;
   /**

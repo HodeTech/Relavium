@@ -311,8 +311,8 @@ export interface WorkflowEngineDeps {
    */
   readonly resolverCapabilities?: ResolverCapabilities;
   /**
-   * Per-call output-token default the pre-egress budget governor uses when a node/session omits
-   * `maxTokens` (ADR-0028). Not the model's absolute max, which would over-block.
+   * Estimate-only output fallback for a final uncapped wire request (ADR-0101).
+   * Captured once and forwarded to node execution and the governor; never a generation control.
    */
   readonly maxTokensEstimate?: number;
   /**
@@ -325,10 +325,8 @@ export interface WorkflowEngineDeps {
    */
   readonly resolvePrice?: PricingOverlay;
   /**
-   * Is a model's provider on its own API, or behind a custom `base_url` (ADR-0071 §7)? Forwarded to the pre-egress
-   * {@link BudgetGovernor}: the adapter clamps an authored `max_tokens` to the model's ceiling only on an official
-   * endpoint, and an estimate that assumes otherwise stops describing the request the wire will carry. Absent ⇒
-   * official (the adapter's own default).
+   * @deprecated Retained for host API compatibility only. Actual adapter-factory endpoint identity
+   * is required on each bound pre-egress info object (ADR-0101); this resolver has no pricing authority.
    */
   readonly resolveEndpoint?: (provider: ProviderId) => EndpointKind;
   /**
@@ -1219,12 +1217,16 @@ class RunExecution {
     // fail-closed rather than trusted.
     let admission: BudgetAdmission | undefined;
     if (job.acceptedCostMicrocents === undefined) {
-      admission = this.#budgetGovernor?.reserveCommittedEgress(
-        job.model,
-        0,
-        [{ modality: job.modality, units }],
-        job.provider,
-      );
+      admission = this.#budgetGovernor?.reserveCommittedEgress({
+        route: 'generative-media',
+        model: job.model,
+        provider: job.provider,
+        endpoint: 'official',
+        inputTokensEstimate: 0,
+        maxTokens: 0,
+        outputTokensEstimate: 0,
+        mediaUnitsEstimate: [{ modality: job.modality, units }],
+      });
       // The reservation above is a re-price from TODAY's catalog, so it may be lower than what the provider
       // will actually bill. Register the node as an unknown basis: with a cap configured the governor then
       // refuses NEW egress until this job settles, rather than admitting spend against headroom that may not
@@ -2238,8 +2240,7 @@ class RunExecution {
     // Pass the media-unit estimate (1.AF/D17) so the governor folds a per-modality media addend into the
     // projection; `outputModalities` rides the hook info for request-lowering/observability but the cost
     // calc needs only the units.
-    return (info) =>
-      governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate, info.provider);
+    return (info) => governor.checkPreEgress(info);
   }
 
   /** Run one attempt of a vertex; returns its outcome (an uncaught handler throw → a single `internal`). */
@@ -2296,6 +2297,7 @@ class RunExecution {
         whenReady: () => this.handle.whenConsumersReady(),
         signal: this.#abort.signal,
         attemptNumber,
+        maxTokensEstimate: this.#maxTokensEstimate,
         ...(preEgress === undefined ? {} : { preEgress }),
         // Unconditional, unlike `preEgress` above — which `budgetApproved` deliberately drops for an approved
         // re-dispatch. The ledger must not be dropped with it: an approved node is the one the user just

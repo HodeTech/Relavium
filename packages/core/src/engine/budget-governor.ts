@@ -1,9 +1,12 @@
 import {
-  estimateMaxNextCost,
+  estimateResolvedNextCost,
+  outputTokensReservation,
+  assertOutputCapPlanMatches,
+  DEFAULT_OUTPUT_TOKENS_ESTIMATE,
+  InvalidOutputCapPlanError,
   estimateMediaCost,
   UnknownModelError,
   type EndpointKind,
-  type MediaUnitsEstimate,
   type PricingOverlay,
   type ProviderId,
 } from '@relavium/llm';
@@ -11,6 +14,7 @@ import type { Budget, MediaBilledModality } from '@relavium/shared';
 
 import type { RunEventDraft } from './event-bus.js';
 import type { GateRequest } from './node-executor.js';
+import type { PreEgressInfo } from './agent-turn.js';
 
 /** The POSIX way to carry a literal `'` through single quotes: close, escape, reopen. */
 const ESCAPED_SINGLE_QUOTE = String.raw`'\''`;
@@ -50,7 +54,7 @@ function byName(a: string, b: string): number {
  * node/session nor the host config supplies `max_tokens_estimate` (ADR-0028). The canonical value
  * is deliberately conservative: it is a safety rail, not a performance target.
  */
-export const DEFAULT_MAX_TOKENS_ESTIMATE = 4096;
+export const DEFAULT_MAX_TOKENS_ESTIMATE = DEFAULT_OUTPUT_TOKENS_ESTIMATE;
 
 /**
  * Why a strict budget check refused the prospective call.
@@ -318,7 +322,6 @@ export class BudgetGovernor {
   readonly #defaultMaxTokensEstimate: number;
   readonly #emit: (event: GovernorEventDraft) => Promise<void>;
   readonly #overlay: PricingOverlay | undefined;
-  readonly #resolveEndpoint: ((provider: ProviderId) => EndpointKind) | undefined;
   /** The durable/realized total reported by the engine or session cost stream. */
   #cumulativeCostMicrocents = 0;
   /**
@@ -409,22 +412,7 @@ export class BudgetGovernor {
     /** The user-pricing overlay (2.5.G S10) — makes the PRE-EGRESS estimate price a user-priced model that the
      *  static registry lacks, so `max_cost_microcents` enforces it (the cap-gap fix). Absent ⇒ static-only. */
     readonly resolvePrice?: PricingOverlay;
-    /**
-     * Is this model's provider on its OWN API, or behind a custom `base_url`
-     * ([ADR-0071](../../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §7)?
-     *
-     * The adapter clamps an authored `max_tokens` to the model's published ceiling on an official endpoint, and
-     * deliberately does NOT on a custom one (a gateway may serve anything under a familiar id). The estimate has to
-     * make the SAME call, or it stops describing the request: assume `official` on a gateway and the estimate lands
-     * BELOW what the wire can spend, so the governor under-authorizes and waves through a call it should have
-     * stopped. The engine cannot know a base URL — the host injects the answer, exactly as it injects the price.
-     *
-     * Absent ⇒ every model is treated as official, which is the adapter's own default for an un-overridden endpoint.
-     *
-     * Keyed on the ROUTING PROVIDER, not the model: a custom gateway serving another provider's model id is
-     * `custom` at the wire yet `official` by the model's catalog provider, and estimating from the catalog
-     * provider under-authorizes the turn (review M2). The provider rides the pre-egress info per attempt.
-     */
+    /** @deprecated Actual endpoint identity is required on the estimate-info from the provider factory. */
     readonly resolveEndpoint?: (provider: ProviderId) => EndpointKind;
     /**
      * Called when a turn runs on a model we cannot PRICE, so the cap could not apply to it (ADR-0071 §K7). Fired
@@ -452,7 +440,6 @@ export class BudgetGovernor {
     this.#overlay = params.resolvePrice;
     this.#onUnpriced = params.onUnpriced;
     this.#onLegacyMediaJobHold = params.onLegacyMediaJobHold;
-    this.#resolveEndpoint = params.resolveEndpoint;
   }
 
   /** Update the governor with the engine's durable running cumulative cost. Conservative unknown-usage debits stay separate. */
@@ -468,22 +455,13 @@ export class BudgetGovernor {
    * callers apply the action by throwing the supplied error or, for `warn`, emitting the event.
    * `mediaUnitsEstimate` (1.AF/D17) adds a disjoint per-modality media addend to the projection.
    */
-  evaluatePreEgress(
-    model: string,
-    maxTokens: number | undefined,
-    mediaUnitsEstimate?: readonly MediaUnitsEstimate[],
-    provider?: ProviderId,
-  ): BudgetCheckResult {
-    return this.#evaluate(model, maxTokens, mediaUnitsEstimate, provider).result;
+  evaluatePreEgress(info: PreEgressInfo): BudgetCheckResult {
+    return this.#evaluate(info).result;
   }
 
   /** Evaluate against the authoritative realized total plus every live admission, without mutating either. */
-  #evaluate(
-    model: string,
-    maxTokens: number | undefined,
-    mediaUnitsEstimate: readonly MediaUnitsEstimate[] | undefined,
-    provider: ProviderId | undefined,
-  ): BudgetEvaluation {
+  #evaluate(info: PreEgressInfo): BudgetEvaluation {
+    const { model } = info;
     // A cap of 0 means UNBOUNDED (`[chat].max_cost_microcents`: "0 = unbounded"): never block, and never
     // reach the `thresholdPct` division below (which would be `/0` → NaN). A workflow `BudgetSchema` forbids
     // 0 (`positiveInt`), but the governor is reused for the `[chat]`/session path where 0 is valid. This
@@ -491,7 +469,7 @@ export class BudgetGovernor {
     if (this.#budget.max_cost_microcents <= 0) {
       return { result: { kind: 'allow' } };
     }
-    const estimateResult = this.#estimate(model, maxTokens, mediaUnitsEstimate, provider);
+    const estimateResult = this.#estimate(info);
     if (estimateResult.kind === 'unpriced') {
       // An unpriced model id (a custom/self-hosted id OR a first-party catalog gap) cannot be distinguished at
       // this seam. The regular cap degrades to allow with one notice for EVERY unpriced id; strict_cost_cap blocks
@@ -630,12 +608,8 @@ export class BudgetGovernor {
    * its reservation before the first await, then emit a re-armable warning or throw the typed fail/pause outcome.
    * The returned admission MUST be settled, conservatively committed, or released exactly once by the attempt owner.
    */
-  async checkPreEgress(
-    model: string,
-    maxTokens: number | undefined,
-    mediaUnitsEstimate?: readonly MediaUnitsEstimate[],
-    provider?: ProviderId,
-  ): Promise<BudgetAdmission | undefined> {
+  async checkPreEgress(info: PreEgressInfo): Promise<BudgetAdmission | undefined> {
+    const { model } = info;
     // ADR-0074 §2's barrier: the NEXT provider attempt waits for any prior commitment's durability. Before this
     // point a crash between a possibly-billable call and its durable record would reopen the cap; awaiting here is
     // what closes that window, and it throws if the write failed rather than admitting more spend against a cap
@@ -681,7 +655,7 @@ export class BudgetGovernor {
       // Re-checked in a loop: a second legacy job can register while we await the first.
       await Promise.all([...this.#legacyMediaJobNodes.values()].map((e) => e.promise));
     }
-    const evaluation = this.#evaluate(model, maxTokens, mediaUnitsEstimate, provider);
+    const evaluation = this.#evaluate(info);
     const { result } = evaluation;
     // A partial pricing gap (ADR-0089 §4): the verdict below stands on its own — the cap WAS applied to the
     // priced part — and this only adds the sentence the user is owed. Announced before the verdict is acted on,
@@ -918,14 +892,11 @@ export class BudgetGovernor {
    * accepted it cannot prevent spend. Unknown prices have no meaningful reservation and preserve the normal
    * allow-degrade behavior.
    */
-  reserveCommittedEgress(
-    model: string,
-    maxTokens: number | undefined,
-    mediaUnitsEstimate?: readonly MediaUnitsEstimate[],
-    provider?: ProviderId,
-  ): BudgetAdmission | undefined {
-    const estimate = this.#estimate(model, maxTokens, mediaUnitsEstimate, provider);
-    return estimate.kind === 'priced' ? this.#admit(model, estimate.estimateMicrocents) : undefined;
+  reserveCommittedEgress(info: PreEgressInfo): BudgetAdmission | undefined {
+    const estimate = this.#estimate(info);
+    return estimate.kind === 'priced'
+      ? this.#admit(info.model, estimate.estimateMicrocents)
+      : undefined;
   }
 
   /**
@@ -951,23 +922,27 @@ export class BudgetGovernor {
   }
 
   /** Calculate a price without applying cap policy; shared by prospective admission and committed-job restoration. */
-  #estimate(
-    model: string,
-    maxTokens: number | undefined,
-    mediaUnitsEstimate: readonly MediaUnitsEstimate[] | undefined,
-    provider: ProviderId | undefined,
-  ): EstimateResult {
+  #estimate(info: PreEgressInfo): EstimateResult {
     try {
       // Token estimate + the disjoint media estimate (ADR-0044 §3). An unknown MODEL throws and follows the
       // uniform policy in #evaluate; an unpriced MODALITY on a known model comes back named (ADR-0089 §4)
       // rather than as a silent 0, because a 0 here is what let a strict cap admit paid generation (`CR-55`).
-      const tokens = estimateMaxNextCost(
+      const { model, mediaUnitsEstimate } = info;
+      let outputTokens = 0;
+      if (info.route === 'text') {
+        assertOutputCapPlanMatches(info.outputCapPlan, info);
+        if (
+          (info.maxTokensEstimate ?? DEFAULT_MAX_TOKENS_ESTIMATE) !== this.#defaultMaxTokensEstimate
+        ) {
+          throw new InvalidOutputCapPlanError();
+        }
+        outputTokens = outputTokensReservation(info.outputCapPlan, info.maxTokensEstimate);
+      }
+      const tokens = estimateResolvedNextCost(
         model,
-        maxTokens ?? this.#defaultMaxTokensEstimate,
+        info.inputTokensEstimate,
+        outputTokens,
         this.#overlay,
-        // Key the endpoint on the routing provider (review M2). A media-only gate omits it (`maxTokens: 0`
-        // makes the token estimate 0 regardless), so `official` is a harmless default there.
-        (provider === undefined ? undefined : this.#resolveEndpoint?.(provider)) ?? 'official',
       );
       const media =
         mediaUnitsEstimate === undefined

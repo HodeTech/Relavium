@@ -5,7 +5,12 @@ import type { AbortSignalLike, ContentPart, StopReason } from '@relavium/shared'
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { catalogModel, modelAccepts } from '../catalog/lookup.js';
-import { cappedMaxTokens } from '../output-cap.js';
+import {
+  outputCapNativeOptions,
+  outputCapPlanForRequest,
+  prepareOutputCapRequest,
+  InvalidOutputCapPlanError,
+} from '../output-cap.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import {
   ANTHROPIC_WIRE,
@@ -53,7 +58,6 @@ import {
 
 const PROVIDER = 'anthropic';
 /** Anthropic requires `max_tokens`; default it when the request omits one. */
-const DEFAULT_MAX_TOKENS = 4096;
 /** Anthropic's API caps `temperature` at 1 (the shared contract's envelope is the wider [0, 2]). */
 const MAX_TEMPERATURE = 1;
 // The tier → wire map moved to `reasoning-wire.ts` (ADR-0071 §6): `acceptedTiers` must compose it with the
@@ -548,8 +552,10 @@ function buildCommonBody(
   // This value is also the ceiling the thinking budget is derived from, a few lines down. Clamping here and not
   // there would put `budget_tokens` above the `max_tokens` we actually send, which Anthropic rejects outright —
   // so it is computed ONCE and both uses read it.
-  const maxTokens =
-    cappedMaxTokens(req.maxTokens ?? DEFAULT_MAX_TOKENS, req.model) ?? DEFAULT_MAX_TOKENS;
+  const capPlan = outputCapPlanForRequest(req, PROVIDER, 'official');
+  // Anthropic always has its required mapped default in the shared plan.
+  const maxTokens = capPlan.mappedValue;
+  if (maxTokens === undefined) throw new InvalidOutputCapPlanError();
   const body: Omit<Anthropic.MessageCreateParamsNonStreaming, 'stream'> = {
     model: req.model,
     max_tokens: maxTokens,
@@ -612,7 +618,7 @@ function buildCommonBody(
   // `metadata`) the common path doesn't model. `body` is spread LAST so the mapped common-path
   // fields (model / messages / max_tokens / tools / …) always win — providerOptions can only ADD,
   // never override or smuggle past the canonical request.
-  return { ...req.providerOptions, ...body };
+  return { ...outputCapNativeOptions(capPlan, req.providerOptions), ...body };
 }
 
 /** Bridge the host's `AbortSignalLike` (a real `AbortSignal` at runtime) to the SDK's signal option. */
@@ -883,6 +889,7 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
     id: PROVIDER,
     supports: SUPPORTS,
     async generate(req: LlmRequest, key: string): Promise<LlmResult> {
+      req = prepareOutputCapRequest(req, PROVIDER, 'official').request;
       assertSupported(PROVIDER, SUPPORTS, req); // fail fast, never silently drop an unsupported feature
       assertMediaCapabilities(PROVIDER, SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       const client = createClient(key);
@@ -904,6 +911,7 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
       };
     },
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
+      req = prepareOutputCapRequest(req, PROVIDER, 'official').request;
       assertSupported(PROVIDER, SUPPORTS, req); // fail fast on an unsupported feature or no streaming
       assertStreamable(PROVIDER, SUPPORTS);
       assertMediaCapabilities(PROVIDER, SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
@@ -951,7 +959,7 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
       });
     },
     // ADR-0062 context-compaction seam — the shared defaults (a native token-count endpoint could specialize
-    // estimateTokens later; real usage is authoritative, so the heuristic is only a pre-first-turn fallback).
+    // estimateTokens later; current requests drive live context estimates, usage drives realized billing).
     ...CONTEXT_SEAM_DEFAULTS,
   };
 }
