@@ -105,7 +105,10 @@ merged too (PR #85, 2026-08-28).
 > Headless activation now races an owned interrupt; Home activation requires a running session outside teardown.
 > Eight focused suites pass 310 tests; native pipe/FIFO before/after controls and late callbacks after actual
 > database close pass. Workspace checks, build and coverage pass (298 suites, 6,520 tests, 11 skipped).
-> Full CI and a sixth fresh round precede closure. Step 4 and all six items remain open.
+> Full CI passed at `e753beb7`. [Round 6](../reviews/2026-10-02T10-57-58-w7-step-4-round-6-review.md) accepted the complete
+> step and every correction with no new material findings. Parent native/privacy controls pass; compiled-entry
+> process-exit delay under queued stdio also reproduces on the exact pre-step baseline and is explicitly qualified.
+> **Step 4 is closed; step 5 proceeds automatically.** All six W7 register items remain open.
 > It repairs collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.

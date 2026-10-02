@@ -445,7 +445,11 @@ Real owned-worker STOP/CONT controls pass.
 preventing headless Ctrl-C teardown and late Home acknowledgement deleting evidence during canceled-session
 MCP teardown. Headless activation now races an owned interrupt with permanently disarmed ownership; Home
 requires a running session outside teardown. Native pipe/FIFO before/after controls and late callback
-regressions pass. A sixth fresh acceptance round follows.
+regressions pass.
+[Round 6](../reviews/2026-10-02T10-57-58-w7-step-4-round-6-review.md) accepted the complete step and every correction.
+Independent native late-settlement/actual-database-close, byte-erasure, high-water, structural attribution and
+atomic-sweep probes pass. Command teardown is guaranteed independently of the inherited native stdio drain
+that can delay natural bin exit. Step 4 is closed; whole-wave closure remains pending.
 
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 

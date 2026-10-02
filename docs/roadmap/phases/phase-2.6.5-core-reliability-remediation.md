@@ -1989,7 +1989,7 @@ correction inside its own ADR rather than a rewrite, so the wrong reasoning stay
 
 ### W7 pre-implementation review and proposed execution plan — 2026-10-02
 
-**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–3 are closed after their independent review rounds; step 4 corrections await fresh acceptance.**
+**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–4 are closed after their independent review rounds; step 5 proceeds automatically.**
 The four Accepted ADRs retain their decisions. Three verified gaps were explicitly resolved before code:
 manual compaction with an unknown window and the budget outcome of idle compaction
 ([ADR-0099](../../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md)),
@@ -2172,8 +2172,16 @@ permanently disarmed ownership; Home activation requires a running session outsi
 command and two controller regressions failed before correction; late callbacks cannot touch a closed
 database. Eight focused suites pass 310 tests. The [round 5 record](../../reviews/2026-10-02T10-36-22-w7-step-4-round-5-review.md)
 records evidence and limits. Workspace checks, build and coverage pass (298 suites, 6,520 tests, 11 skipped).
-Full CI and a sixth fresh independent round precede closure;
-all six items remain open.
+Full CI passed at `e753beb7`; a sixth fresh round then accepted the complete step.
+
+**Step 4, review round 6 — 2026-10-02.** Two fresh reviewers accepted the entire step and every earlier
+correction with no new verified material finding. Privacy passed 17 suites/386 tests and eight independent
+probes; lifecycle passed 16 suites/438 tests. The parent independently reran native blocked-pipe/real-SIGINT/
+actual-DB-close late-settlement controls and structural/byte/atomicity probes. Compiled-entry controls also
+proved that queued native stdio can delay natural process exit after command teardown on both this head
+and the exact pre-step baseline; the canonical contract now states that inherited qualification explicitly.
+The [round 6 record](../../reviews/2026-10-02T10-57-58-w7-step-4-round-6-review.md) records evidence and limits.
+**Step 4 is closed; step 5 proceeds automatically.** All six W7 register items remain open.
 
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A

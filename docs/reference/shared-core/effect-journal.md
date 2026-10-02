@@ -280,7 +280,9 @@ and handling error/close. Returning from `write()` alone only acknowledges enque
 retains evidence; stdout remains the event stream. Ctrl-C disarms ownership before releasing the
 headless activation wait, so a blocked native write cannot delay command teardown. Its late success or failure
 stays observed and cannot sweep or access a closed database. EOF still waits for delivery. The command does
-not destroy its externally owned stderr or claim that queued bytes were flushed. Home disarms activation as
+not destroy its externally owned stderr or claim that queued bytes were flushed. The bin assigns
+`process.exitCode`; queued native stdio can still delay natural process exit until the reader drains,
+as it did before W7. Command/session/database/MCP teardown and natural process exit are separate guarantees. Home disarms activation as
 soon as the session stops or its teardown starts, even while the same chat remains mounted during MCP close.
 A discarded Home build cannot consume evidence. A committed incomplete/legacy row is disclosed once after a successful
 sweep; a crash between notice and sweep may disclose it again. Unresolved rows are disclosed on later resumes

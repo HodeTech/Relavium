@@ -67,6 +67,9 @@ added.
 - [2026-10-02 — W7 step 4, round 5](2026-10-02T10-36-22-w7-step-4-round-5-review.md):
   native backpressure interrupt and canceled Home teardown ownership independently reproduced and corrected; fresh acceptance pending.
 
+- [2026-10-02 — W7 step 4, round 6](2026-10-02T10-57-58-w7-step-4-round-6-review.md):
+  complete step and five correction rounds accepted; inherited native stdio exit qualification verified; step 4 closed.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and
