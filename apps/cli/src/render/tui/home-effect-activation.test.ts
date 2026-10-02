@@ -46,7 +46,14 @@ function session(onNotice?: () => void, flushNotice?: () => Promise<void>) {
       sessionId: 's1',
       sanitize: sanitizeInline,
       isActive,
-      ...(flushNotice === undefined ? {} : { flushNotice }),
+      ...(flushNotice === undefined
+        ? {}
+        : {
+            flushNotice: async (publish: (() => void | Promise<void>) | undefined) => {
+              await publish?.();
+              await flushNotice();
+            },
+          }),
       deliverNotice: (text) => {
         expect(rows()).toHaveLength(1);
         store.notice(text);

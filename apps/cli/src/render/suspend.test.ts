@@ -273,6 +273,76 @@ describe('suspendFullScreen — re-entrancy is the SURFACE’s job to gate', () 
  * call it hands out, so no caller can forget to maintain it.
  */
 describe('createSuspendPort — the suspension window', () => {
+  it('keeps publication exclusive until acknowledgement and then services the queued suspension', async () => {
+    const port = createSuspendPort();
+    const trace: string[] = [];
+    port.attach(async (body) => {
+      trace.push('suspend');
+      await body();
+    });
+    let acknowledge: () => void = () => undefined;
+    const pending = new Promise<void>((resolve) => {
+      acknowledge = resolve;
+    });
+    const publication = port.withActiveTerminal(async () => {
+      trace.push('publish');
+      await pending;
+      trace.push('ack');
+    });
+    const suspension = port.current()?.(() => {
+      trace.push('continue');
+      return Promise.resolve();
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(trace).toEqual(['publish']);
+    expect(port.isSuspended()).toBe(false);
+    acknowledge();
+    await publication;
+    await suspension;
+    expect(trace).toEqual(['publish', 'ack', 'suspend', 'continue']);
+  });
+
+  it('waits for reclaim before publication, releasing ownership even when publication fails', async () => {
+    const port = createSuspendPort();
+    let resume: () => void = () => undefined;
+    const pending = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    port.attach(async (body) => {
+      await body();
+    });
+    const suspension = port.current()?.(() => pending);
+    const publish = vi.fn(() => Promise.reject(new Error('publication failed')));
+    const publication = port.withActiveTerminal(publish);
+    const assertion = expect(publication).rejects.toThrow('publication failed');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(publish).not.toHaveBeenCalled();
+    resume();
+    await suspension;
+    await assertion;
+    await expect(port.withActiveTerminal(() => Promise.resolve())).resolves.toBeUndefined();
+  });
+
+  it('wakes a pending publication on detachment without executing it on an absent renderer', async () => {
+    const port = createSuspendPort();
+    let resume: () => void = () => undefined;
+    const pending = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    port.attach(async (body) => {
+      await body();
+    });
+    const suspension = port.current()?.(() => pending);
+    const publish = vi.fn(() => Promise.resolve());
+    const publication = port.withActiveTerminal(publish);
+    const assertion = expect(publication).rejects.toThrow('no longer active');
+    port.attach(undefined);
+    await assertion;
+    expect(publish).not.toHaveBeenCalled();
+    resume();
+    await suspension;
+  });
+
   it('is false before, TRUE for exactly the callback, and false after', async () => {
     const port = createSuspendPort();
     const seen: boolean[] = [];

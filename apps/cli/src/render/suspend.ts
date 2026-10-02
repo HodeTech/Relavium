@@ -1,3 +1,5 @@
+import { CliError } from '../process/errors.js';
+
 import {
   DISABLE_MOUSE,
   ENABLE_MOUSE,
@@ -155,6 +157,8 @@ export interface SuspendPort {
    * handler must therefore ask this before acting (Step-5d-3 Sonnet review).
    */
   readonly isSuspended: () => boolean;
+  /** Publish and acknowledge a notice while Ink owns the terminal, excluding suspension until completion. */
+  readonly withActiveTerminal: (publish: () => Promise<void>) => Promise<void>;
 }
 
 /**
@@ -164,23 +168,54 @@ export interface SuspendPort {
 export function createSuspendPort(): SuspendPort {
   let suspend: SuspendTerminal | undefined;
   let suspended = false;
+  let occupied = false;
+  const waiters = new Set<() => void>();
+  const changed = (): void => {
+    const pending = [...waiters];
+    waiters.clear();
+    for (const wake of pending) wake();
+  };
+  const exclusive = async (body: () => Promise<void>): Promise<void> => {
+    while (occupied) {
+      if (suspend === undefined)
+        throw new CliError('internal', 'The terminal renderer is no longer active.');
+      await new Promise<void>((resolve) => waiters.add(resolve));
+    }
+    if (suspend === undefined)
+      throw new CliError('internal', 'The terminal renderer is no longer active.');
+    occupied = true;
+    try {
+      await body();
+    } finally {
+      occupied = false;
+      changed();
+    }
+  };
   return {
     attach: (next) => {
       suspend = next;
+      changed(); // Detachment wakes pending publication/suspension so teardown cannot strand a waiter.
     },
     current: () => {
       const live = suspend;
       if (live === undefined) return undefined;
-      return async (callback) => {
-        suspended = true;
-        try {
-          await live(callback);
-        } finally {
-          suspended = false;
-        }
+      return (callback) => {
+        if (suspended)
+          return Promise.reject(new CliError('internal', 'The terminal is already suspended.'));
+        return exclusive(async () => {
+          if (suspend !== live)
+            throw new CliError('internal', 'The terminal renderer is no longer active.');
+          suspended = true;
+          try {
+            await live(callback);
+          } finally {
+            suspended = false;
+          }
+        });
       };
     },
     isSuspended: () => suspended,
+    withActiveTerminal: exclusive,
   };
 }
 

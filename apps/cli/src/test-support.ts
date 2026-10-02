@@ -66,6 +66,10 @@ export function captureIo(env: Readonly<Record<string, string | undefined>> = {}
     writeErr: (text) => {
       errChunks.push(text);
     },
+    writeErrAcknowledged: (text) => {
+      errChunks.push(text);
+      return Promise.resolve();
+    },
     env,
     stdoutIsTty: false,
     stdinIsTty: false,

@@ -11,6 +11,7 @@ import {
 } from 'react';
 
 import type { SuspendPort } from '../suspend.js';
+import type { NoticeFlush } from '../../engine/effect-retention.js';
 import { useVisibleRenderFlush } from './render-acknowledgement.js';
 import {
   driveJson,
@@ -189,7 +190,7 @@ function TranscriptLine(props: Readonly<{ entry: TranscriptEntry; color: boolean
 interface ChatAppProps {
   readonly store: ChatStoreController;
   /** Successful terminal setup and a flushed frame make this transcript eligible for disclosure. */
-  readonly onActivated?: (flushNotice: () => Promise<void>) => void | Promise<void>;
+  readonly onActivated?: (flushNotice: NoticeFlush) => void | Promise<void>;
   /** `true` ⇒ mounted on ink 7's alternate screen (2.6.F Step 4b, ADR-0068 §c) — the transcript renders through the
    *  scroll {@link TranscriptViewport} (constrained to the terminal size) instead of `<Static>`. Resolved by
    *  `driveInk` (`resolveRenderMode`); absent/false ⇒ the inline renderer. */
@@ -1500,7 +1501,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // back to 80×24 off a TTY (a harness), moot on a real TTY (the only place alt mounts, via the driveInk gate).
   const windowSize = useWindowSize();
 
-  const flushVisible = useVisibleRenderFlush(props.onError);
+  const flushVisible = useVisibleRenderFlush(props.onError, props.suspendPort);
   useEffect(() => {
     if (props.onActivated === undefined) return;
     let mounted = true;
@@ -1713,7 +1714,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   let cancelRequested = false;
   let activated = false;
   const isActive = (): boolean => active && !cancelRequested && !ctx.shouldStop();
-  const onActivated = async (flushNotice: () => Promise<void>): Promise<void> => {
+  const onActivated = async (flushNotice: NoticeFlush): Promise<void> => {
     if (activated || !active) return;
     if (!isActive()) {
       resolveExit();

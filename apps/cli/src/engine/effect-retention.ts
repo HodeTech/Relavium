@@ -18,7 +18,7 @@ const CHECKPOINT_DEFERRED =
 /** Driver diagnostics, ids and database contents are never interpolated into a warning. */
 function warn(io: CliIo, text: string): void {
   try {
-    io.writeErr(`${text}\n`);
+    void io.writeErrAcknowledged(`${text}\n`).catch(() => undefined);
   } catch {
     // A failed output sink must not change the outcome or trigger another cleanup attempt.
   }
@@ -33,15 +33,18 @@ export function sweepCommittedEffects(io: CliIo, db: Db, runId: string): void {
   }
 }
 
+/** A notice is inserted inside the terminal ownership interval and acknowledged before it is released. */
+export type NoticeFlush = (publish?: () => void | Promise<void>) => Promise<void>;
+
 export interface ResumedSessionEffectOptions {
   readonly io: CliIo;
   readonly db: Db;
   readonly sessionId: string;
   readonly sanitize: (text: string) => string;
-  /** The ACTIVE transcript for TTY/Home, stderr for plain/JSON. Throwing prevents the sweep. */
-  readonly deliverNotice: (text: string) => void;
-  /** TTY/Home acknowledge the rendered notice before destructive retention. Plain/JSON sinks are synchronous. */
-  readonly flushNotice?: () => Promise<void>;
+  /** The ACTIVE transcript or acknowledged stderr writer. Throwing/rejection prevents the sweep. */
+  readonly deliverNotice: (text: string) => void | Promise<void>;
+  /** TTY/Home also acknowledge the rendered notice before destructive retention. */
+  readonly flushNotice?: NoticeFlush;
   /** Rechecked after delivery, which can synchronously trigger an exit or a session swap. */
   readonly isActive?: () => boolean;
 }
@@ -54,51 +57,63 @@ export function reconcileResumedSessionEffects(
   if (!active()) return;
   const store = createEffectJournalStore(options.db, { uuid: randomUUID, now: Date.now });
   let snapshot: SessionEffectDisclosureSnapshot;
+  let notice: string | undefined;
+  let published = false;
+  let delivered: Promise<boolean> | undefined;
+  const warning = (text: string): void | Promise<void> => {
+    if (!active()) return;
+    try {
+      const delivered = options.deliverNotice(text);
+      if (delivered !== undefined) return delivered.catch(() => warn(options.io, text));
+    } catch {
+      warn(options.io, text);
+    }
+  };
   try {
     snapshot = store.readSessionDisclosureSnapshot(options.sessionId);
     if (!active()) return;
-    const notice = sessionEffectNotice(snapshot, options.sanitize);
-    if (notice !== undefined) options.deliverNotice(notice);
+    notice = sessionEffectNotice(snapshot, options.sanitize);
   } catch {
     // Read and delivery failures are the SAME retention answer: zero deletion.
-    if (active()) {
-      try {
-        options.deliverNotice(DISCLOSURE_FAILED);
-      } catch {
-        warn(options.io, DISCLOSURE_FAILED);
-      }
-    }
-    return;
+    return warning(DISCLOSURE_FAILED);
   }
-  const sweep = (): void => {
+  const sweep = (): void | Promise<void> => {
     if (!active()) return;
     try {
       const swept = store.sweepCommittedForSession(options.sessionId, snapshot.committed);
-      if (swept.checkpoint === 'deferred' && active()) options.deliverNotice(CHECKPOINT_DEFERRED);
+      if (swept.checkpoint === 'deferred') return warning(CHECKPOINT_DEFERRED);
     } catch {
       // A checkpoint can fail AFTER logical deletion committed: do not assert all rows remain.
-      if (active()) {
-        const warning = 'warning: session effect retention or WAL erasure could not be completed.';
-        try {
-          options.deliverNotice(warning);
-        } catch {
-          warn(options.io, warning);
-        }
-      }
+      return warning('warning: session effect retention or WAL erasure could not be completed.');
     }
   };
-  if (options.flushNotice === undefined) return sweep();
-  return Promise.resolve()
-    .then(options.flushNotice)
-    .then(sweep, () => {
-      if (active()) {
-        try {
-          options.deliverNotice(DISCLOSURE_FAILED);
-        } catch {
-          warn(options.io, DISCLOSURE_FAILED);
-        }
-      }
-    });
+  const publish = (): void | Promise<void> => {
+    if (!active() || notice === undefined) return;
+    const result = options.deliverNotice(notice);
+    published = true;
+    if (result !== undefined)
+      delivered = result.then(
+        () => true,
+        () => false,
+      );
+    return result;
+  };
+  const acknowledged = (): void | Promise<void> => {
+    if (!active()) return;
+    // A flush adapter must actually publish, and cannot discard an asynchronous delivery failure.
+    if (notice !== undefined && !published) return warning(DISCLOSURE_FAILED);
+    return delivered === undefined
+      ? sweep()
+      : delivered.then((success) => (success ? sweep() : warning(DISCLOSURE_FAILED)));
+  };
+  try {
+    if (options.flushNotice !== undefined)
+      return options.flushNotice(publish).then(acknowledged, () => warning(DISCLOSURE_FAILED));
+    void publish();
+    return acknowledged();
+  } catch {
+    return warning(DISCLOSURE_FAILED);
+  }
 }
 
 /** Never resumable; the caller proves ownership by a successful one-shot turn-key reservation. */

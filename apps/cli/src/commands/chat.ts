@@ -64,7 +64,7 @@ import {
   type ChatBudgetWarning,
 } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
-import { reconcileResumedSessionEffects } from '../engine/effect-retention.js';
+import { reconcileResumedSessionEffects, type NoticeFlush } from '../engine/effect-retention.js';
 import { createModelCatalogPort, type ModelCatalogPort } from '../engine/model-catalog-port.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import { loadUserPricingOverlay, readUserPricingOverlay } from '../engine/pricing-overlay.js';
@@ -207,7 +207,7 @@ export interface ChatDriveContext {
    *  through teardown and revalidates it after a synchronous notice-triggered exit or swap. */
   readonly onActivated?: (
     isActive: () => boolean,
-    flushNotice?: () => Promise<void>,
+    flushNotice?: NoticeFlush,
   ) => void | Promise<void>;
   /** Handle one line of user input (a slash command or a chat message). Awaits the turn for a message. */
   readonly processLine: (line: string, display?: string) => Promise<void>;
@@ -867,8 +867,8 @@ export async function chatResumeCommand(
           isActive,
           ...(flushNotice === undefined ? {} : { flushNotice }),
           deliverNotice: (text) => {
-            if (chatIsInteractive(deps.io, deps.global)) store.notice(text);
-            else deps.io.writeErr(`${text}\n`);
+            if (chatIsInteractive(deps.io, deps.global)) return store.notice(text);
+            else return deps.io.writeErrAcknowledged(`${text}\n`);
           },
         }),
       intro,
@@ -898,7 +898,7 @@ interface ReplWiring {
   readonly startSession: () => void;
   readonly onActivated?: (
     isActive: () => boolean,
-    flushNotice?: () => Promise<void>,
+    flushNotice?: NoticeFlush,
   ) => void | Promise<void>;
   /** The plain-driver banner override (the 2.N resume context line); fresh sessions omit it. */
   readonly intro?: string;
@@ -1871,8 +1871,8 @@ async function buildReseatWiring(
         isActive,
         ...(flushNotice === undefined ? {} : { flushNotice }),
         deliverNotice: (text) => {
-          if (chatIsInteractive(deps.io, deps.global)) seeded.store.notice(text);
-          else deps.io.writeErr(`${text}\n`);
+          if (chatIsInteractive(deps.io, deps.global)) return seeded.store.notice(text);
+          else return deps.io.writeErrAcknowledged(`${text}\n`);
         },
       }),
     intro: modelSwitchNotice(loaded.session.agentSnapshot.model, target.modelId),

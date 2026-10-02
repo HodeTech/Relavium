@@ -28,7 +28,7 @@ import {
 } from '../chat/session-host.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import { onceEffortNotice } from '../chat/effort-notice.js';
-import { reconcileResumedSessionEffects } from '../engine/effect-retention.js';
+import { reconcileResumedSessionEffects, type NoticeFlush } from '../engine/effect-retention.js';
 import { sanitizeInline } from '../render/sanitize.js';
 import type { DoctorProbes } from '../chat/doctor.js';
 import {
@@ -215,7 +215,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     | Pick<ReturnType<typeof render>, 'unmount' | 'waitUntilRenderFlush' | 'waitUntilExit'>
     | undefined;
   let rendererActive = true;
-  let flushVisible: (() => Promise<void>) | undefined;
+  let flushVisible: NoticeFlush | undefined;
   let controller: HomeController | undefined;
   let unsubscribeSignals: (() => void) | undefined;
   let unsubscribeProcessExit: (() => void) | undefined;
@@ -604,10 +604,10 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
                     sanitize: sanitizeInline,
                     deliverNotice: (text) => store.notice(text),
                     isActive: () => rendererActive && isActive(),
-                    flushNotice: async () => {
+                    flushNotice: async (publish) => {
                       if (flushVisible === undefined)
                         throw new Error('Home renderer is not ready.');
-                      await flushVisible();
+                      await flushVisible(publish);
                     },
                   }),
               }),

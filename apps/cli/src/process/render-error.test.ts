@@ -14,6 +14,10 @@ function captureIo(): { readonly io: CliIo; readonly stderr: () => string } {
       writeErr: (text) => {
         writes.push(text);
       },
+      writeErrAcknowledged: (text) => {
+        writes.push(text);
+        return Promise.resolve();
+      },
       env: {},
       stdoutIsTty: false,
       stdinIsTty: false,

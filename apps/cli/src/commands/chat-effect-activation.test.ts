@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Socket } from 'node:net';
 
 import {
   createClient,
@@ -15,6 +16,7 @@ import type { Instance } from 'ink';
 
 import { scriptedResolver, textTurn } from '../chat/test-support.js';
 import type { GlobalOptions } from '../process/options.js';
+import { processIo } from '../process/io.js';
 import { driveInk } from '../render/tui/chat-ink.js';
 import { captureIo, OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import {
@@ -57,7 +59,9 @@ const rows = () => client.sqlite.prepare('SELECT * FROM run_effects').all();
 
 function isCallback(
   value: unknown,
-): value is (flushNotice?: () => Promise<void>) => void | Promise<void> {
+): value is (
+  flushNotice?: (publish?: () => void | Promise<void>) => Promise<void>,
+) => void | Promise<void> {
   return typeof value === 'function';
 }
 
@@ -68,7 +72,9 @@ function mountedCallbacks(node: unknown): { activate: () => Promise<void>; exit:
     throw new Error('expected activation and exit callbacks');
   return {
     activate: async () => {
-      await onActivated(() => Promise.resolve());
+      await onActivated(async (publish?: () => void | Promise<void>) => {
+        await publish?.();
+      });
     },
     exit: () => {
       void onExit();
@@ -304,12 +310,12 @@ describe('actual Ink driver activation owns session effect disclosure (ADR-0098)
             drive: json ? driveJson : drivePlain,
             io: {
               ...captured.io,
-              writeErr: (text) => {
+              writeErrAcknowledged: (text) => {
                 if (text.includes('external effect')) {
                   expect(rows()).toHaveLength(1);
                   notices.push(text);
                 }
-                captured.io.writeErr(text);
+                return captured.io.writeErrAcknowledged(text);
               },
             },
           },
@@ -319,6 +325,190 @@ describe('actual Ink driver activation owns session effect disclosure (ADR-0098)
       expect(rows()).toEqual([]);
       expect(captured.out()).not.toContain('external effect');
       expect(renderer.render).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    'actual process stderr retains failed disclosure (json=%s)',
+    async (json) => {
+      for (const closedBefore of [false, true]) {
+        const descriptor = Object.getOwnPropertyDescriptor(process, 'stderr');
+        if (descriptor === undefined) throw new Error('expected process stderr descriptor');
+        const stderr = new Socket(); // No descriptor, connection, network or real terminal.
+        const errors: string[] = [];
+        stderr.on('error', (error: Error) => errors.push(error.message));
+        if (closedBefore) {
+          stderr.destroy();
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        const captured = captureIo();
+        try {
+          Object.defineProperty(process, 'stderr', { configurable: true, get: () => stderr });
+          const actual = processIo();
+          expect(
+            await chatResumeCommand(
+              { sessionId: 'activation-0' },
+              {
+                ...deps,
+                global: { ...deps.global, json },
+                drive: json ? driveJson : drivePlain,
+                io: {
+                  ...actual,
+                  writeOut: (text) => captured.io.writeOut(text),
+                  stdin: captured.io.stdin,
+                  stdoutIsTty: false,
+                  stdinIsTty: false,
+                },
+              },
+            ),
+          ).toBe(4);
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          expect(rows()).toHaveLength(1);
+          expect(captured.out()).not.toContain('external effect');
+          expect(errors.join('')).not.toContain('SECRET');
+        } finally {
+          Object.defineProperty(process, 'stderr', descriptor);
+          stderr.destroy();
+        }
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'actual headless command waits for native stderr delivery (json=%s)',
+    async (json) => {
+      const descriptor = Object.getOwnPropertyDescriptor(process, 'stderr');
+      if (descriptor === undefined) throw new Error('expected stderr descriptor');
+      class PendingOutput extends OwnedTtyOutput {
+        complete: (() => void) | undefined;
+        override _write(
+          chunk: unknown,
+          _encoding: BufferEncoding,
+          callback: (error?: Error | null) => void,
+        ): void {
+          const text = Buffer.isBuffer(chunk)
+            ? chunk.toString('utf8')
+            : typeof chunk === 'string'
+              ? chunk
+              : '';
+          this.complete = () => {
+            this.complete = undefined;
+            this.frames.push(text);
+            callback();
+          };
+        }
+      }
+      const stderr = new PendingOutput();
+      const captured = captureIo();
+      let outcome: Promise<number> | undefined;
+      try {
+        Object.defineProperty(process, 'stderr', { configurable: true, get: () => stderr });
+        const actual = processIo();
+        Object.defineProperty(process, 'stderr', descriptor);
+        outcome = chatResumeCommand(
+          { sessionId: 'activation-0' },
+          {
+            ...deps,
+            global: { ...deps.global, json },
+            drive: json ? driveJson : drivePlain,
+            io: {
+              ...actual,
+              writeOut: (text) => captured.io.writeOut(text),
+              stdin: captured.io.stdin,
+              stdoutIsTty: false,
+              stdinIsTty: false,
+            },
+          },
+        );
+        await vi.waitFor(() => expect(stderr.complete).toBeDefined());
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(rows()).toHaveLength(1);
+        expect(stderr.frames).toEqual([]);
+        stderr.complete?.();
+        expect(await outcome).toBe(4);
+        expect(stderr.frames.join('')).toContain('They are NOT retried');
+        expect(rows()).toEqual([]);
+        expect(captured.out()).not.toContain('external effect');
+        await vi.waitFor(() => {
+          expect(stderr.listenerCount('error')).toBe(0);
+          expect(stderr.listenerCount('close')).toBe(0);
+        });
+      } finally {
+        Object.defineProperty(process, 'stderr', descriptor);
+        stderr.complete?.();
+        stderr.destroy();
+        await outcome;
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'raw Ctrl-Z cannot consume an undisplayed notice (alt=%s)',
+    async (alt) => {
+      const ink = await vi.importActual<typeof import('ink')>('ink');
+      const input = new OwnedTtyInput();
+      const stdout = new OwnedTtyOutput();
+      const stderr = new OwnedTtyOutput();
+      let sentStop = false;
+      let suspended = false;
+      let continueJob: (() => void) | undefined;
+      let firstNoticeRows: number | undefined;
+      let actual: Instance | undefined;
+      let callbacks: ReturnType<typeof mountedCallbacks> | undefined;
+      const failures: unknown[] = [];
+      stdout.onFrame = (frame) => {
+        if (frame.includes('external effect') && firstNoticeRows === undefined)
+          firstNoticeRows = rows().length;
+        if (frame === '' && input.isRaw && !sentStop) {
+          sentStop = true;
+          input.push('\x1a');
+        }
+      };
+      writeFileSync(deps.global.configPath ?? '', '[preferences]\nalt_screen = true\n');
+      renderer.render.mockImplementation((node, options) => {
+        callbacks = mountedCallbacks(node);
+        actual = ink.render(node, { ...options, stdin: input, stdout, stderr, debug: false });
+        return actual;
+      });
+      const outcome = chatResumeCommand(
+        { sessionId: 'activation-0' },
+        {
+          ...deps,
+          global: { ...deps.global, noAltScreen: !alt },
+          jobControlLifecycle: {
+            supported: true,
+            onSuspend: () => () => undefined,
+            onContinue: (listener) => {
+              continueJob = listener;
+              return () => undefined;
+            },
+            suspendSelf: () => {
+              suspended = true;
+            },
+          },
+        },
+      ).catch((error: unknown) => {
+        failures.push(error);
+        return -1;
+      });
+      try {
+        await vi.waitFor(() => expect(suspended).toBe(true));
+        expect(sentStop).toBe(true);
+        expect(rows()).toHaveLength(1);
+        expect(firstNoticeRows).toBeUndefined();
+        continueJob?.();
+        await vi.waitFor(() => expect(firstNoticeRows).toBe(1));
+        await vi.waitFor(() => expect(rows()).toEqual([]));
+        expect(failures).toEqual([]);
+      } finally {
+        continueJob?.();
+        callbacks?.exit();
+        await outcome;
+        actual?.cleanup();
+        input.destroy();
+        stdout.destroy();
+        stderr.destroy();
+      }
     },
   );
 

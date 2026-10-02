@@ -78,7 +78,7 @@ function globalOptions(cwd: string): GlobalOptions {
 function linesDriver(lines: readonly string[]): ChatDriver {
   return async (ctx) => {
     ctx.startSession();
-    void ctx.onActivated?.(() => !ctx.shouldStop()); // open the session (a real driver does this after wiring its subscription)
+    await ctx.onActivated?.(() => !ctx.shouldStop()); // a real driver activates after wiring its subscription
     for (const line of lines) {
       await ctx.processLine(line);
       if (ctx.shouldStop()) break;
@@ -1084,7 +1084,7 @@ describe('chatCommand', () => {
     const drive: ChatDriver = async (ctx) => {
       if (driveCount++ === 0) {
         ctx.startSession();
-        void ctx.onActivated?.(() => !ctx.shouldStop());
+        await ctx.onActivated?.(() => !ctx.shouldStop());
         await ctx.processLine('first');
         const turn = store.reserveEffectTurnKey(ctx.handle.sessionId);
         const journal = createEffectJournalStore(client.db, {
@@ -1457,7 +1457,7 @@ describe('chatCommand', () => {
       const capture: ChatDriver = async (ctx) => {
         live = ctx.store;
         ctx.startSession();
-        void ctx.onActivated?.(() => !ctx.shouldStop());
+        await ctx.onActivated?.(() => !ctx.shouldStop());
         await ctx.processLine('/exit');
         return { kind: 'exit' };
       };
@@ -1595,11 +1595,11 @@ describe('chatResumeCommand (2.N)', () => {
       journal.settle(identity, 'committed', 'synthetic private result');
       const { d, err } = resumeDeps([], [], store);
       let activated = false;
-      const drive: ChatDriver = (ctx) => {
+      const drive: ChatDriver = async (ctx) => {
         expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toHaveLength(1);
         expect(err()).not.toContain('external effect');
         ctx.startSession();
-        void ctx.onActivated?.(() => !ctx.shouldStop());
+        await ctx.onActivated?.(() => !ctx.shouldStop());
         activated = true;
         expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toEqual([]);
         if (interactive) {
@@ -1706,7 +1706,7 @@ describe('chatResumeCommand (2.N)', () => {
     const clearThenExit: ChatDriver = async (ctx) => {
       seen.push(ctx.handle.sessionId);
       ctx.startSession();
-      void ctx.onActivated?.(() => !ctx.shouldStop()); // no-op for the resumed session; starts the fresh one
+      await ctx.onActivated?.(() => !ctx.shouldStop()); // activates the resumed notice surface, or is absent for fresh sessions
       if (call++ === 0) return { kind: 'clear' }; // the resumed session's /clear swap
       await ctx.processLine('/exit');
       return { kind: 'exit' };

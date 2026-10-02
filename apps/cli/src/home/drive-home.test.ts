@@ -105,6 +105,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   const io: CliIo = {
     writeOut: () => undefined,
     writeErr: () => undefined,
+    writeErrAcknowledged: () => Promise.resolve(),
     env: {},
     stdoutIsTty: true,
     stdinIsTty: true,
@@ -160,7 +161,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       uuid: () => `id-${uuidN++}`, // unique per call (mirrors production randomUUID): the session id + message ids never collide
       render: (props) => {
         capture(props);
-        props.onRendererReady?.(() => Promise.resolve());
+        props.onRendererReady?.(async (publish) => {
+          await publish?.();
+        });
         return {
           unmount,
           waitUntilRenderFlush: () => Promise.resolve(),
@@ -576,7 +579,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           render: (props: RootAppProps) => {
             captured = props;
             if (!actualInk) {
-              props.onRendererReady?.(() => Promise.resolve());
+              props.onRendererReady?.(async (publish) => {
+                await publish?.();
+              });
               return {
                 unmount: finishRenderer,
                 waitUntilRenderFlush: () => Promise.resolve(),

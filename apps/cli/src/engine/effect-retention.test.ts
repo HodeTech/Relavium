@@ -43,6 +43,34 @@ afterEach(() => {
 });
 
 describe('active session disclosure before exact retention (ADR-0098)', () => {
+  it.each(['omitted', 'discarded rejection'] as const)(
+    'refuses a flush that falsely acknowledges publication (%s)',
+    async (kind) => {
+      effect();
+      const io = captureIo();
+      const notices: string[] = [];
+      await reconcileResumedSessionEffects({
+        io: io.io,
+        db: client.db,
+        sessionId: 's1',
+        sanitize: sanitizeInline,
+        deliverNotice: (text) => {
+          notices.push(text);
+          return text.startsWith('note:')
+            ? Promise.reject(new Error('SECRET_OUTPUT'))
+            : Promise.resolve();
+        },
+        flushNotice: async (publish) => {
+          if (kind === 'discarded rejection') void publish?.();
+          await Promise.resolve();
+        },
+      });
+      expect(rows()).toHaveLength(1);
+      expect(notices.at(-1)).toContain('audit evidence was retained');
+      expect(notices.join('')).not.toContain('SECRET_OUTPUT');
+    },
+  );
+
   it('delivers before deletion, leaves unresolved evidence and discloses a committed incomplete turn once', () => {
     effect();
     effect(2, 'ambiguous');
@@ -83,7 +111,9 @@ describe('active session disclosure before exact retention (ADR-0098)', () => {
       db: client.db,
       sessionId: 's1',
       sanitize: sanitizeInline,
-      deliverNotice: (text) => notices.push(text),
+      deliverNotice: (text) => {
+        notices.push(text);
+      },
     });
     expect(rows()).toHaveLength(1);
     expect(notices).toEqual([
@@ -220,8 +250,13 @@ describe('active session disclosure before exact retention (ADR-0098)', () => {
         sessionId: 's1',
         sanitize: sanitizeInline,
         isActive: () => active,
-        deliverNotice: (text) => notices.push(text),
-        flushNotice: () => flushed,
+        deliverNotice: (text) => {
+          notices.push(text);
+        },
+        flushNotice: (publish) => {
+          void publish?.();
+          return flushed;
+        },
       });
       expect(notices[0]).toContain('landed in a turn that did not complete');
       await new Promise<void>((yes) => setImmediate(yes));

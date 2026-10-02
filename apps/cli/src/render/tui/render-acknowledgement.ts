@@ -2,6 +2,9 @@
 import { useApp, useStdout } from 'ink';
 import { useCallback, useLayoutEffect, useRef } from 'react';
 
+import type { NoticeFlush } from '../../engine/effect-retention.js';
+import type { SuspendPort } from '../suspend.js';
+
 const OUTPUT_FAILED = 'The terminal output closed before display could be acknowledged.';
 
 function canWrite(output: NodeJS.WriteStream): boolean {
@@ -17,7 +20,8 @@ function canWrite(output: NodeJS.WriteStream): boolean {
 /** Call after the component's input hooks, so successful passive setup precedes activation. */
 export function useVisibleRenderFlush(
   onError: ((error: Error) => void) | undefined,
-): () => Promise<void> {
+  suspendPort?: SuspendPort,
+): NoticeFlush {
   const app = useApp();
   const { stdout } = useStdout();
   const mounted = useRef(false);
@@ -54,10 +58,18 @@ export function useVisibleRenderFlush(
       } else release();
     };
   }, [stdout, onError]);
-  return useCallback(async () => {
-    if (!mounted.current || !canWrite(stdout)) throw new Error(OUTPUT_FAILED);
-    await app.waitUntilRenderFlush();
-    // Ink can resolve its flush promise through a fallback yield when stdout cannot write.
-    if (!mounted.current || !canWrite(stdout)) throw new Error(OUTPUT_FAILED);
-  }, [app, stdout]);
+  return useCallback(
+    async (publish?: () => void | Promise<void>) => {
+      const acknowledge = async (): Promise<void> => {
+        if (!mounted.current || !canWrite(stdout)) throw new Error(OUTPUT_FAILED);
+        await publish?.();
+        await app.waitUntilRenderFlush();
+        // Ink can resolve its flush promise through a fallback yield when stdout cannot write.
+        if (!mounted.current || !canWrite(stdout)) throw new Error(OUTPUT_FAILED);
+      };
+      if (suspendPort === undefined) await acknowledge();
+      else await suspendPort.withActiveTerminal(acknowledge);
+    },
+    [app, stdout, suspendPort],
+  );
 }

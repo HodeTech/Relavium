@@ -52,10 +52,11 @@ export type { HomeChatSession } from './home-controller.js';
 
 import type { ClipboardOutcome } from '../clipboard.js';
 import type { SuspendPort } from '../suspend.js';
+import type { NoticeFlush } from '../../engine/effect-retention.js';
 
 export interface RootAppProps {
   /** Publishes a mounted render acknowledgement bound to this Ink tree and its exact output stream. */
-  readonly onRendererReady?: (flushVisible: () => Promise<void>) => void;
+  readonly onRendererReady?: (flushVisible: NoticeFlush) => void;
   readonly onRendererError?: (error: Error) => void;
   readonly controller: HomeController;
   readonly nowMs: () => number;
@@ -418,7 +419,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   // one `text` event, so a multi-line block appends verbatim and a pasted approval token never reaches the key
   // reducers (ADR-0068). The controller gates it (drops behind an overlay / pending approval / mid-turn).
   usePaste((text) => controller.handlePaste(text));
-  const flushVisible = useVisibleRenderFlush(props.onRendererError);
+  const flushVisible = useVisibleRenderFlush(props.onRendererError, props.suspendPort);
   useEffect(() => {
     props.onRendererReady?.(flushVisible);
   }, [flushVisible, props.onRendererReady]);
