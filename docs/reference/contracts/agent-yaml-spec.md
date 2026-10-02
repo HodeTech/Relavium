@@ -62,10 +62,42 @@ fallback_chain:             # ordered alternates tried after the primary is exha
 | `output_schema` | no | JSON Schema describing the output this agent produces. **Unlike `input_schema`, this DOES affect a run — on a workflow `agent` node.** An [`AgentSession`](agent-session-spec.md) (`relavium chat`, `relavium agent run`) neither lowers nor enforces it today: `agent-session.ts` does not read the field at all, so the same agent behaves differently depending on which entry point runs it. Recorded as a residual in [deferred-tasks.md](../../roadmap/deferred-tasks.md) rather than papered over. On the workflow node: it is lowered to the seam's `responseFormat` and the returned content is validated against it, a miss failing the node with `validation` (`retryable: false`) — see [agent-runner.md](../shared-core/agent-runner.md) and [ADR-0092](../../decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md). What a schema may CONTAIN — the per-keyword enforced/refused matrix, the bounds, and the two modes — is [json-schema-subset.md](../shared-core/json-schema-subset.md); a schema outside that subset is refused at **parse**, not at run time. |
 | `tools` | no | Tool ids — see [../shared-core/built-in-tools.md](../shared-core/built-in-tools.md). |
 | `mcp_servers` | no | See [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md). |
-| `memory` | no | `none`, `window` (with `window_size`) or `summary`. **Accepted by the schema and not yet enforced.** No engine code reads it today, and every session behaves as an omitted policy does: the full transcript, auto-compacted per `[chat].auto_compact`. An earlier version of this row named `none` as the default, which was the opposite of the shipped behaviour. The semantics are decided in [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §4, and enforcement lands in `W7`. |
+| `memory` | no | `none`, `window` (with positive integer `window_size`) or `summary`; omitted preserves the full working transcript. Enforced by `AgentSession`; see [Conversational memory](#conversational-memory). **No effect on a workflow `agent` node**, including a node produced by session export: the node executes one turn. |
 | `retry` | no | Node-retry budget **above** the fallback chain — re-runs the whole node on a retryable failure, up to `max` total attempts ([ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md)). `max` may not exceed **10** ([ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md), which supersedes ADR-0040's "intentionally unbounded" clause). |
 | `fallback_chain` | no | Switch to a *different* model/provider **within an attempt** (the within-chain failover); the node `retry` budget then re-runs the whole chain above it. At most **5** entries, each with `max_attempts` at most **10** ([ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md)) — the two multiply, so both are bounded. |
 | `tools` | no | The tools this agent may call. A single model RESPONSE may request at most **16** tool calls ([ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md) §2) — a turn over that is refused before any of them is dispatched, so no effect fires. This is the model's width, not the author's; there is no field to raise it. |
+
+## Conversational memory
+
+The policy is copied and frozen when the session instance binds its agent. Resume uses the durable
+`agentSnapshot`; a model reseat carries that snapshot's policy. Editing YAML changes a new session,
+not a resumed one. The working transcript and durable archive remain distinct: request selection
+does not delete or rewrite either. [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md)
+§4 and its September 18 note decide these semantics.
+
+| Policy | Model-facing conversation | Automatic compaction permission | Manual history operations |
+|---|---|---|---|
+| omitted | The complete working transcript, with any standing summary as untrusted user-role data | `[chat].auto_compact` (absent means enabled) | `/compact` and `/trim` allowed |
+| `none` | Only the current user message, alongside the authored system prompt | Never | `/compact` and `/trim` refused with a policy reason |
+| `window` | Current user message plus the last `window_size` completed turns | Never | `/compact` refused; `/trim` allowed |
+| `summary` | The complete working transcript, with any standing summary as untrusted user-role data | Permitted even when `[chat].auto_compact = false` | `/compact` and `/trim` allowed |
+
+A completed turn with empty final text still occupies one window slot. The current pending message is
+explicitly tracked and is never counted as a completed turn. Legacy text with no proven terminal
+remains in the archive and ordinary working transcript; `window` selects only proven completed
+turns, excluding unproven legacy prefixes, gaps and tails. Under `none` or `window`, a restored
+summary remains durable but is excluded from the request. After selection, adjacent user/assistant
+messages are folded with explicit in-band separators; the archive stays unfolded.
+
+Automatic permission does not itself trigger or fund a summariser. A one-shot `agent run` makes no
+after-turn summariser call. Manual `/trim` retains its message-unit bound and may keep a complete
+exchange beyond that bound to avoid an orphaned assistant message. The engine API and typed refusals
+are specified in [agent-session-spec.md](agent-session-spec.md#request-projection-and-history-operations).
+
+**W7 implementation status, 2026-10-02:** step 5 implements request projection, frozen policy,
+engine/CLI refusals and policy permission for the existing after-turn trigger on `development`.
+The measured pre-send trigger, overflow recovery and revised compaction primitive remain subsequent
+approved steps; the complete wave is still open.
 
 ## Retry vs. fallback
 

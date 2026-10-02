@@ -1989,7 +1989,7 @@ correction inside its own ADR rather than a rewrite, so the wrong reasoning stay
 
 ### W7 pre-implementation review and proposed execution plan — 2026-10-02
 
-**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–4 are closed after their independent review rounds; step 5 proceeds automatically.**
+**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–4 are closed after their independent review rounds; step 5 implementation is checked, with independent review pending.**
 The four Accepted ADRs retain their decisions. Three verified gaps were explicitly resolved before code:
 manual compaction with an unknown window and the budget outcome of idle compaction
 ([ADR-0099](../../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md)),
@@ -2182,6 +2182,22 @@ proved that queued native stdio can delay natural process exit after command tea
 and the exact pre-step baseline; the canonical contract now states that inherited qualification explicitly.
 The [round 6 record](../../reviews/2026-10-02T10-57-58-w7-step-4-round-6-review.md) records evidence and limits.
 **Step 4 is closed; step 5 proceeds automatically.** All six W7 register items remain open.
+
+**Step 5 implementation checkpoint, 2026-10-02:** one pure request projection selects authored
+memory before summary placement and same-role folding. Completed-turn spans count empty finals,
+exclude unproven legacy text from a window and survive trim, resume and model reseat without changing
+the durable archive. The instance copies/freezes its policy; engine history operations return typed
+policy refusals, and the CLI checks them before progress or bound validation. The existing after-turn
+trigger consumes the resolved permission; measured pre-send/recovery and revised compaction outcomes
+remain later steps. Actual workflow-node requests retain their one-turn behaviour.
+
+Core request/state/purity tests and actual CLI/SQLite resume/reseat tests verify these paths,
+including restored-summary exclusion, empty finals, completion-sink rollback, manual refusal and a
+high-usage summary-policy one-shot with no after-turn summariser. Required workspace checks pass
+(23 tasks), build passes (6 tasks), and coverage exits 0 (299 suites, 6,567 passing tests, 11 skipped;
+all configured thresholds met). Canonical memory, session API, config and chat contracts and dated
+ADR-0095/ADR-0062 landing notes are updated. **Fresh independent review rounds are pending;
+step 5 and all six W7 register items remain open.**
 
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A

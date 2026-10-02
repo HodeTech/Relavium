@@ -66,6 +66,15 @@
 > remains available under ADR-0099's disclosed soft input bound and atomic four-pass limit. These decisions
 > are staged in `W7`; the historical text below is unchanged.
 
+> **Landing note 2026-10-02 — W7 step 5.** The authored memory override and typed engine refusals
+> described in the September 18 note are implemented on `development`, including CLI refusal before
+> progress/bound checks. Message-unit trimming and append-only marker boundaries are preserved.
+> A fresh summary-policy `agent run` above the threshold still makes exactly its one main request;
+> there is no foldable earlier exchange and no after-turn summariser call. The revised measured triggers,
+> multi-pass primitive and idle budget outcomes remain later W7 steps. Current contracts live in
+> [agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md#conversational-memory) and
+> [agent-session-spec.md](../reference/contracts/agent-session-spec.md#request-projection-and-history-operations).
+
 ## Context
 
 A long `relavium chat` / Home session grows its transcript every turn. `AgentSession`

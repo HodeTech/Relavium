@@ -59,6 +59,8 @@ stateDiagram-v2
 | **cancel** | Abort the in-flight turn via `AbortSignal` **and end the session** (the terminal `session:cancelled`); the session stays resumable from its persisted transcript. |
 | **runUserCommand** | Run a **USER-invoked `!`-shell command** (2.5.D, [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) — the additive method that routes a shell escape through the **one** `run_command` dispatch boundary, **reusing the same dispatch-context construction as a turn** (`toolPolicy` allowlist, `fsScope`, `gateApproved:false`, the mode-aware `confirmAction`): `enforcePolicy(allowedCommands)` **before** approval → `spawn`/`shell:false`. The caller pre-tokenizes the line into `command` + `args` (no shell expansion); the user grant of `run_command` is scoped to this one-off dispatch and never reaches the model. Returns a classified `UserCommandOutcome` (`ran` \| `denied{allowlist}` \| `failed` \| `cancelled`) — no raw error escapes. Callable only when **started + idle** (a `!` never races a turn); leaves the session idle. |
 | **resume** | Reload a persisted session (messages + context) and continue. |
+| **compact** | Summarise the older working context, retain the latest complete exchange and append a durable boundary marker. Callable only when started and idle; returns a typed `CompactionResult`. Memory-policy refusal precedes no-op detection, provider planning, events and egress. |
+| **trimHistory** | Keep a suffix under a message-unit bound, starting at a user boundary; append a marker without an LLM call. Callable only when started and idle; returns a typed `TrimResult`. Memory-policy refusal precedes bound/no-op checks and mutation. |
 | **export** | Serialize the session to a `.relavium.yaml` scaffold ([export](#export-to-workflow)). |
 
 The turn loop, tool dispatch, streaming, and fallback are the **same** code paths a workflow `agent`
@@ -72,6 +74,36 @@ enumerate event names). 1.V keeps the conversation **in-memory** (the in-flight 
 form) and emits session events through an injected sink; wiring that sink onto the shared `RunEventBus`
 (per-session `sequenceNumber` + gap/resync) is **1.W**, and the durable [`SessionMessage`](#session-messages)
 schema + persistence is **1.X**.
+
+### Request projection and history operations
+
+The authored [`memory` contract](agent-yaml-spec.md#conversational-memory) selects one request
+projection, also used by the session's context estimate. It applies to fresh, resumed and model-reseated
+instances. Selection and summary placement happen before same-role folding; generated summaries
+remain untrusted user-role data and cannot change the authored system prompt. Each request owns
+its message/content arrays and text parts, so request consumers cannot mutate the working transcript.
+
+`AgentSession.memoryPolicy` returns the copied, frozen policy. `automaticCompactionAllowed` exposes
+its resolved permission independently of whether a trigger or budget permits a call. `compactionRefusal`
+and `trimRefusal` expose the same `MemoryPolicyRefusal` that the operations return:
+`{ kind: 'policy_refused', memory: 'none' | 'window', message: string }`. The message is a fixed,
+secret-free explanation. Lifecycle misuse still throws `SessionStateError` before a policy outcome.
+Hosts use these getters before progress or bound validation; the engine remains the authority.
+
+`reconstructSessionState(record, messages)` returns a text-only, unfolded `SessionResumeState`.
+Alongside its messages, costs and turn counter, it supplies required `completedTurnSpans`: ordered,
+non-overlapping `{ start, end }` indices into that message array, with exclusive `end`. Each span
+starts with a user and contains either that user alone for an empty final, or the user plus its final
+assistant text. Structural durable rows are excluded. Legacy text remains outside spans rather than
+being invented into a completed turn. The current pending user is tracked separately during a send.
+Build resume state with this helper; `AgentSession.resume` validates span bounds, roles and text-only
+parts before host cost callbacks, refuses invalid metadata with `SessionStateError` code
+`invalid_resume_state`, and copies the admitted state. A compact/trim rebases surviving whole spans;
+a failed, aborted or cancelled turn creates none.
+
+**W7 step 5, 2026-10-02:** request projection and policy permission/refusals are implemented on
+`development`. The later measured pre-send/recovery entry points and revised multi-pass/budget
+compaction outcomes remain staged; this section does not claim they have landed.
 
 ### Hard turn cap
 

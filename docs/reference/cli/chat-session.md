@@ -97,8 +97,8 @@ A small, **alias-free**, curated set of slash commands drives the REPL itself (n
 | `/mode [name]` | Switch the chat **mode** — `ask` / `plan` / `accept-edits` / `auto` (**2.5.E**, below); bare `/mode` shows the current mode + explains each. `Shift+Tab` cycles them. Chat-only. |
 | `/thinking` | Show / hide the collapsible **reasoning ("thinking") panel** (**2.5.H**; also `Ctrl+T`). A pure UI-view toggle (no session/engine effect); the panel is only rendered while the model is actually streaming reasoning. Default collapsed. Chat-only. |
 | `/doctor` | Run a setup health check as a **notice** (**2.5.C S5**). Fast tier: OS keychain reachable · config valid · wired tool capabilities. `--deep` adds provider-key validation (a bounded, **redacted** live ping per configured key — the key never reaches the output) + the live session's MCP status (the bound agent's connected servers + any tools the manager dropped). The `--deep` MCP tier is **read-only** — it reports the already-connected session, never a fresh connect/spawn (a security-review decision). Available in **both** the chat and the bare Home (pre-chat diagnostics); the Home palette runs the fast tier, `--deep` is typed in a chat. |
-| `/compact` | **Model-summarise** the conversation so far to reclaim context — an LLM call ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md), **2.5.F**; see § Context compaction below). Reports the token deltas + spend + the summary as a **notice**. Effect `write` (spends tokens). Chat-only. |
-| `/trim [n]` | **Deterministically** drop older messages down to the last `n` (default `[chat].max_messages`), **no LLM call** (ADR-0062, 2.5.F). A bare `/trim` with no config bound prints an actionable notice; a bound larger than the history is a reported no-op. Chat-only. |
+| `/compact` | **Model-summarise** the conversation so far to reclaim context — an LLM call ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md), **2.5.F**; see § Context compaction below). Reports the token deltas + spend + the summary as a **notice**. Checks the bound agent's [memory policy](../contracts/agent-yaml-spec.md#conversational-memory) before showing progress; a policy refusal names why without starting a call. Effect `write` (spends tokens). Chat-only. |
+| `/trim [n]` | **Deterministically** drop older messages down to the last `n` (default `[chat].max_messages`), **no LLM call** (ADR-0062, 2.5.F); keep a user boundary even if that retains an extra message. Checks the [memory policy](../contracts/agent-yaml-spec.md#conversational-memory) before missing/invalid-bound notices. When permitted, a bare `/trim` with no config bound prints an actionable notice; a bound larger than the history is a reported no-op. Chat-only. |
 | `/models` | Open the live catalog **picker** ([ADR-0064](../../decisions/0064-live-model-catalog.md)) — **interactive-only**. In a **chat**, picking a *different* model **reseats** the live session onto it; re-picking the model you are already on only sets its effort tier (a per-turn override, **no reseat**). In the **bare Home** it writes the next session's defaults instead. Both paths — and what a reseat does and does not carry — are in § [Model reseat](#model-reseat-models) (**2.5.G**). Opening the picker changes nothing — the effect lands only on an explicit selection. Under `--json` / a plain non-TTY there is no overlay: nothing is reseated and an actionable hint is printed. |
 | `/effort [tier]` | Set the **reasoning-effort** tier — `off` / `low` / `medium` / `high` / `max` ([ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md)); bare `/effort` shows the current tier + the options. A **per-turn session override** on the live session — **no reseat** (unlike `/models`), and it does **not** survive one. Always available in a chat: on a model with no controllable reasoning tier the command says so and the tier is stored but **inert** (gated off at send) — it is the picker's effort sub-step and the footer indicator that are capability-gated, not this command. Chat-only. |
 | `/scrollback` | Dump the transcript into the terminal's **native scrollback** (to scroll, search, select, copy — Enter returns). One of the three copy-and-search **hatches** described under § [Entry](#entry) — the alt screen has no scrollback of its own. Not available before the first turn. Chat-only. |
@@ -125,7 +125,11 @@ The session's `ToolHost` is bound **full-capability** for its lifetime (fs read+
 
 A long conversation grows its transcript every turn until it approaches the model's context window. Three
 mechanisms bound it — all **append-only** (nothing is deleted; the full transcript always survives for
-`/export` and audit) and **resume/reseat-preserving**:
+`/export` and audit) and **resume/reseat-preserving**.
+
+The bound agent's [memory policy](../contracts/agent-yaml-spec.md#conversational-memory) controls
+request selection and permission for history operations. Its frozen value survives resume and
+model reseat. A policy refusal is shown before any progress indicator or `/trim` bound validation.
 
 - **`/compact`** — model-summarises the earlier conversation into a **session-level summary** and keeps the
   **last exchange verbatim**. An LLM call: it reports the
@@ -133,7 +137,8 @@ mechanisms bound it — all **append-only** (nothing is deleted; the full transc
   by the session's **own bound model** (no second binding — [ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)).
 - **Automatic compaction** — after a turn whose **real** input tokens exceed `[chat].compact_threshold`
   (default `0.8`) × the serving model's context window, the session auto-compacts **before the next turn**
-  (`[chat].auto_compact`, default on). Guarded so it never thrashes (skipped when compaction can't reduce
+  (permission follows the bound memory policy; `[chat].auto_compact` governs an omitted policy).
+  Guarded so it never thrashes (skipped when compaction can't reduce
   below the budget) and its cost is accounted + surfaced as an inline `⟳ Context auto-compacted …` notice —
   never a silent context swap. A model with no known window (a custom base-URL id) skips auto-compaction; a
   summarisation failure degrades to a deterministic `/trim`.

@@ -23,6 +23,17 @@
   [agent-session-spec.md](../reference/contracts/agent-session-spec.md) ·
   [agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md)
 
+> **Landing note 2026-10-02 — W7 step 5 request memory.** The development implementation now
+> enforces §4 request selection and typed engine/CLI history-operation refusals, copies/freezes the
+> instance's policy and applies its permission to the existing after-turn trigger. Explicit completed-turn
+> spans preserve empty finals through resume/reseat and exclude unproven legacy text from a bounded
+> window without changing its archive/export compatibility. Selection precedes same-role folding;
+> restored summaries remain untrusted and are excluded under `none`/`window`. Workflow execution is
+> unchanged. Canonical contracts are [agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md#conversational-memory)
+> and [agent-session-spec.md](../reference/contracts/agent-session-spec.md#request-projection-and-history-operations).
+> Pre-send measurement, overflow recovery and revised compaction outcomes remain later approved W7
+> steps. The historical Implementation field records the pre-W7 state, not this partial development landing.
+
 > **Amended 2026-10-02 — W7 step 3 legacy read compatibility.** The fourth implementation review
 > reproduced a pre-W7 successful empty-final exchange using the actual old persister: it stored a user
 > row alone, and a later completed exchange left `user → user → assistant`. The old resume retained

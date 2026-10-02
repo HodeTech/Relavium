@@ -109,6 +109,11 @@ merged too (PR #85, 2026-08-28).
 > step and every correction with no new material findings. Parent native/privacy controls pass; compiled-entry
 > process-exit delay under queued stdio also reproduces on the exact pre-step baseline and is explicitly qualified.
 > **Step 4 is closed; step 5 proceeds automatically.** All six W7 register items remain open.
+> Step 5's memory implementation and canonical docs are checked, with fresh independent review pending:
+> one pure request projection, frozen policy, completed-turn spans and engine/CLI history refusals;
+> actual request, workflow-node and SQLite resume/reseat controls pass. Workspace checks, build and coverage
+> pass (299 suites, 6,567 passing tests, 11 skipped). Later measured pre-send/recovery and revised compaction
+> outcomes remain staged. Step 5 and all six W7 register items remain open.
 > It repairs collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.
