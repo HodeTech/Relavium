@@ -405,6 +405,13 @@ export interface ToolDispatchContext {
   readonly effectSlot: EffectSlot;
   /** Session-owned call identity and the provider attempt that actually dispatched it. */
   readonly effectAttempt?: Pick<EffectAttemptId, 'providerAttempt' | 'toolCallId'>;
+  /**
+   * Trusted host admission, synchronously checked after approval and preparation, immediately before
+   * every actual dispatch (including unjournaled tools). A throw proves dispatch never started: any
+   * prepared claim is discarded, while settlement of effects already started remains available.
+   * Replayed results do not dispatch and do not invoke this hook. Must not perform asynchronous work.
+   */
+  readonly beforeDispatch?: (toolId: ToolId) => void;
   readonly signal?: AbortSignalLike;
 }
 

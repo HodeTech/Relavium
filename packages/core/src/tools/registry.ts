@@ -483,6 +483,17 @@ async function dispatch(
         replayed = asReplayEnvelope(verdict.result);
       }
     }
+    // 4d. Admission belongs at the actual dispatch boundary, independent of effect tier. Approval and
+    // prepare can both yield while the host's durable state fails. A refusal here proves the call never
+    // started, so release its prepared claim rather than recording a possibly-landed effect.
+    if (replayed === NOT_REPLAYED) {
+      try {
+        ctx.beforeDispatch?.(def.id);
+      } catch (cause) {
+        if (tier !== undefined) await discardQuietly(ctx, def.id);
+        throw cause;
+      }
+    }
     let output: unknown;
     // Split the attachment off HERE, immediately at the dispatch boundary, so everything downstream —
     // `output_mapping`, bounding, the tool result, the spill — sees the ordinary descriptor value and never

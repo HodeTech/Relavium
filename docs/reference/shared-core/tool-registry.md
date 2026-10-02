@@ -184,6 +184,15 @@ host is touched once, in the middle.
 7. **Bound the model-facing result** (§Result bounding and spill-to-file) from the result via `ctx.limits` + the host `outputStore` — over the ceiling the model gets a preview + a spill handle, the full result still flows to `output_mapping`.
 8. **Mark the result untrusted** (§Untrusted-data taint) and hand the structured `tool_call` / `tool_result` data + its taint/secret markers to the bus's single translation point ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) for `agent:tool_call` / `agent:tool_result` emission.
 
+The durable [effect bracket](effect-journal.md) prepares a tiered call after approval and settles it
+after model-facing bounding. Immediately before step 5, after any asynchronous approval and preparation,
+the registry invokes the optional trusted `ctx.beforeDispatch(toolId)` synchronously for **every actual
+dispatch**, including unjournaled tools. No asynchronous work may occur in that hook. It uses the resolved
+registry id and does not run for a retained-result replay. A refusal proves no dispatch started: a prepared
+claim is discarded, with a failed discard conservatively retaining the unresolved claim. This admission
+check does not guard settlement of an effect that already started. Session hosts use it to enforce their
+live durability latch independently of journal tier or cached effect identity.
+
 > **Loop-correctable vs terminal.** `UnknownToolError` and `ToolArgsInvalidError` are **thrown** by the registry; the agent loop (1.O) **catches** them and synthesizes a correctable `isError` `tool_result` (from the secret-free `error.message`) so the model can fix its call, within a **bounded correction budget** it owns — escalating to a node `ErrorCode` only when that budget is spent. A `ToolPolicyError` — and, identically, a `ToolDeniedByUserError` (the per-tool approval denial, ADR-0057) — is structurally fatal (`tool_denied`) and **never** fed back as a correctable result (re-asking a denied tool just burns budget), with **one Step-14 exception**: a `recoverable` SCOPE denial (`media_scope_denied` / the fs pure scope-tier escape — refused before any side effect) IS fed back on the `recoverToolFailures` surfaces (chat / Home / one-shot `agent run`) so the model can adapt to an in-bounds path (see the `recoverable` note under the error taxonomy). See [agent-runner.md §the failure ladder](agent-runner.md). A `ToolCancelledError` maps to `cancelled` ahead of all other classifications (cancel wins).
 
 ```ts
@@ -205,6 +214,7 @@ interface ToolDispatchContext {
   readonly secretArgKeys?: ReadonlySet<string>;
   readonly invokeAgent?: (nodeId: string, input: unknown) => Promise<unknown>; // engine delegate (invoke_agent); absent ⇒ ToolUnavailableError
   readonly limits?: ToolResultLimits;      // the result-bounding ceilings; absent ⇒ DEFAULT_TOOL_RESULT_LIMITS
+  readonly beforeDispatch?: (toolId: ToolId) => void; // synchronous trusted admission immediately before actual dispatch
   readonly signal?: AbortSignalLike;
 }
 ```
