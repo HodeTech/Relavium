@@ -113,6 +113,9 @@ added.
 - [2026-10-02 — W7 step 6, round 8](2026-10-02T22-44-01-w7-step-6-round-8-review.md):
   clean independent financial/contract acceptance and parent replays; Step 6 closed.
 
+- [2026-10-02 — W7 step 9, foundation preflight](2026-10-02T23-40-16-w7-step-9-foundation-preflight-review.md):
+  two verified candidate corrections, complete quote/debit foundation and parent causal controls; committed-step acceptance pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

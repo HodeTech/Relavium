@@ -2924,3 +2924,17 @@ Git-ignore mismatch is preserved as a corrected harness error. The
 records the exact scope and evidence limits. **Steps 1–6 are closed.** Maintainer live captures
 remain required for Step 7 and therefore Step 8; Step 9 proceeds independently from accepted
 input pricing. All six W7 register items remain open.
+
+**Step 9 implementation checkpoint — 2026-10-02.** The combined rate-only kernel freezes finite
+token/media price evidence from one lookup. Quotes use original candidate-specific construction
+caps, actual lowered tools, current input and effective chain attempts; native caps remain
+unclamped through E/A. Full basis comparison includes excluded candidates and zero-volume gaps.
+Opaque dispatch ownership debits under-cap calls, reconciles refunds/conservative retention/overrun,
+holds one in-flight slot through host callbacks and refuses stale owners or exhausted allowances.
+The [preflight record](../../reviews/2026-10-02T23-40-16-w7-step-9-foundation-preflight-review.md) separates external-candidate findings and parent
+verification from committed-step acceptance. Ten causal negatives fail as expected; restored
+focused checks pass 279 tests. Full `pnpm run ci` and sequential `pnpm coverage` exit 0
+(312 suites, 7,074 passing tests, 11 existing skips; line/branch/function coverage
+95.87%/92.75%/96.57%). Fresh independent committed-step rounds precede closure. The legacy H3 boolean does not activate this foundation: authoritative durable
+authorization, checkpoint/replay and live/cross-process wiring remain Step 10; safe approval is
+Step 11. Maintainer live captures for Steps 7–8 remain pending. All six register items remain open.

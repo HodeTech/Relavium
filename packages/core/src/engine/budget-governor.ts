@@ -1,10 +1,10 @@
 import {
-  estimateResolvedNextCost,
+  estimateResolvedRequestCost,
   outputTokensReservation,
   assertOutputCapPlanMatches,
   DEFAULT_OUTPUT_TOKENS_ESTIMATE,
   InvalidOutputCapPlanError,
-  estimateMediaCost,
+  InvalidTokenEstimateError,
   UnknownModelError,
   type EndpointKind,
   type PricingOverlay,
@@ -15,6 +15,13 @@ import type { Budget, MediaBilledModality } from '@relavium/shared';
 import type { RunEventDraft } from './event-bus.js';
 import type { GateRequest } from './node-executor.js';
 import type { PreEgressInfo } from './agent-turn.js';
+import { quoteBudgetAllowance, type AllowanceQuoteResult } from './budget-allowance.js';
+import {
+  DispatchAllowanceBook,
+  type DispatchAllowanceToken,
+  type AllowanceDebit,
+  type AllowanceRefusal,
+} from './dispatch-allowance.js';
 
 /** The POSIX way to carry a literal `'` through single quotes: close, escape, reopen. */
 const ESCAPED_SINGLE_QUOTE = String.raw`'\''`;
@@ -66,7 +73,14 @@ export const DEFAULT_MAX_TOKENS_ESTIMATE = DEFAULT_OUTPUT_TOKENS_ESTIMATE;
  * the exact trap ADR-0089 §4(c) exists to avoid). Both used to report `unpriced_model`, so a caller
  * narrowing on `.reason` could not tell them apart even though the messages already did.
  */
-export type BudgetExceededReason = 'projected_over_cap' | 'unpriced_model' | 'unpriced_modality';
+export type BudgetExceededReason =
+  | 'projected_over_cap'
+  | 'unpriced_model'
+  | 'unpriced_modality'
+  | 'allowance_exhausted'
+  | 'allowance_owner_invalid'
+  | 'allowance_in_flight'
+  | 'unrepresentable_estimate';
 
 /**
  * Thrown when a priced pre-egress projection exceeds a configured `on_exceed: fail` cap, or when strict-cost mode
@@ -120,6 +134,8 @@ export class BudgetPauseError extends Error {
     readonly spentMicrocents: number,
     readonly limitMicrocents: number,
     readonly thresholdPct: number,
+    /** Frozen scalar quote only; raw request/cap inputs never cross the gate boundary. */
+    readonly allowanceQuote?: AllowanceQuoteResult,
   ) {
     super(
       `pre-egress budget check would exceed the cap of ${limitMicrocents} micro-cents ` +
@@ -141,6 +157,7 @@ export class BudgetPauseError extends Error {
       spentMicrocents: this.spentMicrocents,
       limitMicrocents: this.limitMicrocents,
       isBudgetGate: true,
+      ...(this.allowanceQuote === undefined ? {} : { allowanceQuote: this.allowanceQuote }),
     };
   }
 }
@@ -201,7 +218,7 @@ export interface BudgetAdmission {
 /** Internal evaluation detail: the public verdict stays compact while admission keeps the exact priced estimate. */
 interface BudgetEvaluation {
   readonly result: BudgetCheckResult;
-  /** Present only for a priced, bounded call; absent means there is nothing meaningful to reserve. */
+  /** Present for a safely priced call, including a cap refusal that an owned allowance can answer. */
   readonly estimateMicrocents?: number;
   /**
    * A PARTIAL pricing gap: the model is priced, the cap still applies to the token side, and one or more
@@ -218,6 +235,10 @@ type EstimateResult =
       readonly kind: 'priced';
       readonly estimateMicrocents: number;
       /** Billed modalities with requested volume and no rate — the figure above excludes their charge. */
+      readonly unpricedModalities: readonly MediaBilledModality[];
+    }
+  | {
+      readonly kind: 'unrepresentable';
       readonly unpricedModalities: readonly MediaBilledModality[];
     }
   | { readonly kind: 'unpriced' };
@@ -322,6 +343,7 @@ export class BudgetGovernor {
   readonly #defaultMaxTokensEstimate: number;
   readonly #emit: (event: GovernorEventDraft) => Promise<void>;
   readonly #overlay: PricingOverlay | undefined;
+  readonly #allowances = new DispatchAllowanceBook();
   /** The durable/realized total reported by the engine or session cost stream. */
   #cumulativeCostMicrocents = 0;
   /**
@@ -450,6 +472,58 @@ export class BudgetGovernor {
     this.#cumulativeCostMicrocents = cumulativeCostMicrocents;
   }
 
+  /** Trusted engine ownership activation; Step 10 supplies this only after observed authorization ACK. */
+  activateDispatchAllowance(params: {
+    readonly nodeId: string;
+    readonly dispatchId: number;
+    readonly amountMicrocents: number;
+    readonly isLive: () => boolean;
+  }): DispatchAllowanceToken {
+    return this.#allowances.activate(
+      params.nodeId,
+      params.dispatchId,
+      params.amountMicrocents,
+      params.isLive,
+    );
+  }
+
+  closeDispatchAllowance(token: DispatchAllowanceToken): void {
+    this.#allowances.close(token);
+  }
+
+  /** Process-local diagnostic snapshot; never a durable source of restored spending authority. */
+  dispatchAllowanceState(
+    token: DispatchAllowanceToken,
+  ): ReturnType<DispatchAllowanceBook['snapshot']> {
+    return this.#allowances.snapshot(token);
+  }
+
+  #allowanceError(reason: AllowanceRefusal): BudgetExceededError {
+    const code =
+      reason === 'exhausted'
+        ? 'allowance_exhausted'
+        : reason === 'in_flight'
+          ? 'allowance_in_flight'
+          : 'allowance_owner_invalid';
+    return new BudgetExceededError(
+      this.#cumulativeCostMicrocents,
+      this.#budget.max_cost_microcents,
+      undefined,
+      reason === 'exhausted'
+        ? 'approved dispatch allowance is exhausted'
+        : reason === 'in_flight'
+          ? 'approved dispatch already has an in-flight provider attempt'
+          : 'approved dispatch no longer owns its allowance',
+      code,
+    );
+  }
+
+  #assertAllowanceLive(token: DispatchAllowanceToken | undefined, admitted = false): void {
+    if (token === undefined) return;
+    const refusal = this.#allowances.validateLive(token, admitted);
+    if (refusal !== undefined) throw this.#allowanceError(refusal);
+  }
+
   /**
    * Evaluate one prospective LLM call. Returns a result description (synchronous, no side effects);
    * callers apply the action by throwing the supplied error or, for `warn`, emitting the event.
@@ -460,16 +534,18 @@ export class BudgetGovernor {
   }
 
   /** Evaluate against the authoritative realized total plus every live admission, without mutating either. */
-  #evaluate(info: PreEgressInfo): BudgetEvaluation {
+  #evaluate(info: PreEgressInfo, token?: DispatchAllowanceToken): BudgetEvaluation {
     const { model } = info;
     // A cap of 0 means UNBOUNDED (`[chat].max_cost_microcents`: "0 = unbounded"): never block, and never
     // reach the `thresholdPct` division below (which would be `/0` → NaN). A workflow `BudgetSchema` forbids
     // 0 (`positiveInt`), but the governor is reused for the `[chat]`/session path where 0 is valid. This
     // short-circuit stays BEFORE any estimate (ADR-0044 §3 — no `/0`, no estimate work when unbounded).
-    if (this.#budget.max_cost_microcents <= 0) {
+    if (this.#budget.max_cost_microcents <= 0 && token === undefined) {
       return { result: { kind: 'allow' } };
     }
     const estimateResult = this.#estimate(info);
+    // Pricing may call a host overlay. Validate lifetime after it, before any projection/atomic debit.
+    this.#assertAllowanceLive(token);
     if (estimateResult.kind === 'unpriced') {
       // An unpriced model id (a custom/self-hosted id OR a first-party catalog gap) cannot be distinguished at
       // this seam. The regular cap degrades to allow with one notice for EVERY unpriced id; strict_cost_cap blocks
@@ -525,6 +601,34 @@ export class BudgetGovernor {
         },
       };
     }
+    if (estimateResult.kind === 'unrepresentable') {
+      if (token !== undefined) this.#allowances.exhaust(token);
+      return {
+        ...(estimateResult.unpricedModalities.length === 0
+          ? {}
+          : { unpricedModalities: estimateResult.unpricedModalities }),
+        result:
+          token === undefined && this.#budget.on_exceed === 'pause_for_approval'
+            ? {
+                kind: 'pause',
+                error: new BudgetPauseError(
+                  this.#cumulativeCostMicrocents,
+                  this.#budget.max_cost_microcents,
+                  100,
+                ),
+              }
+            : {
+                kind: 'fail',
+                error: new BudgetExceededError(
+                  this.#cumulativeCostMicrocents,
+                  this.#budget.max_cost_microcents,
+                  undefined,
+                  'prospective provider cost cannot be represented safely',
+                  'unrepresentable_estimate',
+                ),
+              },
+      };
+    }
     const estimate = estimateResult.estimateMicrocents;
     // Non-strict, and a modality had no rate: the verdict below is a REAL allow/warn/fail against the priced
     // part, and the gap rides beside it so `checkPreEgress` can say so once. Attaching it to every arm rather
@@ -542,7 +646,7 @@ export class BudgetGovernor {
       this.#conservativeCostMicrocents +
       this.#reservedCostMicrocents +
       estimate;
-    if (projected <= this.#budget.max_cost_microcents) {
+    if (this.#budget.max_cost_microcents <= 0 || projected <= this.#budget.max_cost_microcents) {
       return { result: { kind: 'allow' }, estimateMicrocents: estimate, ...gap };
     }
 
@@ -555,11 +659,8 @@ export class BudgetGovernor {
     return {
       ...verdict,
       ...gap,
-      // ONLY on `warn`, which is the one over-cap arm that still ADMITS the call and therefore reserves
-      // against this number. `fail`/`pause` throw before any consumer reads it — so attaching it there was
-      // inert, but it would have made the field's own contract ("present only for a priced, bounded call")
-      // false, and a later consumer reserving budget for a refused call is exactly what that wording guards.
-      ...(verdict.result.kind === 'warn' ? { estimateMicrocents: estimate } : {}),
+      // An owned dispatch can answer only this cap verdict; it debits the same current estimate even under cap.
+      estimateMicrocents: estimate,
     };
   }
 
@@ -609,8 +710,12 @@ export class BudgetGovernor {
    * fail/pause outcome. Earlier durability/legacy-job barriers complete before evaluating headroom.
    * The returned admission MUST be settled, conservatively committed, or released exactly once by the attempt owner.
    */
-  async checkPreEgress(info: PreEgressInfo): Promise<BudgetAdmission | undefined> {
+  async checkPreEgress(
+    info: PreEgressInfo,
+    token?: DispatchAllowanceToken,
+  ): Promise<BudgetAdmission | undefined> {
     const { model } = info;
+    this.#assertAllowanceLive(token);
     // ADR-0074 §2's barrier: the NEXT provider attempt waits for any prior commitment's durability. Before this
     // point a crash between a possibly-billable call and its durable record would reopen the cap; awaiting here is
     // what closes that window, and it throws if the write failed rather than admitting more spend against a cap
@@ -620,6 +725,7 @@ export class BudgetGovernor {
     // Guarded so the common case (nothing outstanding) pays no microtask at all; see `#pendingCommitments`.
     if (this.#pendingCommitments > 0 || this.#commitmentFailure !== undefined) {
       await this.flushCommitments();
+      this.#assertAllowanceLive(token);
     }
     // ADR-0074 §3's fail-closed hold. A resumed pre-§3 media job holds a reservation we could only obtain by
     // RE-PRICING from today's catalog; if the price fell since submission, that reserves less than the provider
@@ -652,52 +758,116 @@ export class BudgetGovernor {
       } catch {
         // The notice is advisory; it cannot block or fail the check.
       }
+      this.#assertAllowanceLive(token);
     }
     while (this.#legacyMediaJobNodes.size > 0) {
       // Re-checked in a loop: a second legacy job can register while we await the first.
       await Promise.all([...this.#legacyMediaJobNodes.values()].map((e) => e.promise));
+      this.#assertAllowanceLive(token);
     }
-    const evaluation = this.#evaluate(info);
+    const evaluation = this.#evaluate(info, token);
     const { result } = evaluation;
+    const overridesCap =
+      token !== undefined &&
+      (result.kind === 'pause' ||
+        (result.kind === 'fail' && result.error.reason === 'projected_over_cap'));
+    const permits =
+      result.kind === 'allow' ||
+      result.kind === 'warn' ||
+      result.kind === 'unpriced' ||
+      overridesCap;
+    // No callback/await between #evaluate's projection, the owner debit and the global insertion.
+    let debit: AllowanceDebit | undefined;
+    if (token !== undefined && permits) {
+      const acquired = this.#allowances.acquire(token, evaluation.estimateMicrocents);
+      if (acquired.kind === 'refused') throw this.#allowanceError(acquired.reason);
+      debit = acquired.debit;
+    }
     // Reserve BEFORE calling a host. A synchronous partial-pricing notice can re-enter this governor just as
     // an awaited operation can interleave a sibling: it must see this admission, including on the warn arm.
-    const admission =
-      result.kind === 'allow' || result.kind === 'warn'
-        ? this.#admit(model, evaluation.estimateMicrocents)
-        : undefined;
+    let admission: BudgetAdmission | undefined;
+    try {
+      admission = permits ? this.#admit(model, evaluation.estimateMicrocents, debit) : undefined;
+    } catch (error) {
+      debit?.release();
+      throw error;
+    }
+    // Freeze a refused call's quote before advisory callbacks can change pricing/routing inputs.
+    const pauseQuote =
+      result.kind === 'pause' && !overridesCap ? this.#freezeQuote(info) : undefined;
     // A partial pricing gap (ADR-0089 §4): the verdict below stands on its own — the cap WAS applied to the
     // priced part — and this only adds the sentence the user is owed. Announced before the verdict is acted on,
     // because a `fail` arm throws and would otherwise swallow it. Deduped per (model, modality) for the same
     // reason the unpriced-model notice is deduped: it is a standing condition of the model, not an event.
-    if (evaluation.unpricedModalities !== undefined) {
-      this.#noticeUnpricedModalities(model, evaluation.unpricedModalities);
-    }
-    if (result.kind === 'allow') return admission;
-    if (result.kind === 'unpriced') {
-      // Once per model — a standing condition, not an event (a `loop` over an unpriced model must not repeat it
-      // every iteration). The engine cannot print; the host is told and decides where the sentence goes.
-      if (!this.#unpricedNotified.has(result.model)) {
-        this.#unpricedNotified.add(result.model);
-        // The advisory surface is not allowed to turn an explicit allow-degrade policy into a hidden block. The
-        // condition remains deduped even if a host renderer/logger fails, preventing an exception storm.
-        try {
-          this.#onUnpriced?.(result.model, this.#budget.max_cost_microcents);
-        } catch {
-          // Best-effort host notice; the governed decision remains allow for non-strict unpriced models.
+    try {
+      if (evaluation.unpricedModalities !== undefined) {
+        this.#noticeUnpricedModalities(model, evaluation.unpricedModalities);
+        if (permits) this.#assertAllowanceLive(token, admission !== undefined);
+      }
+      if (result.kind === 'allow' || overridesCap) return admission;
+      if (result.kind === 'unpriced') {
+        // Once per model — a standing condition, not an event (a `loop` over an unpriced model must not repeat it
+        // every iteration). The engine cannot print; the host is told and decides where the sentence goes.
+        if (!this.#unpricedNotified.has(result.model)) {
+          this.#unpricedNotified.add(result.model);
+          // The advisory surface is not allowed to turn an explicit allow-degrade policy into a hidden block. The
+          // condition remains deduped even if a host renderer/logger fails, preventing an exception storm.
+          try {
+            this.#onUnpriced?.(result.model, this.#budget.max_cost_microcents);
+          } catch {
+            // Best-effort host notice; the governed decision remains allow for non-strict unpriced models.
+          }
         }
-      }
-      return undefined;
-    }
-    if (result.kind === 'warn') {
-      try {
-        await this.#emitWarning(result);
+        this.#assertAllowanceLive(token, admission !== undefined);
         return admission;
-      } catch (error) {
-        admission?.release();
-        throw error;
       }
+      if (result.kind === 'warn') {
+        await this.#emitWarning(result);
+        this.#assertAllowanceLive(token, admission !== undefined);
+        return admission;
+      }
+      if (result.kind === 'pause' && pauseQuote !== undefined) {
+        throw new BudgetPauseError(
+          result.error.spentMicrocents,
+          result.error.limitMicrocents,
+          result.error.thresholdPct,
+          pauseQuote,
+        );
+      }
+      throw result.error;
+    } catch (error) {
+      admission?.release();
+      throw error;
     }
-    throw result.error;
+  }
+
+  #freezeQuote(info: PreEgressInfo): AllowanceQuoteResult | undefined {
+    const context = info.allowanceQuoteContext;
+    if (context === undefined) return undefined;
+    if (context.route === 'text' && info.route === 'text') {
+      // Reuse THIS attempt's once-captured cap and retain every other candidate's original construction.
+      const otherCaps =
+        context.request.preparedOutputCaps?.filter(
+          (plan) =>
+            plan.model !== info.model ||
+            plan.provider !== info.provider ||
+            plan.endpoint !== info.endpoint,
+        ) ?? [];
+      return quoteBudgetAllowance({
+        ...context,
+        request: { ...context.request, preparedOutputCaps: [info.outputCapPlan, ...otherCaps] },
+        strictCostCap: this.#budget.strict_cost_cap === true,
+        ...(this.#overlay === undefined ? {} : { overlay: this.#overlay }),
+      });
+    }
+    if (context.route === 'generative' && info.route === 'generative-media') {
+      return quoteBudgetAllowance({
+        ...context,
+        strictCostCap: this.#budget.strict_cost_cap === true,
+        ...(this.#overlay === undefined ? {} : { overlay: this.#overlay }),
+      });
+    }
+    throw new InvalidTokenEstimateError();
   }
 
   /**
@@ -951,72 +1121,100 @@ export class BudgetGovernor {
         }
         outputTokens = outputTokensReservation(info.outputCapPlan, info.maxTokensEstimate);
       }
-      const tokens = estimateResolvedNextCost(
+      const estimate = estimateResolvedRequestCost(
         model,
         info.inputTokensEstimate,
         outputTokens,
+        mediaUnitsEstimate,
         this.#overlay,
       );
-      const media =
-        mediaUnitsEstimate === undefined
-          ? undefined
-          : estimateMediaCost(model, mediaUnitsEstimate, this.#overlay);
-      return {
-        kind: 'priced',
-        estimateMicrocents: tokens + (media?.microcents ?? 0),
-        unpricedModalities: media?.unpricedModalities ?? [],
-      };
+      return estimate.kind === 'priced'
+        ? {
+            kind: 'priced',
+            estimateMicrocents: estimate.microcents,
+            unpricedModalities: estimate.unpricedModalities,
+          }
+        : { kind: 'unrepresentable', unpricedModalities: estimate.unpricedModalities };
     } catch (err) {
       if (err instanceof UnknownModelError) return { kind: 'unpriced' };
       throw err;
     }
   }
 
-  /** Insert one reservation synchronously. Zero/unpriced/unbounded evaluations intentionally carry no lease. */
-  #admit(model: string, estimateMicrocents: number | undefined): BudgetAdmission | undefined {
-    if (estimateMicrocents === undefined || estimateMicrocents <= 0) return undefined;
-    const id = this.#nextAdmissionId++;
-    this.#reservedAdmissions.set(id, estimateMicrocents);
-    this.#reservedCostMicrocents += estimateMicrocents;
+  /** Insert globally priced money and bind its lifecycle to the already-acquired dispatch debit. */
+  #admit(
+    model: string,
+    estimateMicrocents: number | undefined,
+    debit?: AllowanceDebit,
+  ): BudgetAdmission | undefined {
+    if (debit === undefined && (estimateMicrocents === undefined || estimateMicrocents <= 0))
+      return undefined;
+    if (
+      estimateMicrocents !== undefined &&
+      (!Number.isSafeInteger(estimateMicrocents) ||
+        estimateMicrocents < 0 ||
+        !Number.isSafeInteger(this.#reservedCostMicrocents + estimateMicrocents))
+    ) {
+      throw new InvalidTokenEstimateError('unrepresentable_cost');
+    }
+    // Unknown pricing has a lifecycle owner, but no invented global reservation or reservedMicrocents field.
+    const id = estimateMicrocents === undefined ? undefined : this.#nextAdmissionId++;
+    if (id !== undefined && estimateMicrocents !== undefined) {
+      this.#reservedAdmissions.set(id, estimateMicrocents);
+      this.#reservedCostMicrocents += estimateMicrocents;
+    }
     let settled = false;
-    const settle = (realizedMicrocents: number): void => {
-      if (settled) return;
-      settled = true;
+    const takeReservation = (): number | undefined => {
+      if (id === undefined) return undefined;
       const reserved = this.#reservedAdmissions.get(id);
-      if (reserved === undefined) return;
-      this.#reservedAdmissions.delete(id);
-      this.#reservedCostMicrocents -= reserved;
-      // A cost event immediately follows on the normal path and assigns the same authoritative total. Advancing
-      // here keeps admissions sound even if an event sink throws after the provider has already charged the call.
-      if (realizedMicrocents > 0) {
-        this.#cumulativeCostMicrocents += realizedMicrocents;
-        this.#warningArmed = true;
+      if (reserved !== undefined) {
+        this.#reservedAdmissions.delete(id);
+        this.#reservedCostMicrocents -= reserved;
       }
+      return reserved;
     };
     return {
-      reservedMicrocents: estimateMicrocents,
-      settle,
+      ...(estimateMicrocents === undefined ? {} : { reservedMicrocents: estimateMicrocents }),
+      settle: (realizedMicrocents) => {
+        if (settled) return;
+        // Validate before consuming the lease; an invalid actual must still permit conservative settlement.
+        if (!Number.isSafeInteger(realizedMicrocents) || realizedMicrocents < 0) {
+          throw new InvalidTokenEstimateError();
+        }
+        settled = true;
+        takeReservation();
+        // Global money changes BEFORE the host lifetime predicate inside debit.settle can re-enter admission.
+        if (realizedMicrocents > 0) {
+          this.#cumulativeCostMicrocents += realizedMicrocents;
+          this.#warningArmed = true;
+        }
+        debit?.settle(realizedMicrocents);
+      },
       settleAtReservedEstimate: (origin) => {
         if (settled) return;
         settled = true;
-        const reserved = this.#reservedAdmissions.get(id);
-        if (reserved === undefined) return;
-        this.#reservedAdmissions.delete(id);
-        this.#reservedCostMicrocents -= reserved;
-        this.#conservativeCostMicrocents += reserved;
-        this.#warningArmed = true;
-        // The snapshot is read AFTER the increment, so it always includes this commitment — the invariant the
-        // event's schema refinement pins, and the one bug the refinement exists to catch.
-        this.#persistCommitment({
-          type: 'budget:estimate_committed',
-          ...(origin?.nodeId === undefined ? {} : { nodeId: origin.nodeId }),
-          ...(origin?.attemptNumber === undefined ? {} : { attemptNumber: origin.attemptNumber }),
-          model,
-          estimateMicrocents: reserved,
-          cumulativeConservativeMicrocents: this.#conservativeCostMicrocents,
-        });
+        const reserved = takeReservation();
+        // A genuine zero or an unpriced call cannot manufacture a positive commitment row.
+        if (reserved !== undefined && reserved > 0) {
+          this.#conservativeCostMicrocents += reserved;
+          this.#warningArmed = true;
+          this.#persistCommitment({
+            type: 'budget:estimate_committed',
+            ...(origin?.nodeId === undefined ? {} : { nodeId: origin.nodeId }),
+            ...(origin?.attemptNumber === undefined ? {} : { attemptNumber: origin.attemptNumber }),
+            model,
+            estimateMicrocents: reserved,
+            cumulativeConservativeMicrocents: this.#conservativeCostMicrocents,
+          });
+        }
+        debit?.retain();
       },
-      release: () => settle(0),
+      release: () => {
+        if (settled) return;
+        settled = true;
+        takeReservation();
+        debit?.release();
+      },
     };
   }
 

@@ -1,6 +1,12 @@
 import type { MediaBilledModality } from '@relavium/shared';
 
-import { priceModel, worstCaseRates, type MediaCost, type PricingOverlay } from './cost-tracker.js';
+import {
+  priceModel,
+  worstCaseRateBasis,
+  worstCaseRates,
+  type MediaCost,
+  type PricingOverlay,
+} from './cost-tracker.js';
 import { InvalidTokenEstimateError } from './errors.js';
 import { cappedMaxTokens, type EndpointKind } from './output-cap.js';
 
@@ -31,83 +37,129 @@ export function estimateMaxNextCost(
   return Math.round((capped * worstCaseRates(p).output) / TOKENS_PER_MTOK);
 }
 
+/** Assumed billed output units, after lowering the requested modalities. */
+export interface MediaUnitsEstimate {
+  readonly modality: MediaBilledModality;
+  readonly units: number;
+}
+
+/** Copied scalar evidence for one media estimate, including a rate gap at an authored zero volume. */
+export interface MediaEstimateBasis extends MediaUnitsEstimate {
+  readonly rateMicrocents?: number;
+}
+
+/** Pure frozen pricing evidence; contains no request, native options, closures or provider objects. */
+export interface RequestEstimateBasis {
+  readonly inputTokensEstimate: number;
+  readonly outputTokensReservation: number;
+  readonly inputRateKind: 'non_cached';
+  readonly inputPerMtokMicrocents: number;
+  readonly outputPerMtokMicrocents: number;
+  readonly contextTierAboveTokens?: number;
+  readonly media: readonly MediaEstimateBasis[];
+}
+
+interface EstimateEvidence {
+  readonly basis: RequestEstimateBasis;
+  readonly unpricedModalities: readonly MediaBilledModality[];
+}
+
+export type ResolvedRequestEstimate =
+  | (EstimateEvidence & { readonly kind: 'priced'; readonly microcents: number })
+  | (EstimateEvidence & { readonly kind: 'unrepresentable' });
+
+function assertEstimate(value: number): void {
+  if (!Number.isFinite(value) || value < 0) throw new InvalidTokenEstimateError();
+}
+
 /**
- * Rate-only admission/allowance pricing (ADR-0096/0101). Inputs are already resolved; there is
- * deliberately no catalog-cap lookup here. Native caps may exceed a catalog's output ceiling.
- * Both terms use the highest context tier and NON-cached input, including user pricing overlays.
+ * One rate-only kernel for governor admission and frozen allowance quotes (ADR-0096/0097/0101).
+ * Read the user/catalog price once, select the same highest context threshold as realized accounting,
+ * and round each token class and media entry independently. Effective native caps are already resolved;
+ * no catalog ceiling is applied here. An unsafe COST is distinguishable from malformed estimates/rates,
+ * so a reject-only quote can retain its finite provenance without persisting an invented amount.
  */
+export function estimateResolvedRequestCost(
+  modelId: string,
+  inputTokensEstimate: number,
+  outputTokensReservation: number,
+  mediaUnitsEstimate: readonly MediaUnitsEstimate[] = [],
+  overlay?: PricingOverlay,
+): ResolvedRequestEstimate {
+  assertEstimate(inputTokensEstimate);
+  assertEstimate(outputTokensReservation);
+  const volumes = mediaUnitsEstimate.map((entry) => {
+    const units = entry.units;
+    assertEstimate(units);
+    return { modality: entry.modality, units };
+  });
+  const pricing = priceModel(modelId, overlay);
+  for (const tier of pricing.contextTiers ?? []) assertEstimate(tier.aboveContextTokens);
+  const selected = worstCaseRateBasis(pricing);
+  assertEstimate(selected.rates.input);
+  assertEstimate(selected.rates.output);
+  const media: MediaEstimateBasis[] = [];
+  const gaps = new Set<MediaBilledModality>();
+  let amount =
+    Math.round((inputTokensEstimate * selected.rates.input) / TOKENS_PER_MTOK) +
+    Math.round((outputTokensReservation * selected.rates.output) / TOKENS_PER_MTOK);
+  for (const entry of volumes) {
+    const rate = pricing.mediaOutputRates?.[entry.modality];
+    if (rate === undefined || !Number.isFinite(rate) || rate < 0) {
+      // A requested modality remains unpriced when its assumed volume is zero (ADR-0089 §4).
+      gaps.add(entry.modality);
+      media.push(Object.freeze({ modality: entry.modality, units: entry.units }));
+    } else {
+      media.push(
+        Object.freeze({ modality: entry.modality, units: entry.units, rateMicrocents: rate }),
+      );
+      amount += Math.round(entry.units * rate);
+    }
+  }
+  const basis: RequestEstimateBasis = Object.freeze({
+    inputTokensEstimate,
+    outputTokensReservation,
+    inputRateKind: 'non_cached',
+    inputPerMtokMicrocents: selected.rates.input,
+    outputPerMtokMicrocents: selected.rates.output,
+    ...(selected.aboveContextTokens === undefined
+      ? {}
+      : {
+          contextTierAboveTokens: selected.aboveContextTokens,
+        }),
+    media: Object.freeze(media),
+  });
+  const unpricedModalities = Object.freeze([...gaps]);
+  return Number.isSafeInteger(amount) && amount >= 0
+    ? Object.freeze({ kind: 'priced', microcents: amount, basis, unpricedModalities })
+    : Object.freeze({ kind: 'unrepresentable', basis, unpricedModalities });
+}
+
+function pricedAmount(estimate: ResolvedRequestEstimate): number {
+  if (estimate.kind === 'unrepresentable') {
+    throw new InvalidTokenEstimateError('unrepresentable_cost');
+  }
+  return estimate.microcents;
+}
+
+/** Compatibility number result for already resolved token-only estimates. */
 export function estimateResolvedNextCost(
   modelId: string,
   inputTokensEstimate: number,
   outputTokensReservation: number,
   overlay?: PricingOverlay,
 ): number {
-  if (
-    ![inputTokensEstimate, outputTokensReservation].every(
-      (value) => Number.isFinite(value) && value >= 0,
-    )
-  ) {
-    throw new InvalidTokenEstimateError();
-  }
-  const rates = worstCaseRates(priceModel(modelId, overlay));
-  // Realized cost rounds each token class separately; combining first can under-reserve a microcent.
-  const cost =
-    Math.round((inputTokensEstimate * rates.input) / TOKENS_PER_MTOK) +
-    Math.round((outputTokensReservation * rates.output) / TOKENS_PER_MTOK);
-  if (!Number.isSafeInteger(cost) || cost < 0) throw new InvalidTokenEstimateError();
-  return cost;
+  return pricedAmount(
+    estimateResolvedRequestCost(modelId, inputTokensEstimate, outputTokensReservation, [], overlay),
+  );
 }
 
-/** One element of the pre-egress media estimate: a billed modality + its assumed unit count (a count for
- *  image, seconds for audio/video) — built by the runner from `output_modalities` + `media_cost_estimate`. */
-export interface MediaUnitsEstimate {
-  readonly modality: MediaBilledModality;
-  readonly units: number;
-}
-
-/**
- * Pre-egress media cost estimate for a single call (1.AF/D17, ADR-0044 §3) — `Σ units × rate`, integer
- * micro-cents, using the model's per-modality media-output rates. Throws `UnknownModelError` for a model not
- * in the pricing table (the governor catches it and degrades the WHOLE estimate, exactly as for the token
- * estimate).
- *
- * **A modality the model does not price is NAMED, not zeroed**
- * ([ADR-0089](../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4). The pre-egress twin of
- * the realized `mediaCost` fold, and it has to be: the governor decides admission from this number, so a
- * silent 0 here is a cap that waves through the one call class most likely to be expensive. The policy
- * (allow-with-notice, or refuse under `strict_cost_cap`) stays the governor's — this only reports the fact.
- */
+/** Compatibility media-only result; policy remains with the governor. */
 export function estimateMediaCost(
   modelId: string,
   estimate: readonly MediaUnitsEstimate[],
   overlay?: PricingOverlay,
 ): MediaCost {
-  const p = priceModel(modelId, overlay);
-  let microcents = 0;
-  const unpriced = new Set<MediaBilledModality>();
-  for (const { modality, units } of estimate) {
-    const rate = p.mediaOutputRates?.[modality];
-    // The rate check comes FIRST, and deliberately does not depend on the unit count. An entry exists here only
-    // because the node's `output_modalities` REQUESTED that modality — the count is a configured guess
-    // (`[defaults].media_cost_estimate`), and that guess is authorable as `0` (`nonNegativeInt`). Skipping on
-    // `units <= 0` first therefore let a git-committable `media_cost_estimate = { image = 0 }` silently disable
-    // the strict cap for image output: no units, so no gap, so no refusal, and the image bills anyway.
-    //
-    // This is the mirror-image of the realized fold's guard and the two must NOT be made symmetric. There,
-    // `units === 0` means the provider reported nothing produced, so an absent rate really is not a gap. Here,
-    // zero means "we cannot guess the volume", which says nothing about whether a charge is coming.
-    if (rate === undefined) {
-      unpriced.add(modality);
-      continue;
-    }
-    if (units <= 0) {
-      continue; // priced, but no volume to multiply — contributes nothing to the estimate
-    }
-    // Round per entry, exactly as the realized `mediaCost` fold does (cost-tracker.ts), so the pre-egress
-    // gate estimate and the realized addend agree to the micro-cent on a fractional duration (N3).
-    microcents += Math.round(units * rate);
-  }
-  return unpriced.size === 0
-    ? { microcents, unpricedModalities: [] }
-    : { microcents, unpricedModalities: [...unpriced] };
+  const priced = estimateResolvedRequestCost(modelId, 0, 0, estimate, overlay);
+  return { microcents: pricedAmount(priced), unpricedModalities: priced.unpricedModalities };
 }

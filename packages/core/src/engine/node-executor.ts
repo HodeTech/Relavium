@@ -101,6 +101,8 @@ export interface GateRequest {
    * `budget_exceeded` failure rather than completing the gate vertex.
    */
   readonly isBudgetGate?: boolean;
+  /** Safe frozen quote; authoritative persistence and activation are the Step 10 protocol. */
+  readonly allowanceQuote?: import('./budget-allowance.js').AllowanceQuoteResult;
 }
 
 /**

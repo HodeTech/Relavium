@@ -26,7 +26,7 @@ import {
   generativeUnits,
   type AgentRunnerDeps,
 } from './agent-runner.js';
-import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
+import { BudgetExceededError, BudgetPauseError, BudgetGovernor } from './budget-governor.js';
 import type { NodeExecContext, NodeStreamEvent } from './node-executor.js';
 import type { PreEgressInfo } from './agent-turn.js';
 import { parseWorkflow } from '../parser.js';
@@ -888,6 +888,81 @@ describe('createAgentNodeExecutor — a delegate-backed tool is not OFFERED with
   const READ_FILE = BUILTIN_TOOLS.find((d) => d.id === 'read_file');
   if (READ_FILE === undefined) throw new Error('the read_file built-in is missing');
 
+  for (const ordinaryTool of [false, true])
+    for (const nodeRetry of [false, true]) {
+      it(`quotes actual lowered tools and chain attempts, ordinary=${ordinaryTool}, retry=${nodeRetry}`, async () => {
+        const { provider: p } = recordingProvider();
+        let keys = 0;
+        let input: number | undefined;
+        let names: string[] | undefined;
+        const resolvePrice: PricingOverlay = new Map([
+          [
+            AGENT.model,
+            {
+              provider: 'anthropic',
+              nativeId: AGENT.model,
+              displayName: 'quote fixture',
+              contextWindowTokens: 1000000,
+              maxOutputTokens: 1000000,
+              inputPerMtokMicrocents: 1000000,
+              outputPerMtokMicrocents: 1000000,
+              cachedInputPerMtokMicrocents: 0,
+            },
+          ],
+        ]);
+        const gov = new BudgetGovernor({
+          budget: { max_cost_microcents: 1, on_exceed: 'pause_for_approval' },
+          resolvePrice,
+          emit: () => Promise.resolve(),
+        });
+        const exec = createAgentNodeExecutor(
+          deps(p, {
+            tools: [INVOKE_AGENT, READ_FILE],
+            resolvePrice,
+            keyFor: () => {
+              keys += 1;
+              return 'synthetic';
+            },
+            preEgress: (info) => {
+              input = info.inputTokensEstimate;
+              const context = info.allowanceQuoteContext;
+              if (context?.route === 'text')
+                names = context.request.tools?.map((tool) => tool.name) ?? [];
+              return gov.checkPreEgress(info);
+            },
+          }),
+        );
+        const { ctx } = ctxFor(
+          vertexFor({
+            kind: 'agent',
+            node: agentNode({
+              max_tokens: 1,
+              ...(nodeRetry ? { retry: { max: 3, backoff: 'linear' } } : {}),
+            }),
+            resolvedAgent: {
+              ...AGENT,
+              tools: ordinaryTool ? ['invoke_agent', 'read_file'] : ['invoke_agent'],
+            },
+          }),
+        );
+        const outcome = await exec.execute(ctx);
+        expect(outcome.kind).toBe('paused');
+        if (outcome.kind !== 'paused') throw new Error('expected quote pause');
+        const result = outcome.gate.allowanceQuote;
+        if (result?.kind !== 'quoted' || input === undefined)
+          throw new Error('missing construction quote');
+        const calls = ordinaryTool ? 17 : 1;
+        const attempts = nodeRetry ? 1 : 2;
+        expect(names).toEqual(ordinaryTool ? ['read_file'] : []);
+        expect(result.quote.provenance).toMatchObject({ calls, attempts });
+        expect(result.quote.amount).toEqual({
+          kind: 'representable',
+          microcents: calls * attempts * (input + 1),
+        });
+        expect(keys).toBe(0);
+      });
+    }
+
   it('drops `invoke_agent` from the lowered tool list, and leaves an ordinary granted tool alone', async () => {
     const { provider: p, toolNames } = recordingProvider();
     const exec = createAgentNodeExecutor(deps(p, { tools: [INVOKE_AGENT, READ_FILE] }));
@@ -976,6 +1051,64 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
       node: agentNode({ output_modalities: ['image'], ...over }),
       resolvedAgent: AGENT,
     });
+
+  it('carries a primary-only generative quote with token zeros and one attempt before credentials', async () => {
+    let keys = 0;
+    const p = generativeProvider();
+    const resolvePrice: PricingOverlay = new Map([
+      [
+        AGENT.model,
+        {
+          provider: 'anthropic',
+          nativeId: AGENT.model,
+          displayName: 'quote fixture',
+          contextWindowTokens: 1000000,
+          maxOutputTokens: 1000000,
+          inputPerMtokMicrocents: 1000000,
+          outputPerMtokMicrocents: 1000000,
+          cachedInputPerMtokMicrocents: 0,
+          mediaOutputRates: { image: 1000 },
+        },
+      ],
+    ]);
+    const gov = new BudgetGovernor({
+      budget: { max_cost_microcents: 1, on_exceed: 'pause_for_approval' },
+      resolvePrice,
+      emit: () => Promise.resolve(),
+    });
+    const exec = createAgentNodeExecutor(
+      genDeps(p, {
+        resolvePrice,
+        keyFor: () => {
+          keys += 1;
+          return 'synthetic';
+        },
+        preEgress: (info) => gov.checkPreEgress(info),
+      }),
+    );
+    const vertex = vertexFor({
+      kind: 'agent',
+      node: agentNode({ output_modalities: ['image'], count: 2 }),
+      resolvedAgent: {
+        ...AGENT,
+        fallback_chain: [{ provider: 'anthropic', model: 'unused-fallback', max_attempts: 7 }],
+      },
+    });
+    const outcome = await exec.execute(ctxFor(vertex).ctx);
+    expect(outcome.kind).toBe('paused');
+    if (outcome.kind !== 'paused') throw new Error('expected generative pause');
+    const result = outcome.gate.allowanceQuote;
+    if (result?.kind !== 'quoted') throw new Error('missing generative quote');
+    expect(result.quote.amount).toEqual({ kind: 'representable', microcents: 2000 });
+    expect(result.quote.provenance).toMatchObject({ route: 'generative', calls: 1, attempts: 1 });
+    expect(result.quote.provenance.entries).toHaveLength(1);
+    expect(result.quote.provenance.entries[0]?.estimate.basis).toMatchObject({
+      inputTokensEstimate: 0,
+      outputTokensReservation: 0,
+      media: [{ modality: 'image', units: 2, rateMicrocents: 1000 }],
+    });
+    expect(keys).toBe(0);
+  });
 
   it('routes a generative model to generateMedia and outputs { text:"", media:[part] } + one token-free cost:updated', async () => {
     const exec = createAgentNodeExecutor(genDeps(generativeProvider()));

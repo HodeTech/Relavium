@@ -327,3 +327,25 @@ amount from the message** (rejected: the workflow controls text in it).
 - **Canonical docs**: [sse-event-schema.md](../reference/contracts/sse-event-schema.md) (the pause and approval
   fields, and the media sentence) and [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md).
 - **Code**: remove the H3 comments in `engine.ts`, and change what the CLI gate prompter renders.
+
+## Implementation foundation — 2026-10-02, W7 step 9
+
+The pure quote and governor-owned dispatch debit/reconciliation are staged. One rate-only kernel
+prices paused/current input, resolved output and media from one price lookup and returns a frozen
+scalar basis. Quotes retain every effective priced/excluded candidate and distinguish zero, unpriced
+and unsafe arithmetic. The full basis comparison also detects a newly priced exclusion or a newly
+supplied media rate at zero volume when A does not change. Heterogeneous candidates consume original
+construction cap inputs, with the current attempt's once-captured plan reused.
+
+An opaque live token isolates governor/node/dispatch ownership. All owned calls debit, including
+under-cap calls; one in-flight slot covers reconciliation and host callbacks. Under-spend/proven
+release refunds, conservative settlement retains, overrun debits, and consumed positive allowances
+fail later admission closed. A naturally zero allowance preserves ordinary free/unpriced policy
+until an actual positive charge or forced exhaustion closes it. A later known actual after unknown E
+is charged without inventing a pre-egress reservation. Sibling reservations remain global; straggler
+actuals cannot refund a successor. None of these enforcement details changes the accepted policy.
+
+This foundation does not activate from the legacy H3 boolean. Step 10 still owns authoritative
+persistence, observed acknowledgement, checkpoint correction, pre-claim refusal, predecessor replay
+barriers and live/cross-process activation; Step 11 owns safe confirmation. The current canonical
+implementation boundary is the [runner contract](../reference/shared-core/agent-runner.md#dispatch-allowance-foundation).

@@ -111,7 +111,45 @@ non-stop/non-error stream chunk establish processing evidence. Custom routes and
 failures retain the reserved estimate. Chain-owned facts cannot be replaced by an accounting
 or observer exception; observers run once outside provider error normalization.
 
-**W7 step 6, 2026-10-02:** the required hook, current-request financial estimate and cap-plan
-handoff foundation are implemented. Automatic session pre-send/summary handoff remains step 8;
-bounded approval allowances remain step 9, as tracked in the
+The turn and generative runner also attach process-local `allowanceQuoteContext`: the paused raw
+construction and eligible plan, current input estimate, actual lowered tools, configured output
+fallback and turn limit. The generative fork supplies only its primary and authored media volume.
+The governor freezes scalar `AllowanceQuoteResult` onto `BudgetPauseError`/`GateRequest`; raw
+requests, native options, cap plans, provider objects and closures never enter that quote.
+
+### Dispatch allowance foundation
+
+[ADR-0097](../../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) sizes the
+frozen amount as **calls × eligible chain attempts × largest current E**. Advertised tools give
+`maxToolTurns + 1` calls; no lowered tools or inline media gives one. Generative media has one
+primary call/attempt and zero text tokens. Node retry does not multiply A; cooldown remains in
+the eligible plan. Capability/streaming skips and unknown pricing are structured exclusions.
+Non-strict partial media pricing retains its priced part; strict gaps are excluded/refused.
+Priced zero, wholly unpriced and unrepresentable results are distinct. The full price/eligibility
+comparison covers quantities, rates, tiers, route, calls, attempts, endpoint and every priced and
+excluded candidate; equal A alone is insufficient, including at zero volume.
+
+The trusted governor API activates an opaque, process-local dispatch token with a frozen safe
+amount and a host lifetime predicate. Tokens belong to one governor/node/dispatch; stale dispatch
+identities cannot replace newer owners. Evaluation, owner debit and global reservation have no
+callback or await between them. Owned calls debit under the cap too, including an unbounded
+configured cap. One in-flight slot prevents another call before settlement reconciles realized
+under-spend/overrun; proven release refunds, uncertain settlement retains. Global money changes
+before the settlement's host predicate runs. Late actuals remain global truth but cannot refund or
+revive a replacement owner. Lifetime is rechecked after pricing, durability/legacy holds, notices
+and warning awaits; failed warning writes release the admission.
+
+A consumed positive allowance, a prospective E larger than the remainder, an unsafe E or a real
+overdraw closes later admission with `budget_exceeded`; it cannot produce a new pause or retry.
+An originally zero allowance still admits a genuinely free call and ordinary non-strict unpriced
+usage until positive actual spend or forced exhaustion closes it. Unknown E has lifecycle ownership
+without a fabricated global reservation; a later known actual debits that same owner. A known zero
+has an explicit zero reservation and cannot manufacture a positive commitment event. Strict-cost
+refusals are never overridden.
+
+**W7 steps 6/9, 2026-10-02:** request pricing, frozen quote calculation and dispatch debit/reconciliation
+are implemented foundations. Trusted activation is not yet supplied by the workflow's legacy approval
+boolean. Authoritative authorization/observed ACK, checkpoint/replay and live/cross-process resume
+are Step 10; production engine approvals remain staged until that protocol replaces the legacy
+bypass. Automatic session pre-send/summary handoff remains Step 8. See the
 [W7 execution plan](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md).

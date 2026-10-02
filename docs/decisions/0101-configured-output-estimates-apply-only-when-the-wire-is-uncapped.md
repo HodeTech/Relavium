@@ -314,3 +314,14 @@ immutable capture; cap precedence, native forwarding and rate-only pricing remai
 The guard covers these helpers rather than arbitrary caller-object inspection throughout the host.
 The canonical contract remains the
 [seam contract](../reference/shared-core/llm-provider-seam.md#current-request-estimates-and-bound-output-caps).
+
+## Implementation foundation — 2026-10-02, W7 step 9
+
+Frozen allowance quotes now consume the same resolved-output, rate-only kernel as final governor
+pricing. The process-local quote context preserves original construction controls for heterogeneous
+candidates; the paused attempt reuses its immutable captured plan. Effective native output caps remain
+unclamped through E and A and no quote inserts a wire limit. A scalar basis contains quantities, selected
+highest-context-tier non-cached rates, media prices/gaps and candidate/endpoint/attempt identity,
+without raw options, plans or closures. Unsafe E/A carries a reject-only marker rather than a number.
+The [runner contract](../reference/shared-core/agent-runner.md#dispatch-allowance-foundation) distinguishes
+this calculation/debit foundation from Step 10's still-staged durable activation protocol.

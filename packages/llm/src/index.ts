@@ -153,9 +153,15 @@ export type { CostUpdate, MediaCost, PricingOverlay } from './cost-tracker.js';
 export {
   estimateMaxNextCost,
   estimateResolvedNextCost,
+  estimateResolvedRequestCost,
   estimateMediaCost,
 } from './budget-estimator.js';
-export type { MediaUnitsEstimate } from './budget-estimator.js';
+export type {
+  MediaUnitsEstimate,
+  MediaEstimateBasis,
+  RequestEstimateBasis,
+  ResolvedRequestEstimate,
+} from './budget-estimator.js';
 
 // FallbackChain runner — fallback policy outside the adapters (1.K).
 export { FallbackChain, withFallback, stripReasoningParts } from './fallback-chain.js';

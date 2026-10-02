@@ -93,13 +93,18 @@ export interface Rates {
  * number we have. Inventing one by scaling would be a guess on a money path. Filed in deferred-tasks; the exposure is
  * a cache-write-heavy prompt above 272k on the four `gpt-5.6` variants.
  */
-function ratesFor(p: ModelPricing, contextTokens: number): Rates {
+export interface RateBasis {
+  readonly rates: Rates;
+  readonly aboveContextTokens?: number;
+}
+
+function rateBasisFor(p: ModelPricing, contextTokens: number): RateBasis {
   const flat: Rates = {
     input: p.inputPerMtokMicrocents,
     output: p.outputPerMtokMicrocents,
     cachedInput: p.cachedInputPerMtokMicrocents,
   };
-  if (p.contextTiers === undefined || p.contextTiers.length === 0) return flat;
+  if (p.contextTiers === undefined || p.contextTiers.length === 0) return { rates: flat };
   let best: Rates = flat;
   let bestThreshold = -1;
   for (const tier of p.contextTiers) {
@@ -116,7 +121,15 @@ function ratesFor(p: ModelPricing, contextTokens: number): Rates {
       };
     }
   }
-  return best;
+  return bestThreshold < 0 ? { rates: best } : { rates: best, aboveContextTokens: bestThreshold };
+}
+
+function ratesFor(p: ModelPricing, contextTokens: number): Rates {
+  return rateBasisFor(p, contextTokens).rates;
+}
+
+export function worstCaseRateBasis(p: ModelPricing): RateBasis {
+  return rateBasisFor(p, Number.POSITIVE_INFINITY);
 }
 
 /**
@@ -127,7 +140,7 @@ function ratesFor(p: ModelPricing, contextTokens: number): Rates {
  * under-estimates lets real money escape. Only one of those is recoverable.
  */
 export function worstCaseRates(p: ModelPricing): Rates {
-  return ratesFor(p, Number.MAX_SAFE_INTEGER);
+  return worstCaseRateBasis(p).rates;
 }
 
 /**

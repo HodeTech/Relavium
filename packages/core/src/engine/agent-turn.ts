@@ -136,6 +136,8 @@ export interface TextPreEgressInfo extends PreAttemptInfo {
   readonly maxTokensEstimate: number | undefined;
   readonly outputModalities?: readonly OutputModality[];
   readonly mediaUnitsEstimate?: readonly MediaUnitsEstimate[];
+  /** Raw construction remains process-local so each allowance candidate can resolve its own dialect cap. */
+  readonly allowanceQuoteContext?: import('./budget-allowance.js').AllowanceQuoteContext;
 }
 
 export interface GenerativePreEgressInfo {
@@ -148,6 +150,7 @@ export interface GenerativePreEgressInfo {
   readonly outputTokensEstimate: 0;
   readonly outputModalities?: readonly OutputModality[];
   readonly mediaUnitsEstimate?: readonly MediaUnitsEstimate[];
+  readonly allowanceQuoteContext?: import('./budget-allowance.js').AllowanceQuoteContext;
 }
 
 // Exactly the accepted upstream refusal list; 408, other 4xx and uncertain failures stay committed.
@@ -1396,14 +1399,27 @@ async function driveAgentTurn(
             if (preEgress === undefined) return;
             // This is the only admitting boundary. Re-check after the governor await and release any newly
             // acquired lease before propagating a cancellation during warning durability/admission.
+            const request = buildRequest(messages, params);
+            const inputTokensEstimate = estimateRequestTokens({
+              ...request,
+              system: params.system ?? '',
+            });
             const nextAdmission = await preEgress({
               ...info,
               route: 'text',
               maxTokensEstimate: params.maxTokensEstimate,
-              inputTokensEstimate: estimateRequestTokens({
-                ...buildRequest(messages, params),
-                system: params.system ?? '',
-              }),
+              inputTokensEstimate,
+              allowanceQuoteContext: {
+                route: 'text',
+                entries: params.planEntries,
+                request,
+                inputTokensEstimate,
+                maxTokensEstimate: params.maxTokensEstimate,
+                maxToolTurns: params.limits.maxToolTurns,
+                ...(params.mediaUnitsEstimate === undefined
+                  ? {}
+                  : { mediaUnitsEstimate: params.mediaUnitsEstimate }),
+              },
               ...(params.outputModalities === undefined
                 ? {}
                 : { outputModalities: params.outputModalities }),

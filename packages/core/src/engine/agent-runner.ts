@@ -543,6 +543,7 @@ async function acquireGenerativeAdmission(
     readonly endpoint: import('@relavium/llm').EndpointKind;
     readonly modality: MediaBilledModality;
     readonly units: number;
+    readonly entry: FallbackPlanEntry;
   },
 ): Promise<
   | { kind: 'admitted'; admission: BudgetAdmission | undefined }
@@ -565,6 +566,11 @@ async function acquireGenerativeAdmission(
         outputTokensEstimate: 0,
         outputModalities: [req.modality],
         mediaUnitsEstimate: [{ modality: req.modality, units: req.units }],
+        allowanceQuoteContext: {
+          route: 'generative',
+          entries: [req.entry],
+          mediaUnitsEstimate: [{ modality: req.modality, units: req.units }],
+        },
       })) ?? undefined;
     return { kind: 'admitted', admission };
   } catch (err) {
@@ -635,6 +641,7 @@ async function executeGenerativeMedia(
     endpoint: primary.provider.customEndpoint === true ? 'custom' : 'official',
     modality: modality.modality,
     units,
+    entry: primary,
   });
   if (gated.kind === 'refused') {
     return gated.outcome;

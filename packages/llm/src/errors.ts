@@ -141,7 +141,7 @@ export class UnsupportedCapabilityError extends LlmConfigError {
 /** Invalid finite token/cost arithmetic is refused before it can authorize paid egress. */
 export class InvalidTokenEstimateError extends LlmConfigError {
   readonly code = 'invalid_token_estimate';
-  constructor() {
+  constructor(readonly reason: 'invalid_estimate' | 'unrepresentable_cost' = 'invalid_estimate') {
     super('token estimates must be finite and non-negative, with a safe integer cost');
     this.name = 'InvalidTokenEstimateError';
   }

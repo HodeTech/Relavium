@@ -249,6 +249,18 @@ request uses the configured estimate or the shared 4096 estimate default, clampe
 `estimateResolvedNextCost` then prices the resolved input and output independently at highest-tier
 non-cached input/output rates, with user overlays, and performs **no second catalog clamp**. Invalid
 non-finite/negative token estimates or unsafe cost arithmetic throw `InvalidTokenEstimateError`.
+Governor admission and frozen allowance quotes use the one `estimateResolvedRequestCost` kernel.
+It snapshots finite non-negative token/media quantities before reading one user/catalog price,
+uses the **highest finite context threshold** and full non-cached token rates, and rounds each
+token class and each media entry independently. Its immutable scalar basis records quantities,
+selected rates/tier and missing media rates. A safe total returns `priced`; unsafe finite arithmetic
+returns `unrepresentable` without an invented numeric amount. The number-returning token/media
+compatibility helpers throw `InvalidTokenEstimateError` for that marker. Malformed quantities
+remain typed refusals even for an unknown model; malformed selected token rates also refuse.
+Missing, negative and non-finite media rates follow
+the existing named-gap policy; a requested zero volume still exposes a gap, while an explicit zero
+rate is a real price. Realized tier selection retains its strict-threshold and first-equal-tier rules.
+
 The output-only `estimateMaxNextCost` remains a compatibility helper for canonical authored caps;
 native caps must never pass through it. Gemini's uncapped thinking control keeps its existing catalog
 fallback; a native output envelope is a reservation and cannot become an invented thinking budget.
@@ -276,7 +288,7 @@ except a callable outer `providerOptions.toJSON`: it is executable body replacem
 override mapped fields. Noncallable data bearing that name is preserved.
 `LlmRequest.preparedOutputCaps` carries a measured candidate's plan through the chain and
 adapter unchanged, including after a catalog refresh; another candidate gets its own bound plan.
-The staged step 9 allowance consumer must prepare heterogeneous candidates from original construction
+The allowance quote consumer prepares heterogeneous candidates from original construction
 inputs or separately preserved candidate plans; a primary's filtered cap projection cannot recover
 opaque controls that its dialect discarded.
 A substituted plan or changed cap/routing binding throws `InvalidOutputCapPlanError`. Neither

@@ -132,7 +132,10 @@ merged too (PR #85, 2026-08-28).
 > [Step 6 round 8](../reviews/2026-10-02T22-44-01-w7-step-6-round-8-review.md) accepts the complete step and seven corrections.
 > Both fresh reviewers reported no verified new findings; parent replays pass 120 contract and 54
 > financial controls. **Steps 1–6 are closed; all six W7 register items remain open.**
-> Step 9 proceeds independently from accepted input pricing while live Step 7 captures are pending.
+> Step 9's quote/debit foundation is implemented, with [candidate preflight and parent causal controls](../reviews/2026-10-02T23-40-16-w7-step-9-foundation-preflight-review.md).
+> Full CI/coverage pass (312 suites, 7,074 passing tests, 11 existing skips); fresh committed-step reviews
+> precede acceptance. Durable workflow activation
+> remains Step 10. Live Step 7 captures, and therefore Step 8, remain pending.
 > Step 1 repaired collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.
