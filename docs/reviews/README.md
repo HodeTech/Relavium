@@ -30,6 +30,9 @@ added.
 - [2026-10-02 — W7 step 2, round 1](2026-10-02T04-29-12-w7-step-2-round-1-review.md):
   nested-transaction key reuse and unsafe session media metadata verified and corrected; fresh round 2 pending.
 
+- [2026-10-02 — W7 step 2, round 2](2026-10-02T04-41-54-w7-step-2-round-2-review.md):
+  both corrections and complete step cleared; strict persistence and durable key allocation closed.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

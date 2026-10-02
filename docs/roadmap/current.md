@@ -57,7 +57,10 @@ merged too (PR #85, 2026-08-28).
 > tests, 11 skipped); full CI passed at `1927daa1`.
 > [Round 1](../reviews/2026-10-02T04-29-12-w7-step-2-round-1-review.md) verified nested-transaction
 > key reuse and unsafe session media metadata. Both are corrected; checks and coverage pass
-> (289 suites, 6,374 passing tests, 11 skipped). The second fresh review round is pending.
+> (289 suites, 6,374 passing tests, 11 skipped), with full CI passing at `c96eb9b5`.
+> [Round 2](../reviews/2026-10-02T04-41-54-w7-step-2-round-2-review.md) cleared the complete step
+> and both fixes, including real lock contention and process-crash checks. Step 2 is closed;
+> implementation continues automatically with step 3.
 > It repairs collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.

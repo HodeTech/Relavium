@@ -1989,7 +1989,7 @@ correction inside its own ADR rather than a rewrite, so the wrong reasoning stay
 
 ### W7 pre-implementation review and proposed execution plan — 2026-10-02
 
-**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Step 1 is closed after five independent review rounds; implementation continues with step 2.**
+**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Step 1 is closed after five independent review rounds and step 2 after two; implementation continues with step 3.**
 The four Accepted ADRs retain their decisions. Three verified gaps were explicitly resolved before code:
 manual compaction with an unknown window and the budget outcome of idle compaction
 ([ADR-0099](../../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md)),
@@ -2061,7 +2061,10 @@ exits 0 (289 suites, 6,367 passing tests, 11 skipped). Full CI exited 0 at `1927
 transaction rollback could erase an issued key, and that session media admitted unsafe integers.
 Allocation now refuses an open transaction; session-only media metadata has safe-integer ceilings.
 Required checks and coverage pass after correction (289 suites, 6,374 passing tests, 11 skipped).
-A second fresh independent review round is required before step 2 closes. All six W7 items remain open.
+Full CI also exits 0 at `c96eb9b5`.
+[Round 2](../../reviews/2026-10-02T04-41-54-w7-step-2-round-2-review.md) cleared the entire step
+and both fixes, including real lock contention and process-crash probes. **Step 2 is closed;
+step 3 proceeds automatically.** All six W7 items remain open.
 
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A
