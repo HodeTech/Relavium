@@ -153,7 +153,8 @@ after asynchronous approval and preparation. Its refusal proves dispatch never s
 any prepared claim. Settling or discarding an already-started effect remains available to record its outcome.
 Errors and aborts commit no transcript; their billed cost remains real.
 
-Resume, model reseat, export and boundary mapping share one history projection. `completedSessionTurns`
+Resume, model reseat, export, boundary mapping and effect disclosure share the pure structural history
+projection in `@relavium/shared`; existing core exports remain available. `completedSessionTurns`
 selects its completed exchanges; `resumableMessageSequences` and `resumableTurnBoundarySequences`
 supply the matching host boundary seeds. A tool-call row
 with preamble text is never a terminal, and an unfinished exchange rolls back. An empty-final turn

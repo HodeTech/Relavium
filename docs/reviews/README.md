@@ -58,6 +58,9 @@ added.
 - [2026-10-02 — W7 step 4, round 2](2026-10-02T08-48-12-w7-step-4-round-2-review.md):
   usable Ink setup and displayed-disclosure ordering independently reproduced and corrected; fresh acceptance pending.
 
+- [2026-10-02 — W7 step 4, round 3](2026-10-02T09-24-27-w7-step-4-round-3-review.md):
+  incomplete-turn attribution and unwritable Ink output independently reproduced and corrected; fresh acceptance pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

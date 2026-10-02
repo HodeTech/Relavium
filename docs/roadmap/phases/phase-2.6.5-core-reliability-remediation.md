@@ -1989,7 +1989,7 @@ correction inside its own ADR rather than a rewrite, so the wrong reasoning stay
 
 ### W7 pre-implementation review and proposed execution plan — 2026-10-02
 
-**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Step 1 is closed after five independent review rounds and step 2 after two; implementation continues with step 3.**
+**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–3 are closed after their independent review rounds; step 4 corrections await fresh acceptance.**
 The four Accepted ADRs retain their decisions. Three verified gaps were explicitly resolved before code:
 manual compaction with an unknown window and the budget outcome of idle compaction
 ([ADR-0099](../../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md)),
@@ -2142,6 +2142,17 @@ create their line iterator before awaited activation so piped input remains buff
 frames retain the captured rows until displayed. Seven focused suites pass 295 tests; required checks and
 coverage pass (297 suites, 6,487 tests, 11 skipped). The [round 2 record](../../reviews/2026-10-02T08-48-12-w7-step-4-round-2-review.md) records the
 correction. A third fresh independent round and full CI are required before closure; all six items stay open.
+
+**Step 4, review round 3 — 2026-10-02.** Fresh reviewers verified two High findings: incomplete/orphan/abandoned
+structural calls suppressed disclosure, and Ink acknowledged closed stdout before/during notice rendering.
+Both were independently reproduced by the parent. Attribution now uses the shared structural projector over
+all history, preserving the core facade and raw duplicate/name anomaly checks. A context-bound render hook
+checks actual stdout before/after flush, observes close/error, disarms activation and safely releases output
+listeners after pending Node destruction events. Home consumes the actual RootApp's checked acknowledgement
+and disarms its controller immediately on renderer failure/exit. Three permanent attribution tests and four
+permanent output controls failed before their corrections; seven focused suites now pass 157 tests. Required
+checks, build and coverage pass (297 suites, 6,497 tests, 11 skipped). The
+[round 3 record](../../reviews/2026-10-02T09-24-27-w7-step-4-round-3-review.md) records evidence and limits. Full checks, CI and a fourth fresh independent round precede closure; all six items stay open.
 
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A

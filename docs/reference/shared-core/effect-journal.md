@@ -252,11 +252,14 @@ again.
 **A session discloses and does not block.** Initial `chat-resume`, standalone `/models` reseat and Home
 reseat read one snapshot in an owned read transaction: content-free effect metadata and **every** strictly
 decoded historical transcript row, including rows before compaction/trim. Atomic completed-turn writes make
-the engine-assigned structural call ids completion evidence; completed-turn counts are not a join key.
+the engine-assigned structural call ids completion evidence only within a completed exchange, as selected
+by the shared `completedSessionTurns(..., false)` projection. A strictly decoded call alone cannot prove
+completion: missing-terminal, orphan and abandoned exchanges disclose conservatively. Duplicate IDs and
+mismatched names anywhere in history remain attribution anomalies; completed-turn counts are not a join key.
 
 - Every unresolved state is disclosed, including negative-slot `!` commands; these rows remain evidence.
 - A committed non-negative-slot effect whose valid engine id is absent from the historical transcript is
-  disclosed as **landed in a turn that did not complete**. A persisted match is silent. Corrupt or mismatched
+  disclosed as **landed in a turn that did not complete**. A match within a completed exchange is silent. Corrupt or mismatched
   attribution and legacy placeholders are disclosed conservatively as **possibly incomplete**.
 - A committed negative-slot `!` command is silent: it is not a model turn.
 
@@ -265,8 +268,10 @@ activates disclosure after passive terminal-input setup and an initial render fl
 the session. A layout commit or `render()` returning alone does not establish a usable transcript. TTY/Home
 await the disclosure render flush, then recheck active ownership before retention (§9); input stays gated
 until activation completes. Component lifetime and the observed Ink exit/error guard the standalone driver;
-Home also observes its renderer lifetime. Failed setup, read, notice delivery or render acknowledgement, and
-callbacks after exit or a session swap, prevent deletion. Plain/JSON sinks deliver synchronously. A discarded
+Home also observes its renderer lifetime. The acknowledgement uses the exact stdout from Ink context,
+checks that it can write before and after the flush and observes output close/error. An Ink flush promise
+alone can resolve for unwritable output and is not sufficient. Failed setup, read, notice delivery or
+render acknowledgement, and callbacks after exit or a session swap, prevent deletion. Plain/JSON sinks deliver synchronously. A discarded
 Home build cannot consume evidence. A committed incomplete/legacy row is disclosed once after a successful
 sweep; a crash between notice and sweep may disclose it again. Unresolved rows are disclosed on later resumes
 until resolved. No earlier effect is auto-retried. The user must check its target before repeating the message.

@@ -89,7 +89,12 @@ merged too (PR #85, 2026-08-28).
 > and before disclosure was drawn. Activation now awaits usable setup and disclosure render acknowledgement,
 > observes renderer exit/error and keeps input gated; actual Ink and Home tests verify the display boundary.
 > Required checks and coverage pass (297 suites, 6,487 passing tests, 11 skipped); a third fresh
-> corrective acceptance round is required before step 4 closes.
+> corrective acceptance round was required before step 4 closes.
+> [Round 3](../reviews/2026-10-02T09-24-27-w7-step-4-round-3-review.md) verified incomplete-call attribution and
+> flush acknowledgement of unwritable output. Completion now uses the shared structural projector;
+> rendered disclosure checks the actual Ink output and its lifetime. Required checks, build and coverage
+> pass (297 suites, 6,497 passing tests, 11 skipped); a fourth fresh acceptance round is required.
+> Step 4 and all six register items remain open.
 > It repairs collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.
