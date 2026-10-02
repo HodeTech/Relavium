@@ -2889,3 +2889,14 @@ the living usage contract now states the adapter-normalization limitation. Full 
 coverage pass 307 suites, 6,951 tests and 11 pre-existing skips. The
 [fifth-round record](../../reviews/2026-10-02T20-36-23-w7-step-6-round-5-review.md)
 records evidence and scope. **Fresh round 6 is required; step 6 remains open.**
+
+**Step 6 sixth review checkpoint — 2026-10-02.** Fresh independent matrices passed 191 wire
+and 44 financial controls. Financial review recommended permanent coverage of B1 and correction
+of its inherited untestable-coverage comment. The parent's six-case expansion found that a
+budgetless cancellation during a pending sibling ledger write still resolved one credential;
+no provider call occurred. Existing settlement/cancellation checks now precede the no-hook return.
+All six controls pass; removing only B1 fails all six, and restoring the exact previous turn source
+fails only budgetless cancellation. The independent 191/44 controls still pass. Full CI and coverage
+pass 308 suites, 6,957 tests and 11 pre-existing skips. The
+[sixth-round record](../../reviews/2026-10-02T21-16-26-w7-step-6-round-6-review.md)
+preserves attribution and evidence limits. **Fresh round 7 is required; step 6 remains open.**

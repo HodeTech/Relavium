@@ -95,6 +95,12 @@ any host notice or warning write. A reentrant partial-pricing notice therefore s
 reservation. Non-strict fail/pause verdicts reserve nothing and still announce their partial-pricing gap.
 Warning admissions await their shared durable warning; a failed write releases each admission.
 
+Before invoking the hook, the turn joins the run's shared realized/conservative money barrier,
+including turns without a budget hook. A pending sibling write blocks admission, credential
+resolution and provider egress; its failure retains the sibling's attribution. Cancellation is
+checked after that join before the no-hook return, and again after any awaited admission; a
+newly acquired admission is released before cancellation propagates.
+
 An admission settles from accountable usage. A usage-less failed attempt releases only with
 positive pre-provider proof, or an actual **official** endpoint's pre-content HTTP status in
 `429, 400, 401, 402, 403, 404, 413, 422`. A returned generation, even empty, and every forwarded

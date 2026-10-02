@@ -1385,22 +1385,17 @@ async function driveAgentTurn(
             // throws the retained failure rather than returning, which is the only way a caller here can see
             // it (`#emitDurable` absorbs a store fault and resolves).
             //
-            // **UNTESTED, and the reason is worth knowing rather than guessing.** Deleting this line leaves
-            // the entire core suite green, and no fixture reddens it because on today's engine every path
-            // that reaches a SECOND egress after a settled attempt passes through B2 or B3 first: within one
-            // chain, a settled attempt ends it (a post-content failure surfaces rather than failing over), so
-            // a second egress means either another tool round (B2) or another node dispatch (B3). B1 is
-            // therefore defence in depth against a future path that reaches egress without crossing either —
-            // a chain that continues past a settled attempt, or a turn core that stops routing tools through
-            // `dispatchToolUseTurn`. Kept deliberately; if a later reader finds it genuinely unreachable, the
-            // honest move is to delete it and say so, not to leave an untestable line with a hopeful comment.
+            // A concurrent sibling can leave this run's realized write pending before THIS turn's first
+            // call. Pending-write success/failure/cancellation controls pin B1 independently of B2/B3 in
+            // agent-turn-money-admission.test.ts, including turns with no budget hook.
             await params.money?.join();
-            if (preEgress === undefined) return;
-            // This is the only admitting boundary. Check cancellation on BOTH sides of the awaited governor call:
-            // a cancellation landing while warning durability/admission is pending must not reach key resolution
-            // or provider egress, and any just-acquired lease is released before the cancellation propagates.
             settleUnreportedAttemptAdmission();
+            // The money join can suspend a budgetless turn too. Observe cancellation before returning from
+            // that branch, so an aborted wait reaches neither credential resolution nor provider egress.
             throwIfAborted(params.signal);
+            if (preEgress === undefined) return;
+            // This is the only admitting boundary. Re-check after the governor await and release any newly
+            // acquired lease before propagating a cancellation during warning durability/admission.
             const nextAdmission = await preEgress({
               ...info,
               route: 'text',

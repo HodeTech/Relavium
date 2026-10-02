@@ -102,6 +102,10 @@ added.
   pre-existing reentrant notice overbooking independently reproduced and corrected; known CR-82
   usage limitation qualified; full restored CI and coverage pass, fresh round 6 pending.
 
+- [2026-10-02 — W7 step 6, round 6](2026-10-02T21-16-26-w7-step-6-round-6-review.md):
+  budgetless cancellation during a shared ledger wait still resolved credentials; parent-verified
+  correction and six permanent B1 controls pass causal negatives and full CI/coverage; fresh round 7 pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

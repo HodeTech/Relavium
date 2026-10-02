@@ -215,3 +215,19 @@ no arm, the four rejected alternatives, and the reason it lands after
 - **ADR-0076 §1 must be read together with this ADR**, since the corpus is append-only and that paragraph
   stays on the page. Mitigation: the title, the `Related` line and the "What ADR-0076 keeps" section above make
   the scope of the correction unambiguous — one paragraph, not a section.
+
+## Implementation correction — 2026-10-02, W7 step 6 sixth review
+
+An independent pending-sibling-write fixture now pins B1 before a turn's first admission,
+credential resolution and provider call, separately from B2/B3. The source comment claiming
+that no fixture could test B1 has been replaced with this concrete boundary. Six permanent
+[controls](../../packages/core/src/engine/agent-turn-money-admission.test.ts) cover write
+success, write rejection and cancellation with and without a budget hook; removing only B1
+fails all six.
+
+The parent found a cancellation gap while expanding that coverage: a budgetless turn aborted
+during B1 still resolved its credential after the write completed, because the no-hook return
+preceded the cancellation check. No provider call occurred. The existing settlement/cancellation
+checks now precede that return, preserving the budgeted path's order. Restoring the previous
+source reproduces only the budgetless cancellation failure; corrected source passes all six.
+This changes neither the durability protocol nor approval policy. Historical text is preserved.
