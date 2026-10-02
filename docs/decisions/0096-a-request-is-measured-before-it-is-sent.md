@@ -211,6 +211,18 @@
 > heuristic, never a bound on actual provider tokenisation. Implementation is staged in `W7`; the historical
 > text below is unchanged.
 
+> Amended 2026-10-02 — [ADR-0101](0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md),
+> accepted by the maintainer, explicitly qualifies September 18's unauthored-output acceptance:
+> the shared 4,096 fallback applies only when no effective canonical/native cap or required adapter
+> default exists and no configured estimate is supplied, then follows official catalog clamping.
+> Known caps take precedence; an explicitly configured estimate remains effective only when uncapped.
+> This expands the one seam-level helper into a shared immutable cap plan, with required cap-only
+> `PreAttemptHook` inputs and prepared-plan handoff from measurement to the matching attempt. It
+> qualifies the earlier hook premise without moving input estimation from the turn core's current
+> pre-strip round request. Resolved input/output quantities use rate-only pricing. No generation
+> limit or thinking control changes; main-turn skip/failure rules and ADR-0099 outcomes stay intact.
+> Implementation is staged in W7, with runtime handoff/parity acceptance still required.
+
 ## Context
 
 Three defects make a long session fail badly, and all three are live:

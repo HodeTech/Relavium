@@ -5,6 +5,13 @@
 - **Related**: [ADR-0075](0075-fail-closed-resume-on-an-unreadable-event-log.md) · [ADR-0078](0078-ordered-durable-append-and-the-terminal-outbox.md) · [ADR-0079](0079-cross-process-run-ownership-lease-and-fencing-token.md) · [ADR-0080](0080-durable-effect-journal-and-the-tiered-effect-contract.md) · [ADR-0097](0097-a-budget-approval-is-an-allowance-not-an-exemption.md)
 - **Scope**: `W7`'s `CR-94` and `CR-96`; refines ADR-0097's durable mechanism and applies ADR-0075's replay refusal to its changed authorization semantics. No runtime dependency or general log-version system.
 
+> Amended 2026-10-02 — [ADR-0101](0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md),
+> accepted by the maintainer, refines frozen allowance sizing with candidate-specific effective
+> cap plans and rate-only resolved-token pricing. The paused raw options remain ephemeral; only
+> the existing frozen amount/provenance are durable. This does not change authoritative ordering,
+> companion identity, acknowledgment barriers or dispatch ownership. Implementation is staged in
+> W7. The historical body remains unchanged.
+
 ## Context
 
 ADR-0097 freezes an allowance and its provenance on optional fields of existing budget/gate events. The pre-`W7` reader recognises those event types and strips the new fields: it records no skipped row, so ADR-0075's replay refusal never fires. Its checkpoint fold still completes the agent with `{ decision: 'approved' }`, and its live budget approval still removes the pre-egress hook. An older binary can therefore approve or replay a new bounded authorization under the old uncapped semantics.

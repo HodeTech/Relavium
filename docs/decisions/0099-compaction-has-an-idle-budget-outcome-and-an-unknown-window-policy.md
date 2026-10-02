@@ -5,6 +5,14 @@
 - **Related**: [ADR-0062](0062-context-compaction-and-cli-history-commands.md) · [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md) · [ADR-0096](0096-a-request-is-measured-before-it-is-sent.md) · [architectural principles](../standards/architectural-principles.md)
 - **Scope**: `W7`'s `CR-72` and `CR-98`; replaces ADR-0096 §3 invariant 4's unconditional unknown-window guarantee, qualifies §2 invariant 2 for summariser requests to cover every attemptable fallback window, and clarifies idle compaction's budget outcome in ADR-0062, ADR-0095 and ADR-0096. Main-turn measurement still uses the first entry the chain will actually attempt. All other decisions stand.
 
+> Amended 2026-10-02 — [ADR-0101](0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md),
+> accepted by the maintainer, refines the shared output-reservation rules consumed by every pass:
+> the summariser's authored 4,096 cap takes precedence over configured uncapped estimates, with
+> the prepared plan handed to each measured candidate. A replacement repeats dependent measurement
+> before egress; it cannot use a stale fit or install a partial summary. Known/mixed-window bounds,
+> manual best effort and idle-versus-active budget/trim outcomes remain this ADR's decisions.
+> Implementation is staged in W7. The historical body remains unchanged.
+
 ## Context
 
 The `W7` pre-implementation review of 2026-10-02 found two gaps that would otherwise become silent implementation decisions.

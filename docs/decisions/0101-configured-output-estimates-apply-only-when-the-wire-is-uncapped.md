@@ -1,6 +1,6 @@
 # ADR-0101: Configured output estimates apply only when the wire is uncapped
 
-- **Status**: Proposed — awaiting maintainer approval; no dependent implementation authorised
+- **Status**: Accepted — maintainer approved 2026-10-02; implementation staged in `W7`
 - **Date**: 2026-10-02
 - **Related**: [ADR-0028](0028-workflow-resource-governance.md) · [ADR-0071](0071-models-dev-as-the-model-metadata-source.md) · [ADR-0096](0096-a-request-is-measured-before-it-is-sent.md) · [ADR-0097](0097-a-budget-approval-is-an-allowance-not-an-exemption.md) · [ADR-0099](0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md) · [ADR-0100](0100-budget-authorization-is-durable-state-with-a-replay-barrier.md) · [architectural principles](../standards/architectural-principles.md)
 - **Scope**: W7 step 6 output-reservation/configuration precedence and the cap-identity/resolved-token pricing seams needed to implement it. Narrows ADR-0028's configured-default promise, explicitly qualifies ADR-0096's September 18 unauthored-output acceptance and hook premise, and refines the shared reservation mechanism consumed by ADR-0099 and ADR-0097/ADR-0100. Does not change generation limits, ADR-0096's input-rate policy, compaction outcomes, allowance ownership or runtime dependencies.
@@ -43,7 +43,7 @@ are visible in [the chain hook](../../packages/llm/src/fallback-chain.ts),
 
 ## Decision
 
-**Proposed: resolve the effective wire cap first; use the configured estimate only when the
+**We resolve the effective wire cap first; use the configured estimate only when the
 request remains uncapped. Preserve the existing wire behaviour.**
 
 - The resolver **extends ADR-0096's September 18 one seam-level helper**, rather than introducing
@@ -154,7 +154,7 @@ closer to a literal reading of September's acceptance case, but would remove exi
 tuning and require a visible compatibility/migration policy. Considered introducing a shared
 wire default or sending the configured estimate as a cap. That provides a stronger output bound
 but changes generation length and native/custom-provider behaviour, beyond this narrow gap.
-The proposed choice retains those behaviours while removing substitution for a known cap.
+The chosen approach retains those behaviours while removing substitution for a known cap.
 
 ### Acceptance and landing obligations
 
@@ -205,7 +205,7 @@ The proposed choice retains those behaviours while removing substitution for a k
 - Requests without a cap remain without one. No fixture may verify a newly inserted limit and
   describe it as preservation of wire behaviour.
 
-After approval, add targeted dated notes without rewriting older bodies:
+Targeted dated notes qualify the older bodies without rewriting them:
 
 - **ADR-0028:** narrow the configured-default promise to genuinely uncapped requests and qualify
   its historical hook premise with the new required cap-only projection and resolved-token pricing.
@@ -223,7 +223,9 @@ After approval, add targeted dated notes without rewriting older bodies:
 
 Update the canonical [config contract](../reference/contracts/config-spec.md), LLM seam and
 agent-runner contract, plus W7's step 6/8/9 checklist alongside their implementation.
-This proposed document does not yet amend those Accepted decisions or authorise implementation.
+The maintainer approved this complete revised decision on 2026-10-02 after two fresh independent
+review rounds. The dated notes are landed; dependent implementation is authorised and staged in W7
+steps 6, 8 and 9, with runtime acceptance still required.
 
 ## Consequences
 

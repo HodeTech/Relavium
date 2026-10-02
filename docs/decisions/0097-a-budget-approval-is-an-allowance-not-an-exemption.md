@@ -127,6 +127,14 @@
 > The authoritative pause also preserves any existing absolute gate deadline. The predecessor's strict
 > replay refuses the new state-bearing event. Implementation is staged in `W7`; historical bodies are unchanged.
 
+> Amended 2026-10-02 — [ADR-0101](0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md),
+> accepted by the maintainer, refines `E`'s output reservation/pricing: rebind the paused attempt's
+> raw canonical/native cap inputs separately to each eligible model/provider/actual endpoint,
+> including cooldown entries, and price the resolved reservation without another catalog clamp.
+> Never reuse one dialect's resolved number for another or persist arbitrary native options. The
+> frozen amount/provenance, dispatch ownership and ADR-0100 authorization ordering stay unchanged.
+> Implementation is staged in W7. The historical body remains unchanged.
+
 ## Context
 
 Under `on_exceed: pause_for_approval`, approving a paused step removes the cap for that step:

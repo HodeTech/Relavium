@@ -31,6 +31,16 @@
 > clamped to the model's catalog output ceiling whenever the adapter sends no cap of its own. (Both figures:
 > maintainer, 2026-09-18.)
 
+> Amended 2026-10-02 — [ADR-0101](0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md),
+> accepted by the maintainer, narrows the configured `max_tokens_estimate` promise to requests that
+> remain uncapped after adapter lowering. A known canonical/native cap or required adapter default
+> takes precedence; only an uncapped request uses the configured estimate, otherwise 4,096, with
+> official catalog clamping. The required cap-only projection/prepared plan now reaches the chain
+> hook and object-based governor; turn-core pre-strip input estimation stays unchanged. Resolved
+> reservations are priced through a separate rate-only entry without another output clamp. These
+> seam refinements qualify September 18's no-per-entry-request premise and preserve the budget
+> branches, wire behaviour and estimate-only meaning of the setting. Implementation is staged in W7.
+
 ## Context
 
 A workflow can spend real money. A fan-out of agent nodes, a fallback chain that tries several

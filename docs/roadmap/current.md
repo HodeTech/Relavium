@@ -121,13 +121,14 @@ merged too (PR #85, 2026-08-28).
 > [Step 5 round 2](../reviews/2026-10-02T12-21-33-w7-step-5-round-2-review.md) accepted the complete step:
 > both fresh reviewers passed 347 tests; the parent reproduced 1,536 state/history and 86 CLI/Home/SQLite
 > cases, plus exact-source positive/negative controls. **Steps 1–5 are closed; all six W7 items remain open.**
-> Step 6's independently reviewed [Proposed ADR-0101](../decisions/0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md)
-> resolves a newly identified configured-estimate/native-cap precedence gap. Maintainer approval is pending;
+> Step 6's independently reviewed [Accepted ADR-0101](../decisions/0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md)
+> resolves a newly identified configured-estimate/native-cap precedence gap. The maintainer approved the
+> complete revised decision on 2026-10-02; dated forward notes are landed and step 6 proceeds;
 > [ADR revision round 1](../reviews/2026-10-02T15-09-58-w7-adr-0101-revision-round-1-review.md) records the maintainer's
 > verified transport/pricing findings and the corrected measurement-to-attempt handoff.
 > [Fresh draft round 2](../reviews/2026-10-02T15-18-01-w7-adr-0101-revision-round-2-review.md) accepted the complete
-> corrected proposal with no actionable findings; full CI passed at `2b628e1a`. The revised proposal has
-> been presented for maintainer approval; no dependent step 6 implementation has begun.
+> corrected proposal with no actionable findings; full CI passed at `2b628e1a`. The acceptance and runtime
+> obligations remain distinct: proposal review is complete; step 6 implementation is in progress.
 > Step 1 repaired collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.
