@@ -24,6 +24,12 @@ import {
 
 import { markUntrusted, type Untrusted } from '../tools/untrusted.js';
 
+/** One proven completed turn in the text-only, unfolded transcript; end is exclusive. */
+export interface CompletedTurnSpan {
+  readonly start: number;
+  readonly end: number;
+}
+
 /**
  * The reconstructed in-memory state {@link AgentSession.resume} preloads — its `#messages` (in-flight
  * transcript), `#turnCount` (the hard-cap counter), and `#cumulativeCostMicrocents` (the running cost).
@@ -35,6 +41,8 @@ import { markUntrusted, type Untrusted } from '../tools/untrusted.js';
  */
 export interface SessionResumeState {
   readonly messages: readonly LlmMessage[];
+  /** Legacy text remains in messages without being invented into a completed turn. */
+  readonly completedTurnSpans: readonly CompletedTurnSpan[];
   readonly turnCount: number;
   readonly cumulativeCostMicrocents: number;
   /**
@@ -49,13 +57,6 @@ export interface SessionResumeState {
    * `0` for a session written before §4, which is the truth for it: nothing was ever committed.
    */
   readonly conservativeCostMicrocents: number;
-  /**
-   * The context-compaction **preamble** ([ADR-0062](../../../../docs/decisions/0062-context-compaction-and-cli-history-commands.md))
-   * to restore into the resumed session — the summary text of the **newest boundary marker that carries a
-   * summary** (a `/compact` marker; a summary-less `/trim` marker never provides one). Absent when the session
-   * has never been compacted. `AgentSession.resume` re-injects it into the per-turn system prompt, so a
-   * compacted session stays compacted across resume **and** a model reseat (which reuses this same path).
-   */
   /**
    * The compaction summary carried across a resume or a reseat, **re-marked untrusted at this boundary**
    * ([ADR-0081](../../../../docs/decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md) §2).
@@ -106,13 +107,23 @@ export function reconstructSessionState(
   }
   // The ONE projection the host persister also seeds from (`resumableMessageSequences`) — no drift.
   const surviving = resumableSessionMessages(ordered);
+  const turns = completedSessionTurns(ordered);
+  const lengths = new Map(
+    turns.map((turn) => [turn.user, textOf(turn.terminal.content).length === 0 ? 1 : 2]),
+  );
+  const completedTurnSpans: CompletedTurnSpan[] = [];
+  for (const [index, message] of surviving.entries()) {
+    const length = lengths.get(message);
+    if (length !== undefined) completedTurnSpans.push({ start: index, end: index + length });
+  }
   const committed: LlmMessage[] = surviving.map((m) => ({
     role: m.role === 'assistant' ? 'assistant' : 'user',
     content: [{ type: 'text', text: textOf(m.content) }],
   }));
   return {
     messages: committed,
-    turnCount: completedSessionTurns(ordered).length,
+    completedTurnSpans,
+    turnCount: turns.length,
     cumulativeCostMicrocents: record.totalCostMicrocents,
     conservativeCostMicrocents: record.totalConservativeMicrocents,
     ...(compactionSummary === undefined ? {} : { compactionSummary }),

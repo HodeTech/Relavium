@@ -339,6 +339,97 @@ const params = (deps: SessionDeps) => ({
 });
 
 describe('AgentSession.resume (1.Y)', () => {
+  it('window excludes unproven legacy prefix, gaps and tail while preserving the resume archive', async () => {
+    const rows = [
+      msg(0, 'user', [{ type: 'text', text: 'legacy prefix' }]),
+      msg(1, 'user', [{ type: 'text', text: 'first' }]),
+      msg(2, 'assistant', [{ type: 'text', text: 'answer' }]),
+      msg(3, 'user', [{ type: 'text', text: 'legacy gap' }]),
+      msg(4, 'user', [{ type: 'text', text: 'empty-final' }]),
+      msg(5, 'assistant', [{ type: 'text', text: '' }]),
+      msg(6, 'user', [{ type: 'text', text: 'legacy tail' }]),
+      msg(7, 'user', [{ type: 'text', text: 'rolled back' }]),
+    ];
+    const state = reconstructSessionState(record(), rows);
+    expect(state.completedTurnSpans).toEqual([
+      { start: 1, end: 3 },
+      { start: 4, end: 5 },
+    ]);
+    const archive = JSON.stringify(state.messages);
+    const seen: LlmMessage[][] = [];
+    const agent = AgentSchema.parse({ ...AGENT, memory: { type: 'window', window_size: 2 } });
+    const s = AgentSession.resume(
+      { ...params(depsFor(capturingProvider(seen), [])), agent },
+      state,
+    );
+    await s.sendMessage('current');
+    expect(
+      seen[0]?.map((message) =>
+        message.content.map((part) => (part.type === 'text' ? part.text : '')).join(''),
+      ),
+    ).toEqual(['first', 'answer', 'empty-final\n\ncurrent']);
+    expect(JSON.stringify(state.messages)).toBe(archive);
+  });
+
+  it.each([
+    { spans: [{ start: -1, end: 1 }] },
+    { spans: [{ start: 0, end: 3 }] },
+    { spans: [{ start: 1, end: 2 }] },
+    { spans: [{ start: 0, end: Number.NaN }] },
+    { spans: [{ start: 0, end: Number.MAX_SAFE_INTEGER + 1 }] },
+    {
+      spans: [
+        { start: 0, end: 2 },
+        { start: 0, end: 2 },
+      ],
+    },
+  ])('refuses invalid completed-turn spans before any host budget callback (%o)', ({ spans }) => {
+    const costs: number[] = [];
+    const p = params({
+      ...depsFor(capturingProvider([]), []),
+      updateCost: (cost) => costs.push(cost),
+    });
+    expect(() =>
+      AgentSession.resume(p, {
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'q' }] },
+          { role: 'assistant', content: [{ type: 'text', text: 'a' }] },
+        ],
+        completedTurnSpans: spans,
+        turnCount: 3,
+        cumulativeCostMicrocents: 0,
+        conservativeCostMicrocents: 0,
+      }),
+    ).toThrow('resumed completed-turn metadata is invalid');
+    expect(costs).toEqual([]);
+  });
+
+  it('copies resumed messages and turn metadata before a caller can mutate them', async () => {
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: 'past' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'answer' }]),
+    ]);
+    const spans = [{ start: 0, end: 2 }];
+    const seen: LlmMessage[][] = [];
+    const agent = AgentSchema.parse({ ...AGENT, memory: { type: 'window', window_size: 1 } });
+    const s = AgentSession.resume(
+      { ...params(depsFor(capturingProvider(seen), [])), agent },
+      { ...state, completedTurnSpans: spans },
+    );
+    const firstSpan = spans[0];
+    if (firstSpan === undefined) throw new Error('expected span');
+    firstSpan.end = 99;
+    const part = state.messages[0]?.content[0];
+    if (part?.type !== 'text') throw new Error('expected text');
+    part.text = 'mutated';
+    await s.sendMessage('current');
+    expect(seen[0]?.map((message) => message.content)).toEqual([
+      [{ type: 'text', text: 'past' }],
+      [{ type: 'text', text: 'answer' }],
+      [{ type: 'text', text: 'current' }],
+    ]);
+  });
+
   it('resumes without re-emitting session:started, and the next turn sees the prior transcript', async () => {
     const seen: LlmMessage[][] = [];
     const events: SessionStreamEvent[] = [];
@@ -373,6 +464,7 @@ describe('AgentSession.resume (1.Y)', () => {
         { role: 'user', content: [{ type: 'text', text: 'hi' }] },
         { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
       ],
+      completedTurnSpans: [{ start: 0, end: 2 }],
       turnCount: 1,
       cumulativeCostMicrocents: 0,
       conservativeCostMicrocents: 0,
@@ -451,6 +543,7 @@ describe('AgentSession.resume (1.Y)', () => {
     };
     AgentSession.resume(params(deps), {
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      completedTurnSpans: [{ start: 0, end: 1 }],
       turnCount: 1,
       cumulativeCostMicrocents: 4200,
       conservativeCostMicrocents: 900,
@@ -472,6 +565,7 @@ describe('AgentSession.resume (1.Y)', () => {
     };
     AgentSession.resume(params(deps), {
       messages: [],
+      completedTurnSpans: [],
       turnCount: 0,
       cumulativeCostMicrocents: 0,
       conservativeCostMicrocents: 0,
@@ -490,6 +584,7 @@ describe('AgentSession.resume (1.Y)', () => {
     };
     AgentSession.resume(params(deps), {
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      completedTurnSpans: [{ start: 0, end: 1 }],
       turnCount: 1,
       cumulativeCostMicrocents: 4200,
       conservativeCostMicrocents: 0,

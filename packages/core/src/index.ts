@@ -276,6 +276,7 @@ export type {
   UserCommandOutcome,
   // The classified results of context compaction / trim (ADR-0062) — the host renders each case (2.5.F).
   CompactionResult,
+  MemoryPolicyRefusal,
   TrimResult,
 } from './engine/agent-session.js';
 // Session checkpoint/resume (1.Y) — reconstruct the in-flight state from a persisted transcript (1.X) so a
@@ -287,7 +288,11 @@ export {
   resumableTurnBoundarySequences,
   completedSessionTurns,
 } from './engine/session-resume.js';
-export type { SessionResumeState, CompletedSessionTurn } from './engine/session-resume.js';
+export type {
+  SessionResumeState,
+  CompletedSessionTurn,
+  CompletedTurnSpan,
+} from './engine/session-resume.js';
 // 1.W — the session:* namespace on the shared bus: the SessionEventSink→RunEventBus adapter (attaches the
 // sessionId; the bus stamps the per-session sequenceNumber) and the SessionHandle (mirrors RunHandle,
 // scoped to sessionId, terminal on session:cancelled). See sse-event-schema.md §"The session stream".

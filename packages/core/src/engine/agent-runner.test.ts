@@ -207,6 +207,30 @@ function capsWithOutput(combinations: readonly (readonly OutputModality[])[]): C
 }
 
 describe('createAgentNodeExecutor — dispatch', () => {
+  it.each(['none', 'window', 'summary'] as const)(
+    'authored memory has no effect on a workflow agent node (%s)',
+    async (type) => {
+      const captured = reqCapturingProvider();
+      const exec = createAgentNodeExecutor(deps(captured.provider));
+      const { ctx } = ctxFor(
+        vertexFor({
+          kind: 'agent',
+          node: agentNode(),
+          resolvedAgent: {
+            ...AGENT,
+            memory: type === 'window' ? { type, window_size: 1 } : { type },
+          },
+        }),
+      );
+      const outcome = await exec.execute(ctx);
+      expect(outcome.kind).toBe('completed');
+      expect(captured.req()?.system).toBe(AGENT.system_prompt);
+      expect(captured.req()?.messages).toEqual([
+        { role: 'user', content: [{ type: 'text', text: 'Summarize: hi' }] },
+      ]);
+    },
+  );
+
   it('runs an agent vertex and completes with the assistant text + tokensUsed', async () => {
     const exec = createAgentNodeExecutor(
       deps(provider([{ type: 'text_delta', text: 'sum' }, STOP])),
