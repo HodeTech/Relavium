@@ -78,6 +78,29 @@ const turnStarted = (timestamp: string): SessionStreamHandleEvent => ({
   timestamp,
 });
 
+describe('ChatApp mounted disclosure surface (ADR-0098)', () => {
+  it('activates after commit and displays a notice delivered by the activation hook', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const onActivated = vi.fn(() => store.notice('External effect needs attention.'));
+    const h = render(
+      <ChatApp
+        store={store}
+        onActivated={onActivated}
+        onSubmit={async () => {}}
+        shouldStop={() => false}
+        onExit={() => {}}
+        onError={() => {}}
+        onModeChange={() => {}}
+      />,
+    );
+    await waitFor(() => (h.lastFrame() ?? '').includes('External effect needs attention.'));
+    expect(onActivated).toHaveBeenCalledTimes(1);
+    store.tick();
+    await settleFrames();
+    expect(onActivated).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('ChatApp — raw Ctrl-Z job-control routing (G0)', () => {
   it('routes the raw control byte to onSuspend exactly once and never submits prompt text', async () => {
     const onSuspend = vi.fn();

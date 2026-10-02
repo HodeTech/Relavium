@@ -3,6 +3,7 @@ import {
   createElement,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -187,6 +188,8 @@ function TranscriptLine(props: Readonly<{ entry: TranscriptEntry; color: boolean
 
 interface ChatAppProps {
   readonly store: ChatStoreController;
+  /** A committed mount makes this transcript eligible for disclosure; render() returning alone does not. */
+  readonly onActivated?: () => void;
   /** `true` ⇒ mounted on ink 7's alternate screen (2.6.F Step 4b, ADR-0068 §c) — the transcript renders through the
    *  scroll {@link TranscriptViewport} (constrained to the terminal size) instead of `<Static>`. Resolved by
    *  `driveInk` (`resolveRenderMode`); absent/false ⇒ the inline renderer. */
@@ -553,6 +556,9 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
 export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const { state, tick, color, mode, reasoningEffort, reasoningVisible, approval } =
     useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
+  useLayoutEffect(() => {
+    props.onActivated?.();
+  }, [props.onActivated]);
   const [editor, setEditor] = useState<EditorState>(emptyEditor());
   // A ref SHADOW of the editor is the SOURCE OF TRUTH for edits: in a coalesced stdin chunk ink dispatches every
   // event synchronously with no render flush, so React's queued-updater `prev` is stale for the 2nd+ event of the
@@ -1647,17 +1653,21 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   });
   // Mirror the live stream into the view store the component projects.
   const unsubscribe = ctx.handle.subscribe((event) => ctx.store.apply(event));
-  // Open the session ONLY now — the store is subscribed, so the synchronous session:started (which carries
-  // the model for the footer) is observed, not raced.
-  ctx.startSession();
   const frame = setInterval(() => ctx.store.tick(), FRAME_MS);
   frame.unref();
 
   let resolveExit: () => void = () => undefined;
   let rejectExit: (err: unknown) => void = () => undefined;
+  let active = true;
   const exited = new Promise<void>((resolve, reject) => {
-    resolveExit = resolve;
-    rejectExit = reject;
+    resolveExit = () => {
+      active = false;
+      resolve();
+    };
+    rejectExit = (err) => {
+      active = false;
+      reject(err instanceof Error ? err : new Error('Chat driver failed.'));
+    };
   });
 
   // An EXTERNAL SIGINT (kill -INT / a parent's signal). A keyboard Ctrl-C is normally intercepted by useInput in raw
@@ -1681,6 +1691,23 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   // hard `false` (Step 4b-3), so ink toggles NO DECSET-1049 per session — the hoisted `runReplLoop` owns the single
   // alt-buffer enter/exit, and the end-of-session summary rides on the outcome + prints after that exit (ADR-0068 §c).
   let cancelRequested = false;
+  let activated = false;
+  const isActive = (): boolean => active && !cancelRequested && !ctx.shouldStop();
+  const onActivated = (): void => {
+    if (activated || !active) return;
+    if (!isActive()) {
+      resolveExit();
+      return;
+    }
+    activated = true;
+    try {
+      ctx.onActivated?.(isActive);
+      if (!isActive()) resolveExit();
+    } catch (err) {
+      // React/Ink can swallow effect errors; propagate through the driver's owned exit promise instead.
+      rejectExit(err);
+    }
+  };
   const onSigint = (): void => {
     if (cancelRequested) {
       // A second SIGINT while the cooperative /cancel is still draining (e.g. a provider ignoring the abort):
@@ -1718,9 +1745,13 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   process.on('SIGINT', onSigintGated);
 
   try {
+    // Opening a fresh session only emits its lifecycle event. Disclosure/retention waits for a committed mount.
+    // Keep setup under the same cleanup ownership as render(), including a throwing startSession hook.
+    ctx.startSession();
     instance = render(
       createElement(ChatApp, {
         store: ctx.store,
+        onActivated,
         // The COMPONENT prop `alternateScreen` (ADR-0068 §c) selects the transcript viewport (vs `<Static>`) — kept
         // as the resolved mode. It is INDEPENDENT of ink's render OPTION below (now hard `false`, Step 4b-3): ink
         // renders full-screen via log-update regardless, and the hoisted `runReplLoop` owns the alt-buffer toggle.
@@ -1767,6 +1798,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
       // Tear down + UNMOUNT (restores raw mode + cursor; with the option false it does NOT exit the alt buffer — the
       // hoisted runReplLoop owns that). A throw here must not mask the outcome nor skip the SIGINT-listener removal.
       teardown: () => {
+        active = false;
         clearInterval(frame);
         unsubscribe();
         try {
@@ -1787,6 +1819,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   } catch (err) {
     // render() threw synchronously — clean up the interval, subscription, and SIGINT handler set up above so
     // none leaks past the throw (the finally above is never reached when render() throws).
+    active = false;
     clearInterval(frame);
     unsubscribe();
     process.removeListener('SIGINT', onSigintGated);
