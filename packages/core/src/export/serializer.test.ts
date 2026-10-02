@@ -49,6 +49,41 @@ const msg = (
 });
 
 describe('sessionToWorkflow (1.Z) — linear-chain scaffold', () => {
+  it('preserves legacy bare-user prefixes in the next completed export prompt', () => {
+    const messages = [
+      msg(0, 'user', [{ type: 'text', text: 'legacy {{secrets.example}} context' }]),
+      msg(1, 'user', [{ type: 'text', text: 'next question' }]),
+      msg(2, 'assistant', [{ type: 'text', text: 'answer' }]),
+    ];
+    const exported = sessionToWorkflow(session(), messages);
+    expect(exported.workflow.nodes).toHaveLength(3);
+    const node = exported.workflow.nodes[1];
+    expect(node?.type === 'agent' && node.prompt_template).toContain('legacy');
+    expect(node?.type === 'agent' && node.prompt_template).toContain('next question');
+    expect(node?.type === 'agent' && node.prompt_template).not.toContain('{{secrets.example}}');
+    expect(parseWorkflow(serializeWorkflow(exported))).toMatchObject({
+      workflow: { nodes: exported.workflow.nodes },
+    });
+    expect(exported.workflow.metadata).toMatchObject({ relaviumExport: { messages } });
+  });
+
+  it('keeps legacy prompt context while excluding an interrupted structural exchange and its grants', () => {
+    const exported = sessionToWorkflow(session(), [
+      msg(0, 'user', [{ type: 'text', text: 'legacy context' }]),
+      msg(1, 'user', [{ type: 'text', text: 'interrupted' }]),
+      msg(2, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:2:0', name: 'read_file', argsBytes: 2 },
+      ]),
+      msg(3, 'user', [{ type: 'text', text: 'continued' }]),
+      msg(4, 'assistant', [{ type: 'text', text: '' }]),
+    ]);
+    expect(exported.workflow.nodes).toHaveLength(3);
+    expect(exported.workflow.nodes[1]).toMatchObject({
+      prompt_template: 'legacy context\n\ncontinued',
+    });
+    expect(exported.workflow.nodes[1]).not.toHaveProperty('tools');
+  });
+
   it('exports completed empty finals and old compacted tool history, omitting the unresolved marker from grants', () => {
     const def = sessionToWorkflow(session(), [
       msg(0, 'user', [{ type: 'text', text: 'old' }]),

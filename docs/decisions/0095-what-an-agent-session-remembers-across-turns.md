@@ -23,6 +23,19 @@
   [agent-session-spec.md](../reference/contracts/agent-session-spec.md) ·
   [agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md)
 
+> **Amended 2026-10-02 — W7 step 3 legacy read compatibility.** The fourth implementation review
+> reproduced a pre-W7 successful empty-final exchange using the actual old persister: it stored a user
+> row alone, and a later completed exchange left `user → user → assistant`. The old resume retained
+> both users; requiring the new terminal shape for the earlier row silently removed its context from
+> resume/reseat and its text from the exported prompt. The September 18 trailing-bare-user rollback
+> does not authorise that nontrailing loss. The corrected shared projection preserves this legacy text
+> and its compaction/trim boundary position, without synthesising a terminal or increasing the old
+> conservative completed-turn count. The text prefixes the next completed export prompt; a prefix
+> without a later terminal creates no node. A final bare user still rolls back, an interrupted
+> structural exchange stays excluded, and all new writes retain their explicit terminal identity.
+> The decision is unchanged; the read mechanism now preserves the prior compatibility behaviour.
+> The exact contract lives in [agent-session-spec.md](../reference/contracts/agent-session-spec.md#session-messages).
+
 > **Amended 2026-09-18 — the `W7` pre-implementation review.** A systematic review of this ADR against the tree
 > found one false rationale, several gaps that the implementation would otherwise have decided silently, and
 > wording that contradicts the table below it. The decision is unchanged; this note narrows it and adds landing

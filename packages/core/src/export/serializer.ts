@@ -130,7 +130,12 @@ export function sessionToWorkflow(
   for (const turn of completedSessionTurns(ordered, false)) {
     turnIndex += 1;
     const nodeId = `turn-${turnIndex}`;
-    const prompt = neutralizeInterpolation(textOf(turn.user.content));
+    const prompt = neutralizeInterpolation(
+      [...turn.legacyUserPrefix, turn.user]
+        .map((message) => textOf(message.content))
+        .filter((text) => text.length > 0)
+        .join('\n\n'),
+    );
     const tools = [...new Set(turn.messages.flatMap((message) => toolsUsedIn(message.content)))]; // dedupe across the turn, first-seen order (determinism-safe)
     const node: AgentNode = {
       id: nodeId,

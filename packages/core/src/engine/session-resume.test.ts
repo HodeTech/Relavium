@@ -14,6 +14,7 @@ import { createAbortController } from './execution-host.js';
 import {
   reconstructSessionState,
   resumableMessageSequences,
+  resumableTurnBoundarySequences,
   type SessionResumeState,
 } from './session-resume.js';
 import type { ToolRegistry } from '../tools/types.js';
@@ -55,6 +56,76 @@ const msg = (
 });
 
 describe('reconstructSessionState (1.Y)', () => {
+  it('preserves nontrailing legacy bare-user context without inventing completed turns', () => {
+    const rows = [
+      msg(0, 'user', [{ type: 'text', text: 'legacy empty-final context' }]),
+      msg(1, 'user', [{ type: 'text', text: 'next question' }]),
+      msg(2, 'assistant', [{ type: 'text', text: 'answer' }]),
+    ];
+    expect(reconstructSessionState(record(), rows)).toMatchObject({
+      turnCount: 1,
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'legacy empty-final context' }] },
+        { role: 'user', content: [{ type: 'text', text: 'next question' }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'answer' }] },
+      ],
+    });
+    expect(resumableMessageSequences(rows)).toEqual([0, 1, 2]);
+    expect(resumableTurnBoundarySequences(rows)).toEqual([0, 2]);
+    const trimmed = [
+      ...rows,
+      { ...msg(3, 'system', []), compaction: { droppedThroughSequence: 0 } },
+    ];
+    expect(resumableMessageSequences(trimmed)).toEqual([1, 2]);
+    expect(resumableTurnBoundarySequences(trimmed)).toEqual([2]);
+    expect(rows).toHaveLength(3);
+  });
+
+  it('keeps earlier legacy bare users when the final bare user still rolls back', () => {
+    const rows = [
+      msg(0, 'user', [{ type: 'text', text: 'first legacy context' }]),
+      msg(1, 'user', [{ type: 'text', text: 'trailing legacy context' }]),
+    ];
+    expect(reconstructSessionState(record(), rows)).toMatchObject({
+      turnCount: 0,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'first legacy context' }] }],
+    });
+    expect(resumableMessageSequences(rows)).toEqual([0]);
+    expect(resumableTurnBoundarySequences(rows)).toEqual([0]);
+    expect(reconstructSessionState(record(), rows.slice(0, 1)).messages).toEqual([]);
+  });
+
+  it('retains legacy context across an interrupted structural exchange without carrying that exchange', () => {
+    const rows = [
+      msg(0, 'user', [{ type: 'text', text: 'legacy context' }]),
+      msg(1, 'user', [{ type: 'text', text: 'interrupted tool turn' }]),
+      msg(2, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:2:0', name: 'read_file', argsBytes: 2 },
+      ]),
+      msg(3, 'tool', [
+        { type: 'tool_result', toolCallId: 'session-tool:2:0', resultBytes: 4, outcome: 'ok' },
+      ]),
+    ];
+    expect(reconstructSessionState(record(), rows)).toMatchObject({
+      turnCount: 0,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'legacy context' }] }],
+    });
+    const continued = [
+      ...rows,
+      msg(4, 'user', [{ type: 'text', text: 'continued' }]),
+      msg(5, 'assistant', [{ type: 'text', text: '' }]),
+    ];
+    expect(reconstructSessionState(record(), continued)).toMatchObject({
+      turnCount: 1,
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'legacy context' }] },
+        { role: 'user', content: [{ type: 'text', text: 'continued' }] },
+      ],
+    });
+    expect(resumableMessageSequences(continued)).toEqual([0, 4]);
+    expect(resumableTurnBoundarySequences(continued)).toEqual([0, 5]);
+  });
+
   it('counts and retains empty-final turns while dropping an interrupted text-bearing tool preamble', () => {
     const state = reconstructSessionState(record(), [
       msg(0, 'user', [{ type: 'text', text: '' }]),

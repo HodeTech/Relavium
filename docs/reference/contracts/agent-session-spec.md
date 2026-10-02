@@ -153,11 +153,22 @@ after asynchronous approval and preparation. Its refusal proves dispatch never s
 any prepared claim. Settling or discarding an already-started effect remains available to record its outcome.
 Errors and aborts commit no transcript; their billed cost remains real.
 
-Resume, model reseat, export and boundary mapping share `completedSessionTurns`. A tool-call row
+Resume, model reseat, export and boundary mapping share one history projection. `completedSessionTurns`
+selects its completed exchanges; `resumableMessageSequences` and `resumableTurnBoundarySequences`
+supply the matching host boundary seeds. A tool-call row
 with preamble text is never a terminal, and an unfinished exchange rolls back. An empty-final turn
 restores its user message alone and counts as a completed turn. Compaction/trim boundaries retain
 whole turns; `/trim` still takes message units. Export reads all historical completed turns,
 including those superseded by a working-context boundary.
+
+**Legacy empty-final compatibility.** Before explicit empty terminals, the writer could persist a
+successful empty final as a user row alone. A bare user immediately followed by another user retains
+its text in resumed/reseated context, matching the old projection. It prefixes the next completed
+export prompt and has its own compaction/trim boundary slot. It does not create a terminal row or add
+to the reconstructed hard turn cap. The final bare user still rolls back, and interrupted structural
+exchanges stay excluded. Legacy prefix text without a later terminal remains resumed context and
+export metadata; it does not invent an exported node. Explicit empty-terminal turns retain their
+ordinary distinct identity. No historical row is rewritten.
 
 > **Relationship to the run `messages` table.** A session's messages are persisted in
 > **`session_messages`**, bound to a **session** — distinct from the existing per-step run `messages`
@@ -222,6 +233,7 @@ reproducible and round-trips):
 - **Nodes** — a single `input` node (`id: input`), then **one `agent` node per COMPLETED logical turn** in
   `sequenceNumber` order (`id: turn-1`, `turn-2`, … — 1-based), then one `output` node (`id: output`). A
   *logical turn* begins at its user row and ends at its terminal assistant text part (empty text counts).
+  Preserved nontrailing legacy bare-user text prefixes the next completed prompt; it creates no extra node.
   Structural tool preambles/results do not create nodes. An interrupted exchange is omitted from the chain
   and remains in the full metadata. Each `agent` node carries `agent_ref` = the session's `agentSlug`;
   `prompt_template` = the user text, with interpolation openers neutralised (omitted if empty);

@@ -284,6 +284,7 @@ export type {
 export {
   reconstructSessionState,
   resumableMessageSequences,
+  resumableTurnBoundarySequences,
   completedSessionTurns,
 } from './engine/session-resume.js';
 export type { SessionResumeState, CompletedSessionTurn } from './engine/session-resume.js';
