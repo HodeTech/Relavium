@@ -113,7 +113,18 @@ export {
   createEffectJournalPort,
   createEffectResumePort,
 } from './effect-journal-store.js';
-export type { EffectJournalStore, EffectJournalStoreDeps } from './effect-journal-store.js';
+export type {
+  EffectJournalStore,
+  EffectJournalStoreDeps,
+  CapturedSessionEffect,
+  SessionEffectDisclosure,
+  SessionEffectDisclosureSnapshot,
+  SessionEffectSweepResult,
+} from './effect-journal-store.js';
+export {
+  SessionEffectPrivacyError,
+  type SessionEffectCheckpoint,
+} from './session-effect-privacy.js';
 
 // Provider registry (2.C) — CRUD over the non-secret `llm_providers` catalog the CLI's `relavium provider`
 // commands manage. The key VALUE never lives here — only the OS-keychain `account` ref (ADR-0006/0019).

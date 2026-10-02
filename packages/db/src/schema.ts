@@ -826,7 +826,7 @@ export const runEffects = sqliteTable(
     argsDigest: text('args_digest').notNull(),
     /** Tier 1 only: what was handed to the target, so a retry reuses it verbatim rather than minting a new one. */
     targetIdempotencyKey: text('target_idempotency_key'),
-    /** The tool's result, retained only when re-delivery is possible — its absence is what forces a refusal. */
+    /** RUN replay result only. SESSION scopes always write NULL and never replay (ADR-0098). */
     resultJson: text('result_json'),
     /** The audit occurrence: node attempt, provider attempt, tool-call id, owning fence. Never used for dedup. */
     attemptJson: text('attempt_json').notNull(),

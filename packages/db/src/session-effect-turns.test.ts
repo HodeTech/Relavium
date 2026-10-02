@@ -254,7 +254,10 @@ describe('durable session effect-turn high-water mark (ADR-0098)', () => {
     journalStore.settle(identity, 'committed', 'old result');
     runMigrations(client.db);
     expect(key()).toBe(11);
-    journalStore.sweepCommittedForSession('s1', 100);
+    journalStore.sweepCommittedForSession(
+      's1',
+      journalStore.readSessionDisclosureSnapshot('s1').committed,
+    );
     expect(createSessionStore(client.db).reserveEffectTurnKey('s1')).toBe(12);
     runMigrations(client.db);
     expect(createSessionStore(client.db).reserveEffectTurnKey('s1')).toBe(13);
