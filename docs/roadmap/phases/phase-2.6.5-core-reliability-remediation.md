@@ -1989,7 +1989,7 @@ correction inside its own ADR rather than a rewrite, so the wrong reasoning stay
 
 ### W7 pre-implementation review and proposed execution plan — 2026-10-02
 
-**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–4 are closed after their independent review rounds; step 5 implementation is checked, with independent review pending.**
+**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–5 are closed after their independent review rounds. Step 6's newly identified configured-output-estimate precedence awaits approval of Proposed ADR-0101.**
 The four Accepted ADRs retain their decisions. Three verified gaps were explicitly resolved before code:
 manual compaction with an unknown window and the budget outcome of idle compaction
 ([ADR-0099](../../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md)),
@@ -2009,7 +2009,7 @@ behaviour it actually implements; the final pass reconciles the complete wave an
 | 3 | Completed-turn tool structure through turn/session events, atomic persister, resume/reseat/compaction boundary mapping, export and per-call effect-attempt joining (`core`, `cli`, `db`) | Empty final text, all historical rows in the join, resolved MCP ids, no unresolved names/content, atomic failure latch, turn-identified markers; IDs from step 2 reach both stored transcript and effect preparation |
 | 4 | Session effect privacy, no replay, legacy clear, secure deletion/WAL checkpoint, disclosure and retention across chat/Home/one-shot (`db`, `core` reference store, `cli`) | No result in session rows or post-checkpoint bytes; run replay unchanged; read failure prevents sweep; disclose then sweep once; errored/aborted/crashed turns; negative `!` slots; `agent run` teardown; history.db security sitting; depends on steps 2–3 |
 | 5 | One request projection for omitted/none/window/summary memory; same-role folding; policy refusals in engine and CLI (`core`, `cli`) | Current message plus N completed turns, empty finals counted, restored summary excluded under none/window, `/trim` message units preserved, frozen snapshots, workflow-node no-op documented; later automatic entry points consume the same policy |
-| 6 | Shared request estimator and output reservation; per-round input pricing, required hook forwarding, attempt evidence and proven pre-content HTTP refusal release (`llm`, `core`, `cli`) | Media encoding does not inflate tokens, conservative serialization fallback, sourced media constants, highest-tier non-cached input/user overlays, every forwarding site, generative input estimate 0, growing tool-round input, 4xx versus uncertain 5xx/timeout, cap and custom-endpoint identity |
+| 6 | Shared request estimator and output reservation; per-round input pricing, required hook forwarding, attempt evidence and proven pre-content HTTP refusal release (`llm`, `core`, `cli`) | Media encoding does not inflate tokens, conservative serialization fallback, sourced media constants, highest-tier non-cached input/user overlays, every forwarding site, generative input estimate 0, growing tool-round input, 4xx versus uncertain 5xx/timeout, cap and custom-endpoint identity. Newly identified configured-estimate/native-cap precedence requires approval of [Proposed ADR-0101](../../decisions/0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md) before dependent implementation |
 | 7 | Fixture-pinned overflow normalization per dialect, chain custom-endpoint downgrade, recoverability evidence, engine code and policy-aware CLI remedy (`llm`, `shared`, `core`, `cli`) | Four live-captured fixtures, Gemini replay body/message, no failover on overflow, content/tool-round flags, no provider text in engine messages, release conditions and stored-code upgrade behaviour; captured fixtures are required |
 | 8 | Capped atomic multi-pass compaction primitive, terminal balance, pre-send measurement and single overflow recovery (`core`, `cli`) | All ADR-0096 and approved ADR-0099 paths: differing fallback windows, four-pass exhaustion, pending versus completed empty-final user row, budget refusal with an after-turn first-pass notice, failure/skip, abort/cancel, turn cap, one-shot no after-turn call; depends on steps 5–7 |
 | 9 | Pure frozen allowance/provenance computation and synchronous dispatch-owned governor debit/reconciliation (`core`, `llm`) | calls × attempts × E at paused input size, lowered tool list, generative route, exclusions, zero/unrepresentable amounts, under-cap debit, refund/overrun, strict refusal and sibling/straggler isolation; depends on input pricing |
@@ -2202,6 +2202,24 @@ with no material finding; an adjacent lifecycle-row ambiguity was clarified. Bot
 347 focused tests; the parent reproduced 390 state/history cases, 86 actual CLI/SQLite cases and
 matched source-head/pre-step operational controls. **Fresh round 2 is pending; step 5 and all six
 W7 register items remain open.**
+
+**Step 5, review round 2 — 2026-10-02.** Two fresh reviewers accepted the complete step and prior
+clarification without a verified finding. Both independently passed 347 focused tests. The parent
+reproduced 1,536 state/history cases with two sends each and their exact-source pre-step control
+(1,408 expected failures, 128 common-behaviour passes), plus 86 actual CLI/Home/SQLite cases.
+Six exact-source operational controls passed this head and failed the pre-step source as expected;
+final probes use owned temporary caches without an HMR listener. The
+[round 2 record](../../reviews/2026-10-02T12-21-33-w7-step-5-round-2-review.md) states evidence and limits.
+**Step 5 is closed; all six W7 register items remain open.**
+
+**Step 6 preflight — 2026-10-02.** The existing configuration promise permits a configured estimate
+to replace a known native output cap; the shared resolver's precedence was not settled by Accepted
+ADR-0028/ADR-0096. Independently reviewed
+[Proposed ADR-0101](../../decisions/0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md)
+preserves wire behaviour, reserves known caps or recognised native envelopes, and uses the configured
+estimate only for uncapped requests. Its compatibility consequence and dialect/price-path acceptance
+cases are explicit. The maintainer has been asked for approval; no dependent step 6 implementation
+has begun. Live-captured fixtures remain separately required before step 7's classification commit.
 
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A

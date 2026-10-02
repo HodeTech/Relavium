@@ -109,16 +109,21 @@ merged too (PR #85, 2026-08-28).
 > step and every correction with no new material findings. Parent native/privacy controls pass; compiled-entry
 > process-exit delay under queued stdio also reproduces on the exact pre-step baseline and is explicitly qualified.
 > **Step 4 is closed; step 5 proceeds automatically.** All six W7 register items remain open.
-> Step 5's memory implementation and canonical docs are checked, with fresh independent review pending:
+> Step 5's memory implementation and canonical docs are checked:
 > one pure request projection, frozen policy, completed-turn spans and engine/CLI history refusals;
 > actual request, workflow-node and SQLite resume/reseat controls pass. Workspace checks, build and coverage
 > pass (299 suites, 6,567 passing tests, 11 skipped). Later measured pre-send/recovery and revised compaction
-> outcomes remain staged. Step 5 and all six W7 register items remain open.
+> outcomes remain staged. Clean-tree full CI passed at `ecdcc395`.
 > [Step 5 round 1](../reviews/2026-10-02T12-00-17-w7-step-5-round-1-review.md) accepted the implementation:
 > both reviewers passed 347 focused tests; parent-rerun controls passed 390 state/history cases and 86
 > actual CLI/SQLite cases. Matched source-head operational controls pass; exact pre-step engine controls
-> fail as expected. Adjacent working-context/durable-history wording is corrected; fresh round 2 is pending.
-> It repairs collection without deleting private artifacts and provides the
+> fail as expected. Adjacent working-context/durable-history wording is corrected.
+> [Step 5 round 2](../reviews/2026-10-02T12-21-33-w7-step-5-round-2-review.md) accepted the complete step:
+> both fresh reviewers passed 347 tests; the parent reproduced 1,536 state/history and 86 CLI/Home/SQLite
+> cases, plus exact-source positive/negative controls. **Steps 1–5 are closed; all six W7 items remain open.**
+> Step 6's independently reviewed [Proposed ADR-0101](../decisions/0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md)
+> resolves a newly identified configured-estimate/native-cap precedence gap. Maintainer approval is pending;
+> no dependent step 6 implementation has begun. Step 1 repaired collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.
 
