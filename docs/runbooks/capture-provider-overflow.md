@@ -62,6 +62,7 @@ It retains no request body, authentication header or arbitrary transport error. 
 refuses the entire response if it finds the supplied key or a credential shape recognised
 by Relavium's secret scrubber, including JSON-escaped strings and property names. Review
 the resulting artifact for sensitive content before committing it.
+The completed artifact is also checked, so the supplied key cannot remain in metadata or a field name.
 
 An HTTP status alone is not an overflow verdict: authentication, request-size or unsupported
 parameter errors are unsuitable classifier fixtures. Inspect the provider's actual error

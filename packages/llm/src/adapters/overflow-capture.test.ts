@@ -149,6 +149,23 @@ describe('bounded, secret-free live response capture', () => {
   });
 
   it.each([
+    'anthropic',
+    'overflow',
+    'w7-overflow-capture-v1',
+    '2026-10-02',
+    'application/json',
+    'capturedAt',
+  ])('refuses a supplied opaque key coinciding with artifact metadata: %s', async (key) => {
+    await expect(
+      captureResponse(
+        options,
+        key,
+        dependencies(() => Promise.resolve(jsonResponse('{}', 401))),
+      ),
+    ).rejects.toMatchObject({ code: 'secret_in_response' });
+  });
+
+  it.each([
     new Response('not JSON', { headers: { 'content-type': 'text/html' } }),
     new Response('{}', { headers: { 'content-type': 'application/json-malformed' } }),
     new Response('not JSON', { headers: { 'content-type': 'application/json' } }),

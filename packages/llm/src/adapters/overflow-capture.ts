@@ -246,7 +246,7 @@ export async function captureResponse(
     assertSafeBody(body, key);
     const capturedAt = z.string().datetime({ offset: true }).safeParse(deps.now());
     if (!capturedAt.success) throw new CaptureError('invalid_arguments');
-    return {
+    const artifact: CaptureArtifact = {
       captureTool: 'w7-overflow-capture-v1',
       capturedAt: capturedAt.data,
       provider: options.provider,
@@ -256,6 +256,10 @@ export async function captureResponse(
       maxOutputTokens: options.maxOutputTokens,
       response: { status: response.status, contentType: 'application/json', body },
     };
+    // Also cover metadata/field names: even an accidentally pasted opaque key cannot survive by
+    // coinciding with the timestamp or a fixed artifact label. The response byte cap bounds this scan.
+    assertSafeBody(JSON.stringify(artifact), key);
+    return artifact;
   } catch (error) {
     if (deadline.classify() === 'caller') throw new CaptureError('cancelled');
     if (deadline.classify() === 'deadline') throw new CaptureError('timeout');

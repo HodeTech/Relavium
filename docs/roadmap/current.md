@@ -45,7 +45,9 @@ merged too (PR #85, 2026-08-28).
 > [twelve-step W7 plan](phases/phase-2.6.5-core-reliability-remediation.md#w7-pre-implementation-review-and-proposed-execution-plan--2026-10-02).
 > Work remains on `development`; each step closes with two fresh independent Codex review rounds and verified
 > fixes. Step 1's implementation and first review corrections pass `pnpm run ci` and `pnpm coverage`;
-> [round 1](../reviews/2026-10-02T03-04-05-w7-step-1-round-1-review.md) verified seven findings, and round 2 is pending.
+> [round 1](../reviews/2026-10-02T03-04-05-w7-step-1-round-1-review.md) verified seven findings;
+> [round 2](../reviews/2026-10-02T03-22-32-w7-step-1-round-2-review.md) verified a cleanup race in its fix.
+> All corrections pass the gates; a fresh corrective review is pending.
 > It repairs collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.

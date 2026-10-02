@@ -236,13 +236,9 @@ function clear(fixture) {
   if (fixture.root === undefined) return;
   rmSync(fixture.root, { recursive: true, force: true });
   // Do not leave an empty `worktrees/` or `.worktrees/` behind that this guard itself created.
-  if (
-    !fixture.parentExisted &&
-    existsSync(fixture.parent) &&
-    readdirSync(fixture.parent).length === 0
-  ) {
+  if (!fixture.parentExisted) {
     try {
-      // Atomic, non-recursive removal: another guard may have created its own probe since readdir.
+      // The OS checks emptiness atomically; exists/readdir prechecks race another guard's cleanup.
       rmdirSync(fixture.parent);
     } catch (error) {
       if (!['ENOTEMPTY', 'EEXIST', 'ENOENT'].includes(error.code)) throw error;

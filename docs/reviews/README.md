@@ -15,6 +15,8 @@ added.
   existing contract review, supplemental Proposed decisions and execution-plan approval gate.
 - [2026-10-02 — W7 step 1, round 1](2026-10-02T03-04-05-w7-step-1-round-1-review.md):
   capture secrecy and destination ownership, probe ownership/concurrency and CI parity; seven verified findings corrected.
+- [2026-10-02 — W7 step 1, round 2](2026-10-02T03-22-32-w7-step-1-round-2-review.md):
+  one verified concurrent cleanup race corrected and optional whole-artifact assurance adopted; fresh corrective review pending.
 
 ## File naming convention
 
