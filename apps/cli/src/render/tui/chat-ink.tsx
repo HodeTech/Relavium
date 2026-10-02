@@ -3,7 +3,6 @@ import {
   createElement,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -188,8 +187,8 @@ function TranscriptLine(props: Readonly<{ entry: TranscriptEntry; color: boolean
 
 interface ChatAppProps {
   readonly store: ChatStoreController;
-  /** A committed mount makes this transcript eligible for disclosure; render() returning alone does not. */
-  readonly onActivated?: () => void;
+  /** Successful terminal setup and a flushed frame make this transcript eligible for disclosure. */
+  readonly onActivated?: (flushNotice: () => Promise<void>) => void | Promise<void>;
   /** `true` ⇒ mounted on ink 7's alternate screen (2.6.F Step 4b, ADR-0068 §c) — the transcript renders through the
    *  scroll {@link TranscriptViewport} (constrained to the terminal size) instead of `<Static>`. Resolved by
    *  `driveInk` (`resolveRenderMode`); absent/false ⇒ the inline renderer. */
@@ -556,9 +555,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
 export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const { state, tick, color, mode, reasoningEffort, reasoningVisible, approval } =
     useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
-  useLayoutEffect(() => {
-    props.onActivated?.();
-  }, [props.onActivated]);
+  const activationReady = useRef(props.onActivated === undefined);
   const [editor, setEditor] = useState<EditorState>(emptyEditor());
   // A ref SHADOW of the editor is the SOURCE OF TRUTH for edits: in a coalesced stdin chunk ink dispatches every
   // event synchronously with no render flush, so React's queued-updater `prev` is stale for the 2nd+ event of the
@@ -1020,6 +1017,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   }, [app, suspendPort]);
 
   const submit = (message: string, display?: string): void => {
+    if (!activationReady.current && message !== '/cancel' && message !== '/exit') return;
     // A typed `/models` opens the reseat picker overlay (ADR-0059) instead of sending — interactive only (the port
     // is wired). Covers a directly-typed `/models` AND a chat-palette selection (both route through `submit`).
     if (props.modelPicker !== undefined && message.trim() === '/models') {
@@ -1068,6 +1066,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // in flight, no keyboard-owning overlay/submode, and NO pending approval (read FRESH from the store). This also
   // closes the standalone-chat paste gap — it never enabled DECSET 2004 before; usePaste enables it natively now.
   usePaste((text) => {
+    if (!activationReady.current) return;
     const pasted = text.replace(/\r\n?/g, '\n');
     if (pasted.length === 0) return;
     const snap = props.store.getSnapshot();
@@ -1163,6 +1162,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       props.onSuspend?.();
       return;
     }
+    if (!activationReady.current && !(key.ctrl && char.toLowerCase() === 'c')) return;
     // Mouse reports (Step 5): the alt screen enables mouse reporting, so a wheel/click arrives in EVERY state —
     // including while an overlay owns the keyboard. CONSUME every report HERE, ahead of the overlay routing below,
     // so its raw bytes can never type into the prompt, the `/` palette filter, or the `[c]` reason capture. The wheel
@@ -1499,6 +1499,25 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // back to 80×24 off a TTY (a harness), moot on a real TTY (the only place alt mounts, via the driveInk gate).
   const windowSize = useWindowSize();
 
+  useEffect(() => {
+    if (props.onActivated === undefined) return;
+    let mounted = true;
+    // Ink yields for passive raw-input setup. Its flush can also resolve after error-driven unmount,
+    // so component ownership AND the driver's observed Ink exit are required before/after activation.
+    void app
+      .waitUntilRenderFlush()
+      .then(async () => {
+        if (!mounted) return;
+        await props.onActivated?.(() => app.waitUntilRenderFlush());
+        if (mounted) activationReady.current = true;
+      })
+      .catch(props.onError);
+    return () => {
+      mounted = false;
+      activationReady.current = false;
+    };
+  }, [app, props.onActivated, props.onError]);
+
   // A resize re-wraps the transcript, so every display-line index the live selection holds moves. Drop it rather than
   // highlight — and copy — the wrong text (2.6.F Step 6).
   useEffect(() => {
@@ -1693,7 +1712,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   let cancelRequested = false;
   let activated = false;
   const isActive = (): boolean => active && !cancelRequested && !ctx.shouldStop();
-  const onActivated = (): void => {
+  const onActivated = async (flushNotice: () => Promise<void>): Promise<void> => {
     if (activated || !active) return;
     if (!isActive()) {
       resolveExit();
@@ -1701,7 +1720,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
     }
     activated = true;
     try {
-      ctx.onActivated?.(isActive);
+      await ctx.onActivated?.(isActive, flushNotice);
       if (!isActive()) resolveExit();
     } catch (err) {
       // React/Ink can swallow effect errors; propagate through the driver's owned exit promise instead.
@@ -1793,6 +1812,9 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
         alternateScreen: false,
       },
     );
+    // Ink owns passive input/render failures. Observe its terminal promise rather than leave the
+    // driver alive after an error boundary has unmounted the disclosure surface.
+    void instance.waitUntilExit().then(resolveExit, rejectExit);
 
     return finalizeInkExit(exited, {
       // Tear down + UNMOUNT (restores raw mode + cursor; with the option false it does NOT exit the alt buffer — the

@@ -12,6 +12,8 @@ import {
 } from '@relavium/db';
 import { REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { render as renderInk, type Instance } from 'ink';
+import { createElement } from 'react';
 
 import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
 import { scriptedResolver, textTurn } from '../chat/test-support.js';
@@ -21,7 +23,8 @@ import type { ClackOnboardingDeps } from '../onboarding/wizard.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
-import type { RootAppProps } from '../render/tui/home-app.js';
+import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
+import { OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import { DISABLE_MOUSE, ENABLE_MOUSE, HIDE_CURSOR, SHOW_CURSOR } from '../render/alt-screen.js';
 import type { JobControlLifecycle, SuspendPort } from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
@@ -157,7 +160,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       uuid: () => `id-${uuidN++}`, // unique per call (mirrors production randomUUID): the session id + message ids never collide
       render: (props) => {
         capture(props);
-        return { unmount };
+        return {
+          unmount,
+          waitUntilRenderFlush: () => Promise.resolve(),
+          waitUntilExit: () => new Promise(() => {}),
+        };
       },
       getSize: () => ({ cols: 120, rows: 40 }),
       subscribeResize: () => () => undefined,
@@ -206,6 +213,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           unmount: () => {
             throw new Error('ink unmount failed');
           },
+          waitUntilRenderFlush: () => Promise.resolve(),
+          waitUntilExit: () => new Promise(() => {}),
         };
       },
     });
@@ -289,7 +298,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         render: (p, opts) => {
           props = p;
           alt = opts.alternateScreen;
-          return { unmount: vi.fn() };
+          return {
+            unmount: vi.fn(),
+            waitUntilRenderFlush: () => Promise.resolve(),
+            waitUntilExit: () => new Promise(() => {}),
+          };
         },
         ...over,
       });
@@ -532,91 +545,140 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
-  it('the REAL Home reseat activates disclosure before sweeping and does not disclose the committed row again', async () => {
-    let captured: RootAppProps | undefined;
-    let buildChecks = 0;
-    const { deps } = makeDeps(
-      (props) => {
-        captured = props;
-      },
-      {
-        providers: scriptedResolver([textTurn('first reply')]),
-        buildResumedSession: async (options) => {
-          const built = await buildResumedChatSession(options);
-          expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toHaveLength(
-            buildChecks === 0 ? 2 : 1,
-          );
-          buildChecks++;
-          return built;
-        },
-      },
-    );
-    const running = driveHome(deps);
-    const props = captured;
-    if (props === undefined) throw new Error('render was not invoked');
-    type(props, 'first');
-    props.controller.handleKey('', ENTER);
-    await flush();
-    const sessionId = props.controller.getSnapshot().session?.sessionId;
-    if (sessionId === undefined) throw new Error('missing active session');
-    const turn = createSessionStore(client.db).reserveEffectTurnKey(sessionId);
-    let next = 0;
-    const journal = createEffectJournalStore(client.db, {
-      uuid: () => `home-effect-${String(++next)}`,
-      now: () => 0,
-    });
-    for (const [slot, state] of [
-      [0, 'committed'],
-      [1, 'ambiguous'],
-    ] as const) {
-      const identity = {
-        scope: `session:${encodeURIComponent(sessionId)}:${String(turn)}`,
-        slot,
-        toolId: 'run_command',
+  it.each([false, true])(
+    'the REAL Home reseat displays disclosure before sweeping (actual Ink: %s)',
+    async (actualInk) => {
+      let captured: RootAppProps | undefined;
+      let buildChecks = 0;
+      const input = new OwnedTtyInput();
+      const stdout = new OwnedTtyOutput();
+      const stderr = new OwnedTtyOutput();
+      let instance: Instance | undefined;
+      let finishRenderer: () => void = () => undefined;
+      const syntheticExit = new Promise<void>((resolve) => {
+        finishRenderer = resolve;
+      });
+      let firstNoticeRows: number | undefined;
+      stdout.onFrame = (frame) => {
+        if (frame.includes('external effect') && firstNoticeRows === undefined)
+          firstNoticeRows = client.sqlite.prepare('SELECT * FROM run_effects').all().length;
       };
-      journal.prepare(
-        identity,
-        { kind: 'session', sessionId, turn },
-        { providerAttempt: 1, toolCallId: `session-tool:${String(turn)}:${String(slot)}` },
-        3,
-        'digest',
+      const { deps } = makeDeps(
+        (props) => {
+          captured = props;
+        },
+        {
+          render: (props: RootAppProps) => {
+            captured = props;
+            if (!actualInk)
+              return {
+                unmount: finishRenderer,
+                waitUntilRenderFlush: () => Promise.resolve(),
+                waitUntilExit: () => syntheticExit,
+              };
+            instance = renderInk(createElement(RootApp, props), {
+              stdin: input,
+              stdout,
+              stderr,
+              debug: true,
+              exitOnCtrlC: false,
+              patchConsole: false,
+              alternateScreen: false,
+            });
+            return instance;
+          },
+          providers: scriptedResolver([textTurn('first reply')]),
+          buildResumedSession: async (options) => {
+            const built = await buildResumedChatSession(options);
+            expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toHaveLength(
+              buildChecks === 0 ? 2 : 1,
+            );
+            buildChecks++;
+            return built;
+          },
+        },
       );
-      journal.settle(identity, state, 'synthetic private result');
-    }
-    const pick = async (model: string) => {
-      props.controller.handleKey('/', {});
-      type(props, 'models');
-      props.controller.handleKey('', ENTER);
-      await flush();
-      type(props, model);
-      props.controller.handleKey('', ENTER);
-      if (props.controller.getSnapshot().modelPicker?.phase === 'effort')
+      const running = driveHome(deps);
+      try {
+        await instance?.waitUntilRenderFlush();
+        const props = captured;
+        if (props === undefined) throw new Error('render was not invoked');
+        type(props, 'first');
         props.controller.handleKey('', ENTER);
-      await flush();
-    };
-    await pick('claude-opus-4-8');
-    expect(client.sqlite.prepare('SELECT state FROM run_effects').all()).toEqual([
-      { state: 'ambiguous' },
-    ]);
-    const notices = () =>
-      props.controller
-        .getSnapshot()
-        .session?.store.getSnapshot()
-        .state.transcript.filter(
-          (entry) => entry.role === 'notice' && entry.text.includes('external effect'),
-        ) ?? [];
-    expect(notices()).toHaveLength(1);
-    expect(notices()[0]?.text).toContain('landed in a turn that did not complete');
-    await pick('claude-sonnet-4-6');
-    expect(buildChecks).toBe(2);
-    expect(notices()).toHaveLength(2);
-    expect(notices().at(-1)?.text).toContain('ambiguous');
-    expect(notices().at(-1)?.text).not.toContain('landed in a turn that did not complete');
-    props.controller.handleKey('c', CTRL_C);
-    await flush();
-    props.controller.handleKey('c', CTRL_C);
-    expect(await running).toBe(0);
-  });
+        await flush();
+        const sessionId = props.controller.getSnapshot().session?.sessionId;
+        if (sessionId === undefined) throw new Error('missing active session');
+        const turn = createSessionStore(client.db).reserveEffectTurnKey(sessionId);
+        let next = 0;
+        const journal = createEffectJournalStore(client.db, {
+          uuid: () => `home-effect-${String(++next)}`,
+          now: () => 0,
+        });
+        for (const [slot, state] of [
+          [0, 'committed'],
+          [1, 'ambiguous'],
+        ] as const) {
+          const identity = {
+            scope: `session:${encodeURIComponent(sessionId)}:${String(turn)}`,
+            slot,
+            toolId: 'run_command',
+          };
+          journal.prepare(
+            identity,
+            { kind: 'session', sessionId, turn },
+            { providerAttempt: 1, toolCallId: `session-tool:${String(turn)}:${String(slot)}` },
+            3,
+            'digest',
+          );
+          journal.settle(identity, state, 'synthetic private result');
+        }
+        const pick = async (model: string) => {
+          props.controller.handleKey('/', {});
+          type(props, 'models');
+          props.controller.handleKey('', ENTER);
+          await flush();
+          type(props, model);
+          props.controller.handleKey('', ENTER);
+          if (props.controller.getSnapshot().modelPicker?.phase === 'effort')
+            props.controller.handleKey('', ENTER);
+          await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+          await instance?.waitUntilRenderFlush();
+        };
+        await pick('claude-opus-4-8');
+        expect(client.sqlite.prepare('SELECT state FROM run_effects').all()).toEqual([
+          { state: 'ambiguous' },
+        ]);
+        const notices = () =>
+          props.controller
+            .getSnapshot()
+            .session?.store.getSnapshot()
+            .state.transcript.filter(
+              (entry) => entry.role === 'notice' && entry.text.includes('external effect'),
+            ) ?? [];
+        if (actualInk) expect(firstNoticeRows).toBe(2);
+        expect(notices()).toHaveLength(1);
+        expect(notices()[0]?.text).toContain('landed in a turn that did not complete');
+        await pick('claude-sonnet-4-6');
+        expect(buildChecks).toBe(2);
+        expect(notices()).toHaveLength(2);
+        expect(notices().at(-1)?.text).toContain('ambiguous');
+        expect(notices().at(-1)?.text).not.toContain('landed in a turn that did not complete');
+        props.controller.handleKey('c', CTRL_C);
+        await flush();
+        props.controller.handleKey('c', CTRL_C);
+        expect(await running).toBe(0);
+      } finally {
+        instance?.unmount();
+        finishRenderer();
+        if (captured !== undefined) await captured.controller.teardownActive();
+        await running.catch(() => undefined);
+        instance?.cleanup();
+        input.destroy();
+        stdout.destroy();
+        stderr.destroy();
+      }
+    },
+  );
 
   it('a reseat notice fired DURING the build is buffered and flushed into the transcript, not lost to stderr (review M5/bot)', async () => {
     // The store is seeded from the build (it needs `built.resumeState`), so it cannot exist yet when a governor/

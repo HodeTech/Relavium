@@ -40,12 +40,16 @@ export interface ResumedSessionEffectOptions {
   readonly sanitize: (text: string) => string;
   /** The ACTIVE transcript for TTY/Home, stderr for plain/JSON. Throwing prevents the sweep. */
   readonly deliverNotice: (text: string) => void;
+  /** TTY/Home acknowledge the rendered notice before destructive retention. Plain/JSON sinks are synchronous. */
+  readonly flushNotice?: () => Promise<void>;
   /** Rechecked after delivery, which can synchronously trigger an exit or a session swap. */
   readonly isActive?: () => boolean;
 }
 
 /** A successful read, an active-surface disclosure, then the exact captured committed-row sweep. */
-export function reconcileResumedSessionEffects(options: ResumedSessionEffectOptions): void {
+export function reconcileResumedSessionEffects(
+  options: ResumedSessionEffectOptions,
+): void | Promise<void> {
   const active = options.isActive ?? (() => true);
   if (!active()) return;
   const store = createEffectJournalStore(options.db, { uuid: randomUUID, now: Date.now });
@@ -66,21 +70,35 @@ export function reconcileResumedSessionEffects(options: ResumedSessionEffectOpti
     }
     return;
   }
-  if (!active()) return;
-  try {
-    const swept = store.sweepCommittedForSession(options.sessionId, snapshot.committed);
-    if (swept.checkpoint === 'deferred' && active()) options.deliverNotice(CHECKPOINT_DEFERRED);
-  } catch {
-    // A checkpoint can fail AFTER logical deletion committed: do not assert all rows remain.
-    if (active()) {
-      const warning = 'warning: session effect retention or WAL erasure could not be completed.';
-      try {
-        options.deliverNotice(warning);
-      } catch {
-        warn(options.io, warning);
+  const sweep = (): void => {
+    if (!active()) return;
+    try {
+      const swept = store.sweepCommittedForSession(options.sessionId, snapshot.committed);
+      if (swept.checkpoint === 'deferred' && active()) options.deliverNotice(CHECKPOINT_DEFERRED);
+    } catch {
+      // A checkpoint can fail AFTER logical deletion committed: do not assert all rows remain.
+      if (active()) {
+        const warning = 'warning: session effect retention or WAL erasure could not be completed.';
+        try {
+          options.deliverNotice(warning);
+        } catch {
+          warn(options.io, warning);
+        }
       }
     }
-  }
+  };
+  if (options.flushNotice === undefined) return sweep();
+  return Promise.resolve()
+    .then(options.flushNotice)
+    .then(sweep, () => {
+      if (active()) {
+        try {
+          options.deliverNotice(DISCLOSURE_FAILED);
+        } catch {
+          warn(options.io, DISCLOSURE_FAILED);
+        }
+      }
+    });
 }
 
 /** Never resumable; the caller proves ownership by a successful one-shot turn-key reservation. */

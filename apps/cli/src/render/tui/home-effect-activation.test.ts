@@ -34,7 +34,7 @@ function submit(controller: HomeController) {
   controller.handlePaste('synthetic prompt');
   controller.handleKey('', { return: true });
 }
-function session(onNotice?: () => void) {
+function session(onNotice?: () => void, flushNotice?: () => Promise<void>) {
   const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
   const io = captureIo();
   const processLine = vi.fn(() => Promise.resolve());
@@ -46,6 +46,7 @@ function session(onNotice?: () => void) {
       sessionId: 's1',
       sanitize: sanitizeInline,
       isActive,
+      ...(flushNotice === undefined ? {} : { flushNotice }),
       deliverNotice: (text) => {
         expect(rows()).toHaveLength(1);
         store.notice(text);
@@ -95,6 +96,32 @@ afterEach(() => {
 });
 
 describe('Home activation owns disclosure evidence (ADR-0098)', () => {
+  it.each([false, true])(
+    'gates the first message until rendered disclosure settles (exit=%s)',
+    async (exit) => {
+      let acknowledge: () => void = () => undefined;
+      const flushed = new Promise<void>((resolve) => {
+        acknowledge = resolve;
+      });
+      const made = session(undefined, () => flushed);
+      const c = controller(() => Promise.resolve(made.built));
+      submit(c);
+      await flush();
+      expect(rows()).toHaveLength(1);
+      expect(c.getSnapshot().submitBusy).toBe(true);
+      expect(made.processLine).not.toHaveBeenCalled();
+      c.handlePaste('premature second message');
+      c.handleKey('', { return: true });
+      expect(made.processLine).not.toHaveBeenCalled();
+      if (exit) await c.teardownActive();
+      acknowledge();
+      await flush();
+      expect(rows()).toHaveLength(exit ? 1 : 0);
+      expect(made.processLine).toHaveBeenCalledTimes(exit ? 0 : 1);
+      if (!exit) await c.teardownActive();
+    },
+  );
+
   it('publishes the active transcript before disclosure, then sweeps once before accepting a message', async () => {
     const made = session();
     const c = controller(() => Promise.resolve(made.built));

@@ -49,7 +49,7 @@ describe('active session disclosure before exact retention (ADR-0098)', () => {
     const io = captureIo();
     const notices: string[] = [];
     const reconcile = () =>
-      reconcileResumedSessionEffects({
+      void reconcileResumedSessionEffects({
         io: io.io,
         db: client.db,
         sessionId: 's1',
@@ -59,11 +59,11 @@ describe('active session disclosure before exact retention (ADR-0098)', () => {
           notices.push(text);
         },
       });
-    reconcile();
+    void reconcile();
     expect(notices[0]).toContain('landed in a turn that did not complete');
     expect(notices[0]).toContain('ambiguous');
     expect(rows()).toHaveLength(1);
-    reconcile();
+    void reconcile();
     expect(notices[1]).not.toContain('landed in a turn that did not complete');
     expect(io.out()).toBe('');
   });
@@ -78,7 +78,7 @@ describe('active session disclosure before exact retention (ADR-0098)', () => {
     });
     const io = captureIo();
     const notices: string[] = [];
-    reconcileResumedSessionEffects({
+    void reconcileResumedSessionEffects({
       io: io.io,
       db: client.db,
       sessionId: 's1',
@@ -100,7 +100,7 @@ describe('active session disclosure before exact retention (ADR-0098)', () => {
       )
       .run('{SECRET_HISTORY');
     const io = captureIo();
-    reconcileResumedSessionEffects({
+    void reconcileResumedSessionEffects({
       io: io.io,
       db: client.db,
       sessionId: 's1',
@@ -118,7 +118,7 @@ describe('active session disclosure before exact retention (ADR-0098)', () => {
     const deliverNotice = vi.fn(() => {
       throw new Error('SECRET_OUTPUT');
     });
-    reconcileResumedSessionEffects({
+    void reconcileResumedSessionEffects({
       io: io.io,
       db: client.db,
       sessionId: 's1',
@@ -135,7 +135,7 @@ describe('active session disclosure before exact retention (ADR-0098)', () => {
     effect();
     const io = captureIo();
     let active = true;
-    reconcileResumedSessionEffects({
+    void reconcileResumedSessionEffects({
       io: io.io,
       db: client.db,
       sessionId: 's1',
@@ -147,7 +147,7 @@ describe('active session disclosure before exact retention (ADR-0098)', () => {
     });
     expect(rows()).toHaveLength(1);
     const deliverNotice = vi.fn();
-    reconcileResumedSessionEffects({
+    void reconcileResumedSessionEffects({
       io: io.io,
       db: client.db,
       sessionId: 's1',
@@ -162,7 +162,7 @@ describe('active session disclosure before exact retention (ADR-0098)', () => {
   it('does not delete a different committed effect created during disclosure delivery', () => {
     effect();
     const io = captureIo();
-    reconcileResumedSessionEffects({
+    void reconcileResumedSessionEffects({
       io: io.io,
       db: client.db,
       sessionId: 's1',
@@ -178,7 +178,7 @@ describe('active session disclosure before exact retention (ADR-0098)', () => {
   it('routes a plain/JSON disclosure to stderr and preserves an unpolluted stdout stream', () => {
     effect();
     const io = captureIo();
-    reconcileResumedSessionEffects({
+    void reconcileResumedSessionEffects({
       io: io.io,
       db: client.db,
       sessionId: 's1',
@@ -199,4 +199,41 @@ describe('active session disclosure before exact retention (ADR-0098)', () => {
     expect(rows()).toHaveLength(2);
     expect(io.err()).toBe('');
   });
+
+  it.each(['flushed', 'exited', 'failed'] as const)(
+    'awaits rendered notice acknowledgement before retention (%s)',
+    async (result) => {
+      effect();
+      const io = captureIo();
+      let active = true;
+      let resolve: () => void = () => undefined;
+      let reject: (error: Error) => void = () => undefined;
+      const flushed = new Promise<void>((yes, no) => {
+        resolve = yes;
+        reject = no;
+      });
+      void flushed.catch(() => undefined); // a rejected fixture stays handled even under a skipped-flush mutation.
+      const notices: string[] = [];
+      const done = reconcileResumedSessionEffects({
+        io: io.io,
+        db: client.db,
+        sessionId: 's1',
+        sanitize: sanitizeInline,
+        isActive: () => active,
+        deliverNotice: (text) => notices.push(text),
+        flushNotice: () => flushed,
+      });
+      expect(notices[0]).toContain('landed in a turn that did not complete');
+      await new Promise<void>((yes) => setImmediate(yes));
+      expect(rows()).toHaveLength(1);
+      effect(2); // a later commit while publication is pending is never part of the captured deletion.
+      if (result === 'exited') active = false;
+      if (result === 'failed') reject(new Error('SECRET_OUTPUT_FAILURE'));
+      else resolve();
+      await done;
+      expect(rows()).toHaveLength(result === 'flushed' ? 1 : 2);
+      expect(notices.join('')).not.toContain('SECRET_OUTPUT_FAILURE');
+      if (result === 'failed') expect(notices.at(-1)).toContain('audit evidence was retained');
+    },
+  );
 });

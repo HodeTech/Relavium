@@ -78,7 +78,7 @@ function globalOptions(cwd: string): GlobalOptions {
 function linesDriver(lines: readonly string[]): ChatDriver {
   return async (ctx) => {
     ctx.startSession();
-    ctx.onActivated?.(() => !ctx.shouldStop()); // open the session (a real driver does this after wiring its subscription)
+    void ctx.onActivated?.(() => !ctx.shouldStop()); // open the session (a real driver does this after wiring its subscription)
     for (const line of lines) {
       await ctx.processLine(line);
       if (ctx.shouldStop()) break;
@@ -265,7 +265,7 @@ describe('chatCommand', () => {
     let onContinueSignal: () => void = () => undefined;
     const drive: ChatDriver = async (ctx) => {
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop());
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       onContinueSignal(); // stray SIGCONT: no terminal teardown and no redraw before a stop
       onSuspendSignal();
       await ctx.processLine('/exit');
@@ -591,7 +591,7 @@ describe('chatCommand', () => {
     const fireDuringTurn: ChatDriver = async (ctx) => {
       liveStore = ctx.store;
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop());
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       captured?.({ spentMicrocents: 900, limitMicrocents: 1000, thresholdPct: 90 }); // WHILE the session is live
       await ctx.processLine('/exit');
       return { kind: 'exit' };
@@ -634,7 +634,7 @@ describe('chatCommand', () => {
     let statusAfterExport: string | undefined;
     const probingDrive: ChatDriver = async (ctx) => {
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop());
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       await ctx.processLine('hello'); // turn 1 ⇒ persisted, row status 'active'
       await ctx.processLine('/export'); // export the session-so-far; must NOT mark the row
       statusAfterExport = store.loadFull(sessionId)?.session.status;
@@ -658,7 +658,7 @@ describe('chatCommand', () => {
     const { d, err } = deps([], [textTurn('hi')]);
     const twiceDrive: ChatDriver = async (ctx) => {
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop());
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       await ctx.processLine('hello');
       await ctx.processLine('/export'); // creates id-0.relavium.yaml
       await ctx.processLine('/export'); // must overwrite it (force:true), not error
@@ -689,7 +689,7 @@ describe('chatCommand', () => {
     const clearThenExit: ChatDriver = async (ctx) => {
       seen.push(ctx.handle.sessionId); // record WHICH session this invocation drove
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop());
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       if (call++ === 0) {
         await ctx.processLine('hello'); // a real turn on the OLD session ⇒ persisted
         return { kind: 'clear' };
@@ -734,7 +734,7 @@ describe('chatCommand', () => {
     // fully-inert INERT_HOIST used elsewhere cannot (a total regression here would otherwise pass silently).
     const exitDrive: ChatDriver = async (ctx) => {
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop());
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       await ctx.processLine('/exit');
       return { kind: ctx.stopReason() };
     };
@@ -788,7 +788,7 @@ describe('chatCommand', () => {
   it('MOUSE: on by default, and `--no-mouse` reaches the real controller (2.6.F Step 5e, ADR-0068 §e)', async () => {
     const exitDrive: ChatDriver = async (ctx) => {
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop());
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       await ctx.processLine('/exit');
       return { kind: ctx.stopReason() };
     };
@@ -832,7 +832,7 @@ describe('chatCommand', () => {
   it('MOUSE: `[preferences].mouse = false` reaches the real controller (the durable opt-out)', async () => {
     const exitDrive: ChatDriver = async (ctx) => {
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop());
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       await ctx.processLine('/exit');
       return { kind: ctx.stopReason() };
     };
@@ -867,7 +867,7 @@ describe('chatCommand', () => {
     const clearThenExit: ChatDriver = async (ctx) => {
       alts.push(ctx.altScreen); // capture on both the original + the rebuilt session
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop());
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       if (call++ === 0) {
         await ctx.processLine('hello');
         return { kind: 'clear' };
@@ -899,7 +899,7 @@ describe('chatCommand', () => {
     const reseatThenExit: ChatDriver = async (ctx) => {
       alts.push(ctx.altScreen);
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop());
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       if (call++ === 0) {
         await ctx.processLine('first');
         ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
@@ -950,7 +950,7 @@ describe('chatCommand', () => {
         ctx.store.getSnapshot().state.transcript.map((e) => ({ role: e.role, text: e.text })),
       );
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop());
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       if (call++ === 0) {
         await ctx.processLine('first');
         ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
@@ -988,7 +988,7 @@ describe('chatCommand', () => {
     const reseatThenExit: ChatDriver = async (ctx) => {
       seen.push(ctx.store.getSnapshot().state.transcript.length);
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop());
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       if (call++ === 0) {
         await ctx.processLine('first');
         ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
@@ -1021,7 +1021,7 @@ describe('chatCommand', () => {
     const clearThenExit: ChatDriver = async (ctx) => {
       seen.push(ctx.store.getSnapshot().state.transcript.length);
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop());
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       if (call++ === 0) {
         await ctx.processLine('first');
         await ctx.processLine('/clear');
@@ -1053,7 +1053,7 @@ describe('chatCommand', () => {
     };
     const driveClear: ChatDriver = (ctx) => {
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop());
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       return Promise.resolve({ kind: 'clear' as const }); // request the swap; the rebuild then fails (no await needed)
     };
     const code = await chatCommand({ agent: undefined }, { ...d, buildSession, drive: driveClear });
@@ -1084,7 +1084,7 @@ describe('chatCommand', () => {
     const drive: ChatDriver = async (ctx) => {
       if (driveCount++ === 0) {
         ctx.startSession();
-        ctx.onActivated?.(() => !ctx.shouldStop());
+        void ctx.onActivated?.(() => !ctx.shouldStop());
         await ctx.processLine('first');
         const turn = store.reserveEffectTurnKey(ctx.handle.sessionId);
         const journal = createEffectJournalStore(client.db, {
@@ -1114,7 +1114,7 @@ describe('chatCommand', () => {
           .state.transcript.some((entry) => entry.text.includes('external effect')),
       ).toBe(false);
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop());
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toEqual([]);
       expect(
         ctx.store
@@ -1152,7 +1152,7 @@ describe('chatCommand', () => {
       seen.push(ctx.handle.sessionId);
       intros.push(ctx.intro);
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop());
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       if (call++ === 0) {
         await ctx.processLine('first'); // a turn on the sonnet-bound session ⇒ persisted (attributed to sonnet)
         ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' }); // switch to opus
@@ -1201,7 +1201,7 @@ describe('chatCommand', () => {
       Promise.reject(new Error('reseat build failed'));
     const reseat: ChatDriver = async (ctx) => {
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop());
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       await ctx.processLine('hello'); // a real turn on the OLD session ⇒ persisted + resumable
       ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
       return { kind: ctx.stopReason() };
@@ -1223,7 +1223,7 @@ describe('chatCommand', () => {
     let onReseatWired = true;
     const driver: ChatDriver = async (ctx) => {
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop());
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       await ctx.processLine('hello');
       onReseatWired = ctx.onReseat !== undefined;
       ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' }); // a no-op when unwired
@@ -1317,7 +1317,7 @@ describe('chatCommand', () => {
     const store = createSessionStore(client.db);
     const failingDrive: ChatDriver = (ctx) => {
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop());
+      void ctx.onActivated?.(() => !ctx.shouldStop());
       return Promise.reject(new Error('boom'));
     };
     await expect(
@@ -1457,7 +1457,7 @@ describe('chatCommand', () => {
       const capture: ChatDriver = async (ctx) => {
         live = ctx.store;
         ctx.startSession();
-        ctx.onActivated?.(() => !ctx.shouldStop());
+        void ctx.onActivated?.(() => !ctx.shouldStop());
         await ctx.processLine('/exit');
         return { kind: 'exit' };
       };
@@ -1599,7 +1599,7 @@ describe('chatResumeCommand (2.N)', () => {
         expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toHaveLength(1);
         expect(err()).not.toContain('external effect');
         ctx.startSession();
-        ctx.onActivated?.(() => !ctx.shouldStop());
+        void ctx.onActivated?.(() => !ctx.shouldStop());
         activated = true;
         expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toEqual([]);
         if (interactive) {
@@ -1706,7 +1706,7 @@ describe('chatResumeCommand (2.N)', () => {
     const clearThenExit: ChatDriver = async (ctx) => {
       seen.push(ctx.handle.sessionId);
       ctx.startSession();
-      ctx.onActivated?.(() => !ctx.shouldStop()); // no-op for the resumed session; starts the fresh one
+      void ctx.onActivated?.(() => !ctx.shouldStop()); // no-op for the resumed session; starts the fresh one
       if (call++ === 0) return { kind: 'clear' }; // the resumed session's /clear swap
       await ctx.processLine('/exit');
       return { kind: 'exit' };

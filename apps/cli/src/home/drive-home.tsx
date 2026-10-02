@@ -123,7 +123,7 @@ export interface HomeDeps {
   readonly render?: (
     props: RootAppProps,
     opts: { readonly alternateScreen: boolean },
-  ) => { unmount: () => void };
+  ) => Pick<ReturnType<typeof render>, 'unmount' | 'waitUntilRenderFlush' | 'waitUntilExit'>;
   readonly getSize?: () => { cols: number; rows: number };
   readonly subscribeResize?: (onResize: () => void) => () => void;
   /** Subscribe to SIGINT(2)/SIGTERM(15)/SIGHUP(1)/SIGQUIT(3); returns an unsubscribe. Default registers on `process`. */
@@ -211,7 +211,10 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   // The cleanup scope opens as soon as the db handle is held, so an init fault AFTER this point (a failed
   // homeStore wire, a control write, a signal registration) still closes the shared db ONCE and restores the
   // terminal state (DISABLE bracketed paste + unmount) rather than leaking the handle / leaving the mode on.
-  let instance: { unmount: () => void } | undefined;
+  let instance:
+    | Pick<ReturnType<typeof render>, 'unmount' | 'waitUntilRenderFlush' | 'waitUntilExit'>
+    | undefined;
+  let rendererActive = true;
   let controller: HomeController | undefined;
   let unsubscribeSignals: (() => void) | undefined;
   let unsubscribeProcessExit: (() => void) | undefined;
@@ -599,7 +602,11 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
                     sessionId: built.sessionId,
                     sanitize: sanitizeInline,
                     deliverNotice: (text) => store.notice(text),
-                    isActive,
+                    isActive: () => rendererActive && isActive(),
+                    flushNotice: async () => {
+                      if (instance === undefined) throw new Error('Home renderer is not ready.');
+                      await instance.waitUntilRenderFlush();
+                    },
                   }),
               }),
           onAbort,
@@ -934,8 +941,14 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         homeStore,
         doctorProbes,
         models,
-        onExit: () => resolve(EXIT_CODES.success), // a clean Home exit is exit 0
-        onError: (err) => reject(err instanceof Error ? err : new Error(String(err))),
+        onExit: () => {
+          rendererActive = false;
+          resolve(EXIT_CODES.success);
+        }, // a clean Home exit is exit 0
+        onError: (err) => {
+          rendererActive = false;
+          reject(err instanceof Error ? err : new Error(String(err)));
+        },
       });
       const alternateScreen = renderMode === 'alt';
       altScreenActive = alternateScreen; // the hatch ports read this lazily (see `terminal()` above)
@@ -992,12 +1005,23 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
               alternateScreen,
             })
           : deps.render(props, { alternateScreen });
+      void instance.waitUntilExit().then(
+        () => {
+          rendererActive = false;
+          resolve(EXIT_CODES.success);
+        },
+        (err: unknown) => {
+          rendererActive = false;
+          reject(err instanceof Error ? err : new Error('Home renderer failed.'));
+        },
+      );
       // Mouse reporting is armed by `RootApp` as the in-Home CHAT takes the screen (`setMouseCapture`), not here:
       // capturing it for the whole Home stripped the landing of the emulator's native selection and gave nothing back
       // (2.6.F Step 6g). Disabled on EVERY teardown path below — the `DISABLE_MOUSE` writes are unconditional there
       // (a no-op when it was never enabled, like DISABLE_BRACKETED_PASTE).
     });
   } finally {
+    rendererActive = false;
     // The clean-exit / error / INIT-FAULT path (NOT the signal path, which exits the process directly): undo the
     // terminal state, reclaim a live session, and close the shared db ONCE. The terminal restore swallows its own
     // throw, so it neither turns a clean exit into a failure nor skips the teardown + close below — a faulty

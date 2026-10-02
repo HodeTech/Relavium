@@ -205,7 +205,10 @@ export interface ChatDriveContext {
   readonly startSession: () => void;
   /** Called once after the notice surface is mounted/ready, before accepting input. The driver owns activity
    *  through teardown and revalidates it after a synchronous notice-triggered exit or swap. */
-  readonly onActivated?: (isActive: () => boolean) => void;
+  readonly onActivated?: (
+    isActive: () => boolean,
+    flushNotice?: () => Promise<void>,
+  ) => void | Promise<void>;
   /** Handle one line of user input (a slash command or a chat message). Awaits the turn for a message. */
   readonly processLine: (line: string, display?: string) => Promise<void>;
   /** `true` once `/exit` or `/cancel` (or `/clear`, or a `/models` reseat) has run — the driver stops reading input. */
@@ -855,13 +858,14 @@ export async function chatResumeCommand(
       persister,
       doctorProbes,
       startSession: () => undefined,
-      onActivated: (isActive) =>
+      onActivated: (isActive, flushNotice) =>
         reconcileResumedSessionEffects({
           io: deps.io,
           db: opened.db,
           sessionId: built.sessionId,
           sanitize: sanitizeInline,
           isActive,
+          ...(flushNotice === undefined ? {} : { flushNotice }),
           deliverNotice: (text) => {
             if (chatIsInteractive(deps.io, deps.global)) store.notice(text);
             else deps.io.writeErr(`${text}\n`);
@@ -892,7 +896,10 @@ interface ReplWiring {
   readonly doctorProbes: DoctorProbes;
   /** Open the session: `built.session.start()` for a fresh session, a no-op for a resumed one (already idle). */
   readonly startSession: () => void;
-  readonly onActivated?: (isActive: () => boolean) => void;
+  readonly onActivated?: (
+    isActive: () => boolean,
+    flushNotice?: () => Promise<void>,
+  ) => void | Promise<void>;
   /** The plain-driver banner override (the 2.N resume context line); fresh sessions omit it. */
   readonly intro?: string;
   /** `[chat].max_messages` — the default bound a bare `/trim` uses (ADR-0062); absent ⇒ `/trim` needs an inline `n`. */
@@ -1855,13 +1862,14 @@ async function buildReseatWiring(
     // A resumed session already landed at idle inside AgentSession.resume; start() would throw + re-emitting
     // session:started would double a lifecycle event. Wait for the reseated driver's live notice sink.
     startSession: () => undefined,
-    onActivated: (isActive) =>
+    onActivated: (isActive, flushNotice) =>
       reconcileResumedSessionEffects({
         io: deps.io,
         db: deps.opened.db,
         sessionId: resumed.sessionId,
         sanitize: sanitizeInline,
         isActive,
+        ...(flushNotice === undefined ? {} : { flushNotice }),
         deliverNotice: (text) => {
           if (chatIsInteractive(deps.io, deps.global)) seeded.store.notice(text);
           else deps.io.writeErr(`${text}\n`);
@@ -2445,6 +2453,7 @@ export async function runReplLoop(
 export async function drivePlain(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   const unsubscribe = ctx.handle.subscribe(makePlainPrinter(ctx.io));
   const rl = createInterface({ input: ctx.io.stdin, terminal: false });
+  const lines = rl[Symbol.asyncIterator](); // buffer piped lines before any awaited activation can yield.
   // Ctrl-C (cooked mode here, unlike the raw-mode ink path) closes the input so the loop ends and the
   // command's finally runs cancelOnce() + close() — the session is marked 'ended', never left orphaned 'active'.
   let active = true;
@@ -2457,9 +2466,9 @@ export async function drivePlain(ctx: ChatDriveContext): Promise<ChatDriveOutcom
   try {
     ctx.io.writeOut(`${ctx.intro ?? 'relavium chat — type a message, or /exit to quit.'}\n`);
     ctx.startSession(); // subscription wired above ⇒ session:started is observed (fresh), or a no-op (resume)
-    if (isActive()) ctx.onActivated?.(isActive);
+    if (isActive()) await ctx.onActivated?.(isActive);
     if (isActive()) {
-      for await (const line of rl) {
+      for await (const line of lines) {
         if (!isActive()) break;
         await ctx.processLine(line);
         if (ctx.shouldStop()) break;
@@ -2488,6 +2497,7 @@ export async function driveJson(ctx: ChatDriveContext): Promise<ChatDriveOutcome
     ctx.io.writeOut(`${stringifyJsonLine(event)}\n`),
   );
   const rl = createInterface({ input: ctx.io.stdin, terminal: false });
+  const lines = rl[Symbol.asyncIterator]();
   let active = true;
   const isActive = (): boolean => active && !ctx.shouldStop();
   const onSigint = (): void => {
@@ -2497,9 +2507,9 @@ export async function driveJson(ctx: ChatDriveContext): Promise<ChatDriveOutcome
   process.once('SIGINT', onSigint);
   try {
     ctx.startSession(); // subscription wired above ⇒ the synchronous session:started is the first NDJSON line
-    if (isActive()) ctx.onActivated?.(isActive);
+    if (isActive()) await ctx.onActivated?.(isActive);
     if (isActive()) {
-      for await (const line of rl) {
+      for await (const line of lines) {
         if (!isActive()) break;
         await ctx.processLine(line);
         if (ctx.shouldStop()) break;

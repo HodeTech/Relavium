@@ -11,11 +11,12 @@ import {
 } from '@relavium/db';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { isValidElement } from 'react';
+import type { Instance } from 'ink';
 
 import { scriptedResolver, textTurn } from '../chat/test-support.js';
 import type { GlobalOptions } from '../process/options.js';
 import { driveInk } from '../render/tui/chat-ink.js';
-import { captureIo } from '../test-support.js';
+import { captureIo, OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import {
   chatCommand,
   chatResumeCommand,
@@ -25,7 +26,7 @@ import {
   type ChatResumeCommandDeps,
 } from './chat.js';
 
-const renderer = vi.hoisted(() => ({ render: vi.fn() }));
+const renderer = vi.hoisted(() => ({ render: vi.fn<(typeof import('ink'))['render']>() }));
 vi.mock('ink', async (importOriginal) => ({
   ...(await importOriginal<typeof import('ink')>()),
   render: renderer.render,
@@ -54,16 +55,43 @@ let root: string;
 let deps: ChatResumeCommandDeps;
 const rows = () => client.sqlite.prepare('SELECT * FROM run_effects').all();
 
-function isCallback(value: unknown): value is () => void {
+function isCallback(
+  value: unknown,
+): value is (flushNotice?: () => Promise<void>) => void | Promise<void> {
   return typeof value === 'function';
 }
 
-function mountedCallbacks(node: unknown): { activate: () => void; exit: () => void } {
+function mountedCallbacks(node: unknown): { activate: () => Promise<void>; exit: () => void } {
   if (!isValidElement<Record<string, unknown>>(node)) throw new Error('expected a React element');
   const { onActivated, onExit } = node.props;
   if (!isCallback(onActivated) || !isCallback(onExit))
     throw new Error('expected activation and exit callbacks');
-  return { activate: () => onActivated(), exit: () => onExit() };
+  return {
+    activate: async () => {
+      await onActivated(() => Promise.resolve());
+    },
+    exit: () => {
+      void onExit();
+    },
+  };
+}
+
+function mockInstance(unmount = vi.fn()): Instance {
+  let exit: () => void = () => undefined;
+  const ended = new Promise<void>((resolve) => {
+    exit = resolve;
+  });
+  return {
+    unmount: () => {
+      unmount();
+      exit();
+    },
+    waitUntilExit: () => ended,
+    waitUntilRenderFlush: () => Promise.resolve(),
+    cleanup: () => undefined,
+    clear: () => undefined,
+    rerender: () => undefined,
+  };
 }
 
 async function waitForRender(): Promise<void> {
@@ -152,7 +180,7 @@ describe('actual Ink driver activation owns session effect disclosure (ADR-0098)
     );
     expect(renderer.render).toHaveBeenCalledTimes(1);
     // Even a stale callback retained by a failed renderer cannot claim an active transcript later.
-    callbacks?.activate();
+    await callbacks?.activate();
     expect(rows()).toHaveLength(1);
   });
 
@@ -169,7 +197,7 @@ describe('actual Ink driver activation owns session effect disclosure (ADR-0098)
     };
     renderer.render.mockImplementation((node: unknown) => {
       callbacks = mountedCallbacks(node);
-      return { unmount };
+      return mockInstance(unmount);
     });
     const done = chatResumeCommand({ sessionId: 'activation-0' }, deps);
     await waitForRender();
@@ -180,14 +208,14 @@ describe('actual Ink driver activation owns session effect disclosure (ADR-0098)
       expect(rows()).toHaveLength(1);
       expect(text).toContain('landed in a turn that did not complete');
     });
-    callbacks.activate();
+    await callbacks.activate();
     expect(rows()).toEqual([]);
-    callbacks.activate();
+    await callbacks.activate();
     expect(notice).toHaveBeenCalledTimes(1);
     callbacks.exit();
     expect(await done).toBe(4);
     expect(unmount).toHaveBeenCalledTimes(1);
-    callbacks.activate();
+    await callbacks.activate();
     expect(notice).toHaveBeenCalledTimes(1);
   });
 
@@ -205,7 +233,7 @@ describe('actual Ink driver activation owns session effect disclosure (ADR-0098)
       };
       renderer.render.mockImplementation((node: unknown) => {
         callbacks = mountedCallbacks(node);
-        return { unmount: vi.fn() };
+        return mockInstance();
       });
       const done = chatResumeCommand({ sessionId: 'activation-0' }, deps);
       await waitForRender();
@@ -214,7 +242,7 @@ describe('actual Ink driver activation owns session effect disclosure (ADR-0098)
       const notice = vi.spyOn(ctx.store, 'notice');
       if (exitAt === 'before mount') exit();
       else notice.mockImplementation(() => exit());
-      callbacks.activate();
+      await callbacks.activate();
       expect(await done).toBe(4);
       expect(rows()).toHaveLength(1);
       expect(notice).toHaveBeenCalledTimes(exitAt === 'before mount' ? 0 : 1);
@@ -228,7 +256,7 @@ describe('actual Ink driver activation owns session effect disclosure (ADR-0098)
       drive: (ctx) => {
         if (drives++ > 0) return driveInk(ctx);
         ctx.startSession();
-        ctx.onActivated?.(() => !ctx.shouldStop());
+        void ctx.onActivated?.(() => !ctx.shouldStop());
         expect(rows()).toEqual([]);
         const turn = createSessionStore(client.db).reserveEffectTurnKey(ctx.handle.sessionId);
         const identity = {
@@ -291,6 +319,59 @@ describe('actual Ink driver activation owns session effect disclosure (ADR-0098)
       expect(rows()).toEqual([]);
       expect(captured.out()).not.toContain('external effect');
       expect(renderer.render).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['ready', 'non-tty', 'raw-fails'] as const)(
+    'actual Ink waits for usable input and displayed disclosure (%s)',
+    async (mode) => {
+      const ink = await vi.importActual<typeof import('ink')>('ink');
+      const input = new OwnedTtyInput();
+      input.isTTY = mode !== 'non-tty';
+      input.failRaw = mode === 'raw-fails';
+      const stdout = new OwnedTtyOutput();
+      const stderr = new OwnedTtyOutput();
+      let actual: Instance | undefined;
+      let callbacks: ReturnType<typeof mountedCallbacks> | undefined;
+      let firstNoticeRows: number | undefined;
+      stdout.onFrame = (frame) => {
+        if (frame.includes('external effect') && firstNoticeRows === undefined)
+          firstNoticeRows = rows().length;
+      };
+      renderer.render.mockImplementation((node, options) => {
+        callbacks = mountedCallbacks(node);
+        actual = ink.render(node, { ...options, stdin: input, stdout, stderr, debug: true });
+        return actual;
+      });
+      let rendererError: unknown;
+      const outcome = chatResumeCommand({ sessionId: 'activation-0' }, deps).then(
+        (code) => ({ code }),
+        (error: unknown) => {
+          rendererError = error;
+          return { error };
+        },
+      );
+      try {
+        if (mode === 'ready') {
+          await vi.waitFor(() => expect(firstNoticeRows).toBeDefined());
+          expect(firstNoticeRows).toBe(1);
+          await vi.waitFor(() => expect(rows()).toEqual([]));
+        } else {
+          await vi.waitFor(() =>
+            expect(stdout.frames.some((frame) => frame.includes('ERROR'))).toBe(true),
+          );
+          expect(rows()).toHaveLength(1);
+          expect(firstNoticeRows).toBeUndefined();
+          await vi.waitFor(() => expect(rendererError).toBeInstanceOf(Error));
+        }
+      } finally {
+        callbacks?.exit();
+        await outcome;
+        actual?.cleanup();
+        input.destroy();
+        stdout.destroy();
+        stderr.destroy();
+      }
     },
   );
 });

@@ -45,7 +45,10 @@ afterEach(cleanup);
  *  lifecycle + the raw-mode input/paste handlers, so the driver callbacks are inert stubs. */
 function mountChat(
   store: ChatStoreController,
-  opts: { onSuspend?: () => void } = {},
+  opts: {
+    onSuspend?: () => void;
+    onActivated?: (flushNotice: () => Promise<void>) => void | Promise<void>;
+  } = {},
 ): ReturnType<typeof render> {
   // Self-policing fixture (2.6.C): this helper mounts INLINE, so its store must carry the INLINE bound — the pairing
   // production builds. A divergent fixture would otherwise pass on a DEAD TREE: the tripwire throws inside the
@@ -60,6 +63,7 @@ function mountChat(
       onError={() => {}}
       onModeChange={() => {}}
       {...(opts.onSuspend === undefined ? {} : { onSuspend: opts.onSuspend })}
+      {...(opts.onActivated === undefined ? {} : { onActivated: opts.onActivated })}
     />,
   );
 }
@@ -102,9 +106,12 @@ describe('ChatApp mounted disclosure surface (ADR-0098)', () => {
 });
 
 describe('ChatApp — raw Ctrl-Z job-control routing (G0)', () => {
-  it('routes the raw control byte to onSuspend exactly once and never submits prompt text', async () => {
+  it.each([false, true])('routes raw Ctrl-Z while activation is pending (%s)', async (pending) => {
     const onSuspend = vi.fn();
-    const h = mountChat(createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND), { onSuspend });
+    const h = mountChat(createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND), {
+      onSuspend,
+      ...(pending ? { onActivated: () => new Promise<void>(() => {}) } : {}),
+    });
     await waitFor(() => (h.lastFrame() ?? '').length > 0);
 
     h.stdin.write('\x1a');
