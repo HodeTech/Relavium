@@ -125,3 +125,48 @@ export function reserveSessionEffectTurnKey(db: Db, sessionId: string): number {
     ),
   );
 }
+
+/**
+ * A one-shot is never resumable. Its fresh identity and tombstone commit together,
+ * without a snapshot, context, prompt or transcript. Retain the mark after teardown.
+ */
+export function reserveOneShotSessionEffectTurnKey(db: Db, sessionId: string, now: number): number {
+  if (db.$client.inTransaction) throw new SessionEffectTurnError('transaction_active');
+  if (sessionId.length === 0 || !Number.isSafeInteger(now) || now < 0)
+    throw new SessionEffectTurnError('history_invalid');
+  return withBusyRetry(() =>
+    db.transaction(
+      (tx) => {
+        const prefix = `session:${encodeURIComponent(sessionId)}:`;
+        if (
+          tx
+            .select({ id: agentSessions.id })
+            .from(agentSessions)
+            .where(eq(agentSessions.id, sessionId))
+            .get() !== undefined ||
+          tx
+            .select({ scope: runEffects.scope })
+            .from(runEffects)
+            .where(
+              and(gte(runEffects.scope, prefix), lt(runEffects.scope, `${prefix.slice(0, -1)};`)),
+            )
+            .get() !== undefined
+        )
+          throw new SessionEffectTurnError('history_invalid');
+        tx.insert(agentSessions)
+          .values({
+            id: sessionId,
+            agentSlug: 'one-shot',
+            status: 'ended',
+            effectTurnHighWater: 1,
+            deletedAt: now,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .run();
+        return 1;
+      },
+      { behavior: 'immediate' },
+    ),
+  );
+}

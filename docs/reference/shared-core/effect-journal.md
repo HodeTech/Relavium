@@ -58,7 +58,7 @@ carried for audit only. It is deliberately **not** part of the gate lookup — s
 
 ### `EffectSlot`
 
-Which effect *within* one correlation. A zero-based ordinal over the tool calls in a single model response, in
+Which effect *within* one correlation. A zero-based ordinal over all tool calls in one model turn, in
 the order the provider returned them. It disambiguates two effects in one turn, which correlation alone cannot.
 
 It is stable only **within one model response**. A replay that regenerates the response may produce a different
@@ -73,10 +73,17 @@ loses and learns another attempt exists. It is *not* claimed to be reproducible 
 
 ### `EffectAttemptId`
 
-The audit identity of one occurrence: the node-retry attempt, the provider failover attempt, the provider's
-`toolCallId`, and the owning `(ownerId, generation)` fence from
+The audit identity of one occurrence: the node-retry attempt, the provider attempt, the tool-call id, and the owning `(ownerId, generation)` fence from
 [ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md). Never used for dedup —
 it is deliberately unstable, because its question is "which occurrence was this?".
+
+On the session path, dispatch forwards the actual provider attempt and engine-assigned call id
+per call; `prepare` accepts that occurrence after its optional target idempotency key. It overrides
+the wiring-time audit fields, preserving run node/fence fields. The same engine id appears in
+[the structural transcript](database-schema.md#session-content-parts), enabling a join across
+**all historical completed turns**, including compacted/trimmed ones. Provider/model-chosen ids
+are never part of a session's durable attempt. The core reference journal records these per-call
+fields too. Run callers without this override retain their existing wiring-time audit behaviour.
 
 ### The target idempotency key
 
@@ -313,13 +320,10 @@ Trigger: a user who must resume a partially completed tool loop rather than fail
   flow.
 - **A credential rotation changes the redacted projection**, so an effect whose args reference a rotated
   credential gets a fresh identity and degrades to tier-3 behaviour for that occurrence.
-- **A `!`-shell command after a resume can be refused as a false duplicate.** The shell's slot comes from a
-  per-session counter that restarts on `AgentSession.resume` — which a `/models` reseat also goes through —
-  because there is no durable source to restore it from: `!`-commands never enter the transcript, and the
-  platform-free engine cannot read `run_effects`. Two commands in one turn window followed by a resume can
-  therefore collide. It fails CLOSED (a refusal, never a repeated effect), and the fix is to persist the
-  counter with the session row. Trigger: the first surface where repeated in-window shell commands matter
-  enough to earn the schema change.
+- **Concurrent session resume remains unsupported.** The durable effect-turn allocator gives each host a
+  distinct key, including after a reseat or transcript-write failure, but does not grant session ownership.
+  `!` commands restart their negative slot ordinal under a newly allocated key rather than colliding with
+  a prior process's commands. See [the durable allocation contract](database-schema.md#session-content-parts).
 - **`EffectSlot` is not stable across a model replay**, which is why the gate is at node granularity. A design
   that later needs slot-granular resume needs a durable record of the model response, which is CR-95's long-term
   continuation checkpoint, not this.

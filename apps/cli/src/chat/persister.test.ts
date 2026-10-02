@@ -9,7 +9,7 @@ import {
   type DbClient,
   type SessionStore,
 } from '@relavium/db';
-import type { AgentSessionRecord, DurableContentPart, SessionMessage } from '@relavium/shared';
+import type { AgentSessionRecord, SessionContentPart, SessionMessage } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
@@ -35,7 +35,7 @@ const EMPTY_CHAT: ResolvedChatConfig = {
   reasoningEffort: undefined,
 };
 
-const textOf = (content: readonly DurableContentPart[]): string =>
+const textOf = (content: readonly SessionContentPart[]): string =>
   content.map((part) => (part.type === 'text' ? part.text : '')).join('');
 
 describe('createSessionPersister', () => {
@@ -85,6 +85,8 @@ describe('createSessionPersister', () => {
       governor: undefined,
       store,
       handle: built.handle,
+      attachEffectTurnAllocator: built.attachEffectTurnAllocator,
+      attachDurabilityProbe: built.attachDurabilityProbe,
       sessionId: built.sessionId,
       agent: built.agent,
       context: built.context,
@@ -114,6 +116,8 @@ describe('createSessionPersister', () => {
       governor: undefined,
       store: target,
       handle: built.handle,
+      attachEffectTurnAllocator: built.attachEffectTurnAllocator,
+      attachDurabilityProbe: built.attachDurabilityProbe,
       sessionId: built.sessionId,
       agent: built.agent,
       context: built.context,
@@ -144,6 +148,8 @@ describe('createSessionPersister', () => {
       governor, // NOT undefined — the whole point
       store,
       handle: built.handle,
+      attachEffectTurnAllocator: built.attachEffectTurnAllocator,
+      attachDurabilityProbe: built.attachDurabilityProbe,
       sessionId: built.sessionId,
       agent: built.agent,
       context: built.context,
@@ -205,9 +211,9 @@ describe('createSessionPersister', () => {
     persister.beginUserTurn('second');
     await built.session.sendMessage('second');
     const roles = store.loadMessages('sess-1').map((m) => m.role);
-    expect(roles).toEqual(['user', 'assistant']);
+    expect(roles).toEqual([]); // the failure latch prevents any subsequent egress
     // No gap: the surviving rows are contiguous from 0, because the failed turn advanced nothing.
-    expect(store.loadMessages('sess-1').map((m) => m.sequenceNumber)).toEqual([0, 1]);
+    expect(store.loadMessages('sess-1').map((m) => m.sequenceNumber)).toEqual([]);
   });
 
   it('LATCHES a durable-write failure and stops the session spending (#W15-4)', async () => {
@@ -220,6 +226,7 @@ describe('createSessionPersister', () => {
       attachDurabilityProbe: built.attachDurabilityProbe, // the wiring under test
       store,
       handle: built.handle,
+      attachEffectTurnAllocator: built.attachEffectTurnAllocator,
       sessionId: built.sessionId,
       agent: built.agent,
       context: built.context,
@@ -250,7 +257,7 @@ describe('createSessionPersister', () => {
     persister.beginUserTurn('second');
     await built.session.sendMessage('second');
 
-    expect(terminals.join('\n')).toMatch(/could not be saved/);
+    expect(terminals.join('\n')).toMatch(/could not be reserved/);
     expect(store.loadMessages('sess-1')).toHaveLength(0); // and nothing new was written
     persister.close();
   });
@@ -266,6 +273,7 @@ describe('createSessionPersister', () => {
       attachDurabilityProbe: built.attachDurabilityProbe,
       store,
       handle: built.handle,
+      attachEffectTurnAllocator: built.attachEffectTurnAllocator,
       sessionId: built.sessionId,
       agent: built.agent,
       context: built.context,
@@ -363,8 +371,10 @@ describe('createSessionPersister', () => {
       await built.session.sendMessage('second');
 
       const after = store2.loadSession('sess-1');
-      expect(after?.totalInputTokens).toBe(oneTurn?.totalInputTokens);
-      expect(after?.totalOutputTokens).toBe(oneTurn?.totalOutputTokens);
+      expect(after?.totalInputTokens).toBe(0);
+      expect(after?.totalOutputTokens).toBe(0);
+      expect(oneTurn?.totalInputTokens).toBeGreaterThan(0);
+      expect(store2.loadMessages('sess-1')).toEqual([]);
     } finally {
       other.sqlite.close();
     }
@@ -397,6 +407,8 @@ describe('createSessionPersister', () => {
       governor: undefined,
       store,
       handle: built.handle,
+      attachEffectTurnAllocator: built.attachEffectTurnAllocator,
+      attachDurabilityProbe: built.attachDurabilityProbe,
       sessionId: built.sessionId,
       agent: built.agent,
       context: built.context,
@@ -442,8 +454,10 @@ describe('createSessionPersister', () => {
       await built.session.sendMessage('second');
 
       const after = store2.loadSession('sess-1');
-      expect(after?.totalInputTokens).toBe(oneTurn?.totalInputTokens);
-      expect(after?.totalOutputTokens).toBe(oneTurn?.totalOutputTokens);
+      expect(after?.totalInputTokens).toBe(0);
+      expect(after?.totalOutputTokens).toBe(0);
+      expect(oneTurn?.totalInputTokens).toBeGreaterThan(0);
+      expect(store2.loadMessages('sess-1')).toEqual([]);
     } finally {
       other.sqlite.close();
     }
@@ -594,6 +608,8 @@ describe('createSessionPersister', () => {
       governor: undefined,
       store,
       handle: built.handle,
+      attachEffectTurnAllocator: built.attachEffectTurnAllocator,
+      attachDurabilityProbe: built.attachDurabilityProbe,
       sessionId: built.sessionId,
       agent: built.agent,
       context: built.context,
@@ -642,7 +658,7 @@ describe('createSessionPersister', () => {
     expect(store.loadFull('sess-1')?.session.title).toBe('Plan the launch for next week');
   });
 
-  it('persists only the user row when a successful turn produces no assistant text', async () => {
+  it('persists an explicit empty terminal when a successful turn produces no assistant text', async () => {
     // A turn that emits only a stop chunk — zero text_delta, so result.text is empty; the assistantText.length
     // guard must skip the empty assistant row (mirroring the engine), leaving just the user row.
     const { built, persister } = await setup(scriptedResolver([[stop('stop')]]));
@@ -652,7 +668,10 @@ describe('createSessionPersister', () => {
     await built.session.sendMessage('hello');
 
     const full = store.loadFull('sess-1');
-    expect(full?.messages).toHaveLength(1); // only the user row — no spurious empty assistant row
+    expect(full?.messages).toHaveLength(2);
+    expect(full?.messages[1]?.content).toEqual([{ type: 'text', text: '' }]);
+    if (full !== undefined)
+      expect(reconstructSessionState(full.session, full.messages).turnCount).toBe(1);
     expect(full?.messages[0]?.role).toBe('user');
     // The turn still engaged the provider, so its usage folds into the totals even with no text.
     expect(full?.session.totalInputTokens).toBe(10);
@@ -676,8 +695,14 @@ describe('createSessionPersister', () => {
     await built.session.sendMessage('go');
 
     const full = store.loadFull('sess-1');
-    expect(full?.messages).toHaveLength(2);
-    expect(textOf(full?.messages[1]?.content ?? [])).toBe('the answer'); // NOT "let me check… the answer"
+    expect(full?.messages).toHaveLength(4);
+    expect(full?.messages[1]?.content[0]).toMatchObject({
+      type: 'tool_call',
+      name: 'read_file',
+      id: 'session-tool:1:0',
+    });
+    expect(full?.messages[2]?.content[0]).toMatchObject({ type: 'tool_result', outcome: 'error' });
+    expect(textOf(full?.messages[3]?.content ?? [])).toBe('the answer'); // NOT "let me check… the answer"
   });
 
   it('persists nothing for a failed turn (the engine rolls its user message back)', async () => {
@@ -924,6 +949,8 @@ describe('createSessionPersister', () => {
       governor: undefined,
       store,
       handle: built.handle,
+      attachEffectTurnAllocator: built.attachEffectTurnAllocator,
+      attachDurabilityProbe: built.attachDurabilityProbe,
       sessionId: built.sessionId,
       agent: built.agent,
       context: built.context,

@@ -32,11 +32,12 @@ import type {
   SessionContext,
   SessionEvent,
   SessionStopReason,
+  SessionToolHistoryEntry,
   ToolPolicy,
   EffectCorrelation,
   EffectDispatchPort,
 } from '@relavium/shared';
-import { unwiredEffectJournal } from '@relavium/shared';
+import { createSessionToolCallId, unwiredEffectJournal } from '@relavium/shared';
 
 import { WorkflowGraphError, type GraphIssue } from '../errors.js';
 import { collectAgentCeilingIssues } from '../limits.js';
@@ -282,9 +283,9 @@ export interface SessionDeps {
   readonly effects?: (correlation: EffectCorrelation) => EffectDispatchPort;
   /**
    * ADR-0098 durable effect identity allocator. The host advances the session-row high-water mark before
-   * issuing a key; max_turns retains its reconstructed count. Step 3 wires allocation into turn dispatch.
+   * issuing a key; max_turns retains its reconstructed count. Required even on a text-only turn.
    */
-  readonly reserveEffectTurnKey?: (sessionId: string) => number;
+  readonly reserveEffectTurnKey: (sessionId: string) => number;
   /** The workflow-wide tool policy threaded into dispatch (default `{}` ⇒ deny-all for gated tools). */
   readonly toolPolicy?: ToolPolicy;
   /** Within-turn tool-loop bounds passed to the turn core (default {@link DEFAULT_AGENT_TURN_LIMITS}). */
@@ -513,6 +514,8 @@ export class AgentSession {
   #abortingTurn = false;
   /** Monotonic counter for the synthetic `run_command` tool-call id of a `!`-shell dispatch ({@link runUserCommand}). */
   #userCommandSeq = 0;
+  #effectTurnKey: number | undefined;
+  #lastEffectTurnKey = 0;
   /** Memoized provider fallback plan (the agent binding is fixed for the session). */
   #plan: PlanResult | undefined;
   /**
@@ -580,19 +583,7 @@ export class AgentSession {
     const session = new AgentSession(params, { admit: false });
     session.#messages.push(...state.messages);
     session.#turnCount = state.turnCount;
-    // **`#userCommandSeq` is deliberately NOT restored, and the reason is a limitation rather than a choice.**
-    //
-    // An earlier attempt seeded it from `state.turnCount`, which is wrong: that counts completed ASSISTANT
-    // turns and has no relationship to how many `!`-commands were issued. A review reproduced the resulting
-    // false refusal — two `!`-commands inside one turn window, then a `/models` reseat, and the next command
-    // reuses a slot and is rejected as "already claimed" for something never run before.
-    //
-    // Reconstructing it honestly needs a durable source, and there is none: `!`-commands never enter the
-    // transcript, and the platform-free engine cannot read `run_effects`. So the counter restarts, and the
-    // consequence is recorded in effect-journal.md §14 rather than papered over: a `!`-command issued after a
-    // resume, in a turn window that already had one, can be refused as a false duplicate. It fails CLOSED —
-    // a refusal, never a repeated effect — which is the safe direction, and it is fixed by persisting the
-    // counter with the session row when a surface makes repeated in-window shell commands worth the schema.
+    // Commands restart negative slots under a NEW durable turn key on resume/reseat.
     session.#cumulativeCostMicrocents = state.cumulativeCostMicrocents;
     // ADR-0062: restore the compaction preamble so a compacted session stays compacted across resume AND a
     // model reseat (which reuses this same reconstruct→resume path); without it, resume would silently
@@ -716,6 +707,7 @@ export class AgentSession {
     // only on the NEXT turn, so the advertise-filter + approval regime stay consistent within this turn.
     const turnPolicy = this.#turnPolicy;
     try {
+      this.#reserveEffectTurnKey();
       this.#lastEngagedUsage = undefined; // never inherit an earlier turn's numbers
       const result = await this.#runTurn(abort.signal, turnPolicy);
       // A cancel landed mid-turn — the cancel path owns the terminal session:cancelled; stay quiet, but
@@ -765,11 +757,16 @@ export class AgentSession {
       if (result.text.length > 0) {
         this.#messages.push({ role: 'assistant', content: [{ type: 'text', text: result.text }] });
       }
-      this.#emitTurnCompleted(result.stopReason, {
-        input: result.usage.input,
-        output: result.usage.output,
-        model: result.model,
-      });
+      this.#emitTurnCompleted(
+        result.stopReason,
+        {
+          input: result.usage.input,
+          output: result.usage.output,
+          model: result.model,
+        },
+        undefined,
+        result.toolHistory,
+      );
       // ADR-0062: arm the after-turn auto-compaction check for AFTER this turn fully settles (status back to
       // idle in the `finally`). Set ONLY on this clean-success path — never on an error/abort/cancel/cap exit
       // (those return before here or from the catch, so a failed turn never triggers compaction).
@@ -797,6 +794,8 @@ export class AgentSession {
       }
       this.#settleTurnError(err); // emits the terminal by error class; RE-THROWS an unclassified error
     } finally {
+      this.#effectTurnKey = undefined; // consumed even by an errored, aborted or crashed turn
+      this.#userCommandSeq = 0;
       this.#abort = undefined;
       this.#abortingTurn = false; // clear the per-turn EA7 marker (no stale abort leaks into the next turn)
       if (this.#statusIs('running')) this.#status = 'idle';
@@ -932,18 +931,15 @@ export class AgentSession {
     turnPolicy: SessionTurnPolicy | undefined,
   ): Omit<ToolDispatchContext, 'signal'> {
     return {
-      // The SESSION correlation — `{ kind: 'session', sessionId, turn }`, which this path can supply without
-      // fabricating anything. ADR-0024 gives a session no `runId`, and the discriminated union is exactly why
-      // it never has to invent one. The turn count is the session's own durable counter, restored on resume.
-      // The SESSION correlation, stamped with THIS turn. `#turnCount` is the session's own durable counter,
-      // restored on resume, so a resumed session continues its numbering instead of colliding with the turns
-      // it already ran.
+      // A monotonic host-issued key, independent of the reconstructed max_turns counter.
       effects:
-        this.#deps.effects?.({
-          kind: 'session',
-          sessionId: this.sessionId,
-          turn: this.#turnCount,
-        }) ?? unwiredEffectJournal(),
+        this.#effectTurnKey === undefined
+          ? unwiredEffectJournal()
+          : (this.#deps.effects?.({
+              kind: 'session',
+              sessionId: this.sessionId,
+              turn: this.#effectTurnKey,
+            }) ?? unwiredEffectJournal()),
       effectSlot: 0, // per-CALL; the dispatch sites override it with the tool call's ordinal
       nodeId: this.#agentRef,
       grantedToolIds,
@@ -981,6 +977,20 @@ export class AgentSession {
     };
   }
 
+  #reserveEffectTurnKey(): number {
+    if (this.#effectTurnKey !== undefined) return this.#effectTurnKey;
+    try {
+      const key = this.#deps.reserveEffectTurnKey(this.sessionId);
+      if (!Number.isSafeInteger(key) || key <= this.#lastEffectTurnKey)
+        throw new Error('invalid key');
+      this.#lastEffectTurnKey = key;
+      this.#effectTurnKey = key;
+      return key;
+    } catch {
+      throw new AgentTurnError('internal', 'session effect identity could not be reserved', false);
+    }
+  }
+
   /**
    * Run a USER-invoked `!`-shell command (2.5.D, [ADR-0061](../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
    * — the additive engine method that routes the shell escape through the ONE `run_command` boundary:
@@ -997,7 +1007,7 @@ export class AgentSession {
     this.#status = 'running';
     const abort = this.#deps.newAbortController();
     this.#abort = abort; // so cancel()/abort() can interrupt a long-running command
-    this.#userCommandSeq += 1; // a fresh synthetic tool-call id per `!`-command
+    this.#userCommandSeq += 1; // disjoint negative slots under the next model turn key
     const toolCall: ToolCallPart = {
       type: 'tool_call',
       id: `usercmd-${this.#userCommandSeq}`,
@@ -1005,6 +1015,9 @@ export class AgentSession {
       args: { command, args: [...args] },
     };
     try {
+      const key = this.#reserveEffectTurnKey();
+      if (!Number.isSafeInteger(this.#userCommandSeq))
+        throw new AgentTurnError('internal', 'session command identity is exhausted', false);
       // The user-initiated `!` GRANTS `run_command` for THIS one-off dispatch (the user typed it — the grant is
       // implicit), regardless of whether the bound agent lists it in `tools`. This never reaches the model: it is a
       // direct dispatch, not a turn, so the model's granted/advertised set is untouched. The security gate stays the
@@ -1022,6 +1035,10 @@ export class AgentSession {
         // identity, and the second to arrive would be refused as a duplicate of an unrelated effect.
         // Negative ordinals cannot meet the model's non-negative ones, whatever either counter does.
         effectSlot: -this.#userCommandSeq,
+        effectAttempt: {
+          providerAttempt: 0,
+          toolCallId: `session-command:${String(key)}:${String(this.#userCommandSeq)}`,
+        },
         signal: abort.signal,
       });
       const result = outcome.output;
@@ -1038,6 +1055,7 @@ export class AgentSession {
         stderr: result.stderr,
       };
     } catch (err) {
+      if (err instanceof AgentTurnError) return { kind: 'failed', message: err.message };
       if (err instanceof ToolCancelledError) return { kind: 'cancelled' };
       // An allowlist MISS is a policy denial with `command_not_allowed` — the host shows the actionable
       // `[chat].allowed_commands` hint; any other `tool_denied` (an approval reject / protected path) is a plain
@@ -1151,6 +1169,7 @@ export class AgentSession {
         reason,
         summary,
         keptMessageCount: split.kept.length,
+        keptTurnCount: split.kept.filter((message) => message.role === 'user').length,
         tokensBefore,
         tokensAfter,
         tokensUsed: { input: result.usage.input, output: result.usage.output },
@@ -1211,6 +1230,7 @@ export class AgentSession {
       type: 'session:trimmed',
       reason, // `auto-fallback` when the auto-compaction summariser failed → the view surfaces it (never silent)
       keptMessageCount: kept.length,
+      keptTurnCount: kept.filter((message) => message.role === 'user').length,
       droppedMessageCount: dropped,
     });
     return { kind: 'trimmed', keptMessageCount: kept.length, droppedMessageCount: dropped };
@@ -1363,6 +1383,7 @@ export class AgentSession {
       signal,
       registry: this.#deps.registry,
       dispatchContext,
+      sessionToolCallId: (slot) => createSessionToolCallId(this.#reserveEffectTurnKey(), slot),
       limits: this.#limits,
       ...(this.#deps.preEgress === undefined ? {} : { preEgress: this.#deps.preEgress }),
       ...(this.#deps.resolvePrice === undefined ? {} : { resolvePrice: this.#deps.resolvePrice }),
@@ -1394,11 +1415,13 @@ export class AgentSession {
     stopReason: SessionStopReason,
     tokensUsed: { input: number; output: number; model?: string },
     error?: { code: ErrorCode; message: string; retryable: boolean },
+    toolHistory?: readonly SessionToolHistoryEntry[],
   ): void {
     this.#deps.emit({
       type: 'session:turn_completed',
       stopReason,
       tokensUsed,
+      ...(toolHistory === undefined ? {} : { toolHistory: [...toolHistory] }),
       ...(error === undefined ? {} : { error }),
     });
   }
@@ -1460,34 +1483,18 @@ export class AgentSession {
   }
 }
 
-/**
- * Split the working transcript (ADR-0062) into the earlier part to FOLD into the summary and the last COMPLETE
- * `user`+`assistant` exchange to KEEP verbatim. The kept slice starts at the last `user` that is FOLLOWED by an
- * `assistant` reply — so a trailing dangling `user` (a completed-but-empty-text turn leaves one; `sendMessage`
- * only appends the assistant when `result.text` is non-empty) is never kept as a protocol-breaking LONE user;
- * it rides along at the tail of a complete exchange. `undefined` when there is no earlier turn to fold before
- * the last complete exchange (≤1 exchange — the `nothing_to_compact` / thrash-guard case).
- */
+/** Keep the last completed user turn, including an empty-final turn represented by its user alone. */
 function splitFoldable(
   messages: readonly LlmMessage[],
 ): { readonly foldable: LlmMessage[]; readonly kept: LlmMessage[] } | undefined {
-  // O(N): the kept exchange starts at the last `user` that PRECEDES the last `assistant` (any such user has an
-  // assistant reply after it); a trailing dangling `user` rides along in the kept slice, never as a lone user.
-  let lastAssistant = -1;
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i]?.role === 'assistant') {
-      lastAssistant = i;
-      break;
-    }
-  }
   let keptStart = -1;
-  for (let i = lastAssistant - 1; i >= 0; i -= 1) {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
     if (messages[i]?.role === 'user') {
       keptStart = i;
       break;
     }
   }
-  if (keptStart <= 0) return undefined; // no earlier turn precedes the last complete exchange
+  if (keptStart <= 0) return undefined;
   return { foldable: messages.slice(0, keptStart), kept: messages.slice(keptStart) };
 }
 

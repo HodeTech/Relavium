@@ -72,6 +72,12 @@ export const SessionMessageSchema = z
   })
   .strict()
   .superRefine((message, ctx) => {
+    if (message.compaction !== undefined && message.role !== 'system') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'a boundary marker belongs to a system row',
+      });
+    }
     if (message.role === 'tool' && message.content.some((part) => part.type !== 'tool_result')) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

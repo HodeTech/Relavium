@@ -12,6 +12,7 @@ import {
   STOP_REASONS,
   TOOL_ACTION_CLASSES,
 } from './constants.js';
+import { SessionToolHistorySchema } from './session-content.js';
 import { GateTypeSchema, TimeoutActionSchema } from './node.js';
 
 /**
@@ -967,6 +968,7 @@ export const SessionTurnCompletedEventSchema = z.object({
   // not a failure); a failed turn uses `stopReason: 'error'` + the `error` field.
   stopReason: SessionStopReasonSchema,
   tokensUsed: TokensUsedSchema,
+  toolHistory: SessionToolHistorySchema.optional(),
   // A failed turn (provider error, rate limit, cancellation) still completes — with an error.
   error: z.object(eventErrorFields).optional(),
 });
@@ -1017,6 +1019,8 @@ export const SessionCompactedEventSchema = z.object({
   reason: z.enum(['manual', 'auto-threshold']),
   summary: nonEmptyString,
   keptMessageCount: nonNegativeInt,
+  /** Whole completed turns retained; optional only for pre-W7 event compatibility. */
+  keptTurnCount: nonNegativeInt.optional(),
   tokensBefore: nonNegativeInt,
   tokensAfter: nonNegativeInt,
   tokensUsed: TokensUsedSchema,
@@ -1036,6 +1040,8 @@ export const SessionTrimmedEventSchema = z.object({
   // fallback is never silent (ADR-0062 §5). Symmetric with `session:compacted.reason`.
   reason: z.enum(['manual', 'auto-fallback']),
   keptMessageCount: nonNegativeInt,
+  /** Whole completed turns retained; optional only for pre-W7 event compatibility. */
+  keptTurnCount: nonNegativeInt.optional(),
   droppedMessageCount: nonNegativeInt,
 });
 

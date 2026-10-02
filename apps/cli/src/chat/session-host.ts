@@ -250,6 +250,7 @@ export interface BuiltChatSession {
   readonly attachEffectJournal: (
     factory: (correlation: EffectCorrelation) => EffectDispatchPort,
   ) => void;
+  readonly attachEffectTurnAllocator: (allocator: (sessionId: string) => number) => void;
   readonly attachDurabilityProbe: (probe: () => Error | undefined) => void;
   /**
    * Tools dropped at MCP discovery (allowlist / unsupported schema / collision / unsafe id) — a non-fatal
@@ -312,6 +313,7 @@ function buildSessionRuntime(
    * fail-closed direction: a silently unjournaled effect is exactly what CR-12 exists to prevent.
    */
   attachEffectJournal: (factory: (correlation: EffectCorrelation) => EffectDispatchPort) => void;
+  attachEffectTurnAllocator: (allocator: (sessionId: string) => number) => void;
   attachDurabilityProbe: (probe: () => Error | undefined) => void;
 } {
   let durabilityProbe: () => Error | undefined = () => undefined;
@@ -385,9 +387,15 @@ function buildSessionRuntime(
 
   // Late-bound by `attachEffectJournal`: the journal is owned by the persister, which is built AFTER the
   // session — the same constraint the commitment writer has.
+  let effectTurnAllocator: ((sessionId: string) => number) | undefined;
   let effectJournal: ((correlation: EffectCorrelation) => EffectDispatchPort) | undefined;
 
   const deps: SessionDeps = {
+    reserveEffectTurnKey: (id) => {
+      if (effectTurnAllocator === undefined)
+        throw new Error('session effect allocator is not attached');
+      return effectTurnAllocator(id);
+    },
     resolveProvider: providers.resolveProvider,
     keyFor: providers.keyFor,
     // The durable effect journal (ADR-0080), FORWARDED rather than captured: it is attached later by the
@@ -397,13 +405,14 @@ function buildSessionRuntime(
     effects: (correlation: EffectCorrelation): EffectDispatchPort => {
       const port = effectJournal?.(correlation);
       return {
-        prepare: (slot, toolId, tier, redactedArgs, targetIdempotencyKey) =>
+        prepare: (slot, toolId, tier, redactedArgs, targetIdempotencyKey, callAttempt) =>
           (port ?? unwiredEffectJournal()).prepare(
             slot,
             toolId,
             tier,
             redactedArgs,
             targetIdempotencyKey,
+            callAttempt,
           ),
         settle: (slot, toolId, state, result) =>
           (port ?? unwiredEffectJournal()).settle(slot, toolId, state, result),
@@ -499,6 +508,9 @@ function buildSessionRuntime(
     emit,
     host,
     governor,
+    attachEffectTurnAllocator: (allocator) => {
+      effectTurnAllocator = allocator;
+    },
     attachDurabilityProbe: (probe) => {
       durabilityProbe = probe;
     },
@@ -607,8 +619,16 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     : await connectAgentMcp(agent.mcp_servers, mcpOptionsFor(opts, mcpArtifact, opts.cwd));
 
   try {
-    const { bus, deps, emit, host, governor, attachDurabilityProbe, attachEffectJournal } =
-      buildSessionRuntime(opts, sessionId, mcp, context);
+    const {
+      bus,
+      deps,
+      emit,
+      host,
+      governor,
+      attachDurabilityProbe,
+      attachEffectJournal,
+      attachEffectTurnAllocator,
+    } = buildSessionRuntime(opts, sessionId, mcp, context);
     // The session runs against the EFFECTIVE agent: its grant unioned with the discovered MCP tool ids (2.R)
     // and then narrowed by the 2.5.A advertise-filter to the tools whose ToolHost arm is actually wired (an
     // unwired tool is never offered). The ORIGINAL `agent` is what we return + persist (see {@link BuiltChatSession.agent}).
@@ -645,6 +665,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
             mcpChildPids: mcp.childPids,
           }),
       attachDurabilityProbe,
+      attachEffectTurnAllocator,
       attachEffectJournal,
       ...(governor === undefined ? {} : { governor }),
     };
@@ -841,8 +862,16 @@ export async function buildResumedChatSession(
   );
 
   try {
-    const { bus, deps, emit, host, governor, attachDurabilityProbe, attachEffectJournal } =
-      buildSessionRuntime(opts, record.id, mcp, context);
+    const {
+      bus,
+      deps,
+      emit,
+      host,
+      governor,
+      attachDurabilityProbe,
+      attachEffectJournal,
+      attachEffectTurnAllocator,
+    } = buildSessionRuntime(opts, record.id, mcp, context);
     // The same late-bound producer-await slot as the fresh-session path (`CR-30`), declared again because
     // this is a separate function. A resumed session streams exactly like a new one, so leaving it out
     // would have shipped the bound on one of the two ways a chat starts.
@@ -886,6 +915,7 @@ export async function buildResumedChatSession(
             mcpChildPids: mcp.childPids,
           }),
       attachDurabilityProbe,
+      attachEffectTurnAllocator,
       attachEffectJournal,
       ...(governor === undefined ? {} : { governor }),
     };

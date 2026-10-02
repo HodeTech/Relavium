@@ -2066,6 +2066,18 @@ Full CI also exits 0 at `c96eb9b5`.
 and both fixes, including real lock contention and process-crash probes. **Step 2 is closed;
 step 3 proceeds automatically.** All six W7 items remain open.
 
+**Step 3 implementation checkpoint, 2026-10-02:** completed turns now carry content-free
+structural call/result pairs through the terminal event and one atomic transcript/session write,
+including an explicit empty final. Resume, export and live/reseeded compaction mapping use the
+same completed-turn projection; markers carry whole-turn retention counts while `/trim` retains
+message units. Required host allocator/probe attachment covers chat, clear/reseat, resume and
+Home. One-shot runs atomically retain only an already-tombstoned effect-identity record. Engine
+call ids reach per-call journal attempts, including disjoint negative shell slots. Real CLI/SQLite
+MCP, late-write rollback, hidden one-shot identity, resume/trim/empty-final and rediscovered-export
+plan tests pass. Required lint/typecheck/test/build/format checks pass; root coverage exits 0
+(290 suites, 6,394 passing tests, 11 skipped). Independent post-commit review rounds are pending;
+**step 3 is not closed**. The session journal's result privacy and disclosure/sweep remain step 4.
+
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A
 coding agent cannot remember a file it read in the previous turn and calls the tool again.

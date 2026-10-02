@@ -35,6 +35,7 @@ import type {
   OutputModality,
   ReasoningEffort,
   StopReason,
+  SessionToolHistoryEntry,
 } from '@relavium/shared';
 import {
   CostTracker,
@@ -54,9 +55,16 @@ import {
   type ToolDef as LlmToolDef,
 } from '@relavium/llm';
 
+import { SessionToolHistoryEntrySchema, utf8ByteLength } from '@relavium/shared';
+
 import { ADMISSION_CEILINGS } from '../limits.js';
 import { ToolDispatchError } from '../tools/errors.js';
-import type { ToolCallPart, ToolDispatchContext, ToolRegistry } from '../tools/types.js';
+import type {
+  ToolCallPart,
+  ToolDispatchContext,
+  ToolRegistry,
+  ToolResultPart,
+} from '../tools/types.js';
 import { type Untrusted, unwrapUntrusted } from '../tools/untrusted.js';
 import {
   BudgetExceededError,
@@ -201,6 +209,8 @@ export interface AgentTurnParams {
   /** The shared tool registry (1.T) and the dispatch context for this node (the core adds `signal`). */
   readonly registry: ToolRegistry;
   readonly dispatchContext: Omit<ToolDispatchContext, 'signal'>;
+  /** Session-only identity allocator; provider ids remain within the live protocol. */
+  readonly sessionToolCallId?: (slot: number) => string;
   /** Loop bounds (default {@link DEFAULT_AGENT_TURN_LIMITS}). */
   readonly limits: AgentTurnLimits;
   /** Pre-egress budget hook (default no-op; 1.AC fills it). */
@@ -235,6 +245,7 @@ export interface AgentTurnParams {
 
 /** What one settled agent turn produced. */
 export interface AgentTurnResult {
+  readonly toolHistory: readonly SessionToolHistoryEntry[];
   /** The final assistant content parts (text + any reasoning), in order. */
   readonly content: readonly ContentPart[];
   /** The concatenated assistant text — the node's primary output when there is no `output_schema`. */
@@ -780,6 +791,46 @@ function synthesizedMediaMessage(pending: readonly PendingAttachment[]): LlmMess
   };
 }
 
+/** Count only JSON the model issued/receives; neither its value nor a digest leaves the turn. */
+function jsonBytes(value: unknown): number {
+  try {
+    return utf8ByteLength(JSON.stringify(value) ?? '');
+  } catch {
+    throw new AgentTurnError('tool_failed', 'tool payload could not be represented as JSON', false);
+  }
+}
+
+function sessionToolHistoryEntry(
+  id: string,
+  resolvedName: string,
+  call: ToolCallPart,
+  result: ToolResultPart,
+  media: readonly DurableMediaPart[] = [],
+): SessionToolHistoryEntry {
+  const parsed = SessionToolHistoryEntrySchema.safeParse({
+    call: { type: 'tool_call', id, name: resolvedName, argsBytes: jsonBytes(call.args) },
+    result: {
+      type: 'tool_result',
+      toolCallId: id,
+      resultBytes: jsonBytes(result.result),
+      outcome: result.isError === true ? 'error' : 'ok',
+      ...(media.length === 0
+        ? {}
+        : {
+            media: media.map((part) => {
+              const projected = { ...part };
+              delete projected.name;
+              delete projected.transcript;
+              return projected;
+            }),
+          }),
+    },
+  });
+  if (!parsed.success)
+    throw new AgentTurnError('internal', 'session tool structure could not be recorded', false);
+  return parsed.data;
+}
+
 /**
  * The failure half of one tool dispatch: announce the attempted call with a REDACTED input, then either
  * return the model-correctable `isError` result or throw a classified {@link AgentTurnError}.
@@ -862,6 +913,7 @@ async function dispatchToolCalls(
   attemptNumber: number,
   /** The running effect-slot ordinal for the TURN — see `dispatchToolUseTurn`'s `slotBase`. */
   slotBase: number,
+  history: SessionToolHistoryEntry[],
 ): Promise<{ messages: LlmMessage[]; correctable: boolean }> {
   // **ADR-0086 §2's tool-call ceiling, checked BEFORE the first dispatch.** It is the one ceiling whose
   // subject is a provider RESPONSE rather than an authored file, so it cannot live at admission — the model
@@ -888,10 +940,14 @@ async function dispatchToolCalls(
   // collide with the first on the journal's UNIQUE identity. The provider's return order is the ordinal.
   for (const [slot, call] of toolCalls.entries()) {
     throwIfAborted(params.signal);
+    const id = params.sessionToolCallId?.(slotBase + slot);
     try {
       const outcome = await params.registry.dispatch(call, {
         ...params.dispatchContext,
         effectSlot: slotBase + slot,
+        ...(id === undefined
+          ? {}
+          : { effectAttempt: { providerAttempt: attemptNumber, toolCallId: id } }),
         signal: params.signal,
       });
       // Emit AFTER dispatch: the registry's `events.call.toolInput` is the SANITIZED payload
@@ -906,6 +962,16 @@ async function dispatchToolCalls(
         attemptNumber,
       });
       const part = unwrapUntrusted(outcome.toolResult);
+      if (id !== undefined)
+        history.push(
+          sessionToolHistoryEntry(
+            id,
+            outcome.events.call.toolId,
+            call,
+            part,
+            unwrapUntrusted(outcome.mediaAttachments),
+          ),
+        );
       results.push({ role: 'tool', content: [part] });
       // The bytes a media-answering tool owes the model ride the media-INPUT rail (`CR-50`, ADR-0089 §1) —
       // `tool_result.media` is handle-only and nothing lowers it. HELD until every call in this response has
@@ -923,7 +989,19 @@ async function dispatchToolCalls(
       });
     } catch (err) {
       // Either a model-correctable result to feed back, or a classified throw — see `toolFailureMessage`.
-      results.push(toolFailureMessage(err, call, params, getModel(), attemptNumber));
+      const failure = toolFailureMessage(err, call, params, getModel(), attemptNumber);
+      const part = failure.content.find((entry) => entry.type === 'tool_result');
+      if (id !== undefined && part?.type === 'tool_result') {
+        const name =
+          err instanceof ToolDispatchError &&
+          err.code !== 'unknown_tool' &&
+          err.toolId !== undefined &&
+          params.registry.has(err.toolId)
+            ? err.toolId
+            : 'unknown_tool';
+        history.push(sessionToolHistoryEntry(id, name, call, part));
+      }
+      results.push(failure);
       correctable = true;
     }
   }
@@ -958,6 +1036,7 @@ async function dispatchToolUseTurn(
    * with its own earlier attempt on the journal's UNIQUE identity and refusing a legitimate second call.
    */
   slotBase: number,
+  history: SessionToolHistoryEntry[],
 ): Promise<{ corrections: number; slotBase: number }> {
   // Append the assistant turn (incl. reasoning — carried for the same-provider replay, ADR-0039).
   messages.push({ role: 'assistant', content: turnContent });
@@ -985,6 +1064,7 @@ async function dispatchToolUseTurn(
     activeModel,
     nonSkippedAttempts,
     slotBase,
+    history,
   );
   let next = corrections;
   if (dispatched.correctable) {
@@ -1328,12 +1408,14 @@ async function driveAgentTurn(
         usage: { input: usage.input, output: usage.output },
         model: activeModel,
         stopReason: turn.stopReason,
+        toolHistory: [],
       };
     }
 
     let corrections = 0;
     // Runs across the WHOLE turn, not per model response — see `dispatchToolUseTurn`'s `slotBase`.
     let slotBase = 0;
+    const toolHistory: SessionToolHistoryEntry[] = [];
 
     for (let toolTurn = 0; ; toolTurn += 1) {
       throwIfAborted(params.signal);
@@ -1397,6 +1479,7 @@ async function driveAgentTurn(
           usage: { input: usage.input, output: usage.output },
           model: activeModel,
           stopReason: turn.stopReason,
+          toolHistory,
         };
       }
 
@@ -1411,6 +1494,7 @@ async function driveAgentTurn(
         nonSkippedAttempts,
         corrections,
         slotBase,
+        toolHistory,
       ));
     }
   } finally {

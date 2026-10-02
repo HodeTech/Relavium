@@ -207,7 +207,11 @@ export async function agentRunCommand(
     unguardMcp();
     throw cause;
   }
+  let handedOff = false;
   try {
+    built.attachEffectTurnAllocator((id) =>
+      journalStore.store.reserveOneShotEffectTurnKey(id, Date.now()),
+    );
     built.attachEffectJournal((correlation) =>
       createEffectJournalPort(
         createEffectJournalStore(journalStore.db, { uuid: randomUUID, now: Date.now }),
@@ -216,12 +220,17 @@ export async function agentRunCommand(
       ),
     );
     // Render the live stream + run the single turn + tear down — a classified turn failure maps to exit 1.
+    handedOff = true;
     const turnErrorCode = await runOneShotTurn(built, message, deps);
     return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;
   } finally {
     // Removed first: from here `runOneShotTurn`'s own teardown owns the children on every unwinding path.
     unguardMcp();
-    journalStore.close();
+    try {
+      if (!handedOff) await built.closeMcp?.();
+    } finally {
+      journalStore.close();
+    }
   }
 }
 

@@ -316,13 +316,13 @@ describe('chatCommand', () => {
 
     const full = store.loadFull(sessionId);
     // The tool-calling turn (read_file dispatched through the fail-closed host) still completes to a reply.
-    expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
-    expect(full?.messages[1]?.content[0]).toEqual({ type: 'text', text: 'the answer' });
+    expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'tool', 'assistant']);
+    expect(full?.messages[3]?.content[0]).toEqual({ type: 'text', text: 'the answer' });
   });
 
-  it('persists two distinct user turns (the 2nd a tool call) as four sequenced rows with a real cost', async () => {
+  it('persists two distinct user turns (the 2nd a tool call) with structural tool rows with a real cost', async () => {
     // Turn 1: a plain reply. Turn 2: a tool-calling turn (toolUseTurn → the answer streams after the loop).
-    // Three scripted streams, TWO user messages ⇒ four persisted rows in sequenceNumber order.
+    // Three scripted streams, TWO user messages ⇒ six persisted rows in sequenceNumber order.
     const { d, store, sessionId } = deps(
       ['first message', 'use a tool', '/exit'],
       [textTurn('first reply'), toolUseTurn('c1', 'read_file'), textTurn('the answer')],
@@ -331,10 +331,17 @@ describe('chatCommand', () => {
     expect(code).toBe(EXIT_CODES.chatEnded);
 
     const full = store.loadFull(sessionId);
-    expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
-    expect(full?.messages.map((m) => m.sequenceNumber)).toEqual([0, 1, 2, 3]);
+    expect(full?.messages.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+      'tool',
+      'assistant',
+    ]);
+    expect(full?.messages.map((m) => m.sequenceNumber)).toEqual([0, 1, 2, 3, 4, 5]);
     expect(full?.messages[1]?.content[0]).toEqual({ type: 'text', text: 'first reply' });
-    expect(full?.messages[3]?.content[0]).toEqual({ type: 'text', text: 'the answer' });
+    expect(full?.messages[5]?.content[0]).toEqual({ type: 'text', text: 'the answer' });
     expect(full?.session.totalCostMicrocents).toBeGreaterThan(0); // priced model ⇒ a real running cost
   });
 

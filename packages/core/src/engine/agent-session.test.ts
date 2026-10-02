@@ -164,6 +164,10 @@ function harness(
     resolveProvider: () => provider,
     registry,
     tools: [],
+    reserveEffectTurnKey: (() => {
+      let key = 0;
+      return () => ++key;
+    })(),
     keyFor: () => 'key',
     sleep: () => Promise.resolve(),
     newAbortController: createAbortController,
@@ -259,6 +263,65 @@ async function drainSession(
 }
 
 describe('AgentSession — the effect correlation advances with the turn (ADR-0080 §5)', () => {
+  it.each([0, -1, Number.MAX_SAFE_INTEGER + 1, Number.NaN, Number.POSITIVE_INFINITY])(
+    'refuses invalid durable key %s before provider egress',
+    async (key) => {
+      let calls = 0;
+      const provider: LlmProvider = {
+        ...scriptedProvider([textTurn('never')]),
+        stream: () => {
+          calls += 1;
+          return streamOf(textTurn('never'));
+        },
+      };
+      const { deps, events } = harness([], {
+        reserveEffectTurnKey: () => key,
+        resolveProvider: () => provider,
+      });
+      const s = session(deps);
+      s.start();
+      await s.sendMessage('go');
+      expect(calls).toBe(0);
+      expect(events.at(-1)).toMatchObject({
+        type: 'session:turn_completed',
+        error: { code: 'internal' },
+      });
+    },
+  );
+
+  it('refuses an allocator failure without exposing its cause and never reuses a consumed key', async () => {
+    let calls = 0;
+    const provider: LlmProvider = {
+      ...scriptedProvider([textTurn('')]),
+      stream: () => {
+        calls += 1;
+        return streamOf(textTurn(''));
+      },
+    };
+    const { deps, events } = harness([], {
+      reserveEffectTurnKey: () => 1,
+      resolveProvider: () => provider,
+    });
+    const s = session(deps);
+    s.start();
+    await s.sendMessage('one');
+    await s.sendMessage('two');
+    expect(calls).toBe(1);
+    expect(events.at(-1)).toMatchObject({
+      error: { code: 'internal', message: 'session effect identity could not be reserved' },
+    });
+    const broken = harness([], {
+      reserveEffectTurnKey: () => {
+        throw new Error('private-cause-sentinel');
+      },
+      resolveProvider: () => provider,
+    });
+    const refused = session(broken.deps);
+    refused.start();
+    await refused.sendMessage('go');
+    expect(calls).toBe(1);
+    expect(JSON.stringify(broken.events)).not.toContain('private-cause-sentinel');
+  });
   it('two effectful turns of one session do not collide on the journal', async () => {
     // The bug this pins shipped and was found by RUNNING it: the correlation froze at `turn: 0` for the
     // session's whole life while the slot ordinal restarts each turn, so a user's SECOND effectful request
@@ -375,6 +438,10 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
       resolveProvider: () => provider,
       registry: echoRegistry,
       tools: [],
+      reserveEffectTurnKey: (() => {
+        let key = 0;
+        return () => ++key;
+      })(),
       keyFor: () => 'key',
       sleep: () => Promise.resolve(),
       newAbortController: createAbortController,
@@ -582,6 +649,10 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
       resolveProvider: () => undefined, // a fixed wiring gap — every turn fails pre-egress, none engages
       registry: noToolRegistry,
       tools: [],
+      reserveEffectTurnKey: (() => {
+        let key = 0;
+        return () => ++key;
+      })(),
       keyFor: () => 'key',
       sleep: () => Promise.resolve(),
       newAbortController: createAbortController,
@@ -684,6 +755,10 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
       resolveProvider: () => undefined, // a host-wiring gap — no adapter for the agent's provider
       registry: noToolRegistry,
       tools: [],
+      reserveEffectTurnKey: (() => {
+        let key = 0;
+        return () => ++key;
+      })(),
       keyFor: () => 'key',
       sleep: () => Promise.resolve(),
       newAbortController: createAbortController,
@@ -831,6 +906,10 @@ describe('AgentSession → createSessionEventSink → RunEventBus → SessionHan
       resolveProvider: () => scriptedProvider([textTurn('hello back')]),
       registry: noToolRegistry,
       tools: [],
+      reserveEffectTurnKey: (() => {
+        let key = 0;
+        return () => ++key;
+      })(),
       keyFor: () => 'key',
       sleep: () => Promise.resolve(),
       newAbortController: createAbortController,
@@ -1446,6 +1525,57 @@ describe('AgentSession.runUserCommand — the `!`-shell escape (2.5.D, ADR-0061)
     return s;
   };
 
+  it('joins model tool structures and command effects to the durable key, never provider ids', async () => {
+    const journal = createInMemoryEffectJournalStore();
+    const { registry } = commandRegistry(() => Promise.resolve(RAN));
+    const call = (id: string): StreamChunk[] => [
+      { type: 'tool_call_start', id, name: 'run_command' },
+      { type: 'tool_call_delta', id, argsJsonDelta: '{"command":"ls","args":[]}' },
+      { type: 'tool_call_end', id },
+      { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 4, outputTokens: 2 } },
+    ];
+    let allocations = 40;
+    const { deps, events } = harness(
+      [call('provider-secret-1'), call('provider-secret-2'), textTurn('done')],
+      {
+        reserveEffectTurnKey: () => ++allocations,
+        effects: (correlation) => journal.for(correlation),
+        toolPolicy: { allowedCommands: ['ls'] },
+        tools: BUILTIN_TOOLS,
+      },
+      registry,
+    );
+    const agent = AgentSchema.parse({ ...AGENT, tools: ['run_command'] });
+    const s = session(deps, agent);
+    s.start();
+    await s.runUserCommand('ls', []);
+    await s.runUserCommand('ls', []);
+    await s.sendMessage('go');
+    expect(allocations).toBe(41);
+    const terminal = events.find((event) => event.type === 'session:turn_completed');
+    if (terminal?.type !== 'session:turn_completed') throw new Error('missing terminal');
+    expect(terminal.toolHistory?.map((entry) => entry.call.id)).toEqual([
+      'session-tool:41:0',
+      'session-tool:41:1',
+    ]);
+    expect(JSON.stringify(terminal.toolHistory)).not.toContain('provider-secret');
+    expect(JSON.stringify(terminal.toolHistory)).not.toContain('FILES');
+    expect(
+      journal
+        .rows()
+        .map((row) => ({ slot: row.slot, scope: row.scope, id: row.attempt?.toolCallId })),
+    ).toEqual([
+      { slot: -1, scope: 'session:sess-1:41', id: 'session-command:41:1' },
+      { slot: -2, scope: 'session:sess-1:41', id: 'session-command:41:2' },
+      { slot: 0, scope: 'session:sess-1:41', id: 'session-tool:41:0' },
+      { slot: 1, scope: 'session:sess-1:41', id: 'session-tool:41:1' },
+    ]);
+    expect(journal.rows().map((row) => row.attempt?.providerAttempt)).toEqual([0, 0, 1, 2]);
+    await s.runUserCommand('ls', []);
+    expect(allocations).toBe(42);
+    expect(journal.rows().at(-1)).toMatchObject({ scope: 'session:sess-1:42', slot: -1 });
+  });
+
   it('an unlisted command is DENIED before any spawn, flagged as an allowlist miss (actionable hint)', async () => {
     const { registry, calls } = commandRegistry(() => Promise.resolve(RAN));
     const { deps } = harness([], { toolPolicy: {} }, registry); // empty allowlist ⇒ `!` disabled
@@ -1631,6 +1761,10 @@ describe('a server-supplied tool description carries its provenance to the model
           resolveProvider: () => provider,
           registry: noToolRegistry,
           tools: [def],
+          reserveEffectTurnKey: (() => {
+            let key = 0;
+            return () => ++key;
+          })(),
           keyFor: () => 'key',
           sleep: () => Promise.resolve(),
           newAbortController: createAbortController,
@@ -1713,6 +1847,10 @@ function compactHarness(
     resolveProvider: () => provider,
     registry: noToolRegistry,
     tools: [],
+    reserveEffectTurnKey: (() => {
+      let key = 0;
+      return () => ++key;
+    })(),
     keyFor: () => 'key',
     sleep: () => Promise.resolve(),
     newAbortController: createAbortController,
@@ -1928,22 +2066,28 @@ describe('AgentSession — context compaction + trim (ADR-0062)', () => {
     expect(captured.requests.at(-1)?.messages[0]?.role).toBe('user'); // protocol-valid next turn
   });
 
-  it('does not keep a lone dangling user as the kept exchange (an empty-text turn)', async () => {
+  it('keeps a completed empty-final user as its own turn during compaction', async () => {
     // A completed turn with empty final text leaves a dangling `user` (sendMessage only appends the assistant
     // when result.text is non-empty). compact() must NOT keep that lone user as the "kept exchange" — with only
     // one complete exchange before it, there is nothing earlier to fold, so it is a clean no-op.
     const emptyTurn: StreamChunk[] = [
       { type: 'stop', stopReason: 'stop', usage: { inputTokens: 5, outputTokens: 0 } },
     ];
-    const { session: s, events } = compactHarness([textTurn('a1'), emptyTurn], {
-      contextLimit: 1_000_000,
-    });
+    const { session: s, events } = compactHarness(
+      [textTurn('a1'), emptyTurn, textTurn('summary')],
+      {
+        contextLimit: 1_000_000,
+      },
+    );
     s.start();
     await s.sendMessage('q1'); // [u,a1]
     await s.sendMessage('q2'); // empty text → [u,a1,u2] (u2 dangling)
     const result = await s.compact('manual');
-    expect(result.kind).toBe('nothing_to_compact'); // never a lone-user kept slice
-    expect(events.some((e) => e.type === 'session:compacted')).toBe(false);
+    expect(result.kind).toBe('compacted');
+    expect(events.find((event) => event.type === 'session:compacted')).toMatchObject({
+      keptMessageCount: 1,
+      keptTurnCount: 1,
+    });
   });
 
   it('reports non-zero before/after token deltas from the estimator (before > after)', async () => {
@@ -2072,6 +2216,10 @@ describe('AgentSession — a restored compaction summary stays out of `system` (
           resolveProvider: () => provider,
           registry: echoRegistry,
           tools: BUILTIN_TOOLS.filter((t) => t.id === 'echo'),
+          reserveEffectTurnKey: (() => {
+            let key = 0;
+            return () => ++key;
+          })(),
           keyFor: () => 'key',
           sleep: () => Promise.resolve(),
           newAbortController: createAbortController,
@@ -2121,6 +2269,10 @@ describe('AgentSession — a restored compaction summary stays out of `system` (
             resolveProvider: () => provider,
             registry: echoRegistry,
             tools: BUILTIN_TOOLS,
+            reserveEffectTurnKey: (() => {
+              let key = 0;
+              return () => ++key;
+            })(),
             keyFor: () => 'key',
             sleep: () => Promise.resolve(),
             newAbortController: createAbortController,

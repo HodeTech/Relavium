@@ -55,6 +55,37 @@ const msg = (
 });
 
 describe('reconstructSessionState (1.Y)', () => {
+  it('counts and retains empty-final turns while dropping an interrupted text-bearing tool preamble', () => {
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: '' }]),
+      msg(1, 'assistant', [{ type: 'text', text: '' }]),
+      msg(2, 'user', [{ type: 'text', text: 'interrupted' }]),
+      msg(3, 'assistant', [
+        { type: 'text', text: 'preamble' },
+        { type: 'tool_call', id: 'session-tool:2:0', name: 'read_file', argsBytes: 2 },
+      ]),
+    ]);
+    expect(state.turnCount).toBe(1);
+    expect(state.messages).toEqual([{ role: 'user', content: [{ type: 'text', text: '' }] }]);
+  });
+
+  it('never resumes a partial turn whose user is before a boundary but terminal is after it', () => {
+    const messages = [
+      msg(0, 'user', [{ type: 'text', text: 'old' }]),
+      msg(1, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:1:0', name: 'read_file', argsBytes: 2 },
+      ]),
+      msg(2, 'tool', [
+        { type: 'tool_result', toolCallId: 'session-tool:1:0', resultBytes: 4, outcome: 'ok' },
+      ]),
+      msg(3, 'assistant', [{ type: 'text', text: 'old answer' }]),
+      { ...msg(4, 'system', []), compaction: { droppedThroughSequence: 1 } },
+      msg(5, 'user', [{ type: 'text', text: 'kept' }]),
+      msg(6, 'assistant', [{ type: 'text', text: '' }]),
+    ];
+    expect(resumableMessageSequences(messages)).toEqual([5]);
+    expect(reconstructSessionState(record(), messages).turnCount).toBe(1);
+  });
   it('projects user/assistant text turns and re-seeds turnCount + cost', () => {
     const state = reconstructSessionState(record({ totalCostMicrocents: 4200 }), [
       msg(0, 'user', [{ type: 'text', text: 'hi' }]),
@@ -214,6 +245,10 @@ function depsFor(
     resolveProvider: () => provider,
     registry: noToolRegistry,
     tools: [],
+    reserveEffectTurnKey: (() => {
+      let key = 0;
+      return () => ++key;
+    })(),
     keyFor: () => 'key',
     sleep: () => Promise.resolve(),
     newAbortController: createAbortController,

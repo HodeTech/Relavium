@@ -371,11 +371,8 @@ export function createEffectJournalPort(
   store: EffectJournalStore,
   correlation: EffectCorrelation,
   /**
-   * The audit occurrence. **A known gap, recorded rather than hidden**: the provider failover attempt and
-   * the provider's `toolCallId` are not threaded to the dispatch today, so what is stored is what is
-   * reachable at wiring time. Nothing load-bearing depends on it — the dedup key is the identity and the
-   * resume gate reads the scope; this field is the audit trail, and it is currently coarser than
-   * `EffectAttemptId` describes.
+   * Run wiring supplies node/fence audit fields. Session dispatch forwards the actual
+   * provider attempt and engine-owned tool-call id per call, replacing these defaults.
    */
   attempt: EffectAttemptId,
 ): EffectDispatchPort {
@@ -385,13 +382,13 @@ export function createEffectJournalPort(
     toolId,
   });
   return {
-    prepare: (slot, toolId, tier, redactedArgs, targetIdempotencyKey) => {
+    prepare: (slot, toolId, tier, redactedArgs, targetIdempotencyKey, callAttempt) => {
       try {
         return Promise.resolve(
           store.prepare(
             identityFor(slot, toolId),
             correlation,
-            attempt,
+            callAttempt === undefined ? attempt : { ...attempt, ...callAttempt },
             tier,
             digestOf(redactedArgs),
             targetIdempotencyKey,

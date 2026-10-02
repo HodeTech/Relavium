@@ -14,6 +14,7 @@ import type {
   ContentPart,
   DurableMediaPart,
   EffectDispatchPort,
+  EffectAttemptId,
   EffectSlot,
   EffectTier,
   FsScopeTier,
@@ -402,6 +403,8 @@ export interface ToolDispatchContext {
    * apart; keying on the correlation alone would make the second legitimate effect collide with the first.
    */
   readonly effectSlot: EffectSlot;
+  /** Session-owned call identity and the provider attempt that actually dispatched it. */
+  readonly effectAttempt?: Pick<EffectAttemptId, 'providerAttempt' | 'toolCallId'>;
   readonly signal?: AbortSignalLike;
 }
 

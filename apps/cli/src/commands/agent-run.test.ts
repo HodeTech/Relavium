@@ -9,6 +9,7 @@ import type { StreamChunk } from '@relavium/llm';
 import { startMcpClient as realStartMcpClient, type McpConnection } from '@relavium/mcp';
 
 import { buildChatSession } from '../chat/session-host.js';
+import { openSessionStore } from '../history/session-open.js';
 import { scriptedResolver, textTurn, unresolvedResolver } from '../chat/test-support.js';
 import type { ProviderResolver } from '../engine/providers.js';
 import { isCliError } from '../process/errors.js';
@@ -42,6 +43,54 @@ function globalOptions(cwd: string, json = false): GlobalOptions {
 }
 
 describe('agentRunCommand (2.Q)', () => {
+  it('keeps only a hidden durable identity and refuses reuse before provider egress', async () => {
+    const first = deps('private-prompt-sentinel', {
+      json: true,
+      providers: scriptedResolver([textTurn('done')]),
+    });
+    const buildSession: typeof buildChatSession = (options) =>
+      buildChatSession({ ...options, uuid: () => 'fixed-one-shot' });
+    expect(
+      await agentRunCommand(
+        { agent: join(cwd, 'coder.agent.yaml'), input: [], allowMcpStdio: [] },
+        { ...first.d, buildSession },
+      ),
+    ).toBe(0);
+    const opened = openSessionStore(home);
+    try {
+      expect(opened.store.listSessions()).toEqual([]);
+      expect(opened.store.loadFull('fixed-one-shot')).toBeUndefined();
+      expect(opened.store.loadMessages('fixed-one-shot')).toEqual([]);
+      expect(
+        opened.db.$client
+          .prepare(
+            'SELECT effect_turn_high_water, deleted_at, agent_snapshot, context_json FROM agent_sessions',
+          )
+          .get(),
+      ).toMatchObject({
+        effect_turn_high_water: 1,
+        agent_snapshot: null,
+        context_json: '{}',
+      });
+      expect(
+        JSON.stringify(opened.db.$client.prepare('SELECT * FROM agent_sessions').all()),
+      ).not.toContain('private-prompt-sentinel');
+    } finally {
+      opened.close();
+    }
+    const second = deps('again', {
+      json: true,
+      providers: scriptedResolver([textTurn('provider-must-not-run')]),
+    });
+    expect(
+      await agentRunCommand(
+        { agent: join(cwd, 'coder.agent.yaml'), input: [], allowMcpStdio: [] },
+        { ...second.d, buildSession },
+      ),
+    ).toBe(1);
+    expect(second.out()).not.toContain('provider-must-not-run');
+    expect(second.out()).toContain('session effect identity could not be reserved');
+  });
   let cwd: string;
   let home: string;
   const savedHome = new Map<string, string | undefined>();

@@ -506,6 +506,8 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       try {
         persister = createSessionPersister({
           governor: built.governor,
+          attachDurabilityProbe: built.attachDurabilityProbe,
+          attachEffectTurnAllocator: built.attachEffectTurnAllocator,
           store: opened.store,
           handle: built.handle,
           sessionId: built.sessionId,

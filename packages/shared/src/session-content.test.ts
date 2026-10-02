@@ -1,17 +1,50 @@
 import { describe, expect, it } from 'vitest';
 
 import { DurableContentPartSchema } from './content.js';
+import { SessionMessageSchema } from './session.js';
 import {
   createSessionToolCallId,
   parseSessionToolCallId,
   SessionContentPartSchema,
   SessionToolCallPartSchema,
   SessionToolResultPartSchema,
+  SessionToolHistorySchema,
 } from './session-content.js';
 
 const call = { type: 'tool_call', id: 'session-tool:7:0', name: 'read_file', argsBytes: 12 };
 const result = { type: 'tool_result', toolCallId: call.id, resultBytes: 4, outcome: 'ok' };
 const handle = { kind: 'handle', ref: `media://sha256-${'a'.repeat(64)}` };
+
+describe('completed session tool history event boundary', () => {
+  it('permits a boundary only on a system marker row', () => {
+    const message = {
+      id: 'm',
+      sessionId: 's',
+      sequenceNumber: 3,
+      role: 'system',
+      content: [],
+      compaction: { droppedThroughSequence: 2 },
+      timestamp: '2026-10-02T00:00:00.000Z',
+    };
+    expect(SessionMessageSchema.safeParse(message).success).toBe(true);
+    for (const role of ['user', 'assistant', 'tool'])
+      expect(SessionMessageSchema.safeParse({ ...message, role }).success).toBe(false);
+  });
+  it('admits only unique, paired, content-free dispatch structures', () => {
+    expect(SessionToolHistorySchema.parse([{ call, result }])).toEqual([{ call, result }]);
+    for (const entries of [
+      [{ call, result: { ...result, toolCallId: 'session-tool:7:1' } }],
+      [
+        { call, result },
+        { call, result },
+      ],
+      [{ call: { ...call, args: { secret: 'sentinel' } }, result }],
+      [{ call, result: { ...result, result: 'sentinel' } }],
+      [{ call, result, providerId: 'sentinel' }],
+    ])
+      expect(SessionToolHistorySchema.safeParse(entries).success).toBe(false);
+  });
+});
 
 describe('session structural content (ADR-0095)', () => {
   it('keeps structure and permits all four fixed outcomes', () => {

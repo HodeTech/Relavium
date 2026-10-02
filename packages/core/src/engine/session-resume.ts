@@ -25,7 +25,7 @@ import { markUntrusted, type Untrusted } from '../tools/untrusted.js';
  * Build it via {@link reconstructSessionState}: `messages` must be the **text-only** `user`/`assistant`
  * projection (AgentSession's cross-turn invariant). `resume` preloads these verbatim, so a hand-built state
  * carrying `tool_call`/`tool_result`/`reasoning` parts would be replayed to the provider on the next turn —
- * risking an orphaned `tool_use` or a non-alternating request. Do not assemble one by hand.
+ * risking an orphaned `tool_use`. Do not assemble one by hand.
  */
 export interface SessionResumeState {
   readonly messages: readonly LlmMessage[];
@@ -79,56 +79,61 @@ function dropBoundaryOf(ordered: readonly SessionMessage[]): number {
   );
 }
 
+/** A completed exchange, including its structural rows and an explicit final text part (even empty). */
+export interface CompletedSessionTurn {
+  readonly user: SessionMessage;
+  readonly terminal: SessionMessage;
+  readonly messages: readonly SessionMessage[];
+}
+
 /**
- * Project the persisted transcript into the SURVIVING real `user`/`assistant` durable ROWS `AgentSession`
- * continues from — the ONE projection both the engine (→ `#messages`) and the host persister (→ the ADR-0062
- * boundary-mapping seed) derive from, so they can never drift (the step-3-review data-loss trap). It: sorts by
- * `sequenceNumber`; keeps only text-bearing `user`/`assistant` rows PAST the compaction boundary (`system`
- * markers + empty-text rows drop — the same `length > 0` guard the assistant-append uses); then rolls back a
- * trailing run of unanswered `user` rows (the process died mid-turn — the `sessionId+sequenceNumber` idempotency
- * analog of re-running the run-side incomplete node). Dropping empty rows BEFORE the trailing-user rollback is
- * load-bearing: an interrupted mid-tool-loop turn projects away its `tool`/text-less rows, re-exposing the
- * originating `user` so the rollback removes it (else the next `sendMessage` would emit two consecutive `user`s).
+ * The one durable turn projection for resume, boundary mapping, export and effect disclosure.
+ * A tool-call preamble is never a terminal. A new user abandons an unfinished exchange.
+ * Boundary filtering keeps WHOLE turns, never an orphaned structural row. Export/disclosure
+ * pass `false` to include completed turns from the entire append-only history.
  */
-function projectResumableRows(messages: readonly SessionMessage[]): SessionMessage[] {
+export function completedSessionTurns(
+  messages: readonly SessionMessage[],
+  honorBoundary = true,
+): CompletedSessionTurn[] {
   const ordered = [...messages].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
-  const boundary = dropBoundaryOf(ordered);
-  const surviving = ordered.filter(
-    (m) =>
-      (m.role === 'user' || m.role === 'assistant') &&
-      m.sequenceNumber > boundary &&
-      textOf(m.content).length > 0,
+  const boundary = honorBoundary ? dropBoundaryOf(ordered) : -1;
+  const turns: CompletedSessionTurn[] = [];
+  let user: SessionMessage | undefined;
+  let rows: SessionMessage[] = [];
+  for (const message of ordered) {
+    if (message.compaction !== undefined || message.role === 'system') continue;
+    if (message.role === 'user') {
+      user = message;
+      rows = [message];
+      continue;
+    }
+    if (user === undefined) continue;
+    rows.push(message);
+    const terminal =
+      message.role === 'assistant' &&
+      message.content.some((part) => part.type === 'text') &&
+      !message.content.some((part) => part.type === 'tool_call');
+    if (!terminal) continue;
+    if (user.sequenceNumber > boundary) turns.push({ user, terminal: message, messages: rows });
+    user = undefined;
+    rows = [];
+  }
+  return turns;
+}
+
+function projectResumableRows(messages: readonly SessionMessage[]): SessionMessage[] {
+  return completedSessionTurns(messages).flatMap((turn) =>
+    textOf(turn.terminal.content).length === 0 ? [turn.user] : [turn.user, turn.terminal],
   );
-  while (surviving.at(-1)?.role === 'user') surviving.pop();
-  return surviving;
 }
 
-/**
- * The durable `sequenceNumber`s of the rows a resumed session continues from (ADR-0062) — the SAME projection
- * {@link reconstructSessionState} resumes from, exposed so the host persister seeds its compaction/trim
- * boundary-mapping from an identical view (mirroring the engine's trailing-unanswered-`user` rollback + empty-row
- * drop, not just a role filter — the step-3-review fix that prevents a silent kept-message loss on resume→compact).
- */
+/** Durable sequences of the text-only rows the model sees, including completed empty-final users. */
 export function resumableMessageSequences(messages: readonly SessionMessage[]): number[] {
-  return projectResumableRows(messages).map((m) => m.sequenceNumber);
+  return projectResumableRows(messages).map((message) => message.sequenceNumber);
 }
 
-/**
- * Reconstruct the {@link SessionResumeState} from a loaded session record + its transcript (any order). Sorts
- * by `sequenceNumber`, **projects first** (to the text-only in-flight transcript), then rolls back a trailing
- * unanswered turn, and re-seeds the turn count + the running cost (the record's total). Pure and
- * deterministic — the host passes the result to {@link AgentSession.resume}.
- *
- * Projecting BEFORE trimming is load-bearing: an interrupted mid-tool-loop turn leaves a `tool` / text-less
- * `assistant` tail in the durable record; the projection drops those, so the trailing-`user` rollback then
- * sees and removes the originating unanswered `user` — otherwise it would survive as a dangling turn and the
- * next `sendMessage` would emit two consecutive `user` messages (a non-alternating, provider-rejected request).
- *
- * NOTE: `turnCount` counts the **text-producing** assistant turns that survive projection — one per completed
- * logical exchange (a within-turn tool_call-only assistant row is not double-counted). A turn that engaged a
- * provider but produced no committed text leaves no exchange, so the resumed hard-cap counter is a lower bound
- * (the cap is a safety limit, not exact accounting; AgentSessionRecord carries no turn counter to make it exact).
- */
+/** Reconstruct only completed surviving turns; empty finals count, interrupted tool loops roll back. */
 export function reconstructSessionState(
   record: AgentSessionRecord,
   messages: readonly SessionMessage[],
@@ -158,7 +163,7 @@ export function reconstructSessionState(
   }));
   return {
     messages: committed,
-    turnCount: committed.filter((message) => message.role === 'assistant').length,
+    turnCount: completedSessionTurns(ordered).length,
     cumulativeCostMicrocents: record.totalCostMicrocents,
     conservativeCostMicrocents: record.totalConservativeMicrocents,
     ...(compactionSummary === undefined ? {} : { compactionSummary }),

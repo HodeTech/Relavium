@@ -631,7 +631,7 @@ session variables); `agent_snapshot` freezes the agent config the session ran ag
 | `total_output_tokens` | INTEGER | NOT NULL DEFAULT 0 |
 | `total_cost_microcents` | INTEGER | NOT NULL DEFAULT 0 |
 | `total_conservative_microcents` | INTEGER | NOT NULL DEFAULT 0 — the session's **conservative** total ([ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) §1/§4): money a provider MAY already have billed for an attempt that returned no trustworthy usage. An **ESTIMATE**, deliberately apart from `total_cost_microcents` — it consumes cap capacity across a resume without ever inflating a reported cost. Single-writer (`recordSessionConservativeCommitment`), like its realized sibling |
-| `effect_turn_high_water` | INTEGER | NOT NULL DEFAULT 0 (migration 0017) — durable effect identity, written only by `SessionStore.reserveEffectTurnKey`; never SET by session updates/turn flushes or exposed as the reconstructed `max_turns` count |
+| `effect_turn_high_water` | INTEGER | NOT NULL DEFAULT 0 (migration 0017) — durable effect identity, written only by the session effect-key allocation operations; never SET by session updates/turn flushes or exposed as the reconstructed `max_turns` count |
 | `exported_workflow_path` | TEXT | NULL — set when the session is exported to a `.relavium.yaml` |
 | `deleted_at` | INTEGER | NULL |
 | `created_at` | INTEGER | NOT NULL |
@@ -746,13 +746,12 @@ and replaces raw tool values with the following structural parts:
 | Part | Required fields | Meaning |
 |---|---|---|
 | `tool_call` (assistant row) | `type`, `id`, `name`, `argsBytes` | Registry-resolved tool id, or fixed `unknown_tool`; UTF-8 bytes of the JSON arguments issued by the model. No arguments, signatures, provider ids or digests |
-| `tool_result` (tool row) | `type`, `toolCallId`, `resultBytes`, `outcome` | Matching engine id; UTF-8 bytes of the bounded model-facing JSON result, rather than the full host result or event summary; `ok` / `error` / `denied` / `cancelled` |
+| `tool_result` (tool row) | `type`, `toolCallId`, `resultBytes`, `outcome` | Matching engine id; UTF-8 bytes of the bounded model-facing JSON result (0 when the result is absent), rather than the full host result or event summary; `ok` / `error` / `denied` / `cancelled` |
 
 An optional result `media` array contains strict handle-only media metadata (`type`, `mimeType`,
 `source`, optional `byteLength` / `durationMs`). It has no filename or transcript field. Sizes are
 non-negative safe integers. Names have the admitted tool charset `[a-zA-Z0-9_-]`, at most 128
-characters; the registry outcome, not syntax alone, establishes resolution. The completed-turn
-producer is wired in step 3. Generic durable run/event/IPC tool parts retain their existing shape.
+characters; the registry outcome, not syntax alone, establishes resolution. The completed-turn producer derives these fields from actual registry outcomes. Generic durable run/event/IPC tool parts retain their existing shape.
 
 The engine id is `session-tool:<effect-turn-key>:<slot>`, with canonical decimal safe integers,
 a positive turn key and a non-negative whole-turn slot. No provider- or model-chosen string is part
@@ -765,7 +764,17 @@ an issued key. Open-time initialization, under the migration lock, seeds legacy 
 historical terminal assistant rows (empty text counts; tool preambles do not), ignoring compaction,
 and from the greatest retained session effect scope key before any cleanup. Subsequent journal
 sweeps cannot lower it. Allocation repeats initialization for a new session whose mark is still zero.
-Engine dispatch and per-call effect-attempt joining are wired in step 3.
+The required engine host allocator is late-bound by each interactive persister. The engine caches
+one key for idle `!` commands and the next model turn, consuming it on every model-turn exit.
+Commands use disjoint negative slots and engine ids `session-command:<key>:<ordinal>`; model
+calls use non-negative slots across all tool rounds. Per-call ids reach `run_effects.attempt_json`
+and the structural transcript unchanged; provider ids remain within the live protocol.
+
+The fresh-only `reserveOneShotEffectTurnKey` owns an outer `BEGIN IMMEDIATE` and commits
+an already-tombstoned, minimal identity row with high-water 1 for `agent run`. It stores no
+snapshot, context content, prompt or transcript. Existing live/tombstoned ids and row-less effect
+scope collisions are refused. The tombstone stays absent from listing, resume and export and is
+retained after teardown; normal allocation still refuses missing/deleted sessions.
 
 All supplied scalar metadata is validated on write and read: `content` equals the canonical text
 parts joined with two newlines; `tool_calls` equals the canonical structural call array; `name`

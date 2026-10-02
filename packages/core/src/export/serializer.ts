@@ -12,9 +12,8 @@
  *
  * Both are deterministic (no wall-clock / randomness) and platform-free — the host (CLI `relavium
  * chat-export`, the desktop "Export to Canvas") loads the session via the `@relavium/db` `SessionStore`
- * and writes the file; this module never touches the DB or the filesystem. A `secret` value can never
- * appear (secrets never reach a message, ADR-0029) and a reasoning `signature` can never appear (the
- * transcript is `SessionContentPart`, which structurally omits it, ADR-0030).
+ * and writes the file; this module never touches the DB or the filesystem. Structural tool values and
+ * reasoning signatures are excluded by `SessionContentPart`. User-authored text can still be sensitive.
  */
 
 import {
@@ -24,6 +23,8 @@ import {
   type SessionMessage,
 } from '@relavium/shared';
 import { stringify as stringifyYaml } from 'yaml';
+
+import { completedSessionTurns } from '../engine/session-resume.js';
 
 import type { AgentDefinition } from '../agent-parser.js';
 import type { WorkflowDefinition } from '../parser.js';
@@ -71,7 +72,8 @@ function toolsUsedIn(content: readonly SessionContentPart[]): string[] {
       (part): part is Extract<SessionContentPart, { type: 'tool_call' }> =>
         part.type === 'tool_call',
     )
-    .map((part) => part.name);
+    .map((part) => part.name)
+    .filter((name) => name !== 'unknown_tool');
 }
 
 /**
@@ -85,64 +87,6 @@ function toolsUsedIn(content: readonly SessionContentPart[]): string[] {
  */
 function neutralizeInterpolation(text: string): string {
   return text.replace(/\{(?=\{)/g, '{ ');
-}
-
-/** A logical turn: the contiguous `user` message(s) plus the assistant/tool messages that answer them. */
-interface TurnDraft {
-  promptSegments: string[];
-  toolNames: string[];
-  /** Any assistant message (incl. a tool_call-only one) — marks the turn answered, so the next `user` is new. */
-  hasAssistant: boolean;
-  /** An assistant message that produced final text — marks a COMPLETED exchange (gates node promotion). */
-  hasAssistantText: boolean;
-}
-
-/**
- * Segment an ordered transcript into logical TURNS. The spec maps one `agent` node per **turn**, not per
- * assistant message — a host may persist a single turn as split rows (`user → assistant(tool_call) → tool →
- * assistant(text)`), and emitting a node per assistant message would split that one turn into two (the second
- * losing its prompt + tools). A turn begins at a `user` message that follows an already-answered turn;
- * contiguous `user` messages merge into one prompt; `tool`/`system` messages are not delimiters and add no
- * node content (a turn's tools come from its assistant messages' `tool_call` parts). Mirrors the turn model
- * `reconstructSessionState` (1.Y) uses.
- */
-function groupIntoTurns(ordered: readonly SessionMessage[]): TurnDraft[] {
-  const turns: TurnDraft[] = [];
-  let current: TurnDraft | null = null;
-  for (const message of ordered) {
-    if (message.role === 'user') {
-      if (current?.hasAssistant) {
-        turns.push(current);
-        current = null;
-      }
-      current ??= {
-        promptSegments: [],
-        toolNames: [],
-        hasAssistant: false,
-        hasAssistantText: false,
-      };
-      const text = textOf(message.content);
-      if (text.length > 0) {
-        current.promptSegments.push(text);
-      }
-    } else if (message.role === 'assistant') {
-      current ??= {
-        promptSegments: [],
-        toolNames: [],
-        hasAssistant: false,
-        hasAssistantText: false,
-      };
-      current.hasAssistant = true;
-      if (textOf(message.content).length > 0) {
-        current.hasAssistantText = true; // a final-text assistant message completes the exchange
-      }
-      current.toolNames.push(...toolsUsedIn(message.content));
-    }
-  }
-  if (current !== null) {
-    turns.push(current);
-  }
-  return turns;
 }
 
 /**
@@ -169,8 +113,8 @@ function workflowIdFor(record: AgentSessionRecord): string {
  * Map a persisted session + its ordered transcript into a linear-chain scaffold `WorkflowDefinition`
  * (ADR-0026). Deterministic — the same `record` + `messages` always produce the same definition (no
  * wall-clock / randomness), so the emitted YAML round-trips. Assumes a well-formed, user-initiated
- * transcript (each turn opens with a `user` message, as `AgentSession` emits); a malformed assistant-first
- * transcript still yields a valid workflow, just with a prompt-less leading agent node.
+ * transcript (each turn opens with a `user` message, as `AgentSession` emits). Orphaned assistant rows
+ * remain in metadata and never become completed-turn nodes.
  */
 export function sessionToWorkflow(
   record: AgentSessionRecord,
@@ -183,18 +127,11 @@ export function sessionToWorkflow(
   let previousNodeId = 'input';
   let turnIndex = 0;
 
-  for (const turn of groupIntoTurns(ordered)) {
-    if (!turn.hasAssistantText) {
-      // Promote only COMPLETED exchanges (a turn that produced final assistant text). A user-only turn or an
-      // interrupted tool-loop turn (assistant tool_call + tool result, no final text) is skipped — matching
-      // reconstructSessionState's rollback (1.Y) so export and resume agree on what a turn is. The raw attempt
-      // is still preserved verbatim under metadata.relaviumExport.
-      continue;
-    }
+  for (const turn of completedSessionTurns(ordered, false)) {
     turnIndex += 1;
     const nodeId = `turn-${turnIndex}`;
-    const prompt = neutralizeInterpolation(turn.promptSegments.join('\n\n'));
-    const tools = [...new Set(turn.toolNames)]; // dedupe across the turn, first-seen order (determinism-safe)
+    const prompt = neutralizeInterpolation(textOf(turn.user.content));
+    const tools = [...new Set(turn.messages.flatMap((message) => toolsUsedIn(message.content)))]; // dedupe across the turn, first-seen order (determinism-safe)
     const node: AgentNode = {
       id: nodeId,
       type: 'agent',

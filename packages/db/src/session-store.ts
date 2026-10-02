@@ -21,7 +21,10 @@ import {
   sessionCosts,
 } from './schema.js';
 import { epochMsToIso, isoToEpochMs } from './time.js';
-import { reserveSessionEffectTurnKey } from './session-effect-turns.js';
+import {
+  reserveSessionEffectTurnKey,
+  reserveOneShotSessionEffectTurnKey,
+} from './session-effect-turns.js';
 
 /**
  * Session persistence (workstream **1.X**) — the directly-stored, append-only transcript layer over the
@@ -367,6 +370,8 @@ export interface SessionStore {
    * Owns its outer commit and refuses transaction_active if called inside any open transaction.
    */
   reserveEffectTurnKey: (sessionId: string) => number;
+  /** Fresh, already-tombstoned bookkeeping only; no one-shot transcript is persisted. */
+  reserveOneShotEffectTurnKey: (sessionId: string, now: number) => number;
   /** Insert a new `agent_sessions` row. */
   createSession: (record: AgentSessionRecord) => void;
   /** Overwrite a session's mutable fields (status, totals, title, exportedWorkflowPath, …) by id. */
@@ -534,6 +539,8 @@ export function createSessionStore(db: Db): SessionStore {
 
   return {
     reserveEffectTurnKey: (sessionId) => reserveSessionEffectTurnKey(db, sessionId),
+    reserveOneShotEffectTurnKey: (sessionId, now) =>
+      reserveOneShotSessionEffectTurnKey(db, sessionId, now),
     // The three single-statement session writers below go through `withBusyRetry` (#228). They are NOT wrapped
     // in a transaction — a lone INSERT/UPDATE already takes the write lock immediately, so `BEGIN IMMEDIATE`
     // would buy nothing, which is why `database-schema.md` exempts single-statement writes from it. The retry

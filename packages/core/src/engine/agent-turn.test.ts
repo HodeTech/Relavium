@@ -1777,10 +1777,10 @@ describe('media attachments are delivered on a synthesized user message (`CR-50`
   }
 
   /** A registry whose one tool answers with a text descriptor plus a handle-only media attachment. */
-  function mediaRegistry(): ToolRegistry {
+  function mediaRegistry(attachment: DurableMediaPart = ATTACHMENT): ToolRegistry {
     return stubRegistry((call) => ({
       output: `image/png, 5 bytes, ${HANDLE} — attached below.`,
-      mediaAttachments: markUntrusted([ATTACHMENT]),
+      mediaAttachments: markUntrusted([attachment]),
       truncated: false,
       toolResult: markUntrusted({
         type: 'tool_result' as const,
@@ -1804,6 +1804,33 @@ describe('media attachments are delivered on a synthesized user message (`CR-50`
     { type: 'tool_call_end', id: 'c1' },
     STOP('tool_use'),
   ];
+
+  it('records only tool media handles and safe metadata, never synthesized user text or media hints', async () => {
+    const { provider } = capturingProvider([
+      toolTurn,
+      [{ type: 'text_delta', text: 'done' }, STOP()],
+    ]);
+    const result = await runAgentTurn(
+      baseParams(provider, {
+        registry: mediaRegistry({
+          ...ATTACHMENT,
+          name: 'private-name-sentinel',
+          transcript: 'private-transcript-sentinel',
+          byteLength: 5,
+        }),
+        sessionToolCallId: () => 'session-tool:42:0',
+      }),
+    );
+    expect(result.toolHistory[0]?.result.media).toEqual([{ ...ATTACHMENT, byteLength: 5 }]);
+    expect(result.toolHistory[0]?.call).toEqual({
+      type: 'tool_call',
+      id: 'session-tool:42:0',
+      name: 'read_media',
+      argsBytes: 2,
+    });
+    expect(JSON.stringify(result.toolHistory)).not.toContain('sentinel');
+    expect(JSON.stringify(result.toolHistory)).not.toContain('Relavium');
+  });
 
   it('appends the media on a `user` message AFTER the tool result, in that order', async () => {
     const { provider, sent } = capturingProvider([

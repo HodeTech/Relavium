@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
 import { createEffectJournalStore } from './effect-journal-store.js';
-import { agentSessions } from './schema.js';
+import { agentSessions, sessionMessages } from './schema.js';
 import { SessionEffectTurnError } from './session-effect-turns.js';
 import { createSessionStore } from './session-store.js';
 
@@ -63,6 +63,59 @@ function refusal(action: () => number, code: SessionEffectTurnError['code']): vo
     if (error instanceof SessionEffectTurnError) expect(error.code).toBe(code);
   }
 }
+
+describe('fresh one-shot effect identity', () => {
+  it('atomically retains only hidden bookkeeping, never a resumable session or transcript', () => {
+    runMigrations(client.db);
+    const store = createSessionStore(client.db);
+    expect(store.reserveOneShotEffectTurnKey('once', 1234)).toBe(1);
+    expect(store.listSessions()).toEqual([]);
+    expect(store.loadFull('once')).toBeUndefined();
+    expect(client.db.select().from(sessionMessages).all()).toEqual([]);
+    expect(client.db.select().from(agentSessions).get()).toMatchObject({
+      id: 'once',
+      agentSlug: 'one-shot',
+      effectTurnHighWater: 1,
+      deletedAt: 1234,
+      agentSnapshot: null,
+      workingDir: null,
+      gitRef: null,
+      title: null,
+      contextJson: '{}',
+    });
+    const other = createClient(join(root, 'history.db'));
+    try {
+      expect(createSessionStore(other.db).listSessions()).toEqual([]);
+      refusal(
+        () => createSessionStore(other.db).reserveOneShotEffectTurnKey('once', 2345),
+        'history_invalid',
+      );
+      refusal(() => createSessionStore(other.db).reserveEffectTurnKey('once'), 'session_missing');
+    } finally {
+      other.sqlite.close();
+    }
+  });
+
+  it('refuses an outer transaction, a live session, and an existing row-less effect scope', () => {
+    runMigrations(client.db);
+    const store = createSessionStore(client.db);
+    client.db.transaction(() =>
+      refusal(() => store.reserveOneShotEffectTurnKey('once', 1234), 'transaction_active'),
+    );
+    store.createSession(record);
+    refusal(() => store.reserveOneShotEffectTurnKey('s1', 1234), 'history_invalid');
+    const journal = createEffectJournalStore(client.db, { uuid: () => 'effect', now: () => 1234 });
+    journal.prepare(
+      { scope: 'session:orphan:8', slot: 0, toolId: 'run_command' },
+      { kind: 'session', sessionId: 'orphan', turn: 8 },
+      { providerAttempt: 1, toolCallId: 'legacy' },
+      3,
+      'd',
+    );
+    refusal(() => store.reserveOneShotEffectTurnKey('orphan', 1234), 'history_invalid');
+    expect(client.db.select().from(agentSessions).all()).toHaveLength(1);
+  });
+});
 
 describe('durable session effect-turn high-water mark (ADR-0098)', () => {
   it('issues distinct keys across independent stores, a crash with no transcript, and reopen', () => {

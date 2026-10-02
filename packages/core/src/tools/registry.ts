@@ -338,19 +338,15 @@ async function prepareEffect(
   ctx: ToolDispatchContext,
 ): Promise<EffectPrepareVerdict> {
   try {
-    return await ctx.effects.prepare(
+    const args = [
       ctx.effectSlot,
       def.id,
       tier,
-      // **The SAME projection the event stream gets, and for the same reason.** Redacted here because only
-      // the engine knows which args are secret-bearing; hashed in the port because only the host can (core
-      // is platform-free). `sanitizeInput` is used rather than a key-name filter because a key-name filter
-      // misses exactly what §11 names as the threat: a model-placed credential in an arbitrary position — an
-      // `Authorization` header value, a token in a URL query — which `redactSecretShapedValue` scrubs BY
-      // SHAPE. A digest is a permanent equality oracle, and a low-entropy secret is recoverable from one on
-      // a `history.db` that may be unencrypted at rest.
       sanitizeInput(def, effective, ctx.secretArgKeys),
-    );
+    ] as const;
+    return await (ctx.effectAttempt === undefined
+      ? ctx.effects.prepare(...args)
+      : ctx.effects.prepare(...args, undefined, ctx.effectAttempt));
   } catch (cause) {
     // A CONFLICT is a refusal, not a fault: another attempt already holds this identity, so the effect must
     // not be dispatched — and must not be retried either, because a retry re-collides, burns the whole node

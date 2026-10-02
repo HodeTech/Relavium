@@ -26,9 +26,9 @@ import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
 import { applyChatMode, makeChatModeEnv } from './chat-mode-host.js';
 import { buildDefaultChatAgent } from './default-agent.js';
 import {
-  buildChatSession,
+  buildChatSession as buildFreshSession,
   buildGovernorWiring,
-  buildResumedChatSession,
+  buildResumedChatSession as buildRestoredSession,
   swapAgentModel,
   type ChatBudgetWarning,
 } from './session-host.js';
@@ -41,6 +41,20 @@ import {
   unresolvedResolver,
 } from './test-support.js';
 import { createInMemoryEffectJournal } from '@relavium/core';
+
+// Unit hosts use an explicit reference allocator. Persistence integration tests use the real SQLite port.
+async function buildChatSession(opts: Parameters<typeof buildFreshSession>[0]) {
+  const built = await buildFreshSession(opts);
+  let key = 0;
+  built.attachEffectTurnAllocator(() => ++key);
+  return built;
+}
+async function buildResumedChatSession(opts: Parameters<typeof buildRestoredSession>[0]) {
+  const built = await buildRestoredSession(opts);
+  let key = 0;
+  built.attachEffectTurnAllocator(() => ++key);
+  return built;
+}
 
 /** A tool-call turn that carries JSON args (the `toolUseTurn` helper sends none) — for read_file/write_file. */
 const callWithArgs = (id: string, name: string, args: unknown): StreamChunk[] => [

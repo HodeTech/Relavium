@@ -62,6 +62,19 @@ export const SessionToolResultPartSchema = z
   .strict();
 export type SessionToolResultPart = z.infer<typeof SessionToolResultPartSchema>;
 
+/** One completed dispatch; no provider id, model arguments or host result crosses this boundary. */
+export const SessionToolHistoryEntrySchema = z
+  .object({ call: SessionToolCallPartSchema, result: SessionToolResultPartSchema })
+  .strict()
+  .refine((entry) => entry.call.id === entry.result.toolCallId, 'tool identities must match');
+export type SessionToolHistoryEntry = z.infer<typeof SessionToolHistoryEntrySchema>;
+export const SessionToolHistorySchema = z
+  .array(SessionToolHistoryEntrySchema)
+  .refine(
+    (entries) => new Set(entries.map((entry) => entry.call.id)).size === entries.length,
+    'tool identities must be unique',
+  );
+
 /** Session-only persistence union; generic durable run/event/IPC content is deliberately unchanged. */
 export const SessionContentPartSchema = z.union([
   SessionNonToolContentPartSchema,

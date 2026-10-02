@@ -342,7 +342,7 @@ export type EffectCorrelation =
   | { readonly kind: 'session'; readonly sessionId: string; readonly turn: number };
 
 /**
- * Which effect WITHIN one correlation — a zero-based ordinal over the tool calls of a single model response,
+ * Which effect WITHIN one correlation — a zero-based ordinal over all tool calls of one model turn,
  * in the order the provider returned them. It disambiguates two effects in one turn, which the correlation
  * alone cannot.
  *
@@ -377,7 +377,7 @@ export interface EffectAttemptId {
   readonly nodeAttempt?: number;
   /** The within-chain provider failover attempt — the counter that actually reaches the dispatch. */
   readonly providerAttempt: number;
-  /** The provider's own id for this tool call. */
+  /** The engine-assigned id on a session; a provider/wiring audit id on the run path. Never a dedup key. */
   readonly toolCallId: string;
   /** The ADR-0079 fence that owned the run when this occurrence happened; absent on the session path. */
   readonly fence?: RunFence;
@@ -604,6 +604,8 @@ export interface EffectDispatchPort {
      */
     redactedArgs: unknown,
     targetIdempotencyKey?: string,
+    /** Per-call occurrence, overriding the port's wiring-time provider audit fields. */
+    callAttempt?: Pick<EffectAttemptId, 'providerAttempt' | 'toolCallId'>,
   ) => Promise<EffectPrepareVerdict>;
   /** Durably record the outcome, immediately after the call returns or fails. */
   settle: (

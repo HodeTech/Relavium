@@ -24,6 +24,7 @@ import {
   EffectConflictError,
   EffectTransitionError,
   type EffectCorrelation,
+  type EffectAttemptId,
   type EffectDispatchPort,
   type EffectResumePort,
   effectScope,
@@ -726,6 +727,7 @@ export function createInMemoryEffectJournalStore(): {
     toolId: string;
     tier: EffectTier;
     state: EffectState;
+    attempt?: Pick<EffectAttemptId, 'providerAttempt' | 'toolCallId'>;
     result?: unknown;
   }[];
 } {
@@ -735,6 +737,7 @@ export function createInMemoryEffectJournalStore(): {
     toolId: string;
     tier: EffectTier;
     state: EffectState;
+    attempt?: Pick<EffectAttemptId, 'providerAttempt' | 'toolCallId'>;
     /** A stand-in for the host's SHA-256: only EQUALITY matters, and core cannot hash (engine purity). */
     argsKey: string;
     /**
@@ -755,7 +758,7 @@ export function createInMemoryEffectJournalStore(): {
     for: (correlation) => {
       const scope = effectScope(correlation);
       return {
-        prepare: (slot, toolId, tier, redactedArgs) => {
+        prepare: (slot, toolId, tier, redactedArgs, _targetKey, callAttempt) => {
           const held = rows.get(key(scope, slot, toolId));
           const argsKey = JSON.stringify(redactedArgs) ?? 'undefined';
           if (held !== undefined) {
@@ -782,6 +785,7 @@ export function createInMemoryEffectJournalStore(): {
             toolId,
             tier,
             state: 'prepared',
+            ...(callAttempt === undefined ? {} : { attempt: { ...callAttempt } }),
             argsKey,
           });
           return Promise.resolve({ outcome: 'proceed' });
@@ -855,6 +859,7 @@ export function createInMemoryEffectJournalStore(): {
         toolId: row.toolId,
         tier: row.tier,
         state: row.state,
+        ...(row.attempt === undefined ? {} : { attempt: { ...row.attempt } }),
         ...(row.resultJson === undefined ? {} : { result: JSON.parse(row.resultJson) as unknown }),
       })),
   };
@@ -867,6 +872,7 @@ export function createInMemoryEffectJournal(correlation: EffectCorrelation): Eff
     toolId: string;
     tier: EffectTier;
     state: EffectState;
+    attempt?: Pick<EffectAttemptId, 'providerAttempt' | 'toolCallId'>;
     result?: unknown;
   }[];
 } {

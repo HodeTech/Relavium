@@ -141,8 +141,18 @@ The generic `DurableContentPart` used by run/event/IPC positions is unchanged.
 `SessionMessage` is mapped into the seam's `LlmMessage`, rather than copied. The next turn sees the
 text-only projection: carrying earlier tool rounds is deferred. Both forms are Relavium-owned, so
 no vendor SDK type crosses the seam ([ADR-0011](../../decisions/0011-internal-llm-abstraction.md)).
-The structural store boundary landed in W7 step 2; completed-turn event production and persistence
-are wired in step 3. Until that wiring lands, normal engine sessions still append text only.
+A completed turn persists its user row, ordered structural call/result rows, and one terminal
+assistant row containing a text part, even when that text is empty. The additive `toolHistory`
+field on [the completed-turn event](sse-event-schema.md#session-event-namespace) supplies only
+structure; streaming tool inputs and result summaries never feed transcript persistence.
+The persister commits the entire exchange and session totals atomically. A failure latches
+and stops later model/command egress. Errors and aborts commit no transcript; their billed cost remains real.
+
+Resume, model reseat, export and boundary mapping share `completedSessionTurns`. A tool-call row
+with preamble text is never a terminal, and an unfinished exchange rolls back. An empty-final turn
+restores its user message alone and counts as a completed turn. Compaction/trim boundaries retain
+whole turns; `/trim` still takes message units. Export reads all historical completed turns,
+including those superseded by a working-context boundary.
 
 > **Relationship to the run `messages` table.** A session's messages are persisted in
 > **`session_messages`**, bound to a **session** — distinct from the existing per-step run `messages`
@@ -204,16 +214,12 @@ reproducible and round-trips):
 
 - **Nodes** — a single `input` node (`id: input`), then **one `agent` node per COMPLETED logical turn** in
   `sequenceNumber` order (`id: turn-1`, `turn-2`, … — 1-based), then one `output` node (`id: output`). A
-  *logical turn* is the contiguous `user` message(s) plus the assistant/tool messages answering them (a host
-  may persist a single turn as split rows — `user → assistant(tool_call) → tool → assistant(text)`); it is one
-  node, not one per assistant message. A turn is *completed* only if it produced final assistant **text** — an
-  unanswered or interrupted-mid-tool-loop turn (no final text) is **omitted from the chain** (kept verbatim in
-  `metadata`), so export and `reconstructSessionState`'s rollback (1.Y) agree on what a turn is. Each `agent`
-  node carries: `agent_ref` = the session's `agentSlug`; `prompt_template` = the **text** of the turn's
-  `user` message(s), with interpolation openers neutralized (omitted if empty); `tools` = the deduped union of
-  tool names invoked across the turn's assistant messages (the `tool_call` parts), omitted when none. The
-  exporter reads that union, but **no persisted message carries a `tool_call` part today**, so `tools` is
-  currently always omitted (`W7`, ADR-0095). No
+  *logical turn* begins at its user row and ends at its terminal assistant text part (empty text counts).
+  Structural tool preambles/results do not create nodes. An interrupted exchange is omitted from the chain
+  and remains in the full metadata. Each `agent` node carries `agent_ref` = the session's `agentSlug`;
+  `prompt_template` = the user text, with interpolation openers neutralised (omitted if empty);
+  `tools` = the deduplicated union of resolved names in its structural calls, including admitted MCP ids.
+  The fixed unresolved `unknown_tool` marker never becomes a grant. No
   `model`/`temperature`/`max_tokens`/`retry`/`output_schema` are emitted — those are authoring concerns the
   user adds on the canvas, not replay fields.
 - **Edges** — a straight linear chain `input → turn-1 → … → turn-n → output` (just `{ from, to }`); when a
@@ -225,7 +231,7 @@ reproducible and round-trips):
   entry so `agent_ref` resolves; when no snapshot was captured, `agents` is omitted and `agent_ref` resolves
   against the workspace agent registry at author time (the file still parses — `agent_ref` resolution is the
   engine's job, not the schema's).
-- **`metadata`** — the persisted transcript, today text-only, under a single reserved key: `metadata.relaviumExport = { source:
+- **`metadata`** — the full persisted transcript, including content-free tool structure, under a single reserved key: `metadata.relaviumExport = { source:
   'session', sessionId, agentSlug, title?, createdAt, updatedAt, messages: SessionMessage[] }`. It is a real
   schema field (`z.record`), so it survives parse → serialize round-trips.
 - **Determinism + exclusions** — the YAML emitter (1.Z, `serializeWorkflow`; 1.L is parse-only) sorts map
