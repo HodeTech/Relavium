@@ -14,13 +14,13 @@
  * chat-export`, the desktop "Export to Canvas") loads the session via the `@relavium/db` `SessionStore`
  * and writes the file; this module never touches the DB or the filesystem. A `secret` value can never
  * appear (secrets never reach a message, ADR-0029) and a reasoning `signature` can never appear (the
- * transcript is `DurableContentPart`, which structurally omits it, ADR-0030).
+ * transcript is `SessionContentPart`, which structurally omits it, ADR-0030).
  */
 
 import {
   SCHEMA_VERSION,
   type AgentSessionRecord,
-  type DurableContentPart,
+  type SessionContentPart,
   type SessionMessage,
 } from '@relavium/shared';
 import { stringify as stringifyYaml } from 'yaml';
@@ -57,18 +57,18 @@ export function serializeAgent(agent: AgentDefinition): string {
 }
 
 /** The concatenated `text` parts of a durable content array (non-text parts are dropped). */
-function textOf(content: readonly DurableContentPart[]): string {
+function textOf(content: readonly SessionContentPart[]): string {
   return content
-    .filter((part): part is Extract<DurableContentPart, { type: 'text' }> => part.type === 'text')
+    .filter((part): part is Extract<SessionContentPart, { type: 'text' }> => part.type === 'text')
     .map((part) => part.text)
     .join('\n\n');
 }
 
 /** The tool names invoked in a turn — the `tool_call` parts of an assistant message's content. */
-function toolsUsedIn(content: readonly DurableContentPart[]): string[] {
+function toolsUsedIn(content: readonly SessionContentPart[]): string[] {
   return content
     .filter(
-      (part): part is Extract<DurableContentPart, { type: 'tool_call' }> =>
+      (part): part is Extract<SessionContentPart, { type: 'tool_call' }> =>
         part.type === 'tool_call',
     )
     .map((part) => part.name);

@@ -73,10 +73,13 @@ export {
   fromAgentSessionRow,
   toSessionMessageRow,
   fromSessionMessageRow,
+  SessionMessageBoundaryError,
   type SessionStore,
   type SessionMessageMeta,
   LEGACY_COST_SENTINEL,
 } from './session-store.js';
+
+export { SessionEffectTurnError } from './session-effect-turns.js';
 
 // Run history (2.H) — the SQLite-backed RunStore the CLI host injects (durable persist-before-deliver,
 // ADR-0036) plus the list/logs/status read API (2.I) and the cross-process resume substrate (2.G). The

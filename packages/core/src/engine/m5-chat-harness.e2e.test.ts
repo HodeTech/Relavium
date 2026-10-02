@@ -300,7 +300,7 @@ describe('1.AA — chat harness (1.m5 agent-first sub-spine)', () => {
         sequenceNumber: 1,
         role: 'assistant',
         content: [
-          { type: 'tool_call', id: 'c1', name: 'echo', args: {} },
+          { type: 'tool_call', id: 'session-tool:1:0', name: 'echo', argsBytes: 2 },
           { type: 'text', text: 'echo received' },
         ],
         modelId: 'claude-opus-4-8',

@@ -2050,6 +2050,15 @@ cleared the complete step and final corrections. **Step 1 is closed; step 2 proc
 The maintainer has been asked for the live capture artifact paths; independent steps 2–6 proceed
 while that evidence is pending.
 
+**Step 2 implementation checkpoint, 2026-10-02:** the strict session-only structural content union,
+whole metadata boundary and durable high-water allocator are implemented; the engine dispatch/event/
+persister connections remain step 3. Migration 0017 adds one column without rebuilding a table.
+The 0016 upgrade, historical empty-final/compaction floor, post-sweep/reopen identity, stale flush,
+exhaustion, corrupt mark and exact session-scope tests pass. Two real processes issue 200 unique keys.
+Required lint/typecheck/test, build/format, seam/purity/dependency/tools/smoke checks pass; root coverage
+exits 0 (289 suites, 6,367 passing tests, 11 skipped). The full committed-migration CI gate and two
+fresh independent review rounds are required before step 2 closes. All six W7 items remain open.
+
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A
 coding agent cannot remember a file it read in the previous turn and calls the tool again.

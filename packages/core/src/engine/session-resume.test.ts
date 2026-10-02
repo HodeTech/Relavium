@@ -114,9 +114,11 @@ describe('reconstructSessionState (1.Y)', () => {
       msg(1, 'assistant', [{ type: 'text', text: 'a1' }]), // a completed exchange
       msg(2, 'user', [{ type: 'text', text: 'q2 — use a tool' }]), // the interrupted turn begins
       msg(3, 'assistant', [
-        { type: 'tool_call', id: 'c1', name: 'read_file', args: { path: 'x' } },
+        { type: 'tool_call', id: 'session-tool:1:0', name: 'read_file', argsBytes: 12 },
       ]),
-      msg(4, 'tool', [{ type: 'tool_result', toolCallId: 'c1', result: 'ok', isError: false }]), // died here
+      msg(4, 'tool', [
+        { type: 'tool_result', toolCallId: 'session-tool:1:0', resultBytes: 4, outcome: 'ok' },
+      ]), // died here
     ]);
     // the entire interrupted turn (user + tool_call + tool) is rolled back — the projection drops the
     // tool/text-less-assistant rows and the trailing-user rollback removes the originating q2.
@@ -130,7 +132,9 @@ describe('reconstructSessionState (1.Y)', () => {
   it('rolls back a turn whose assistant produced only a tool_call (no committed text)', () => {
     const state = reconstructSessionState(record(), [
       msg(0, 'user', [{ type: 'text', text: 'q' }]),
-      msg(1, 'assistant', [{ type: 'tool_call', id: 'c1', name: 'read_file', args: {} }]),
+      msg(1, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:1:0', name: 'read_file', argsBytes: 2 },
+      ]),
     ]);
     expect(state.messages).toEqual([]); // no completed exchange survives
     expect(state.turnCount).toBe(0);
@@ -139,8 +143,12 @@ describe('reconstructSessionState (1.Y)', () => {
   it('counts a completed tool-loop turn once (assistant tool_call → tool → assistant text)', () => {
     const state = reconstructSessionState(record(), [
       msg(0, 'user', [{ type: 'text', text: 'q' }]),
-      msg(1, 'assistant', [{ type: 'tool_call', id: 'c1', name: 'read_file', args: {} }]), // within-turn
-      msg(2, 'tool', [{ type: 'tool_result', toolCallId: 'c1', result: 'ok', isError: false }]),
+      msg(1, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:1:0', name: 'read_file', argsBytes: 2 },
+      ]), // within-turn
+      msg(2, 'tool', [
+        { type: 'tool_result', toolCallId: 'session-tool:1:0', resultBytes: 4, outcome: 'ok' },
+      ]),
       msg(3, 'assistant', [{ type: 'text', text: 'final answer' }]), // the completing text
     ]);
     expect(state.messages).toEqual([

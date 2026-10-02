@@ -136,6 +136,7 @@ erDiagram
     }
     agent_sessions {
         uuid id PK
+        int effect_turn_high_water
         uuid agent_id FK
         uuid model_id FK
         text status
@@ -630,6 +631,7 @@ session variables); `agent_snapshot` freezes the agent config the session ran ag
 | `total_output_tokens` | INTEGER | NOT NULL DEFAULT 0 |
 | `total_cost_microcents` | INTEGER | NOT NULL DEFAULT 0 |
 | `total_conservative_microcents` | INTEGER | NOT NULL DEFAULT 0 — the session's **conservative** total ([ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) §1/§4): money a provider MAY already have billed for an attempt that returned no trustworthy usage. An **ESTIMATE**, deliberately apart from `total_cost_microcents` — it consumes cap capacity across a resume without ever inflating a reported cost. Single-writer (`recordSessionConservativeCommitment`), like its realized sibling |
+| `effect_turn_high_water` | INTEGER | NOT NULL DEFAULT 0 (migration 0017) — durable effect identity, written only by `SessionStore.reserveEffectTurnKey`; never SET by session updates/turn flushes or exposed as the reconstructed `max_turns` count |
 | `exported_workflow_path` | TEXT | NULL — set when the session is exported to a `.relavium.yaml` |
 | `deleted_at` | INTEGER | NULL |
 | `created_at` | INTEGER | NOT NULL |
@@ -735,22 +737,41 @@ CREATE INDEX        idx_session_costs_session       ON session_costs (session_id
 >
 > **Secret-free by construction** — no free-text or JSON column.
 
-> **Mapping the durable `SessionMessage` to a row (1.X).** `@relavium/shared`'s `SessionMessage`
-> (agent-session-spec.md §"Session messages") carries the transcript body as a single
-> `content: DurableContentPart[]` array. That array is the **canonical** body and is stored as JSON in
-> **`content_parts`** — the source of truth the `@relavium/db` mapper round-trips. The remaining scalar
-> columns (`content`, `tool_calls`, `tool_call_id`, `name`, `finish_reason`, `model_id`) are **optional denormalized
-> metadata** (a plain-text projection for display/search, plus the "which model wrote this reply" label) the
-> persistence layer MAY populate; they are NULL when the durable parts array is the sole source of a row. They keep
-> `session_messages` in the run [`messages`](#messages) shape family without forcing a session to decompose its parts.
-> The per-message **cost/token counters are gone** — `input_tokens`, `output_tokens` and `cost_microcents` were
-> dropped in migration 0009 (see the note above); durable money attribution lives in [`session_costs`](#session_costs),
-> which is the only table that can express a turn whose tool loop billed two models. A provider continuation `signature` — on a `reasoning` part
-> or, since [ADR-0090](../../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md), on a
-> `tool_call` part — and inline media bytes are **structurally impossible** in `content_parts`:
-> `DurableContentPart` forks a signature-less arm for BOTH, so the persisted type has no field for either
-> and only handle-only media ([ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)/[ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)),
-> enforced at the mapper's parse boundary on both write and read.
+#### Session content parts
+
+`SessionMessage.content: SessionContentPart[]` is the canonical body in `content_parts`.
+This strict session-only union retains text, signature-less reasoning and handle-only user media,
+and replaces raw tool values with the following structural parts:
+
+| Part | Required fields | Meaning |
+|---|---|---|
+| `tool_call` (assistant row) | `type`, `id`, `name`, `argsBytes` | Registry-resolved tool id, or fixed `unknown_tool`; UTF-8 bytes of the JSON arguments issued by the model. No arguments, signatures, provider ids or digests |
+| `tool_result` (tool row) | `type`, `toolCallId`, `resultBytes`, `outcome` | Matching engine id; UTF-8 bytes of the bounded model-facing JSON result, rather than the full host result or event summary; `ok` / `error` / `denied` / `cancelled` |
+
+An optional result `media` array contains strict handle-only media metadata (`type`, `mimeType`,
+`source`, optional `byteLength` / `durationMs`). It has no filename or transcript field. Sizes are
+non-negative safe integers. Names have the admitted tool charset `[a-zA-Z0-9_-]`, at most 128
+characters; the registry outcome, not syntax alone, establishes resolution. The completed-turn
+producer is wired in step 3. Generic durable run/event/IPC tool parts retain their existing shape.
+
+The engine id is `session-tool:<effect-turn-key>:<slot>`, with canonical decimal safe integers,
+a positive turn key and a non-negative whole-turn slot. No provider- or model-chosen string is part
+of it. The key is separate from the reconstructed hard-turn-cap counter. The host allocates it in
+one `BEGIN IMMEDIATE` transaction, advancing `effect_turn_high_water` before dispatch; errors,
+aborts, crashes and missing transcript writes do not return a key. Exhaustion or an invalid persisted
+mark fails closed. Open-time initialization, under the migration lock, seeds legacy rows from all
+historical terminal assistant rows (empty text counts; tool preambles do not), ignoring compaction,
+and from the greatest retained session effect scope key before any cleanup. Subsequent journal
+sweeps cannot lower it. Allocation repeats initialization for a new session whose mark is still zero.
+Engine dispatch and per-call effect-attempt joining are wired in step 3.
+
+All supplied scalar metadata is validated on write and read: `content` equals the canonical text
+parts joined with two newlines; `tool_calls` equals the canonical structural call array; `name`
+matches a single call; `tool_call_id` matches a single result; `finish_reason` belongs to the fixed
+stop-reason vocabulary on an assistant row. Absent projections are NULL. Unknown metadata/part
+fields, raw tool values and malformed JSON are refused, never stripped. Boundary errors carry fixed
+codes rather than raw JSON/parser/unknown-property diagnostics. Money attribution remains solely
+in [`session_costs`](#session_costs).
 
 > A `secret`-typed value is never persisted into `session_messages` — per
 > [ADR-0029](../../decisions/0029-tool-policy-hardening.md) secrets are rejected from prompt/tool text

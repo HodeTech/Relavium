@@ -123,28 +123,26 @@ interface SessionMessage {
   sessionId: string;
   sequenceNumber: number;                 // monotonic per session
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: DurableContentPart[];          // the PERSISTED content union (ADR-0031): handle-only media, signature-less reasoning AND `tool_call`
+  content: SessionContentPart[];          // session-only durable union: structural tools, handle-only media, signature-less reasoning
   modelId?: string;                       // canonical model id for an assistant turn (fallback-aware; mirrors session_messages.model_id)
   compaction?: { droppedThroughSequence: number };  // ADR-0062: present ONLY on a role:'system' compaction/trim boundary marker — the durable seq through which older messages are superseded (mirrors session_messages.compaction_dropped_through_sequence)
   timestamp: string;                      // ISO 8601
 }
 ```
 
-> **Amended 2026-06-10 (ADR-0031 / 1.AD).** A persisted position references the **durable**
-> content union, not the in-flight `ContentPart`: `DurableContentPart` (owned by
-> `@relavium/shared`, see [llm-provider-seam.md](../shared-core/llm-provider-seam.md)
-> §"Seam-shape amendments (ADR-0031)") makes media handle-only and drops the reasoning
-> `signature` structurally — on a `reasoning` part and, since ADR-0090, on a `tool_call` part. The engine's `deInlineMedia` pass is the in-flight→durable
-> transform. Binding on the session-persistence implementation (1.X).
+The session-only `SessionContentPart` union is owned by `@relavium/shared`
+([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md)). Its exact structural
+tool fields, byte-size units and engine id form live in
+[the database contract](../shared-core/database-schema.md#session-content-parts). It refuses raw arguments,
+results, continuation signatures and unknown fields instead of silently dropping them. Non-tool media
+remains handle-only; tool attachments carry only handle metadata, never result filenames or transcripts.
+The generic `DurableContentPart` used by run/event/IPC positions is unchanged.
 
-`SessionMessage` is **mapped to the seam's `LlmMessage` at call time, never copied** — when the
-session calls a provider, the `AgentRunner` projects the persisted messages into the `LlmMessage`
-shape owned by [llm-provider-seam.md](../shared-core/llm-provider-seam.md). **No vendor SDK type
-crosses the seam** ([ADR-0011](../../decisions/0011-internal-llm-abstraction.md)): both unions are
-Relavium-owned types from `@relavium/shared`, but they are **distinct by design** —
-`DurableContentPart` is the persisted form (handle-only media, signature-less reasoning AND `tool_call`), while
-`ContentPart` is the in-flight form `LlmMessage` carries. The projection bridges the two existing
-types (resolving durable handles for egress); it never invents a new shape.
+`SessionMessage` is mapped into the seam's `LlmMessage`, rather than copied. The next turn sees the
+text-only projection: carrying earlier tool rounds is deferred. Both forms are Relavium-owned, so
+no vendor SDK type crosses the seam ([ADR-0011](../../decisions/0011-internal-llm-abstraction.md)).
+The structural store boundary landed in W7 step 2; completed-turn event production and persistence
+are wired in step 3. Until that wiring lands, normal engine sessions still append text only.
 
 > **Relationship to the run `messages` table.** A session's messages are persisted in
 > **`session_messages`**, bound to a **session** — distinct from the existing per-step run `messages`
@@ -231,18 +229,26 @@ reproducible and round-trips):
   'session', sessionId, agentSlug, title?, createdAt, updatedAt, messages: SessionMessage[] }`. It is a real
   schema field (`z.record`), so it survives parse → serialize round-trips.
 - **Determinism + exclusions** — the YAML emitter (1.Z, `serializeWorkflow`; 1.L is parse-only) sorts map
-  keys alphabetically and preserves array order, so `parse → serialize` is byte-stable. No `secret` value can
-  appear (secrets never enter a message — [ADR-0029](../../decisions/0029-tool-policy-hardening.md)) and no
-  provider continuation `signature` — on a `reasoning` OR a `tool_call` part (ADR-0090) — can appear (the
-  transcript is `DurableContentPart`, which structurally omits both —
-  [ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)).
+  keys alphabetically and preserves array order, so `parse → serialize` is byte-stable. The strict
+  `SessionContentPart` transcript refuses raw model-issued tool arguments/results and continuation
+  signatures ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md)). User
+  conversational text remains user data in the export.
 
 ## Validation and persistence
 
-- Validated against `AgentSessionSchema` / `SessionMessageSchema` / `SessionContextSchema` (Zod, in
+- Validated against `AgentSessionSchema` / strict `SessionMessageSchema` / `SessionContextSchema` (Zod, in
   `@relavium/shared`) — invalid input fails fast, like every other authored/runtime contract
   ([ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md)).
 - Persisted in the global `history.db` (`agent_sessions` + `session_messages`; on the CLI surface
   unencrypted at rest, `0600`/`0700`-guarded per [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)); the DDL is
-  canonical in [database-schema.md](../shared-core/database-schema.md). API keys never appear in a session
-  row, a message, or an event payload (see [keychain-and-secrets.md](../desktop/keychain-and-secrets.md)).
+  canonical in [database-schema.md](../shared-core/database-schema.md). Credential retrieval uses the OS
+  keychain and does not copy application-held keys into rows, messages or event payloads
+  ([keychain-and-secrets.md](../desktop/keychain-and-secrets.md)); this is distinct from the sensitive
+  content a user can supply in their conversation.
+
+The session store also validates every denormalized metadata field against the canonical body on
+write and read. A text projection must equal its canonical text; structural `toolCalls` must equal
+the canonical call parts; `name` and `toolCallId` must match the appropriate single part; `finishReason`
+is a fixed stop-reason value on an assistant row. Unknown fields and malformed JSON are refused with
+fixed boundary errors. This prevents metadata from becoming a second tool-content channel. User
+conversational text, including `!` output and `@` file injection, remains user data at rest.

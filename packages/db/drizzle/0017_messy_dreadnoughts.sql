@@ -1,0 +1,1 @@
+ALTER TABLE `agent_sessions` ADD `effect_turn_high_water` integer DEFAULT 0 NOT NULL;

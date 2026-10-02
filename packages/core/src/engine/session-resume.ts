@@ -14,7 +14,7 @@
  */
 
 import type { LlmMessage } from '@relavium/llm';
-import type { AgentSessionRecord, DurableContentPart, SessionMessage } from '@relavium/shared';
+import type { AgentSessionRecord, SessionContentPart, SessionMessage } from '@relavium/shared';
 
 import { markUntrusted, type Untrusted } from '../tools/untrusted.js';
 
@@ -62,9 +62,9 @@ export interface SessionResumeState {
 }
 
 /** The concatenated `text` parts of a durable content array (non-text parts are dropped). */
-function textOf(content: readonly DurableContentPart[]): string {
+function textOf(content: readonly SessionContentPart[]): string {
   return content
-    .filter((part): part is Extract<DurableContentPart, { type: 'text' }> => part.type === 'text')
+    .filter((part): part is Extract<SessionContentPart, { type: 'text' }> => part.type === 'text')
     .map((part) => part.text)
     .join('\n\n');
 }

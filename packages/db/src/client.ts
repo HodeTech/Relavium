@@ -9,6 +9,7 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { withMigrationLock } from './migrate-lock.js';
 import * as schema from './schema.js';
 import { withBusyRetry } from './retry.js';
+import { initializeSessionEffectTurnKeys } from './session-effect-turns.js';
 
 /**
  * The local SQLite client for `@relavium/db`, wired over `better-sqlite3`
@@ -185,5 +186,6 @@ export interface RunMigrationsOptions {
 export function runMigrations(db: Db, options: RunMigrationsOptions = {}): void {
   withMigrationLock(options.dbPath, () => {
     migrate(db, { migrationsFolder: MIGRATIONS_DIR });
+    initializeSessionEffectTurnKeys(db);
   });
 }

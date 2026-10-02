@@ -280,6 +280,11 @@ export interface SessionDeps {
    * deliberately run-path-only, while a session's external effects need journaling exactly as a run's do.
    */
   readonly effects?: (correlation: EffectCorrelation) => EffectDispatchPort;
+  /**
+   * ADR-0098 durable effect identity allocator. The host advances the session-row high-water mark before
+   * issuing a key; max_turns retains its reconstructed count. Step 3 wires allocation into turn dispatch.
+   */
+  readonly reserveEffectTurnKey?: (sessionId: string) => number;
   /** The workflow-wide tool policy threaded into dispatch (default `{}` ⇒ deny-all for gated tools). */
   readonly toolPolicy?: ToolPolicy;
   /** Within-turn tool-loop bounds passed to the turn core (default {@link DEFAULT_AGENT_TURN_LIMITS}). */

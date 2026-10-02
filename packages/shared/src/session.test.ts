@@ -7,6 +7,7 @@ import {
   SessionMessageSchema,
   SessionStatusSchema,
 } from './session.js';
+import { SessionContentPartSchema } from './session-content.js';
 
 /** A syntactically valid canonical durable media handle (64 lowercase hex). */
 const HANDLE = `media://sha256-${'a'.repeat(64)}`;
@@ -41,19 +42,23 @@ const baseSession = (overrides: Record<string, unknown> = {}): unknown => ({
 describe('SessionMessageSchema', () => {
   it('accepts a message for each role', () => {
     for (const role of SessionMessageRoleSchema.options) {
-      expect(SessionMessageSchema.safeParse(baseMessage({ role })).success).toBe(true);
+      const content =
+        role === 'tool'
+          ? [{ type: 'tool_result', toolCallId: 'session-tool:1:0', resultBytes: 4, outcome: 'ok' }]
+          : [{ type: 'text', text: 'hello' }];
+      expect(SessionMessageSchema.safeParse(baseMessage({ role, content })).success).toBe(true);
     }
   });
 
   it('accepts each durable content-part arm (text, tool_call, tool_result, reasoning, handle-media)', () => {
     const content = [
       { type: 'text', text: 'hi' },
-      { type: 'tool_call', id: 'c1', name: 'read_file', args: { path: 'x' } },
-      { type: 'tool_result', toolCallId: 'c1', result: { ok: true }, isError: false },
+      { type: 'tool_call', id: 'session-tool:1:0', name: 'read_file', argsBytes: 12 },
+      { type: 'tool_result', toolCallId: 'session-tool:1:0', resultBytes: 11, outcome: 'ok' },
       { type: 'reasoning', text: 'thinking', redacted: false },
       { type: 'media', mimeType: 'image/png', source: { kind: 'handle', ref: HANDLE } },
     ];
-    expect(SessionMessageSchema.safeParse(baseMessage({ content })).success).toBe(true);
+    for (const part of content) expect(SessionContentPartSchema.safeParse(part).success).toBe(true);
   });
 
   it('accepts an optional modelId on an assistant turn', () => {
@@ -63,18 +68,15 @@ describe('SessionMessageSchema', () => {
     expect(parsed.success).toBe(true);
   });
 
-  it('strips a reasoning `signature` on parse — never persisted (ADR-0030)', () => {
-    // A signature is a same-provider, same-turn continuity token; the durable reasoning arm has no
-    // `signature` field, so an inbound one is stripped structurally rather than written to a row.
-    const parsed = SessionMessageSchema.parse(
-      baseMessage({
-        role: 'assistant',
-        content: [{ type: 'reasoning', text: 'thinking', signature: 'sig-should-not-survive' }],
-      }),
-    );
-    const part = parsed.content[0];
-    expect(part?.type).toBe('reasoning');
-    expect(part !== undefined && 'signature' in part).toBe(false);
+  it('refuses a reasoning signature instead of silently stripping it (ADR-0030/0095)', () => {
+    expect(
+      SessionMessageSchema.safeParse(
+        baseMessage({
+          role: 'assistant',
+          content: [{ type: 'reasoning', text: 'thinking', signature: 'sig-should-not-survive' }],
+        }),
+      ).success,
+    ).toBe(false);
   });
 
   it('rejects inline base64 media — the durable form is handle-only (ADR-0031)', () => {

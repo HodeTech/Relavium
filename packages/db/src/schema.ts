@@ -460,6 +460,8 @@ export const agentSessions = sqliteTable(
     // `SUM(session_costs.cost_microcents) == total_cost_microcents`. It consumes cap capacity on resume without
     // ever inflating a reported cost. Single-writer, like its realized sibling.
     totalConservativeMicrocents: microcents('total_conservative_microcents'),
+    // ADR-0098: advanced only by the effect-turn allocator; transcript/session flushes never SET it.
+    effectTurnHighWater: integer('effect_turn_high_water').notNull().default(0),
     exportedWorkflowPath: text('exported_workflow_path'),
     deletedAt: epochMs('deleted_at'),
     createdAt: epochMs('created_at').notNull(),

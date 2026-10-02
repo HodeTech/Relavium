@@ -34,5 +34,6 @@ export * from './edge.js';
 export * from './workflow.js';
 export * from './run-event.js';
 export * from './session.js';
+export * from './session-content.js';
 export * from './run.js';
 export * from './config.js';
