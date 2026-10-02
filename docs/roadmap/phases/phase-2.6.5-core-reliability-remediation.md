@@ -2221,6 +2221,17 @@ estimate only for uncapped requests. Its compatibility consequence and dialect/p
 cases are explicit. The maintainer has been asked for approval; no dependent step 6 implementation
 has begun. Live-captured fixtures remain separately required before step 7's classification commit.
 
+**Step 6 proposal revision, round 1 — 2026-10-02.** The maintainer's ADR-0101 review verified that
+native options do not reach existing admission signatures and resolved output is clamped again by
+the legacy price helper. The corrected Proposed decision specifies required cap transport, a shared
+adapter/reservation plan, rate-only resolved-token pricing, source endpoint identity, candidate-specific
+allowance computation and all related ADR landing notes. Two fresh source/draft reviewers found those
+gaps resolved; one verified a construction-to-attempt metadata-refresh gap. The parent corrected
+measured-plan handoff/rechecking without changing main-turn skip/failure or compaction outcomes.
+The [round 1 record](../../reviews/2026-10-02T15-09-58-w7-adr-0101-revision-round-1-review.md) states the evidence
+and limits. Fresh draft round 2 is pending; ADR-0101 remains Proposed and no dependent implementation
+has begun. Steps 1–5 stay closed; all six W7 register items remain open.
+
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A
 coding agent cannot remember a file it read in the previous turn and calls the tool again.

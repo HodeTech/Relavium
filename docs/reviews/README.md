@@ -76,6 +76,9 @@ added.
 - [2026-10-02 — W7 step 5, round 2](2026-10-02T12-21-33-w7-step-5-round-2-review.md):
   complete memory implementation and prior clarification accepted; independent state/CLI/SQLite and exact-source controls reproduced; step 5 closed.
 
+- [2026-10-02 — W7 ADR-0101 mechanism revision, round 1](2026-10-02T15-09-58-w7-adr-0101-revision-round-1-review.md):
+  maintainer transport/pricing and consistency findings resolved; construction-to-attempt cap-plan handoff corrected; fresh draft round 2 pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and
