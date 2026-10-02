@@ -1,14 +1,6 @@
 #!/usr/bin/env node
 /** Thin maintainer runner; typed construction/refusal lives in @relavium/llm's adapter zone. */
-import {
-  openSync,
-  closeSync,
-  writeFileSync,
-  unlinkSync,
-  fstatSync,
-  lstatSync,
-  fsyncSync,
-} from 'node:fs';
+import { openSync, closeSync, writeFileSync, fstatSync, lstatSync, fsyncSync } from 'node:fs';
 import { setTimeout, clearTimeout } from 'node:timers';
 
 import {
@@ -64,7 +56,6 @@ async function main() {
   const abort = () => caller.abort();
   process.on('SIGINT', abort);
   process.on('SIGTERM', abort);
-  let saved = false;
   try {
     identity = fstatSync(fd);
     const artifact = await captureResponse(options, key, {
@@ -85,7 +76,6 @@ async function main() {
     writeFileSync(fd, JSON.stringify(artifact, null, 2) + '\n');
     fsyncSync(fd);
     if (!stillOwnsDestination()) throw new CaptureError('destination_changed');
-    saved = true;
     // No model, path, body, key, headers or arbitrary error text is ever printed.
     process.stdout.write(
       `capture saved (HTTP ${artifact.response.status}); review the fixture before use\n`,
@@ -93,14 +83,10 @@ async function main() {
   } finally {
     process.off('SIGINT', abort);
     process.off('SIGTERM', abort);
-    try {
-      closeSync(fd);
-    } finally {
-      if (!saved && identity !== undefined) {
-        const current = lstatSync(options.out, { throwIfNoEntry: false });
-        if (current?.dev === identity.dev && current.ino === identity.ino) unlinkSync(options.out);
-      }
-    }
+    // Never delete the caller-selected pathname. A stat comparison followed by unlink is not atomic:
+    // another process can replace the path between those operations. A failed capture may retain an
+    // empty or partial reserved file; closing our fd cannot remove or overwrite a replacement.
+    closeSync(fd);
   }
 }
 
@@ -108,6 +94,8 @@ try {
   await main();
 } catch (error) {
   const reason = error instanceof CaptureError ? error.code : 'local_io';
-  process.stderr.write(`overflow capture refused (${reason}); no fixture was saved\n`);
+  process.stderr.write(
+    `overflow capture refused (${reason}); destination may be empty or partial\n`,
+  );
   process.exitCode = 1;
 }

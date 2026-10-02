@@ -49,7 +49,9 @@ merged too (PR #85, 2026-08-28).
 > [round 2](../reviews/2026-10-02T03-22-32-w7-step-1-round-2-review.md) verified a cleanup race in its fix.
 > [Round 3](../reviews/2026-10-02T03-35-41-w7-step-1-round-3-review.md) verified a passing/starting race;
 > cleanup now retains shared parents and deletes only owned probes. All corrections pass the gates;
-> a fresh corrective review is pending.
+> [Round 4](../reviews/2026-10-02T03-43-31-w7-step-1-round-4-review.md) cleared probe ownership and found
+> a capture pathname-cleanup race. The runner now closes its descriptor without deleting a failed
+> destination; fresh corrective review remains pending.
 > It repairs collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.

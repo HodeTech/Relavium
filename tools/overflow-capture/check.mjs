@@ -24,6 +24,8 @@ const key = 'capture-probe-key-12345'; // Explicitly synthetic; never a live cap
 const duplicateSecret = `{"duplicate":"${key.replace('capture-', '\\u0063apture-')}","duplicate":"safe"}`;
 const out = join(dir, 'capture.json');
 const marker = join(dir, 'calls');
+const raceReady = join(dir, 'cleanup-stat-ready');
+const raceRelease = join(dir, 'cleanup-stat-release');
 const args = [
   '--provider',
   'anthropic',
@@ -37,7 +39,27 @@ const args = [
 writeFileSync(
   loader,
   `
-import { appendFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import fs, { appendFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+// Delay-only regression: return the real lstat result after the parent swaps the pathname. The fixed
+// runner has no failure-path lstat/unlink, so it closes before this scheduling point can be reached.
+const rawLstat = fs.lstatSync;
+let scheduled = false;
+fs.lstatSync = function(path, ...args) {
+  const result = rawLstat(path, ...args);
+  if (process.env.CAPTURE_PROBE_MODE === 'cleanup-race' && !scheduled && path === process.env.CAPTURE_PROBE_OUT) {
+    scheduled = true;
+    writeFileSync(process.env.CAPTURE_PROBE_RACE_READY, '1');
+    const bound = Date.now() + 5000;
+    const waitBuf = new Int32Array(new SharedArrayBuffer(4));
+    while (!fs.existsSync(process.env.CAPTURE_PROBE_RACE_RELEASE)) {
+      if (Date.now() > bound) throw new Error('race scheduling timeout');
+      Atomics.wait(waitBuf, 0, 0, 2);
+    }
+  }
+  return result;
+};
+syncBuiltinESMExports();
 globalThis.fetch = async (url, init) => {
   if (url !== 'https://api.anthropic.com/v1/messages' || init.redirect !== 'error') throw new Error('wrong request');
   appendFileSync(process.env.CAPTURE_PROBE_MARKER, 'call\\n');
@@ -52,6 +74,7 @@ globalThis.fetch = async (url, init) => {
       writeFileSync(process.env.CAPTURE_PROBE_OUT, 'replacement user file');
       if (process.env.CAPTURE_PROBE_MODE === 'replacement-success') return new Response('{}', {headers:{'content-type':'application/json'}});
       throw new Error('refused after replacement');
+    case 'cleanup-race':
     case 'transport': throw new Error(${JSON.stringify(key)});
     case 'secret': return new Response(JSON.stringify({error:${JSON.stringify(key)}}), {status:400,headers:{'content-type':'application/json'}});
     case 'duplicate-secret': return new Response(${JSON.stringify(duplicateSecret)}, {status:400,headers:{'content-type':'application/json'}});
@@ -69,6 +92,8 @@ async function run(argv = args, mode = 'safe', input = key, interrupt = false) {
       CAPTURE_PROBE_MODE: mode,
       CAPTURE_PROBE_MARKER: marker,
       CAPTURE_PROBE_OUT: out,
+      CAPTURE_PROBE_RACE_READY: raceReady,
+      CAPTURE_PROBE_RACE_RELEASE: raceRelease,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -84,10 +109,26 @@ async function run(argv = args, mode = 'safe', input = key, interrupt = false) {
   child.stdin.end(input);
   const timer = setTimeout(() => child.kill('SIGKILL'), 10_000);
   try {
+    let hasClosed = false;
     const closed = new Promise((resolve, reject) => {
       child.once('error', reject);
-      child.once('close', (code, signal) => resolve({ code, signal }));
+      child.once('close', (code, signal) => {
+        hasClosed = true;
+        resolve({ code, signal });
+      });
     });
+    if (mode === 'cleanup-race') {
+      for (let i = 0; i < 400 && !hasClosed && !existsSync(raceReady); i += 1) await sleep(5);
+      assert.ok(
+        hasClosed || existsSync(raceReady),
+        'cleanup race never reached a terminal or stat',
+      );
+      if (existsSync(raceReady)) {
+        rmSync(out);
+        writeFileSync(out, 'replacement user file');
+        writeFileSync(raceRelease, '1');
+      }
+    }
     if (interrupt) {
       for (let i = 0; i < 200 && !existsSync(marker); i += 1) await sleep(10);
       assert.ok(existsSync(marker), 'child never reached the mocked transport');
@@ -163,8 +204,18 @@ try {
     const refused = await run(args, mode, key, mode === 'hang');
     assert.equal(refused.code, 1);
     assert.equal(refused.calls, 1);
-    assert.equal(existsSync(out), false);
+    assert.equal(readFileSync(out, 'utf8'), '', 'a refused body must never be written');
+    rmSync(out);
   }
+  const race = await run(args, 'cleanup-race');
+  assert.equal(race.code, 1);
+  assert.equal(race.calls, 1);
+  assert.equal(
+    readFileSync(out, 'utf8'),
+    existsSync(raceReady) ? 'replacement user file' : '',
+    'failure cleanup deleted a replacement after checking the reserved inode',
+  );
+  rmSync(out);
   const replaced = await run(args, 'replacement');
   assert.equal(replaced.code, 1);
   assert.equal(

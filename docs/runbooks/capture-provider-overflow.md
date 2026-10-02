@@ -78,14 +78,16 @@ it accepts no custom URL, file input, user prompt or tools. It makes one non-str
 with redirects and retries disabled. The input limit is 8,388,608 characters and the requested
 output cap is 1–4,096 tokens (default 64). Stdin must finish within 60 seconds and contain one
 printable key of 8–512 characters, with surrounding whitespace allowed and a 1,024-character
-   pipe limit. Headers and response reads share a separate absolute 60-second deadline. Responses
+pipe limit. Headers and response reads share a separate absolute 60-second deadline. Responses
 must be JSON, at most 1 MiB and at most 16,384 chunks, including empty chunks.
 
 Catchable SIGINT/SIGTERM signals cancel capture on POSIX. Windows `child.kill()` termination is
-forceful and cannot run the signal handler or file cleanup; inspect any reserved destination
-after such termination. A failed capture removes its reserved file when it still owns
-that file; a replacement file is preserved. Success prints only the HTTP status. Failure prints
-a fixed refusal code, never a response body, key, model, path or arbitrary error cause. A saved
+forceful and cannot run the signal handler; inspect any reserved destination after termination.
+A failed capture leaves its reserved destination empty or, if local writing failed, partial. It never
+deletes the caller-selected pathname: checking an inode and then unlinking is not atomic, so such
+cleanup could delete a concurrent replacement. Review a failed destination yourself and choose a
+new path for the next attempt. A replacement is never overwritten or deleted by the command.
+Success prints only the HTTP status. Failure prints a fixed refusal code, never a response body, key, model, path or arbitrary error cause. A saved
 artifact is evidence to review, not an assertion that the provider rejected the request.
 
 Request construction follows the official [Anthropic Messages API](https://platform.claude.com/docs/en/api/messages/create),

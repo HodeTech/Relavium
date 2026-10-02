@@ -21,6 +21,9 @@ added.
 - [2026-10-02 — W7 step 1, round 3](2026-10-02T03-35-41-w7-step-1-round-3-review.md):
   one verified passing/starting guard race corrected by retaining shared parents; fresh review pending.
 
+- [2026-10-02 — W7 step 1, round 4](2026-10-02T03-43-31-w7-step-1-round-4-review.md):
+  collection and probe ownership clear; one verified capture pathname-cleanup race corrected.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

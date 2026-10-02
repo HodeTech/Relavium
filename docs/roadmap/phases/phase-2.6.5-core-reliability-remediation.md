@@ -2042,8 +2042,10 @@ verified seven findings. [Round 2](../../reviews/2026-10-02T03-22-32-w7-step-1-r
 concurrent cleanup race in the fix. [Round 3](../../reviews/2026-10-02T03-35-41-w7-step-1-round-3-review.md)
 verified a remaining passing/starting race; cleanup now retains shared parents and deletes only owned
 probes. The new regression fails the reviewed commit and passes the correction; CI and coverage exit 0
-(285 suites, 6,315 passing tests, 11 skipped). A fresh corrective
-review remains pending before step 1 closes.
+(285 suites, 6,315 passing tests, 11 skipped). [Round 4](../../reviews/2026-10-02T03-43-31-w7-step-1-round-4-review.md)
+cleared probe ownership and verified a capture pathname-cleanup race. The runner now closes its
+descriptor without deleting a failed destination; the runbook documents possible empty/partial
+files. A fresh corrective review remains pending before step 1 closes.
 
 ### CR-70 — Cross-turn tool-call memory does not exist · High (product) · **decided 2026-09-13: carrying DEFERRED** ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2)
 Only the final assistant text enters the cross-turn transcript; within-turn tool call/result pairs are dropped. A
