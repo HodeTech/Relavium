@@ -780,6 +780,44 @@ describe('createRunHistoryStore', () => {
     expect(byId.get('run-m')?.resumable).toBe(false);
   });
 
+  it('historical budget input remains readable and cannot abort aggregate interrupted discovery', async () => {
+    await startRun();
+    await store.persistEvent(
+      ev('budget:paused', 1, {
+        nodeId: 'agent',
+        gateId: 'old-budget',
+        spentMicrocents: 2,
+        limitMicrocents: 1,
+      }),
+    );
+    const input = ev('human_gate:resumed', 2, {
+      nodeId: 'agent',
+      decision: 'input_provided',
+      decidedBy: 'historical-user',
+      payload: { historical: 'answer' },
+    });
+    await store.persistEvent(input);
+    const workflowId = await store.resolveWorkflowId('ordinary');
+    await store.persistEvent({
+      ...ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      runId: 'ordinary-run',
+    });
+    await store.persistEvent({
+      ...ev('human_gate:paused', 1, {
+        nodeId: 'human',
+        gateId: 'ordinary-gate',
+        gateType: 'input',
+        message: 'ordinary input',
+      }),
+      runId: 'ordinary-run',
+    });
+    const interrupted = new Map((await store.listInterruptedRuns()).map((run) => [run.runId, run]));
+    expect(interrupted.size).toBe(2);
+    expect(interrupted.get('run-1')?.resumable).toBe(false);
+    expect(interrupted.get('ordinary-run')?.resumable).toBe(true);
+    expect(store.loadRunEventLogForReplay('run-1').at(-1)).toEqual(input);
+  });
+
   for (const sibling of [false, true]) {
     for (const withCompanion of [false, true]) {
       it(`discovers outstanding gates after budget authority (sibling=${sibling}, companion=${withCompanion})`, async () => {

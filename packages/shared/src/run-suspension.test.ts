@@ -326,12 +326,53 @@ for (const patch of [
   it(`conflicting budget decision companion ${Object.keys(patch)[0]} refuses`, () => {
     corruption([paused(), decided(), resume('g1', 'agent', patch)], 'gate_state_conflict');
   });
-it('budget input_provided refuses rather than inventing an output', () => {
-  corruption(
-    [budgetPause(), resume('g1', 'agent', { decision: 'input_provided' })],
-    'gate_state_conflict',
-  );
-});
+for (const identified of [false, true])
+  it(`historical budget input is rejection, without output or payload (identified=${identified})`, () => {
+    const r = fold([budgetPause(), humanPause('sibling', 'human')]);
+    const input = identified
+      ? resume('g1', 'agent', { decision: 'input_provided', payload: { private: 'PRIVATE' } })
+      : legacyResume('agent', { decision: 'input_provided', payload: { private: 'PRIVATE' } });
+    expect(r.apply(input)).toMatchObject({ kind: 'budget_decided', decision: 'rejected' });
+    expect(r.budgetRejections(RUN)).toEqual([{ nodeId: 'agent', gateId: 'g1' }]);
+    expect(r.resolvedGateIds(RUN)).toEqual(['g1']);
+    expect(r.pendingGates(RUN)).toMatchObject([{ gateId: 'sibling' }]);
+    if (identified) expect(r.apply(input)).toBeUndefined();
+  });
+for (const basis of ['native_frozen', 'native_legacy', 'companion_frozen'] as const)
+  it(`budget input still refuses on a ${basis} gate`, () => {
+    const pause =
+      basis === 'native_frozen'
+        ? paused()
+        : basis === 'native_legacy'
+          ? paused('g1', 'agent', { allowance: { kind: 'legacy_no_allowance' } })
+          : budgetPause('g1', 'agent', { allowanceQuote: quoted });
+    corruption(
+      [pause, resume('g1', 'agent', { decision: 'input_provided', payload: 'PRIVATE' })],
+      'gate_state_conflict',
+    );
+  });
+for (const legacy of [false, true])
+  for (const authorityFirst of [false, true])
+    for (const matching of [false, true])
+      it(`companion amount is checked in both orders (legacy=${legacy}, authorityFirst=${authorityFirst}, matching=${matching})`, () => {
+        const p = legacy ? budgetPause() : paused();
+        const a = legacy
+          ? decided('g1', 'agent', {
+              allowance: { kind: 'legacy_no_allowance' },
+              approvedAmountMicrocents: undefined,
+            })
+          : decided();
+        const c = resume('g1', 'agent', {
+          approvedAmountMicrocents: matching ? (legacy ? undefined : 10) : 999,
+        });
+        const events = [p, ...(authorityFirst ? [a, c] : [c, a])];
+        if (!matching) corruption(events, 'gate_state_conflict');
+        else {
+          const r = fold(events);
+          expect(r.pendingGates(RUN)).toEqual([]);
+          expect(r.budgetRejections(RUN)).toEqual([]);
+        }
+      });
 it('legacy rejection is retained as a fatal budget cause while ordinary sibling remains resumable', () => {
   const r = fold([
     budgetPause(),

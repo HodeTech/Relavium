@@ -389,3 +389,15 @@ early duplicate guard. Parent controls also cover cancellation during park/timer
 No allowance amount, eligibility or strict-cap rule changes; all repairs stay within the
 foundation's actual/conservative distinction. Step 10 still owns authoritative durable
 activation, acknowledgement, replay and native process-lifetime wiring.
+
+## W7 step 10 historical-input correction — 2026-10-03
+
+The second independent review produced a genuine pre-ADR budget `input_provided` record
+with the archived engine. Section 4 invariant 4 requires this historical decision to count as
+rejection; the first Shared reducer instead called it corrupt, aborting checkpoint replay and
+aggregate interruption discovery in both stores. Only a recorded legacy budget gate with no
+native authority, frozen quote or supplied approval amount receives this normalization. Its
+payload never becomes agent output or spending authority. Live input refusal and native/frozen
+corruption checks are unchanged. The [predecessor check](../../tools/budget-replay-compat/README.md)
+now generates that exact old-producer prefix and exercises the current checkpoint, admitted
+engine and both discovery stores. Historical ADR bodies remain intact.

@@ -322,8 +322,10 @@ Sizing and debit rules are described in [agent-runner.md](../shared-core/agent-r
 
 A frozen approval requires an **explicit exact** `approvedAmountMicrocents`, including zero;
 unpriced/unrepresentable quotes are reject-only. A legacy approval supplies no amount and grants no
-allowance. Budget decisions are binary and carry no `payload`; ordinary human-gate input behaviour
-is unchanged. The whole current quote, rather than the amount alone, must match before the gate
+allowance. Native budget decisions are binary and carry no `payload`; ordinary human-gate input behaviour
+is unchanged. A recorded legacy budget `input_provided`, with neither native authority nor a frozen
+allowance, counts as rejection and its historical payload never becomes agent output. Native/frozen
+input decisions remain corrupt. The whole current quote, rather than the amount alone, must match before the gate
 claim/timer disarm. A refusal leaves rejection available.
 
 For a pause, the engine observes the authoritative append's acknowledgement before accepting a
@@ -336,7 +338,9 @@ and terminal/outbox failure handling remain in force.
 
 Companions join by `(runId, nodeId, gateId)`. W7 budget decision companions always carry `gateId`,
 optional `allowanceQuote` and the exact approved amount when granted. Matching historical duplicates
-do not overwrite a real output or resolve a later gate; contradictory persisted companions are corrupt.
+do not overwrite a real output or resolve a later gate; contradictory persisted companions are corrupt
+in either arrival order. A present companion approval amount must equal the authority's amount;
+absence remains compatible with historical companions and `legacy_no_allowance` cannot grant an amount.
 A legacy `human_gate:resumed` without `gateId` joins only the **single then-outstanding** gate at its
 sequence position; zero/multiple matches refuse. Budget identity comes from `budget:paused` or
 `budget:authorization`, never the ordinary `approval` gate type. Checkpoint and interrupted-run

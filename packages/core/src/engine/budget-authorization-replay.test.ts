@@ -91,9 +91,24 @@ describe('budget authorization checkpoint semantics — ADR-0097/0100, CR-96', (
     expect(checkpoint?.resolvedGateIds).toEqual(['human-gate']);
   });
 
-  it('stored budget input_provided is refused instead of inventing an agent output', () => {
-    expect(() =>
-      reconstructCheckpointState([started, budgetPause, decision(2, 'agent', 'input_provided')]),
-    ).toThrow('the stored gate history is inconsistent');
+  it('historical budget input_provided is a fatal rejection with no invented output', () => {
+    const checkpoint = reconstructCheckpointState([
+      started,
+      budgetPause,
+      event(2, {
+        type: 'human_gate:resumed',
+        nodeId: 'agent',
+        decision: 'input_provided',
+        decidedBy: 'historical-user',
+        payload: { historical: 'answer' },
+      }),
+    ]);
+    expect(checkpoint?.nodeStates.get('agent')).toMatchObject({
+      status: 'failed',
+      error: { code: 'budget_exceeded', retryable: false },
+    });
+    expect(checkpoint?.nodeStates.get('agent')).not.toHaveProperty('output');
+    expect(checkpoint?.budgetRejections).toEqual([{ nodeId: 'agent', gateId: 'budget-gate' }]);
+    expect(checkpoint?.pendingGates).toEqual([]);
   });
 });

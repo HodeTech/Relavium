@@ -107,9 +107,7 @@ function snapshot(history: GateHistory): PendingGateProjection {
 function isResolved(history: GateHistory): boolean {
   return history.authorityDecision !== undefined || history.humanDecision !== undefined;
 }
-function compareCompanionDecision(history: GateHistory, event: HumanGateResumedEvent): void {
-  const authority = history.authorityDecision;
-  if (authority === undefined) return;
+function compareCompanionDecision(authority: DecidedAuthority, event: HumanGateResumedEvent): void {
   if (authority.decision !== event.decision || authority.decidedBy !== event.decidedBy) corrupt();
   if (
     event.approvedAmountMicrocents !== undefined &&
@@ -201,11 +199,7 @@ export class RunSuspensionReducer {
       return undefined;
     }
     if (history.humanDecision !== undefined) {
-      if (
-        history.humanDecision.decision !== state.decision ||
-        history.humanDecision.decidedBy !== state.decidedBy
-      )
-        corrupt();
+      compareCompanionDecision(state, history.humanDecision);
     }
     const alreadyResolved = isResolved(history);
     if (!alreadyResolved && !history.active) corrupt();
@@ -263,9 +257,22 @@ export class RunSuspensionReducer {
     }
     if (event.allowanceQuote !== undefined)
       mergeAllowance(history, { kind: 'frozen', quote: event.allowanceQuote });
+    // The pre-ADR-0097 producer accepted input on an unquoted budget gate. Its recorded input is a
+    // rejection, never an agent output or an allowance. Normalize only this historical form; a native
+    // authority or frozen quote continues to require a binary, payload-free budget decision.
+    if (
+      history.budget &&
+      event.decision === 'input_provided' &&
+      event.approvedAmountMicrocents === undefined &&
+      history.authorityPause === undefined &&
+      history.authorityDecision === undefined &&
+      history.allowance?.kind !== 'frozen'
+    )
+      event = { ...event, decision: 'rejected', payload: undefined };
     if (history.budget && (event.decision === 'input_provided' || event.payload !== undefined))
       corrupt();
-    compareCompanionDecision(history, event);
+    if (history.authorityDecision !== undefined)
+      compareCompanionDecision(history.authorityDecision, event);
     if (history.humanDecision !== undefined) {
       const prior = history.humanDecision;
       if (

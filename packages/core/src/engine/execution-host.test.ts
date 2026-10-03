@@ -41,6 +41,64 @@ describe('createAbortController — platform-free abort', () => {
 });
 
 describe('InMemoryRunStore', () => {
+  it('historical budget input rejects its node without aborting another interrupted run discovery', async () => {
+    const store = new InMemoryRunStore();
+    const base = { runId: 'legacy', timestamp: '2026-10-03T00:00:00.000Z' };
+    const rows = [
+      {
+        type: 'run:started',
+        sequenceNumber: 0,
+        workflowId: '00000000-0000-4000-8000-000000000001',
+        inputs: {},
+        executionMode: 'local',
+      },
+      {
+        type: 'budget:paused',
+        sequenceNumber: 1,
+        nodeId: 'agent',
+        gateId: 'old-budget',
+        spentMicrocents: 2,
+        limitMicrocents: 1,
+      },
+      {
+        type: 'human_gate:resumed',
+        sequenceNumber: 2,
+        nodeId: 'agent',
+        decision: 'input_provided',
+        decidedBy: 'historical-user',
+        payload: { historical: 'answer' },
+      },
+    ].map((fields) => RunEventSchema.parse({ ...base, ...fields }));
+    for (const row of rows) await store.persistEvent(row);
+    await store.persistEvent(
+      RunEventSchema.parse({
+        ...base,
+        runId: 'ordinary',
+        type: 'run:started',
+        sequenceNumber: 0,
+        workflowId: '00000000-0000-4000-8000-000000000002',
+        inputs: {},
+        executionMode: 'local',
+      }),
+    );
+    await store.persistEvent(
+      RunEventSchema.parse({
+        ...base,
+        runId: 'ordinary',
+        type: 'human_gate:paused',
+        sequenceNumber: 1,
+        nodeId: 'human',
+        gateId: 'ordinary-gate',
+        gateType: 'input',
+        message: 'ordinary input',
+      }),
+    );
+    const interrupted = new Map((await store.listInterruptedRuns()).map((run) => [run.runId, run]));
+    expect(interrupted.size).toBe(2);
+    expect(interrupted.get('legacy')?.resumable).toBe(false);
+    expect(interrupted.get('ordinary')?.resumable).toBe(true);
+    expect(store.eventsFor('legacy')).toEqual(rows);
+  });
   it('mints a stable UUID per slug and reuses it', async () => {
     const store = new InMemoryRunStore();
     const first = await store.resolveWorkflowId('my-flow');
