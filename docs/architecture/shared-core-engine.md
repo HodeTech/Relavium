@@ -246,7 +246,8 @@ the caller's copies are verified against them rather than used, so a resume cann
 state its own start never recorded ([ADR-0083](../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md)
 §5). A `secret` input is the one thing the record cannot hold — it is persisted as a masked placeholder — so
 the caller re-supplies it by name or the resume is refused; §6 states exactly what that proves. Every one of
-these refusals releases the lease it acquired. **Idempotent re-delivery** never advances a run twice: re-delivering a decision to an
+these refusals attempts to release the exact lease it acquired; a cleanup fault retains its
+bounded TTL and preserves the primary safe refusal. **Idempotent re-delivery** never advances a run twice: re-delivering a decision to an
 already-terminal run is a no-op (a closed handle, nothing re-emitted or re-persisted); re-delivering an
 already-resolved gate on a still-running run drives the remaining work without re-applying the decision.
 This holds within a process and across processes once the durable decision is recorded. The engine

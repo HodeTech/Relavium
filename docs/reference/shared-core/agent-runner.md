@@ -195,7 +195,10 @@ the exact acquired owner/generation fence before any registration or activation.
 precedes a refused admission's settlement. A takeover or unconfirmable lease causes a
 transient, safe `run_owned_elsewhere` refusal before registration, timers, key resolution or
 polling; cleanup releases only the original fence. An expired claim with no successor renews
-without minting another generation. A supplied target decision is
+without minting another generation. Every pre-activation refusal and already-terminal no-op
+attempts to release its exact acquired fence. A rejected cleanup preserves the primary typed
+refusal or closed handle and leaves the existing bounded TTL; it cannot release a successor
+or surface private cleanup text. A supplied target decision is
 applied before its timer could be armed; surviving gates keep their absolute remaining deadlines.
 Effect refusal retains priority over authorization. A reconstructed approval does not restore a
 token or pretend the agent completed: an eligible kick re-runs under the current budget checks.

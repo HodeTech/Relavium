@@ -2206,3 +2206,123 @@ describe('terminal paid-media money barrier — ADR-0077/0097', () => {
     },
   );
 });
+
+describe('resume refusal retains its primary outcome on lease cleanup faults', () => {
+  for (const branch of [
+    'unknown',
+    'schema',
+    'workflow',
+    'terminal',
+    'content',
+    'identity',
+  ] as const) {
+    for (const releaseFault of [false, true, 'takeover'] as const) {
+      it(`native ${branch} guard preserves its outcome (releaseFault=${releaseFault})`, async () => {
+        const run = await parkedRun();
+        const { host, store } = await hostFromLog(run.store.eventsFor(run.handle.runId));
+        run.handle.cancel();
+        await run.drained;
+        const before = [...store.eventsFor(run.handle.runId)];
+        let releases = 0;
+        const engine = new WorkflowEngine({
+          host: {
+            ...host,
+            checkpointer: {
+              ...host.checkpointer,
+              load: async (runId) => {
+                const state = await host.checkpointer.load(runId);
+                if (branch === 'unknown') return undefined;
+                if (state === undefined) throw new Error('missing native checkpoint');
+                if (branch === 'schema') {
+                  const unsupported = { ...state };
+                  Object.defineProperty(unsupported, 'schemaVersion', { value: 1 });
+                  return unsupported;
+                }
+                return branch === 'terminal'
+                  ? { ...state, runStatus: 'completed' as const }
+                  : state;
+              },
+            },
+            store: {
+              ...host.store,
+              resolveWorkflowId: (slug) =>
+                branch === 'workflow'
+                  ? Promise.resolve('another-workflow')
+                  : host.store.resolveWorkflowId(slug),
+              readWorkflowSnapshot: () => Promise.resolve(JSON.stringify(run.workflow)),
+            },
+            runLeases: {
+              ...host.runLeases,
+              release: async (runId, fence) => {
+                releases++;
+                if (releaseFault === 'takeover') {
+                  await host.runLeases.release(runId, fence);
+                  await host.runLeases.acquire(runId, 'successor-owner', 30000);
+                  throw new Error('PRIVATE cleanup storage path');
+                }
+                if (releaseFault) throw new Error('PRIVATE cleanup storage path');
+                await host.runLeases.release(runId, fence);
+              },
+            },
+          },
+          executor: run.executor,
+          resolvePrice: new Map([[MODEL, run.price]]),
+        });
+        const workflow =
+          branch === 'content'
+            ? {
+                ...run.workflow,
+                workflow: { ...run.workflow.workflow, name: 'different frozen name' },
+              }
+            : run.workflow;
+        try {
+          const call = engine.resumeFromCheckpoint({
+            runId: run.handle.runId,
+            workflow,
+            ...(branch === 'identity' ? { inputs: { unexpected: 'another value' } } : {}),
+          });
+          if (branch === 'terminal') {
+            const handle = await call;
+            const events: RunEvent[] = [];
+            for await (const event of handle.events) events.push(event);
+            expect(events).toEqual([]);
+            expect(handle.durability()).toBe('durable');
+          } else {
+            let refusal: unknown;
+            try {
+              await call;
+            } catch (error) {
+              refusal = error;
+            }
+            const expected = {
+              unknown: 'unknown_run',
+              schema: 'admission_record_unreadable',
+              workflow: 'workflow_mismatch',
+              content: 'workflow_content_mismatch',
+              identity: 'input_mismatch',
+            };
+            expect(refusal).toMatchObject({ code: expected[branch] });
+            expect(refusal instanceof Error && refusal.message).not.toContain('PRIVATE');
+          }
+          expect(releases).toBe(1);
+          expectUnknownRun(engine, run.handle.runId);
+          expect(store.eventsFor(run.handle.runId)).toEqual(before);
+          expect(run.keyReads()).toBe(0);
+          expect(run.requests).toEqual([]);
+          expect(run.mediaRequests).toEqual([]);
+          expect(run.toolCalls()).toBe(0);
+          expect(host.armedCount()).toBe(0);
+          expect(host.livenessCount()).toBe(0);
+          expect(host.deadlineCount()).toBe(0);
+          const held = await host.runLeases.read(run.handle.runId);
+          if (releaseFault) expect(held).toBeDefined();
+          else expect(held).toBeUndefined();
+          if (releaseFault === 'takeover') expect(held?.ownerId).toBe('successor-owner');
+        } finally {
+          const held = await host.runLeases.read(run.handle.runId);
+          if (held !== undefined) await host.runLeases.release(run.handle.runId, held);
+        }
+      });
+    }
+  }
+});

@@ -186,3 +186,20 @@ and before terminal delivery closes the stream. A fenced terminal still emits no
 cannot release the successor; a release-store fault retains the existing bounded TTL fallback.
 This makes the existing terminal cleanup/ownership ordering deterministic, without changing
 lease acquisition, fencing generations or the money policy.
+
+## Refusal cleanup correction — 2026-10-03, W7 step 10 fourth review
+
+The fourth review reproduced a rejecting release replacing the new unsupported-checkpoint
+schema refusal with private host text. The same direct-release pattern existed in five
+pre-W7 resume branches: unknown run, workflow identity, already-terminal no-op, frozen
+content and recorded-input identity. All six now use the existing best-effort exact-fence
+release helper, preserving the primary typed refusal or closed terminal handle if cleanup
+rejects. This completes the implementation correction above; it changes no acquisition,
+timeout or fencing policy. A release fault leaves the existing bounded TTL fallback.
+
+Eighteen native regressions cover all six branches with successful release, rejecting
+release and a successor takeover during rejecting cleanup. They retain the primary outcome,
+write no events, read no credentials, execute no provider/tool/media call, arm no timer and
+leave the successor's fence intact. The parent first reproduced twelve failures across
+these branches, passed all eighteen with the owned correction, and restored the original
+bytes to recover the failures before changing repository source.

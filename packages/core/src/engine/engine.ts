@@ -4955,13 +4955,13 @@ export class WorkflowEngine {
     if (checkpoint === undefined) {
       // Release what we just took: the run does not exist, so holding its lease would lock a runId nobody
       // can use. Every refusal below this point does the same — an acquire that leads nowhere must not leak.
-      await this.#host.runLeases.release(input.runId, fence);
+      await this.#releaseReconcileClaim(input.runId, fence);
       throw new EngineStateError('unknown_run', 'no checkpoint exists for the supplied runId', {
         runId: input.runId,
       });
     }
     if (checkpoint.schemaVersion !== CHECKPOINT_SCHEMA_VERSION) {
-      await this.#host.runLeases.release(input.runId, fence);
+      await this.#releaseReconcileClaim(input.runId, fence);
       throw new EngineStateError(
         'admission_record_unreadable',
         'the checkpoint derivation is unsupported; rebuild it with the current event reader',
@@ -4976,7 +4976,7 @@ export class WorkflowEngine {
       this.#host.store.resolveWorkflowId(input.workflow.workflow.id),
     );
     if (expectedWorkflowId !== checkpoint.workflowId) {
-      await this.#host.runLeases.release(input.runId, fence);
+      await this.#releaseReconcileClaim(input.runId, fence);
       throw new EngineStateError(
         'workflow_mismatch',
         'the supplied workflow is not the one this run started on',
@@ -4991,7 +4991,7 @@ export class WorkflowEngine {
       // leads nowhere must not leak. Holding it would convert the documented idempotent no-op into a
       // transient refusal (exit 6) for a full TTL, over a run that has been over for hours, and leave a
       // `run_leases` row per re-delivery that nothing ever deletes.
-      await this.#host.runLeases.release(input.runId, fence);
+      await this.#releaseReconcileClaim(input.runId, fence);
       return createClosedRunHandle(input.runId);
     }
     // **The graph's CONTENT, not just its id (ADR-0083 §5).** The surrogate-id guard above catches resuming
@@ -5011,7 +5011,7 @@ export class WorkflowEngine {
         verifyFrozenWorkflowContent(frozenWorkflow, input.workflow),
       );
       if (contentRefusal !== undefined) {
-        await this.#host.runLeases.release(input.runId, fence);
+        await this.#releaseReconcileClaim(input.runId, fence);
         throw new EngineStateError(contentRefusal.code, contentRefusal.message, {
           runId: input.runId,
         });
@@ -5037,7 +5037,7 @@ export class WorkflowEngine {
       // §5: a refusal releases the lease. Every identity check sits after ownership was acquired, and
       // ADR-0079 §4's rule — an acquire that leads nowhere must not leak — covers these exactly as it
       // covers `workflow_mismatch` above.
-      await this.#host.runLeases.release(input.runId, fence);
+      await this.#releaseReconcileClaim(input.runId, fence);
       throw new EngineStateError(identity.refusal.code, identity.refusal.message, {
         runId: input.runId,
       });
@@ -5447,12 +5447,12 @@ export class WorkflowEngine {
     }
   }
 
-  /** Hand back a reconcile takeover claim; a failure only costs a TTL, never correctness. */
+  /** Release the exact claim without replacing the primary outcome on cleanup faults. */
   async #releaseReconcileClaim(runId: string, fence: RunFence): Promise<void> {
     try {
       await this.#host.runLeases.release(runId, fence);
     } catch {
-      // Left to expire on its own TTL — slower, never wrong.
+      // Preserve the primary refusal/no-op/reconcile result; this exact claim expires on its TTL.
     }
   }
 
