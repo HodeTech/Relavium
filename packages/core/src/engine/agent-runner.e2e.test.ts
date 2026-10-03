@@ -859,13 +859,8 @@ workflow:
     expect(events.some((e) => e.type === 'node:completed' && e.nodeId === 'n')).toBe(false);
     expect(providerCalls).toBe(1);
     expect(host.armedCount()).toBe(0);
-    // Terminal delivery precedes the awaited lease release. Observe that cleanup itself before
-    // checking its heartbeat, with a bounded wait that still fails if the run retains ownership.
-    let cleanupWaits = 0;
-    while ((await host.runLeases.read(handle.runId)) !== undefined) {
-      cleanupWaits += 1;
-      if (cleanupWaits > 1000) throw new Error('terminal run retained its lease');
-    }
+    // The durable terminal releases exact ownership before delivery; no cleanup wait is needed.
+    expect(await host.runLeases.read(handle.runId)).toBeUndefined();
     expect(host.livenessCount()).toBe(0);
   });
 
