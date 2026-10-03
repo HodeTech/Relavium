@@ -36,6 +36,7 @@ import {
   BudgetAllowanceStateSchema,
   BudgetAuthorizationStateSchema,
   type BudgetAllowanceState,
+  type AbortSignalLike,
   MEDIA_JOB_POLL_DEFAULTS,
   RETRYABLE_ERROR_CODES,
   RunEventSchema,
@@ -1016,7 +1017,8 @@ class RunExecution {
    * called from several sites and a re-entrant arm would double-count the window.
    */
   #armGraceWindow(): void {
-    if (this.#graceDisarm !== undefined || this.#settled) {
+    // A seeded checkpoint is still passive: no node or poll needs a grace backstop yet.
+    if (this.#graceDisarm !== undefined || this.#settled || this.#checkpoint !== undefined) {
       return;
     }
     this.#graceDisarm = this.#host.setTimer(
@@ -1608,6 +1610,7 @@ class RunExecution {
       return; // already torn down (a real settle ran) — idempotent
     }
     this.#settled = true; // any straggler timer callback now short-circuits on the #settled guard
+    this.#disarmGraceWindow();
     this.#abort.abort();
     this.#checkpoint = undefined;
     this.#clearBudgetDispatchState();
@@ -1628,6 +1631,12 @@ class RunExecution {
     }
     this.#pendingMediaJobs.clear();
     this.#disarmRunTimeout();
+  }
+
+  /** Latch cancellation during passive admission, without scheduling before an owned execution exists. */
+  cancelResumePreparation(): void {
+    this.#cancelling = true;
+    this.#abort.abort();
   }
 
   requestCancel(): void {
@@ -4762,7 +4771,7 @@ export class WorkflowEngine {
    */
   readonly #onLegacyMediaJobHold: ((nodeIds: readonly string[]) => void) | undefined;
   readonly #runs = new Map<string, RunExecution>();
-  readonly #resumingRuns = new Set<string>();
+  readonly #resumingRuns = new Map<string, AbortControllerLike>();
   /**
    * Settled run ids in settle order — `CR-33`'s retention queue
    * ([ADR-0087](../../../docs/decisions/0087-consumed-streams-size-bounds-and-run-retention.md) §4; this
@@ -4938,15 +4947,19 @@ export class WorkflowEngine {
         { runId: input.runId },
       );
     }
-    this.#resumingRuns.add(input.runId);
+    const preparingAbort = this.#host.newAbortController();
+    this.#resumingRuns.set(input.runId, preparingAbort);
     try {
-      return await this.#resumeCheckpoint(input);
+      return await this.#resumeCheckpoint(input, preparingAbort.signal);
     } finally {
       this.#resumingRuns.delete(input.runId);
     }
   }
 
-  async #resumeCheckpoint(input: ResumeFromCheckpointInput): Promise<RunHandle> {
+  async #resumeCheckpoint(
+    input: ResumeFromCheckpointInput,
+    preparingSignal: AbortSignalLike,
+  ): Promise<RunHandle> {
     // A gate resume supplies gateId + decision; a media-ONLY resume (1.AG Section D) supplies neither.
     const isGateResume = input.gateId !== undefined && input.decision !== undefined;
     assertValidResumeInput(input); // a half-supplied pair, or a malformed decision, is a caller misuse
@@ -5080,7 +5093,7 @@ export class WorkflowEngine {
       buildRunPlan(input.workflow, input.planOptions),
     );
     const resumePreparation = await this.#releaseFenceOnThrow(input.runId, fence, () =>
-      this.#prepareCheckpointGate(input, checkpoint, plan, identity.inputs),
+      this.#prepareCheckpointGate(input, checkpoint, plan, identity.inputs, preparingSignal),
     );
     const bus = new RunEventBus({ now: this.#host.clock.now, validate: this.#validateEvents });
     const execution = await this.#releaseFenceOnThrow(
@@ -5126,6 +5139,11 @@ export class WorkflowEngine {
           ...(resumePreparation === undefined ? {} : { resumePreparation }),
         }),
     );
+    // A cancel while the known run is still being prepared must never schedule before lease adoption.
+    // Carry that intent into the passive execution, then let the existing refused-admission path settle it.
+    const cancelPreparation = (): void => execution.cancelResumePreparation();
+    preparingSignal.addEventListener('abort', cancelPreparation);
+    if (preparingSignal.aborted) cancelPreparation();
     try {
       const admitted = await execution.prepareResumeAdmission();
       // Passive admission can outlive the lease TTL. Renew the EXACT acquired fence after every
@@ -5153,7 +5171,7 @@ export class WorkflowEngine {
           'run ownership changed during resume preparation; retry the resume',
           { runId: input.runId },
         );
-      if (!admitted) {
+      if (!admitted || preparingSignal.aborted) {
         execution.adoptLease(fence, false);
         await execution.refuseResume();
         this.#runs.set(input.runId, execution); // retain the already-closed outcome, never dispatch it
@@ -5188,6 +5206,8 @@ export class WorkflowEngine {
       // This exact-fence release cannot delete a successor; failure leaves only our original TTL.
       await this.#releaseReconcileClaim(input.runId, fence);
       throw error;
+    } finally {
+      preparingSignal.removeEventListener('abort', cancelPreparation);
     }
     // **No release here — the resumed execution owns its own lease lifetime now.**
     //
@@ -5209,6 +5229,7 @@ export class WorkflowEngine {
     checkpoint: CheckpointState,
     plan: RunPlan,
     inputs: Readonly<Record<string, unknown>>,
+    signal: AbortSignalLike,
   ): Promise<
     | {
         readonly gateId: string;
@@ -5258,7 +5279,12 @@ export class WorkflowEngine {
         { runId: input.runId, gateId: input.gateId },
       );
     try {
-      const context = await resolveContext(input.workflow, inputs, this.#resolverCapabilities);
+      const context = await resolveContext(
+        input.workflow,
+        inputs,
+        this.#resolverCapabilities,
+        signal,
+      );
       const outputs = new Map<string, unknown>();
       for (const [nodeId, state] of checkpoint.nodeStates)
         if (state.status === 'completed') outputs.set(nodeId, state.output);
@@ -5273,7 +5299,7 @@ export class WorkflowEngine {
             .map((value) => value.name),
         ),
         toolPolicy: input.workflow.workflow.tools ?? {},
-        signal: this.#host.newAbortController().signal,
+        signal,
         maxTokensEstimate: this.#maxTokensEstimate,
       });
       if (prepared.kind !== 'prepared') throw new Error('preparation refused');
@@ -5287,6 +5313,7 @@ export class WorkflowEngine {
       );
       return { gateId: input.gateId, preparation: prepared.preparation, context };
     } catch {
+      if (signal.aborted) return undefined; // cancel wins; passive admission will settle without egress
       throw new EngineStateError(
         'invalid_decision',
         'the quoted dispatch or current price basis no longer matches; reject remains available',
@@ -5295,10 +5322,16 @@ export class WorkflowEngine {
     }
   }
 
-  /** Request cooperative cancellation. Throws {@link EngineStateError} for an unknown/terminal run. */
+  /** Request cooperative cancellation, including a known run in passive resume preparation.
+   * Throws {@link EngineStateError} for an unknown/terminal run. */
   cancel(runId: string): void {
     const execution = this.#runs.get(runId);
     if (execution === undefined) {
+      const preparing = this.#resumingRuns.get(runId);
+      if (preparing !== undefined) {
+        preparing.abort();
+        return;
+      }
       throw new EngineStateError('unknown_run', 'no run matches the supplied runId', { runId });
     }
     execution.requestCancel();

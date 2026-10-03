@@ -450,7 +450,7 @@ describe('durable budget authorization through the actual runner', () => {
       await entered.promise;
       const original = await leases.read(run.handle.runId);
       if (original === undefined) throw new Error('missing admission fence');
-      expectUnknownRun(engine, run.handle.runId);
+      expect(store.eventsFor(run.handle.runId)).toEqual(prefix);
       expect(host.armedCount()).toBe(0);
       expect(host.livenessCount()).toBe(0);
       expect(host.deadlineCount()).toBe(0);
@@ -1852,7 +1852,10 @@ describe('durable budget authorization through the actual runner', () => {
       },
     });
     await entered.promise;
-    expectUnknownRun(engine, run.handle.runId);
+    expect(store.eventsFor(run.handle.runId)).toHaveLength(before);
+    expect(host.armedCount()).toBe(0);
+    expect(run.requests).toEqual([]);
+    expect(run.keyReads()).toBe(0);
     await expect(
       engine.resumeFromCheckpoint({
         runId: run.handle.runId,
@@ -1872,6 +1875,116 @@ describe('durable budget authorization through the actual runner', () => {
     expect(run.requests).toEqual([]);
     expect(run.keyReads()).toBe(0);
   });
+
+  for (const phase of ['quote', 'effects'] as const) {
+    for (const takeover of [false, true]) {
+      it(`cancellation during passive ${phase} preparation cannot authorize egress (takeover=${takeover})`, async () => {
+        const run = await parkedRun();
+        const prefix = [...run.store.eventsFor(run.handle.runId)];
+        run.handle.cancel();
+        await run.drained;
+        let now = 1000;
+        const leases = createInMemoryRunLeases(() => now);
+        const store = new InMemoryRunStore();
+        for (const event of prefix) await store.persistEvent(event);
+        const host = createInMemoryHost({ store, runLeases: leases });
+        const entered = deferred<void>();
+        const release = deferred<void>();
+        const prepare = run.executor.prepareBudgetDispatch?.bind(run.executor);
+        if (prepare === undefined) throw new Error('missing standard dispatch preparation');
+        let preparationAborted = false;
+        const engine = new WorkflowEngine({
+          host,
+          executor: {
+            ...run.executor,
+            prepareBudgetDispatch: async (ctx) => {
+              if (phase === 'quote') {
+                entered.resolve();
+                await release.promise;
+                preparationAborted = ctx.signal.aborted;
+                // A cooperative executor observes the same signal as the cancellation request.
+                if (ctx.signal.aborted)
+                  return {
+                    kind: 'failed',
+                    error: { code: 'internal', message: 'preparation cancelled', retryable: false },
+                  };
+              }
+              return prepare(ctx);
+            },
+          },
+          resolvePrice: new Map([[MODEL, run.price]]),
+          effectResume: {
+            unresolvedForRun: async () => {
+              if (phase === 'effects') {
+                entered.resolve();
+                await release.promise;
+              }
+              return [];
+            },
+          },
+        });
+        let drained = false;
+        const resumed = engine.resumeFromCheckpoint({
+          runId: run.handle.runId,
+          workflow: run.workflow,
+          gateId: run.authority.gateId,
+          decision: {
+            decision: 'approved',
+            decidedBy: 'offline',
+            approvedAmountMicrocents: run.amount,
+          },
+        });
+        try {
+          await entered.promise;
+          expect(() => engine.cancel(run.handle.runId)).not.toThrow();
+          expect(() => engine.cancel(run.handle.runId)).not.toThrow();
+          expect(store.eventsFor(run.handle.runId)).toEqual(prefix);
+          expect(host.armedCount()).toBe(0);
+          expect(host.livenessCount()).toBe(0);
+          expect(host.deadlineCount()).toBe(0);
+          expect(run.keyReads()).toBe(0);
+          expect(run.requests).toEqual([]);
+          now += takeover ? 60_001 : 0;
+          const successor = takeover
+            ? await leases.acquire(run.handle.runId, 'successor', 60_000)
+            : undefined;
+          const successorLease = await leases.read(run.handle.runId);
+          if (takeover) expect(successor).toBeDefined();
+          release.resolve();
+          if (takeover) {
+            await expect(resumed).rejects.toMatchObject({ code: 'run_owned_elsewhere' });
+            expectUnknownRun(engine, run.handle.runId);
+            expect(store.eventsFor(run.handle.runId)).toEqual(prefix);
+            expect(await leases.read(run.handle.runId)).toEqual(successorLease);
+            if (successor !== undefined) await leases.release(run.handle.runId, successor);
+          } else {
+            const handle = await resumed;
+            const events: RunEvent[] = [];
+            for await (const event of handle.events) events.push(event);
+            drained = true;
+            expect(events.map((event) => event.type)).toEqual(['run:cancelled']);
+            expect(store.eventsFor(run.handle.runId)).toEqual([...prefix, ...events]);
+            expect(await leases.read(run.handle.runId)).toBeUndefined();
+          }
+          expect(preparationAborted).toBe(phase === 'quote');
+          expect(run.keyReads()).toBe(0);
+          expect(run.requests).toEqual([]);
+          expect(host.armedCount()).toBe(0);
+          expect(host.livenessCount()).toBe(0);
+          expect(host.deadlineCount()).toBe(0);
+        } finally {
+          release.resolve();
+          const handle = await resumed.catch(() => undefined);
+          if (handle !== undefined && !drained) {
+            handle.cancel();
+            for await (const event of handle.events) {
+              if (event.type === 'run:cancelled') break;
+            }
+          }
+        }
+      });
+    }
+  }
 
   it('an unreadable effect journal refuses approval without exposing its private host error', async () => {
     const run = await parkedRun();
