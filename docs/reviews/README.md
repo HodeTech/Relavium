@@ -144,6 +144,10 @@ added.
   primary resume outcomes survive lease cleanup rejection across six guards; eighteen permanent
   regressions and green CI/coverage; fresh full-step round 5 pending.
 
+- [2026-10-03 — W7 step 10, round 5](2026-10-03T14-31-39-w7-step-10-round-5-review.md):
+  inherited parallel pause/lease handoff and immediate human-decision preparation corrected;
+  ten permanent regressions, scoped async ACK limits and green CI/coverage; fresh full-step round 6 pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

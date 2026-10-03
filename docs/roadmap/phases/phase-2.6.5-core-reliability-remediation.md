@@ -3087,3 +3087,19 @@ records full sealed provenance, independent counts, setup corrections and limits
 and sequential coverage pass (320 suites, 7,376 tests, 11 existing skips; line/branch/function
 95.85%/92.55%/96.72%). **Fresh full-Step-10 round 5 precedes closure.** Step 11 follows that
 closure; live Steps 7–8 and all six register items stay open. No residual is deferred.
+
+
+**Step 10, review round 5 — 2026-10-03.** Both fresh reviewers covered the complete 65-file
+step. One High inherited race was independently reproduced with actual SQLite and corrected:
+aggregate pause released the lease before all sibling companions were acknowledged; the later
+append reclaimed a waiting-only lease whose heartbeat refused a fresh owner. All pause
+publications now finish before aggregate handoff. A claimed ordinary gate stays visible through
+payload pinning, covering the immediate-decision scheduler race exposed by the tighter barrier.
+Ten permanent regressions cover six held publication phases, two SQLite fresh-owner controls
+and two media pin outcomes. Original and separately removed guards produce the intended causal
+failures. The [round 5 record](../../reviews/2026-10-03T14-31-39-w7-step-10-round-5-review.md) records both full sealed inventories,
+independent counts, explicit setup corrections and the inherited unbounded async ACK freshness
+limit; no new lease policy is chosen. Full CI and sequential coverage pass (320 suites,
+7,386 tests, 11 existing skips; line/branch/function 95.87%/92.56%/96.72%). **Fresh full-Step-10
+round 6 precedes closure.** Step 11 follows that closure; live Steps 7–8 and all six register
+items remain open. No verified handoff defect is deferred.

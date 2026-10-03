@@ -155,6 +155,11 @@ merged too (PR #85, 2026-08-28).
 > primary typed refusals or an already-terminal no-op. Eighteen native regressions cover all six
 > guards and successor takeover; full CI/coverage pass (320 suites, 7,376 tests, 11 existing skips).
 > Fresh whole-Step-10 round 5 precedes closure; no residual is deferred.
+> [Step 10 round 5](../reviews/2026-10-03T14-31-39-w7-step-10-round-5-review.md) corrects inherited parallel gate publication handing off
+> and then reclaiming a waiting-only lease. Ten permanent regressions cover held pause ACKs,
+> actual SQLite fresh-owner resume and immediate human-decision media preparation. Async final-ACK
+> limits are explicit; no new clock/timeout policy is chosen. Full CI/coverage pass (320 suites,
+> 7,386 tests, 11 existing skips). Fresh whole-Step-10 round 6 precedes closure.
 > The safe CLI surface follows in Step 11.
 > Live Step 7 captures, and therefore Step 8, remain pending.
 > Step 1 repaired collection without deleting private artifacts and provides the
