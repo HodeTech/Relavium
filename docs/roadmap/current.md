@@ -170,7 +170,10 @@ merged too (PR #85, 2026-08-28).
 > media remains retained for the outbox. Seven permanent successor/terminal controls and independently
 > verified sealed evidence pass, with full CI and sequential coverage (323 files, 7,405 tests,
 > 11 existing skips). Fresh full-Step-10 round 8 precedes closure.
-> The safe CLI surface follows in Step 11.
+> [Step 10 round 8](../reviews/2026-10-03T17-50-23-w7-step-10-round-8-review.md) accepts the full 74-file step with no new verified findings.
+> Both fresh reviewers pass 857 permanent tests and separate five/six fresh probes; complete reports and
+> every sealed inventory entry are parent-verified. **Step 10 is closed; approved Step 11 proceeds automatically**
+> with the safe CLI surface, permanent compiled-process smoke coverage and fresh independent reviews.
 > Live Step 7 captures, and therefore Step 8, remain pending.
 > Step 1 repaired collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).

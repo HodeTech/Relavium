@@ -1989,7 +1989,7 @@ correction inside its own ADR rather than a rewrite, so the wrong reasoning stay
 
 ### W7 pre-implementation review and proposed execution plan — 2026-10-02
 
-**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–6 and 9 are closed after their independent review rounds. Step 6's configured-output-estimate precedence follows ADR-0101, approved by the maintainer on 2026-10-02. Live captures for Step 7 remain pending; independently approved Step 10 proceeds from the accepted Step 9 foundation.**
+**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–6, 9 and 10 are closed after their independent review rounds. Step 6's configured-output-estimate precedence follows ADR-0101, approved by the maintainer on 2026-10-02. Live captures for Step 7 remain pending; independently approved Step 11 proceeds from the accepted Step 10 foundation.**
 The four Accepted ADRs retain their decisions. Three verified gaps were explicitly resolved before code:
 manual compaction with an unknown window and the budget outcome of idle compaction
 ([ADR-0099](../../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md)),
@@ -3139,3 +3139,22 @@ financial acknowledgement or publication policy changed; no residual is deferred
 95.88%/92.58%/96.72%). **Fresh full-Step-10 round 8 precedes closure.** Step 11 follows that
 closure; its external process prototype is not permanent acceptance. Live Steps 7–8 and all
 six register items remain open.
+
+
+**Step 10, review round 8 — 2026-10-03.** Both fresh reviewers accept the complete 74-file
+step and all seven corrections with no new verified finding. Each independently passes 857
+permanent native tests across 18 files, plus five contracts or six runtime/financial probes;
+overlapping counts are nonadditive. Strict semantic TypeScript, purity/seam/dependency checks,
+causal removal/exact restoration and actual CAS/native-SQLite retention controls pass. Contracts
+independently executes the production predecessor's twelve strict refusals, two legacy controls,
+six historical-input rows and thirteen graph controls; runtime verifies its archive statically.
+Historical sources use current pinned dependency bytes, not a preserved historical installation.
+The parent reads both complete reports and verifies every sealed file, mode, directory and literal
+symlink after explicit zero-worker/session/SQLite access release; neither root is executed or mutated.
+[Full review record](../../reviews/2026-10-03T17-50-23-w7-step-10-round-8-review.md) preserves all failed setups,
+source/worker observations, capture provenance and limits. Implementation CI/coverage at `27a30f63`
+remain green (323 files, 7,405 tests, 11 existing skips; 95.88%/92.58%/96.72%);
+round 8 does not claim another full toolchain run. **Step 10 is closed; approved Step 11 proceeds
+automatically.** Its CLI implementation receives permanent compiled-process coverage and fresh
+independent review rounds. Live Steps 7–8, Step 12 and all six register items remain open.
+No verified residual is deferred and no new lease, clock or acknowledgement policy is selected.

@@ -156,6 +156,9 @@ added.
   inherited stale media retention before fence acknowledgement corrected; seven permanent controls,
   verified sealed evidence and green CI/coverage; fresh full-step round 8 pending.
 
+- [2026-10-03 — W7 step 10, round 8](2026-10-03T17-50-23-w7-step-10-round-8-review.md):
+  both fresh full-step reviews clean; all sealed entries verified; durable activation and replay closed.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and
