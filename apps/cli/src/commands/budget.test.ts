@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setImmediate as yieldImmediate, setTimeout as sleep } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
+import { isMainThread } from 'node:worker_threads';
 import { parseWorkflow, reconstructCheckpointState, type RunStore } from '@relavium/core';
 import {
   createClient,
@@ -20,6 +24,8 @@ import { budgetCommand, gateCommand, type GateCommandDeps } from './gate.js';
 import { statusCommand } from './status.js';
 import { createPlainRenderer } from '../render/renderer.js';
 import { initialRunViewState, reduceRunEvent } from '../render/tui/run-view-model.js';
+import { createFileTerminalOutbox } from '../engine/terminal-outbox.js';
+import { terminalOutboxPath } from '../history/open.js';
 
 let root: string;
 vi.mock('../config/load.js', async (importOriginal) => {
@@ -246,6 +252,117 @@ for (const abort of [false, true]) {
     expect(await createRunLeasePort(reader()).read(paused.runId)).toBeUndefined();
   });
 }
+for (const kind of ['usage', 'unknown-usage', 'abort'] as const) {
+  it(`a native terminal write refusal returns outbox uncertainty rather than takeover (${kind})`, async () => {
+    const paused = await seed();
+    mkdirSync(join(root, '.relavium'), { recursive: true, mode: 0o700 });
+    const terminal = kind === 'usage' ? 'run:completed' : 'run:failed';
+    client.sqlite.exec(
+      `CREATE TRIGGER refuse_terminal BEFORE INSERT ON run_events WHEN NEW.event_type = '${terminal}' BEGIN SELECT RAISE(ABORT, 'terminal fixture refusal'); END;`,
+    );
+    const supplied = providers();
+    const withoutUsage: LlmProvider = {
+      ...provider,
+      stream: async function* () {
+        await Promise.resolve();
+        calls++;
+        yield { type: 'text_delta', text: 'ANSWER' };
+        // EOF after content has no usage; the grammar fails it and its reservation stays committed.
+      },
+    };
+    const { io, err } = captureIo();
+    const code = await budgetCommand(
+      {
+        runId: paused.runId,
+        gate: paused.gateId,
+        ...(kind === 'abort' ? { abort: true } : { approveAmount: String(paused.amount) }),
+      },
+      {
+        ...deps(io),
+        ...(kind === 'unknown-usage'
+          ? { providers: { ...supplied, resolveProvider: () => withoutUsage } }
+          : {}),
+      },
+    );
+    expect(code).toBe(5);
+    expect(err()).not.toContain('taken over');
+    expect(err()).not.toContain('decision was not recorded');
+    expect(calls).toBe(kind === 'abort' ? 0 : 1);
+    expect(keyReads).toBe(kind === 'abort' ? 0 : 1);
+    const rows = reader().loadRunEventLogForReplay(paused.runId);
+    expect(rows.filter((event) => event.type === 'budget:authorization')).toHaveLength(2);
+    expect(rows.some((event) => event.type === terminal)).toBe(false);
+    const held = await createFileTerminalOutbox(terminalOutboxPath(root)).list();
+    expect(held).toHaveLength(1);
+    expect(held[0]).toMatchObject({ runId: paused.runId, type: terminal });
+    if (kind === 'unknown-usage') {
+      expect(rows.some((event) => event.type === 'budget:estimate_committed')).toBe(true);
+      expect(held[0]).toMatchObject({ cumulativeCostMicrocents: 0 });
+    } else if (kind === 'usage') {
+      expect(rows.some((event) => event.type === 'cost:attempt_settled')).toBe(true);
+      expect(held[0]).toMatchObject({ totalCostMicrocents: 2 });
+    }
+    expect(await createRunLeasePort(reader()).read(paused.runId)).toBeUndefined();
+  });
+}
+
+it('an actual successor fence still reports ownership loss without claiming a recorded approval was absent', async () => {
+  const paused = await seed();
+  const { io } = captureIo();
+  const leases = createRunLeasePort(reader());
+  let successor: Awaited<ReturnType<typeof leases.acquire>>;
+  let replaced = false;
+  const command = budgetCommand(
+    { runId: paused.runId, gate: paused.gateId, approveAmount: String(paused.amount) },
+    {
+      ...deps(io),
+      buildEngine: (options) => {
+        if (options?.host === undefined) throw new Error('missing actual command host');
+        const host = options.host;
+        return buildEngine({
+          ...options,
+          resolvePrice: prices,
+          host: {
+            ...host,
+            store: {
+              ...host.store,
+              persistEvent: async (event, context) => {
+                await host.store.persistEvent(event, context);
+                if (
+                  !replaced &&
+                  event.type === 'budget:authorization' &&
+                  event.authorization.state === 'decided'
+                ) {
+                  replaced = true;
+                  client.sqlite
+                    .prepare('UPDATE run_leases SET expires_at = 0 WHERE run_id = ?')
+                    .run(paused.runId);
+                  successor = await leases.acquire(paused.runId, 'actual-native-successor', 60000);
+                }
+              },
+            },
+          },
+        });
+      },
+    },
+  );
+  await expect(command).rejects.toMatchObject({
+    code: 'run_owned_elsewhere',
+  });
+  await expect(command).rejects.toThrow(/could not confirm ownership/);
+  expect(replaced).toBe(true);
+  expect(successor).toBeDefined();
+  expect(await leases.read(paused.runId)).toMatchObject({ ownerId: 'actual-native-successor' });
+  const rows = reader().loadRunEventLogForReplay(paused.runId);
+  expect(rows.filter((event) => event.type === 'budget:authorization')).toHaveLength(2);
+  expect(
+    rows.some((event) => ['run:completed', 'run:failed', 'run:cancelled'].includes(event.type)),
+  ).toBe(false);
+  expect(await createFileTerminalOutbox(terminalOutboxPath(root)).list()).toEqual([]);
+  expect(calls).toBe(0);
+  expect(keyReads).toBe(0);
+});
+
 it('wrong amount refuses before credential factory, engine build and decision writes', async () => {
   const paused = await seed();
   const before = reader().loadRunEventLogForReplay(paused.runId);
@@ -1118,9 +1235,9 @@ for (const interrupt of [false, true]) {
       );
       expect(blocked).toBe(true);
       expect(interrupted).toBe(interrupt);
-      expect(code).toBe(interrupt ? 1 : 0);
       expect(calls).toBe(interrupt ? 0 : 1);
       expect(keyReads).toBe(interrupt ? 0 : 1);
+      expect(code).toBe(interrupt ? 1 : 0);
       const rows = reader().loadRunEventLogForReplay(paused.runId);
       // A successful late decision append stays durable; cancellation prevents its dispatch.
       expect(rows.filter((event) => event.type === 'budget:authorization')).toHaveLength(2);
@@ -1133,6 +1250,148 @@ for (const interrupt of [false, true]) {
       blocker.sqlite.close();
     }
   });
+}
+
+for (const [interrupt, holdMs] of [
+  [false, 1200],
+  [true, 1200],
+  [true, 5500],
+] as const) {
+  it.skipIf(process.platform === 'win32')(
+    `actual OS SIGINT precedes egress after native approval contention (interrupt=${interrupt}, hold=${holdMs})`,
+    async () => {
+      // A forks worker gives this test its own process. Never signal a shared threads-runner process.
+      expect(isMainThread).toBe(true);
+      client.sqlite.close();
+      const file = join(root, 'native-signal-approval.db');
+      client = createClient(file);
+      runMigrations(client.db, { dbPath: file });
+      expect(client.sqlite.pragma('busy_timeout', { simple: true })).toBe(5000);
+      const paused = await seed();
+      const { io } = captureIo();
+      let observedAt: number | undefined;
+      // This observation listener protects the test worker during a failing negative control; it does
+      // not cancel the engine. Only the actual command subscription can prevent key/provider entry.
+      const observeSignal = (): void => {
+        observedAt = Date.now();
+      };
+      process.on('SIGINT', observeSignal);
+      const listeners = process.listenerCount('SIGINT');
+      const writer = spawn(
+        process.execPath,
+        [
+          fileURLToPath(new URL('./fixtures/budget-signal-writer.mjs', import.meta.url)),
+          file,
+          root,
+          String(process.pid),
+          String(interrupt),
+          String(holdMs),
+        ],
+        {
+          cwd: root,
+          env: {
+            PATH: process.env['PATH'] ?? '',
+            HOME: root,
+            USERPROFILE: root,
+            TMPDIR: root,
+            LANG: 'en_US.UTF-8',
+            CI: '1',
+            NO_COLOR: '1',
+          },
+          stdio: ['ignore', 'ignore', 'pipe'],
+        },
+      );
+      let writerError = '';
+      writer.stderr.on('data', (data: Buffer) => {
+        writerError += data.toString();
+      });
+      let finished = false;
+      const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+        (resolve, reject) => {
+          writer.once('error', reject);
+          writer.once('close', (code, signal) => {
+            finished = true;
+            resolve({ code, signal });
+          });
+        },
+      );
+      void exited.catch(() => undefined);
+      const bound = setTimeout(() => {
+        writer.kill('SIGKILL');
+      }, 16000);
+      let blocked = false;
+      let enteredAt = 0;
+      try {
+        const code = await budgetCommand(
+          { runId: paused.runId, gate: paused.gateId, approveAmount: String(paused.amount) },
+          {
+            ...deps(io),
+            buildEngine: (options) => {
+              if (options?.host === undefined) throw new Error('missing actual command host');
+              const host = options.host;
+              return buildEngine({
+                ...options,
+                resolvePrice: prices,
+                host: {
+                  ...host,
+                  store: {
+                    ...host.store,
+                    persistEvent: async (event, context) => {
+                      if (
+                        !blocked &&
+                        event.type === 'budget:authorization' &&
+                        event.authorization.state === 'decided'
+                      ) {
+                        blocked = true;
+                        writeFileSync(join(root, 'native-write-ready'), 'ready');
+                        const deadline = Date.now() + 10000;
+                        while (!existsSync(join(root, 'native-writer-locked'))) {
+                          if (finished || Date.now() >= deadline)
+                            throw new Error(`bounded native writer setup failed: ${writerError}`);
+                          await sleep(10);
+                        }
+                        enteredAt = Date.now();
+                        writeFileSync(join(root, 'native-write-enter'), 'enter');
+                      }
+                      await host.store.persistEvent(event, context);
+                    },
+                  },
+                },
+              });
+            },
+          },
+        );
+        expect(await exited).toEqual({ code: 0, signal: null });
+        expect(writerError).toBe('');
+        expect(blocked).toBe(true);
+        expect(calls).toBe(interrupt ? 0 : 1);
+        expect(keyReads).toBe(interrupt ? 0 : 1);
+        expect(code).toBe(interrupt ? 1 : 0);
+        const releasedAt = Number(readFileSync(join(root, 'native-writer-released'), 'utf8'));
+        if (interrupt) {
+          const sentAt = Number(readFileSync(join(root, 'native-signal-sent'), 'utf8'));
+          expect(sentAt).toBeGreaterThan(enteredAt);
+          expect(sentAt).toBeLessThan(releasedAt);
+          expect(observedAt).toBeDefined();
+        } else expect(observedAt).toBeUndefined();
+        if (holdMs === 1200) expect(releasedAt - enteredAt).toBeLessThan(5000);
+        else expect(releasedAt - enteredAt).toBeGreaterThan(5000);
+        const rows = reader().loadRunEventLogForReplay(paused.runId);
+        expect(rows.filter((event) => event.type === 'budget:authorization')).toHaveLength(2);
+        expect(rows.at(-1)?.type).toBe(interrupt ? 'run:cancelled' : 'run:completed');
+        expect(await createRunLeasePort(reader()).read(paused.runId)).toBeUndefined();
+        expect(process.listenerCount('SIGINT')).toBe(listeners);
+      } finally {
+        clearTimeout(bound);
+        if (!finished) writer.kill('SIGKILL');
+        await exited.catch(() => undefined);
+        await yieldImmediate();
+        await yieldImmediate();
+        process.removeListener('SIGINT', observeSignal);
+      }
+    },
+    20000,
+  );
 }
 
 it('a command interrupt during asynchronous effect admission reaches the passively preparing engine', async () => {

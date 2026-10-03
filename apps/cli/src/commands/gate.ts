@@ -516,14 +516,13 @@ async function resumeGateCommand(
       io: deps.io,
     });
 
-    // **The durability decides fenced-ness; the outcome decides everything else.** Keyed on the outcome
-    // alone this is wrong in both directions: `outcome === undefined` misses a fenced run that had a stale
-    // `run:paused` buffered before the loss was discovered, while `!isTerminalOutcome(outcome)` sweeps up a
-    // LEGITIMATE re-pause at a later gate, which must still exit 3.
-    if (handle.durability() === 'uncertain') {
+    // An uncertain NONTERMINAL outcome is fenced, including a buffered stale pause. A delivered
+    // terminal with uncertainty instead belongs to the outbox/exit-5 path below. A durable later
+    // pause still exits 3. Neither durability nor the outcome alone makes these distinctions.
+    if (handle.durability() === 'uncertain' && !isTerminalOutcome(outcome)) {
       throw new CliError(
         'run_owned_elsewhere',
-        `run ${args.runId} was taken over by another process during the resume; this decision was not recorded — read \`relavium logs ${args.runId}\` for its real outcome, then retry if the gate is still pending`,
+        `this process could not confirm ownership of run ${args.runId} during the resume and stopped — read \`relavium logs ${args.runId}\` for its real outcome, then retry if the gate is still pending`,
       );
     }
     if (outcome === undefined) {
@@ -531,8 +530,8 @@ async function resumeGateCommand(
       // handle (the engine's own checkpoint re-read found the run terminal — a concurrent `relavium gate`
       // settled it between our pre-check and the engine's) is an idempotent no-op. A run FENCED mid-resume
       // (ADR-0079 §5) also emits no terminal by design — and reporting that as "already settled … exit 0"
-      // is the worst available answer: the run is executing elsewhere, this process's gate decision was
-      // never made durable, and an automation loop records success. The disposition separates them at no
+      // is the worst available answer: this process cannot report settlement, even when its earlier gate
+      // decision is already durable, and an automation loop records success. The disposition separates them at no
       // cost: `createClosedRunHandle` reports `durable`, a fenced handle reports `uncertain`.
       const notice = `run ${args.runId} already settled; nothing to resume\n`;
       if (deps.global.json) deps.io.writeErr(notice);
