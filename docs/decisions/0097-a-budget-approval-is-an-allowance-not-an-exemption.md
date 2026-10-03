@@ -422,3 +422,20 @@ real engine authority, debit, secret/MCP grants and durable rows.
 Required full CI and sequential coverage exit 0 (327 files, 7,506 passing tests, 11 existing skips).
 Step 11's implementation commit and fresh independent reviews precede its closure. Steps 7–8 still
 require separate maintainer live captures; no new decision or dependency is introduced here.
+
+
+## W7 step 11 interruption and display correction — 2026-10-03
+
+The first full-step review reproduced Ctrl-C swallowed while native SQLite retried an approval
+append, a missing no-MCP preparation guard, and an old identified companion clearing a newer
+budget notice. Cancellation now reaches known passive resumes and active engine/handle ownership;
+passive cancellation neither schedules nor arms execution timers, and exact-fence confirmation
+still precedes terminal writes. A late acknowledged approval stays durable, with no later dispatch.
+The display removes an identified notice by its full raw run/node/gate identity; no-id historical
+companions keep their node-scoped compatibility projection. Current request/price validation occurs
+before the gate claim, after the run lease is acquired. These repairs implement the existing
+cancellation, ownership and companion invariants without a new allowance, lease or clock policy.
+
+Canonical behaviour is in [the command reference](../reference/cli/commands.md#relavium-budget-resume)
+and [the preparation contract](../reference/shared-core/agent-runner.md#preparing-and-resuming-a-budget-dispatch).
+Fresh complete-Step-11 review follows the correction commit; Steps 7–8 still require live captures.

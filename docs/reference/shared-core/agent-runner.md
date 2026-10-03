@@ -195,6 +195,14 @@ fallback, tool round and above-chain node retry. One dispatch token spans that n
 lifetime and closes when it completes, fails, parks, is cancelled, abandoned or loses ownership.
 Exhaustion is fatal `budget_exceeded`; it neither retries nor creates a fresh budget pause.
 
+A cancellation request for a known cross-process resume also covers passive context, quote and
+effect admission before execution registration. It carries the preparation signal into the retained
+request builder, latches cancellation without scheduling or arming a grace timer, and renews the
+exact acquired fence before settling a cancelled outcome. A successor or unconfirmable owner
+receives no terminal from the abandoned preparation. Command signals continue to the active
+execution and the returned handle; a late acknowledged decision remains durable and cannot grant
+post-cancellation egress.
+
 Cross-process amount/kind/request validation occurs before execution registration. Constructor seeding
 is passive; context and effect-journal admission precede timers, media polling and dispatch. After an
 asynchronous preflight, the engine rechecks the whole current quote. It then atomically renews

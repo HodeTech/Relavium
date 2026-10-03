@@ -308,7 +308,7 @@ relavium budget resume <runId> [--gate <gateId>] --abort
 - A legacy gate with no frozen allowance, an unpriced quote or an unrepresentable amount offers
   **`--abort` only** on this surface. There is no input payload, comment or generic `--approve` flag.
 - Approval preserves the governor and its dispatch-owned allowance. It does not lift the workflow cap.
-  The engine independently rechecks the current request/price provenance before ownership; a stale
+  The engine independently rechecks the current request/price provenance before claiming the gate; a stale
   quote remains pending and is refused (exit `2`). See
   [the preparation/resume contract](../shared-core/agent-runner.md#preparing-and-resuming-a-budget-dispatch).
 - `--abort` rejects the selected budget gate, dispatches no agent and fails the run with
@@ -322,7 +322,11 @@ relavium budget resume <runId> [--gate <gateId>] --abort
   replaced or newly discovered MCP ids refuse rather than changing the authorized request. A budget
   rejection does not connect MCP. Signal teardown is armed before connect and removed after cleanup.
   Ctrl-C during connect/build returns exit `1`, leaves the decision unrecorded and the gate pending,
-  and reaps its child. After engine resume starts, the engine/handle remains authoritative.
+  and reaps any connected child. The interruption guard also covers resumes without MCP. Once
+  engine resume starts, cancellation reaches both passive preparation and the active execution.
+  A decision append may already be in flight: its successful acknowledgement stays durable,
+  while cancellation prevents later dispatch and follows the engine's cancelled outcome; it never
+  rolls back a durable approval. Signal subscriptions remain armed through database/client cleanup.
 - Under `--json`, stdout remains a pure run-event stream, with diagnostics and no-op/interruption
   notices on stderr. There is no prompt under JSON, CI or no TTY. On a TTY the inline budget card shows
   the frozen scalar amount and requires that exact amount or rejection; unpriced/unrepresentable

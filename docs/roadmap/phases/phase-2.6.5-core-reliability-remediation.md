@@ -3192,3 +3192,25 @@ and the mechanical-cleanup tool's initially inadequate comparison are retained s
 semantic product failures; full semantic AST verification precedes the final formatting cleanup.
 **Implementation commit and two fresh independent complete-Step-11 review rounds precede closure.**
 Steps 7–8, Step 12 and all six register items remain open; no verified residual is deferred.
+
+
+**Step 11, review round 1 — 2026-10-03.** Both fresh reviewers examine all 38 implementation files.
+Native SQLite approval-write retries swallowed Ctrl-C, and no-MCP preparation had no command signal
+guard. Cancellation now reaches the known passive resume, active engine and returned handle;
+quote/context preparation uses the same signal. Passive cancellation neither schedules nor arms a
+grace timer. Exact-fence confirmation still precedes cancellation settlement, so a successor is
+neither written over nor released. A late acknowledged approval remains durable without later egress.
+Identified old companions no longer clear a new gate's full raw display identity; historical no-id
+projection remains node-scoped. Current price validation is documented before the gate claim, after
+run ownership. No policy, dependency or wire field changes.
+
+The parent fully reads both reports and verifies every sealed inventory entry after complete releases.
+The record distinguishes corrected-isolation review runs, setup faults and nonadditive test counts.
+Eight owned native probes and 177 permanent cases pass; actual shipping-timeout SQLite SIGINT,
+bounded original/candidate/restored OS no-MCP controls and narrow causal removals are qualified in
+[the review record](../../reviews/2026-10-03T19-39-26-w7-step-11-round-1-review.md).
+Thirteen new permanent regressions include engine-first passive cancellation and successor fencing.
+Full CI and sequential coverage exit 0: 327 files, 7,519 tests, 11 existing skips; global
+line/branch/function coverage 95.88%/92.63%/96.73%.
+**Fresh full-Step-11 round 2 precedes closure.** Live Steps 7–8, Step 12 and all six register items
+remain open; no verified residual is deferred.

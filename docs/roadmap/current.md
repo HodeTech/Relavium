@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -176,7 +176,12 @@ merged too (PR #85, 2026-08-28).
 > with the safe CLI surface, permanent compiled-process smoke coverage and fresh independent reviews.
 > Step 11 implementation now passes full CI and sequential coverage (327 files, 7,506 tests, 11 existing skips),
 > including permanent compiled CLI refusal/status/abort/MCP-interruption smokes and raw-triple display regressions.
-> Its implementation commit and two fresh independent review rounds precede closure.
+> [Step 11 round 1](../reviews/2026-10-03T19-39-26-w7-step-11-round-1-review.md) independently verifies native approval-write cancellation,
+> the no-MCP signal guard and stale identified-companion display cleanup. The parent fixes all three,
+> adds passive Core cancellation/fence controls and corrects the ownership wording.
+> Full CI and sequential coverage pass after the corrections (327 files, 7,519 passing tests,
+> 11 existing skips; global line/branch/function 95.88%/92.63%/96.73%).
+> Fresh full-Step-11 round 2 follows the correction commit; the step remains open.
 > Live Step 7 captures, and therefore Step 8, remain pending.
 > Step 1 repaired collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
