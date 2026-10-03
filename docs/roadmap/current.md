@@ -181,7 +181,14 @@ merged too (PR #85, 2026-08-28).
 > adds passive Core cancellation/fence controls and corrects the ownership wording.
 > Full CI and sequential coverage pass after the corrections (327 files, 7,519 passing tests,
 > 11 existing skips; global line/branch/function 95.88%/92.63%/96.73%).
-> Fresh full-Step-11 round 2 follows the correction commit; the step remains open.
+> [Step 11 round 2](../reviews/2026-10-03T21-01-16-w7-step-11-round-2-review.md) verifies two further High findings:
+> a successful native busy wait can conceal OS SIGINT until after egress, and terminal write uncertainty
+> was misreported as takeover. The CLI host yields across a poll turn before decision acknowledgement;
+> terminal uncertainty retains exit 5, while actual successor fencing still refuses without a false
+> claim that an earlier approval is absent. Seven new permanent controls pass; both complete sealed
+> reports and every inventory entry are parent-verified. Full CI and sequential coverage pass
+> (327 files, 7,526 tests, 11 existing skips; 95.88%/92.63%/96.73%). Fresh full-Step-11 round 3 follows
+> the correction commits; the step remains open.
 > Live Step 7 captures, and therefore Step 8, remain pending.
 > Step 1 repaired collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).

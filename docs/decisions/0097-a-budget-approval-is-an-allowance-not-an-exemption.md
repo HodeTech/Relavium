@@ -439,3 +439,23 @@ cancellation, ownership and companion invariants without a new allowance, lease 
 Canonical behaviour is in [the command reference](../reference/cli/commands.md#relavium-budget-resume)
 and [the preparation contract](../reference/shared-core/agent-runner.md#preparing-and-resuming-a-budget-dispatch).
 Fresh complete-Step-11 review follows the correction commit; Steps 7–8 still require live captures.
+
+
+## W7 step 11 native signal and terminal uncertainty correction — 2026-10-03
+
+The second full-step review reproduces an OS signal queued during a successful native decision
+write reaching Node only after approved egress. The CLI host now yields two check phases across
+a poll turn after a successful decided authorization or human-decision companion append, before
+Core observes its acknowledgement. Cancellation reaches the existing passive/active path; the
+already committed row remains durable. This scheduling stays at the Node host boundary and adds
+no Core platform import, acknowledgement rollback or allowance policy.
+
+A delivered terminal whose durable append fails retains the existing terminal-outbox/exit-5
+outcome. Only nonterminal uncertainty takes the ownership-refusal path; a real successor remains
+fenced. The diagnostic no longer falsely denies an earlier recorded approval. These are repairs
+of the existing cancellation, durability and ownership decisions, not a new architecture decision.
+Canonical behaviour remains in [the command reference](../reference/cli/commands.md#relavium-budget-resume)
+and [the preparation contract](../reference/shared-core/agent-runner.md#preparing-and-resuming-a-budget-dispatch).
+[The second review record](../reviews/2026-10-03T21-01-16-w7-step-11-round-2-review.md) qualifies native
+signal evidence, exact restoration, seven permanent controls and green full CI/coverage.
+Fresh full-Step-11 round 3 precedes closure; live Steps 7–8 remain pending.

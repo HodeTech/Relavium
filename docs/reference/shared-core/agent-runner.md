@@ -203,6 +203,13 @@ receives no terminal from the abandoned preparation. Command signals continue to
 execution and the returned handle; a late acknowledged decision remains durable and cannot grant
 post-cancellation egress.
 
+The Node CLI host yields across a poll turn after a successful decision append, before exposing
+its acknowledgement to the engine, so an OS signal queued during native SQLite contention can
+reach this cancellation path before dispatch. The row is already committed and is not undone.
+This host-specific scheduling belongs outside Core. A delivered terminal with uncertain durability
+uses the terminal-outbox outcome, not the nonterminal ownership-refusal path; the canonical
+[CLI exit codes](../cli/commands.md#exit-codes) distinguish them.
+
 Cross-process amount/kind/request validation occurs before execution registration. Constructor seeding
 is passive; context and effect-journal admission precede timers, media polling and dispatch. After an
 asynchronous preflight, the engine rechecks the whole current quote. It then atomically renews
@@ -223,7 +230,7 @@ token or pretend the agent completed: an eligible kick re-runs under the current
 Legacy approval likewise grants no allowance. The durable protocol and join rules have one home in
 [sse-event-schema.md](../contracts/sse-event-schema.md#durable-budget-authorization).
 
-**W7 Step 10, 2026-10-03:** the workflow approval bypass is replaced by this protocol; implementation
-verification and independent review are in progress. The safe CLI surface remains Step 11, and
+**W7 status, 2026-10-03:** Step 10's workflow approval protocol is accepted after eight independent
+review rounds. Step 11's safe CLI surface is implemented and under corrective independent review;
 automatic session pre-send/summary handoff remains Step 8. See the
 [W7 execution plan](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md).

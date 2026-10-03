@@ -163,6 +163,10 @@ added.
   native approval-write/no-MCP interruption and stale companion notices corrected; parent causal
   controls and permanent regressions; fresh full-step round 2 required.
 
+- [2026-10-03 — W7 step 11, round 2](2026-10-03T21-01-16-w7-step-11-round-2-review.md):
+  queued native OS signals now precede approval egress; terminal uncertainty retains exit 5;
+  seven permanent controls and verified sealed evidence; fresh full-step round 3 required.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

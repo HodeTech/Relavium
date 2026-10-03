@@ -3214,3 +3214,23 @@ Full CI and sequential coverage exit 0: 327 files, 7,519 tests, 11 existing skip
 line/branch/function coverage 95.88%/92.63%/96.73%.
 **Fresh full-Step-11 round 2 precedes closure.** Live Steps 7–8, Step 12 and all six register items
 remain open; no verified residual is deferred.
+
+
+**Step 11, review round 2 — 2026-10-03.** Both fresh reviewers cover the complete 43-file step.
+A successful native SQLite busy wait can conceal an already-sent OS SIGINT until after approved
+provider entry. The CLI host now yields two check phases across a poll turn before exposing a
+successful decision acknowledgement to Core; the durable approval is not rolled back. Terminal
+write uncertainty now retains the existing outbox/exit-5 path, while nonterminal ownership loss
+still refuses. A real native successor remains fenced, and the diagnostic no longer falsely
+claims an earlier approval is absent. No policy, dependency, clock or wire field changes.
+
+The parent reads both complete reports and verifies all 2,234 contracts and 2,607 runtime sealed
+entries after full access releases. Independent fresh parent child/writer controls reproduce both
+findings. Seven permanent regressions cover native terminal faults, successor fencing and actual
+OS contention; restored selection passes 101 tests. One-immediate fixture success, standalone
+reviewer failure, POSIX/platform limits and excluded setup runs are qualified in
+[the round 2 record](../../reviews/2026-10-03T21-01-16-w7-step-11-round-2-review.md).
+Full CI and sequential coverage exit 0: 327 files, 7,526 passing tests, 11 existing skips;
+global line/branch/function coverage 95.88%/92.63%/96.73%.
+**Fresh complete-Step-11 round 3 precedes closure.** Live Steps 7–8, Step 12 and all six register
+items remain open; no verified implementation finding is deferred.

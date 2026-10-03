@@ -56,7 +56,7 @@ a strip — but what reaches a terminal differs: `JSON.stringify` escapes `ESC` 
 (including `U+009B`, a working escape-sequence introducer) and the Trojan-Source bidi family RAW in content
 the model, a tool, or an imported artifact controls. Enforced by lint rather than review; the reasoning and
 the one allowlisted exception live in
-[security-review.md](../../standards/security-review.md#cli-terminal-render-safety--interactive-approval).
+[security-review.md](../../standards/security-review.md#cli-terminal-render-safety--interactive-approval-25e--25-close-step-14).
 
 Under `relavium run --json`, the CLI emits a stable machine contract a CI job can pipe and assert
 on ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)). The contract covers a workflow
@@ -327,6 +327,10 @@ relavium budget resume <runId> [--gate <gateId>] --abort
   A decision append may already be in flight: its successful acknowledgement stays durable,
   while cancellation prevents later dispatch and follows the engine's cancelled outcome; it never
   rolls back a durable approval. Signal subscriptions remain armed through database/client cleanup.
+- A successful native decision write yields to queued OS signal handling before its acknowledgement
+  admits the approved dispatch. Terminal persistence uncertainty returns exit `5` with the delivered
+  terminal retained in the outbox. Nonterminal ownership uncertainty refuses with exit `6`; its
+  diagnostic does not claim that an earlier durable approval is absent. See [the exit codes](#exit-codes).
 - Under `--json`, stdout remains a pure run-event stream, with diagnostics and no-op/interruption
   notices on stderr. There is no prompt under JSON, CI or no TTY. On a TTY the inline budget card shows
   the frozen scalar amount and requires that exact amount or rejection; unpriced/unrepresentable
