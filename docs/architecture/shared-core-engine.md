@@ -263,6 +263,8 @@ handoff. A claimed gate retains ownership while its decision work is in flight; 
 payload preparation remains visible to the scheduler until its vertex can complete. Completion also
 rechecks the run and vertex after asynchronous pinning; the ordinary decision's cutoff and media
 retention scope are defined in the [event contract](../reference/contracts/sse-event-schema.md#human-gate-suspendresume-across-the-stream).
+Run media references follow the append acknowledgement; a fenced write cannot recreate retention
+after a successor's terminal sweep. An owned terminal awaiting the outbox retains its media.
 Renewal confirms the store operation; an unbounded asynchronous ACK
 can outlive its TTL, so the existing liveness and append fences still govern later loss.
 The canonical resume contract is in [agent-runner.md](../reference/shared-core/agent-runner.md).

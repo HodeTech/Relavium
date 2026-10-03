@@ -295,9 +295,17 @@ Timeout behavior (`timeout_action` on the node) maps to `decidedBy: 'timeout'` w
 Ordinary gate payload pinning is asynchronous. The claimed gate stays pending during preparation;
 after the pin, the engine rechecks the run's settlement/cancellation/abort state and the vertex's
 paused state before completing it or publishing the decision. A pin finishing after cancellation,
-a deadline or fenced closure produces no late decision event for persistent subscribers and no
+a deadline or an already observed fenced closure produces no late decision event for persistent subscribers and no
 new run-scoped media reference. An uncancellable CAS write may still finish with an unreferenced
 blob; storage completion is distinct from retained run authority ([ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md)).
+
+Media retention follows the ordered append acknowledgement. If another owner completes the run
+before a held pin returns and the original heartbeat has not yet observed takeover, the store's
+fence still refuses its late append; that refused event creates no run media reference. A terminal
+refused for another store fault retains its media while waiting in the outbox, and a successfully
+persisted terminal reclaims its run references. The existing non-terminal fault-delivery contract
+remains unchanged ([ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md),
+[ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md)).
 
 ### Durable budget authorization
 

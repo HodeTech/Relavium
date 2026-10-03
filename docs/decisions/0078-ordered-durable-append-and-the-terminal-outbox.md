@@ -112,3 +112,24 @@ Stated explicitly, because the next reader will otherwise try to simplify it awa
 - **`uncertain` is a new outcome surfaces must handle**, and a CLI exit code is a user-visible contract change. Mitigated by minting it once for three items rather than three times, and by recording it in ADR-0049's canonical home.
 - **The outbox can itself fail.** A host whose outbox write fails has no further recourse; the run reports `uncertain` and stops there. That is the honest floor, and it is stated rather than papered over.
 - **`CR-10`'s headline property is still not provable from the log alone.** Streamed events consume sequence numbers and are never persisted, so a healthy log legitimately reads `[0,1,2,3,5,10,…]` and a streamed event's absence is indistinguishable from a lost one. Proving "the committed set is a prefix of the asked set" needs a store harness that records what it was *asked* to persist. That harness is built before the implementation, exported from `packages/core` the same way `checkDurableTruth` is, and its own vacuity is checked by mutating it to compare sets instead of prefixes.
+
+## Media retention acknowledgement correction — 2026-10-03, W7 step 10 seventh review
+
+The ordered writer previously recorded produced-media references before entering its append
+region. A held ordinary-gate CAS write could finish after a distinct successor completed and
+reclaimed the run. SQLite correctly refused the stale event's fence, but the old writer had
+already recreated run references. This inherited retention mutation is recoverable by a later
+other-run CLI GC sweep; run references grant no read authority. No extra spend or successor
+terminal corruption was demonstrated.
+
+Produced-media references now follow successful persistence inside the ordered region. A fence
+refusal records no reference. A terminal refused for another store fault records its media before
+the outbox handoff, preserving retention while its terminal waits; a successful terminal records
+then reclaims as before. Seven native controls cover distinct engines with two file-backed SQLite
+connections and real CAS, cancellation/observed-takeover controls, acknowledged terminals,
+uncertain outbox terminals and typed terminal-fence refusal. The latter terminal controls use
+reference run events/leases with actual SQLite retention; they are not SQLite lease proofs.
+Removing the uncertain-terminal retention branch breaks its control.
+
+This corrects the ordering of an existing best-effort retention side effect. It changes no host
+port, money acknowledgement, terminal exemption, non-terminal fault delivery or lease policy.

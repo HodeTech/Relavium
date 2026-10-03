@@ -230,3 +230,17 @@ The shipping SQLite port performs the lease operation synchronously. This correc
 no universal freshness claim for an unbounded asynchronous acknowledgement, timeout policy
 or second engine clock. The final renewal remains an exact-fence admission check at its
 store operation, followed by the existing liveness and write fences.
+
+## Fenced media-reference correction — 2026-10-03, W7 step 10 seventh review
+
+A delayed ordinary-gate CAS completion can return before the original heartbeat discovers that a
+distinct successor has already completed the run. Native SQLite rejected all old event rows, but
+reference recording happened before that rejection and recreated terminal run retention. Two
+file-backed native SQLite connections and distinct engines independently reproduce the inherited
+race. Normal completion, cancellation and heartbeat-observed takeover remain controls.
+
+The existing ordered writer now records produced-media references after append acknowledgement,
+with the separate owned-terminal outbox retention path described in
+[ADR-0078's correction](0078-ordered-durable-append-and-the-terminal-outbox.md#media-retention-acknowledgement-correction--2026-10-03-w7-step-10-seventh-review).
+A refused fence creates no new run reference and cannot reclaim the successor's references. This
+adds no elapsed-acknowledgement freshness guarantee, clock, TTL or acquisition policy.

@@ -4291,10 +4291,8 @@ class RunExecution {
     }
 
     const event = this.#bus.next(durable);
-    // Record the run's reference for every produced durable media handle (1.AF/D12c), then release the
-    // run's references at its terminal event (D11 sweep). Best-effort + synchronous-to-the-stream: a
-    // retention failure never touches the I3 / gap-free / exactly-one-terminal guarantees below.
-    this.#recordProducedMedia(durable);
+    // Retention follows the ordered writer's acknowledgement below. A numbered event alone is not
+    // evidence this process still owns the run: a CAS pin may finish after another owner settles it.
     // NOTE: the terminal media reclaim used to sit here, before the write. It now runs only after the
     // terminal's persist SUCCEEDS — see the write below (ADR-0078 §1 re-timing ADR-0042 §4).
     const prior = this.#deliveryTail;
@@ -4357,6 +4355,7 @@ class RunExecution {
           ...(this.#fence === undefined ? {} : { fence: this.#fence }),
         });
         opts?.onPersisted?.();
+        this.#recordProducedMedia(durable);
         if (handOff && !TERMINAL_TYPES.has(event.type)) {
           // The pause is now durable and was written AS THE OWNER; hand the claim back only after that.
           // Entering `parked` here rather than before the write means the write that creates the state can
@@ -4385,6 +4384,9 @@ class RunExecution {
           // the store — the store is the thing that just failed — so a later start can retry it under the
           // same identity, and report `uncertain` so no surface says `completed` on a record that disagrees.
           this.#terminalDurability = 'uncertain';
+          // An owned terminal refused for a store fault still needs its media while the outbox waits.
+          // A fence rejection takes the separate branch above and must never re-add retention.
+          this.#recordProducedMedia(durable);
           await this.#bestEffortOutbox(event);
         }
         if (
@@ -4638,8 +4640,8 @@ class RunExecution {
   }
 
   /**
-   * Record the producing run's reference for every durable media handle a just-stamped event carries
-   * (1.AF/D12c, ADR-0042 §3). **Best-effort**: a collection or host-write failure is swallowed — it never
+   * Record the producing run's reference after its append acknowledgement, or for an owned terminal
+   * awaiting the outbox (1.AF/D12c, ADR-0042 §3). **Best-effort**: a collection or host-write failure is swallowed — it never
    * touches the I3 / gap-free / exactly-one-terminal guarantees (a missing ref only risks GC
    * over/under-retention). No-op without a `mediaReferences` host port or when the event carries no handle.
    */
