@@ -3057,3 +3057,19 @@ controls. Corrected full CI and sequential coverage pass (320 suites, 7,340 pass
 11 existing skips; line/branch/function coverage 95.83%/92.53%/96.67%). **Fresh complete-Step-10
 round 3 precedes closure.** Step 11 follows that closure; live Steps 7–8 and all six register
 items remain open. No residual is deferred.
+
+
+**Step 10, review round 3 — 2026-10-03.** Three fresh reviewers covered the complete 63-file
+step and both corrective rounds. One Medium finding was independently reproduced and corrected:
+companions with absent versus exact A each matched decided authority, but their duplicate comparison
+still refused both orders and hid unrelated interrupted work. Decided authority now witnesses only
+that compatibility; present money, actor, decision and payload remain strictly checked, and no
+historical amount is invented. Eighteen permanent regressions preserve real outputs and ordinary/
+unrelated gates across checkpoint, reference and SQLite, plus negative conflict and no-witness
+controls. Eight acceptance definitions fail before the repair; 300 selected native definitions pass
+after it. Removing only authoritative amount validation fails seven strict money controls; exact
+restoration passes. The stale draft comment is removed and the e2e test directly checks lease release
+before terminal delivery. The [round 3 record](../../reviews/2026-10-03T12-39-00-w7-step-10-round-3-review.md)
+records complete sealed provenance, setup corrections and limits. Full CI and sequential coverage
+pass (320 suites, 7,358 tests, 11 existing skips; line/branch/function 95.83%/92.54%/96.67%).
+**Fresh full-Step-10 round 4 precedes closure.** Step 11 follows that closure; live Steps 7–8 and all six register items stay open.
