@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { RunEvent } from '@relavium/shared';
 import { MEDIA_JOB_POLL_DEFAULTS } from '@relavium/shared';
-import type { LlmProvider, LlmRequest, MediaGenRequest, PricingOverlay } from '@relavium/llm';
+import type {
+  LlmProvider,
+  LlmRequest,
+  MediaGenRequest,
+  ModelPricing,
+  PricingOverlay,
+} from '@relavium/llm';
 import { LlmProviderError, makeLlmError } from '@relavium/llm';
 import { parseWorkflow } from '../parser.js';
 import { BUILTIN_TOOLS } from '../tools/builtins.js';
@@ -1991,4 +1997,212 @@ describe('durable budget authorization through the actual runner', () => {
       error: { code: 'budget_exceeded' },
     });
   });
+});
+
+describe('terminal paid-media money barrier — ADR-0077/0097', () => {
+  it.each(['acknowledged', 'write_failure', 'takeover'] as const)(
+    'waits for the terminal sweep commitment and cleans up on %s',
+    async (outcome) => {
+      const { run, prefix } = await fundedMediaPrefix();
+      let now = 1000;
+      const leases = createInMemoryRunLeases(() => now);
+      const store = new InMemoryRunStore();
+      for (const event of prefix) await store.persistEvent(event);
+      const base = createInMemoryHost({ store, runLeases: leases });
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      const host = {
+        ...base,
+        store: {
+          resolveWorkflowId: (slug: string) => store.resolveWorkflowId(slug),
+          readWorkflowSnapshot: (runId: string) => store.readWorkflowSnapshot(runId),
+          listInterruptedRuns: () => store.listInterruptedRuns(),
+          persistEvent: async (...args: Parameters<typeof store.persistEvent>) => {
+            if (args[0].type === 'budget:estimate_committed') {
+              entered.resolve();
+              await release.promise;
+              if (outcome === 'write_failure') throw new Error('PRIVATE commitment storage path');
+            }
+            await store.persistEvent(...args);
+          },
+        },
+      };
+      const engine = new WorkflowEngine({
+        host,
+        executor: run.executor,
+        resolvePrice: new Map([[MODEL, { ...run.price, mediaOutputRates: {} }]]),
+        effectResume: {
+          unresolvedForRun: () => Promise.reject(new Error('PRIVATE effect storage path')),
+        },
+      });
+      let finished = false;
+      const resumed = engine
+        .resumeFromCheckpoint({ runId: run.handle.runId, workflow: run.workflow })
+        .then((handle) => {
+          finished = true;
+          return handle;
+        });
+      let successor: Awaited<ReturnType<typeof leases.acquire>>;
+      try {
+        await entered.promise;
+        for (let i = 0; i < 100; i += 1) await Promise.resolve();
+        expect(finished).toBe(false);
+        expect(host.armedCount() + host.deadlineCount() + host.livenessCount()).toBe(0);
+        expect(store.eventsFor(run.handle.runId).some((event) => event.type === 'run:failed')).toBe(
+          false,
+        );
+        if (outcome === 'takeover') {
+          now += 80_000;
+          successor = await leases.acquire(run.handle.runId, 'successor', 60_000);
+          expect(successor).toBeDefined();
+        }
+      } finally {
+        release.resolve();
+      }
+      const handle = await resumed;
+      const events: RunEvent[] = [];
+      for await (const event of handle.events) events.push(event);
+      expect(run.keyReads()).toBe(1);
+      expect(run.polls()).toBe(0);
+      expect(run.mediaRequests).toHaveLength(1);
+      expect(host.armedCount() + host.deadlineCount() + host.livenessCount()).toBe(0);
+      expect(JSON.stringify(events)).not.toContain('PRIVATE');
+      if (outcome === 'takeover') {
+        expect(store.eventsFor(run.handle.runId)).toEqual(prefix);
+        expect(events.some((event) => event.type === 'run:failed')).toBe(false);
+        expect(handle.durability()).toBe('uncertain');
+        expect(await leases.read(run.handle.runId)).toMatchObject({ ownerId: 'successor' });
+        if (successor !== undefined) await leases.release(run.handle.runId, successor);
+      } else {
+        expect(events.at(-1)).toMatchObject({
+          type: 'run:failed',
+          error: { code: 'effect_needs_attention' },
+          cumulativeCostMicrocents: 0,
+        });
+        const commitments = store
+          .eventsFor(run.handle.runId)
+          .filter((event) => event.type === 'budget:estimate_committed');
+        expect(commitments).toHaveLength(outcome === 'acknowledged' ? 1 : 0);
+        if (outcome === 'acknowledged') {
+          expect(commitments[0]).toMatchObject({ estimateMicrocents: 2000 });
+          expect(commitments[0]?.sequenceNumber).toBeLessThan(
+            store.eventsFor(run.handle.runId).at(-1)?.sequenceNumber ?? 0,
+          );
+        }
+      }
+      expect(await leases.read(run.handle.runId)).toBeUndefined();
+    },
+  );
+
+  it('reentrant pricing cancellation joins the newly queued native conservative commitment', async () => {
+    const parked = deferred<void>();
+    let pauses = 0;
+    const run = await parkedRun({
+      mediaJob: true,
+      onEvent: (event) => {
+        if (event.type === 'run:paused' && ++pauses === 2) parked.resolve();
+      },
+    });
+    await run.engine.resume(run.handle.runId, run.authority.gateId, {
+      decision: 'approved',
+      decidedBy: 'offline',
+      approvedAmountMicrocents: run.amount,
+    });
+    await parked.promise;
+    let reentered = false;
+    Object.defineProperty(run.price, 'mediaOutputRates', {
+      configurable: true,
+      get: () => {
+        if (!reentered) {
+          reentered = true;
+          run.handle.cancel();
+        }
+        return undefined;
+      },
+    });
+    run.host.fireTimers();
+    await run.drained;
+    expect(reentered).toBe(true);
+    expect(run.events.at(-1)).toMatchObject({ type: 'run:cancelled', cumulativeCostMicrocents: 0 });
+    const stored = run.store.eventsFor(run.handle.runId);
+    const commitments = stored.filter((event) => event.type === 'budget:estimate_committed');
+    expect(commitments).toHaveLength(1);
+    expect(commitments[0]).toMatchObject({ estimateMicrocents: 2000 });
+    expect(commitments[0]?.sequenceNumber).toBeLessThan(stored.at(-1)?.sequenceNumber ?? 0);
+    expect(run.keyReads()).toBe(2);
+    expect(run.polls()).toBe(1);
+    expect(run.mediaRequests).toHaveLength(1);
+    expect(run.host.armedCount() + run.host.deadlineCount() + run.host.livenessCount()).toBe(0);
+    expect(await run.host.runLeases.read(run.handle.runId)).toBeUndefined();
+  });
+
+  it.each(['known', 'unpriced', 'throws', 'unsafe'] as const)(
+    'retains safe accepted cost before the refused resume terminal (%s)',
+    async (mode) => {
+      const { run, prefix } = await fundedMediaPrefix();
+      const { host, store } = await hostFromLog(prefix);
+      class ThrowingPrice extends Map<string, ModelPricing> {
+        override get(model: string): ModelPricing | undefined {
+          if (model === MODEL) throw new Error('PRIVATE price source');
+          return super.get(model);
+        }
+      }
+      const resolvePrice: PricingOverlay =
+        mode === 'throws'
+          ? new ThrowingPrice([[MODEL, run.price]])
+          : new Map([
+              [
+                MODEL,
+                mode === 'unpriced'
+                  ? { ...run.price, mediaOutputRates: {} }
+                  : mode === 'unsafe'
+                    ? { ...run.price, mediaOutputRates: { image: Number.MAX_SAFE_INTEGER } }
+                    : run.price,
+              ],
+            ]);
+      const engine = new WorkflowEngine({
+        host,
+        executor: run.executor,
+        resolvePrice,
+        effectResume: { unresolvedForRun: () => Promise.reject(new Error('PRIVATE effect port')) },
+      });
+      const handle = await engine.resumeFromCheckpoint({
+        runId: run.handle.runId,
+        workflow: run.workflow,
+      });
+      const events: RunEvent[] = [];
+      for await (const event of handle.events) events.push(event);
+      for (let i = 0; i < 20; i += 1) await Promise.resolve();
+      const stored = store.eventsFor(run.handle.runId);
+      const commitments = stored.filter((event) => event.type === 'budget:estimate_committed');
+      const terminal = stored.at(-1);
+      expect(events.at(-1)).toMatchObject({
+        type: 'run:failed',
+        error: { code: 'effect_needs_attention' },
+      });
+      expect(JSON.stringify(events)).not.toContain('PRIVATE');
+      expect(run.keyReads()).toBe(1);
+      expect(run.polls()).toBe(0);
+      expect(run.mediaRequests).toHaveLength(1);
+      expect(host.armedCount()).toBe(0);
+      expect(host.livenessCount()).toBe(0);
+      expect(host.deadlineCount()).toBe(0);
+      expect(await host.runLeases.read(run.handle.runId)).toBeUndefined();
+      expect(terminal).toMatchObject({
+        type: 'run:failed',
+        error: { code: 'effect_needs_attention' },
+        cumulativeCostMicrocents: mode === 'known' ? 2000 : 0,
+      });
+      if (mode === 'known') expect(commitments).toHaveLength(0);
+      else {
+        expect(commitments).toHaveLength(1);
+        expect(commitments[0]).toMatchObject({
+          estimateMicrocents: 2000,
+          cumulativeConservativeMicrocents: 2000,
+        });
+        expect(commitments[0]?.sequenceNumber).toBeLessThan(terminal?.sequenceNumber ?? 0);
+        expect(reconstructCheckpointState(stored)?.conservativeCostMicrocents).toBe(2000);
+      }
+    },
+  );
 });

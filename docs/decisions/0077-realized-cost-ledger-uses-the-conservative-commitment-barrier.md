@@ -252,3 +252,18 @@ cover repeated appends, both cross-chain directions, write success/rejection/can
 budgeted/budgetless turns, stream/generate selection and real sibling runner-produced money
 rows. Restoring either old method separately breaks its controls; draining realized money only
 before the conservative flush still fails the cross-chain controls. Historical text is preserved.
+
+## Implementation correction — 2026-10-03, W7 step 10 second review
+
+A native approved media job retains its accepted estimate when pricing disappears, throws or
+produces an unsafe actual. The terminal sweep started that conservative write but did not join
+it before stamping the terminal; the terminal could win append order and lose the money row.
+Independent current and pre-Step-10 controls reproduced the gap. This repairs the existing
+barrier obligation; it does not turn an estimate into actual spend or change approval policy.
+
+The engine now drains and observes both money chains after terminal paid-job accounting,
+before terminal sequence/totals. Cleanup and immediate abort remain mandatory on pricing,
+write and fencing faults; an earlier effect failure or cancellation retains precedence.
+[Native regressions](../../packages/core/src/engine/budget-authorization-live.test.ts) cover
+known/unpriced/throwing/unsafe pricing, held/rejected commitment ACKs, takeover and synchronous
+pricing cancellation. A fenced writer claims no terminal and cannot release the successor.

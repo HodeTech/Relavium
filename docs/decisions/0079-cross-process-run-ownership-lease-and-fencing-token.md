@@ -175,3 +175,14 @@ Ten actual-runner controls cover both kicks, takeover, expiry without takeover, 
 renewal, slow failed-effect admission and heartbeat/release faults. Fresh corrective review
 and whole-Step-10 acceptance remain required. This repairs §4/§5's implementation; it adds
 no observer, owner type, lease clock, dependency or schema migration.
+
+## Terminal cleanup correction — 2026-10-03, W7 step 10 second review
+
+Joining terminal money exposed cleanup that had depended on microtask timing: a closed event
+stream could still show an armed heartbeat or an unreleased lease. Settlement now stops the
+heartbeat immediately; terminal reclaim obtains its exact fence without arming a settled
+execution. The ordered writer releases ownership after terminal persistence/outbox handling
+and before terminal delivery closes the stream. A fenced terminal still emits nothing and
+cannot release the successor; a release-store fault retains the existing bounded TTL fallback.
+This makes the existing terminal cleanup/ownership ordering deterministic, without changing
+lease acquisition, fencing generations or the money policy.

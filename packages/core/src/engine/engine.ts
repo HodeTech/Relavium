@@ -3614,6 +3614,9 @@ class RunExecution {
     // previous timer with no way to stop it — a heartbeat that keeps renewing a stale fence for the life of
     // the process, long after the run it belonged to settled.
     this.#stopHeartbeat();
+    // A terminal writer may reclaim a parked lease while draining money. It needs the fence, but must
+    // not install a fresh liveness timer for an execution already closing its stream.
+    if (this.#settled) return;
     // **`'liveness'`, not a work timer** — the kind is the whole reason the seam carries one. This beat
     // advances nothing and re-arms itself for as long as the run lives, so it must not join the set a test
     // fires to drive a run forward (a drive-to-quiescence loop would never terminate) nor the set that
@@ -3725,6 +3728,7 @@ class RunExecution {
       return; // exactly-one-terminal-event: idempotent
     }
     this.#settled = true;
+    this.#stopHeartbeat(); // no settled execution can renew; drain money under the existing fence
     // **A fenced run settles LOCALLY and emits nothing (ADR-0079 §5).** It still disarms its timers, closes
     // its stream and reports `uncertain` — the consumer's `for await` must complete rather than hang — but
     // the terminal is the new owner's to write. Placed before the timer sweep so the state is identical
@@ -3787,6 +3791,12 @@ class RunExecution {
     this.#disarmGraceWindow(); // ADR-0085 §3 — a settled run leaves no backstop holding the loop open
     // Live `keys()` — see the note at the `#onGraceElapsed` sweep for why deleting during iteration is safe.
     for (const vertexId of this.#nodeDeadlineDisarm.keys()) this.#disarmNodeDeadline(vertexId);
+    // The media sweep above can START new conservative writes, including when pricing throws. Drain
+    // both money chains after that sweep and observe their failures before stamping the terminal's
+    // sequence/totals. Teardown is already complete, so a failing join cannot strand timers or jobs.
+    await this.#joinMoneyDurability();
+    if (this.#lostOwnership()) return;
+    if (type === 'run:completed' && this.#failure !== undefined) type = 'run:failed';
     const durationMs = Math.max(0, this.#elapsedMs());
     let draft: RunEventDraft;
     if (type === 'run:completed') {
@@ -3835,17 +3845,7 @@ class RunExecution {
     // already tore the run down without writing or delivering anything. Returning stops a loser from freeing
     // the winner's lease row and from firing `#onSettled` a second time.
     if (this.#lostOwnership()) return;
-    // **Ownership ends with the run, and only AFTER the terminal is written** (ADR-0079 §4). The order is
-    // forced: the terminal is itself fence-checked, so releasing first would make this run's own last write
-    // fail its own guard.
-    //
-    // Both halves are load-bearing. An un-disarmed beat re-arms itself forever, so a finished run would keep
-    // writing a lease renewal every 20s for the life of the process; an unreleased lease leaves a
-    // `run_leases` row per run, growing without bound in `history.db`. Released even when the terminal write
-    // FAILED (the run is `uncertain` and its terminal is in the outbox): letting another process take the run
-    // over is exactly what should happen next, and the generation only moves forward, so this process stays
-    // fenced if it ever wakes.
-    await this.#releaseOwnership();
+    // The ordered terminal writer has released this exact fence before delivering/closing the stream.
     this.#onSettled(this.runId);
   }
 
@@ -4126,7 +4126,7 @@ class RunExecution {
    * write. Kept here so the two surfaces cannot diverge in what a durability failure means: never a released
    * reservation, always a loud failure.
    */
-  async #joinMoneyDurability(nodeId: string): Promise<void> {
+  async #joinMoneyDurability(nodeId?: string): Promise<void> {
     // **Barrier B3 (ADR-0077)** — and it is now the SINGLE join for both money chains. The old
     // `if (governor === undefined) return;` is gone: it was one of §5's three barrier holes, because a run
     // without a budget has no conservative commitments but does have a realized ledger, and returning early
@@ -4150,7 +4150,7 @@ class RunExecution {
    * `??=` throughout: a sibling's already-recorded root cause always wins, which is also why this is usually
    * a no-op on the ordinary path (`#emitDurable` has already set `#failure` from the same fault).
    */
-  #failMoneyDurability(error: unknown, nodeId: string): void {
+  #failMoneyDurability(error: unknown, nodeId?: string): void {
     // Attribute it to the node whose write actually failed, not to whichever node reached this barrier
     // first — under a `fan_out` both branches await the same chain link, so the first to flush may have made no
     // commitment at all. Falls back to this node when the error carries no owner.
@@ -4158,7 +4158,7 @@ class RunExecution {
     const owner =
       error instanceof CommitmentDurabilityError || ledger ? (error.nodeId ?? nodeId) : nodeId;
     this.#failure ??= {
-      nodeId: owner,
+      ...(owner === undefined ? {} : { nodeId: owner }),
       error: {
         code: 'internal',
         // The cause is deliberately NOT in the message: a durable-write failure can carry a filesystem path, and
@@ -4389,6 +4389,12 @@ class RunExecution {
           this.#schedule();
         }
       }
+      // Ownership ends AFTER terminal persistence (or its uncertain outbox path), but BEFORE terminal
+      // delivery closes the stream. Money draining can suspend settlement: a consumer that drains the
+      // terminal must not observe a lease whose cleanup is still queued behind this writer's return.
+      // A fenced terminal returns above and cannot release a successor. Release faults keep the existing
+      // bounded TTL fallback rather than replacing the recorded outcome or stranding stream closure.
+      if (TERMINAL_TYPES.has(event.type)) await this.#releaseOwnership();
       this.#bus.deliver(event); // still in seq order — `prior` is now awaited above, before the write
     })();
     this.#deliveryTail = settled.catch(() => undefined);
