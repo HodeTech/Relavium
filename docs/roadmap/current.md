@@ -137,9 +137,12 @@ merged too (PR #85, 2026-08-28).
 > [Round 1](../reviews/2026-10-03T00-25-08-w7-step-9-round-1-review.md) verified and corrected two caller settlement findings; [Round 2](../reviews/2026-10-03T01-10-45-w7-step-9-round-2-review.md) verified and corrected the async consumer and cancellation teardown; [Round 3](../reviews/2026-10-03T01-57-14-w7-step-9-round-3-review.md) verified and corrected park/poll host admission loss and the reentrant durable-total race.
 > [Fresh round 4](../reviews/2026-10-03T02-40-53-w7-step-9-round-4-review.md) accepts the complete foundation with no new findings; both sealed inventories and 70 parent-rerun fresh cases are verified. Its corrected native-loader evidence and prior harness isolation exception are recorded explicitly.
 > **Step 9 is closed; approved Step 10 proceeds automatically** with durable workflow activation and replay.
-> Step 10's authorization/checkpoint/live-resume implementation passes full CI and coverage
-> (320 suites, 7,308 passing tests, 11 existing skips), including sixty actual-runner race/crash cases
-> and the immutable actual-predecessor downgrade check. Formal committed-step review rounds are pending;
+> [Step 10 round 1](../reviews/2026-10-03T08-35-49-w7-step-10-round-1-review.md) reproduced and corrected
+> passive-resume lease expiry and unbound predecessor CJS/peer/optional edges. Exact-fence renewal and
+> an owned, versioned dependency closure pass causal controls, full CI and coverage
+> (320 suites, 7,318 passing tests, 11 existing skips), including seventy actual-runner cases,
+> twelve real predecessor refusals, two legacy controls and seven permanent graph/runtime controls.
+> Fresh full-Step-10 round 2 is pending;
 > Step 10 and all six register items remain open. The safe CLI surface follows in Step 11.
 > Live Step 7 captures, and therefore Step 8, remain pending.
 > Step 1 repaired collection without deleting private artifacts and provides the

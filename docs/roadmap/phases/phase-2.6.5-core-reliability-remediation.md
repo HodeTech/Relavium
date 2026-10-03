@@ -3018,3 +3018,20 @@ coverage exits 0 (320 suites, 7,308 passing tests, 11 existing skips; line/branc
 95.79%/92.51%/96.67%). Adjacent canonical event, runner, checkpoint and execution contracts are updated.
 **Implementation commits and fresh formal review rounds precede Step 10 closure.** The safe CLI
 surface remains Step 11; live captures still block only Steps 7–8. All six register items remain open.
+
+**Step 10, review round 1 — 2026-10-03.** Both fresh reviewers covered the complete 54-file
+committed step at `309a93ab`. The parent independently reproduced and corrected two High findings:
+passive admission could exceed the lease TTL before media activation, and the predecessor check
+pinned package bytes without binding actual CJS/peer/optional edges. Resume now renews the exact
+acquired fence after all passive awaits, including refusal settlement. The predecessor uses an
+owned copied graph with exact installed/reconstructed edges and runtime file hashes; its original
+source remains immutable. The [round 1 record](../../reviews/2026-10-03T08-35-49-w7-step-10-round-1-review.md)
+preserves independent scope, sealed inventories, setup faults and parent causal proof.
+
+Ten new native cases bring the actual-runner suite to 70; removing the renewal barrier fails nine
+new oracles while 61 controls pass. Seven permanent graph/runtime controls refuse edge/optional/file
+drift; removing the CJS fence makes its marker execute and its oracle fail. The actual predecessor
+still refuses twelve prefixes and passes two legacy controls. Corrected full CI and sequential
+coverage pass (320 suites, 7,318 passing tests, 11 existing skips; line/branch/function coverage
+95.79%/92.53%/96.67%). **Fresh full-step round 2 precedes Step 10 closure.** No residual is deferred;
+Step 11 follows that closure, and live captures remain the separate prerequisite for Steps 7–8.

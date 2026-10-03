@@ -25,12 +25,28 @@ Both are verified before any frozen source runs. The loader also verifies each
 source it loads and forbids mixing versions or resolving workspace source/dist.
 It transpiles TypeScript for execution; normal CI owns typechecking.
 
-`frozen/dependencies.json.gz` pins all 93 installed packages in the predecessor's
-dependency closure by version, package metadata and portable file hashes. Its
-SHA256 is `94b86d29f86bdb68d9d5eefe51325917d2999beed69692e293a32ec34b2dbe97`.
-The
-locally compiled `better-sqlite3/build/**` output is platform-specific and excluded
-from byte matching; its package version and original source remain pinned. The
+`frozen/dependencies.json.gz` pins 180 package roots and 12,000 portable files,
+including every installed declared dependency, peer and optional edge. All versions
+are present in the immutable predecessor lockfile. Its SHA256 is
+`7cce53b58c5eade131f59dcce426519980b9cdc27644d9fbade5087b625bd529`.
+The original 93 roots' portable bytes are retained; the 2026-10-03 review correction
+extends their metadata closure to installed peers rather than changing their versions.
+The 296 edges record exact target roots, two Node builtins and 29 absent optional
+edges. Multiple versions have distinct identities; a name alone is not a join key.
+
+The check verifies installed metadata, complete portable file inventories and actual
+Node lookup edges before a worker starts. It copies verified bytes into its owned
+tree and reconstructs each explicit dependency link, including Drizzle's SQLite peer.
+It verifies lookup again in the copied graph. A redirected edge or a newly resolving
+optional package is refused. Both the ESM loader and CommonJS `module.require` check
+the resolved file against the copied byte inventory before loading it; neither accepts
+an arbitrary `node_modules` path. CommonJS uses the public `module.require` and
+`createRequire.resolve` APIs, including in the loader thread, without a private loader
+hook or a newer Node minimum. `NODE_PATH` is empty in workers.
+
+The locally compiled `better-sqlite3/build/Release/better_sqlite3.node` is the explicit
+platform exception to portable matching. Its package version and source are pinned;
+its actual binary is copied, hashed for the invocation and checked at runtime. The
 archived baseline lockfile is immutable. The current repository lockfile can evolve;
 the check verifies the archived lockfile and requires the matching installed pnpm
 closure, refusing mismatches. It never installs packages or resolves dependencies
@@ -41,8 +57,11 @@ All extraction, snapshots, logs, loader traces, SQLite databases, caches and
 temporary files go into one exclusive external `relavium-budget-replay-*`
 directory printed by the command. Its `OWNER` identifies the invocation. The
 directory is preserved on success and failure for inspection. No old source or
-test is extracted into the repository or normal Vitest collection. Dependencies
-are individually linked inside a physical `node_modules` directory. Workers have
+test is extracted into the repository or normal Vitest collection. Dependencies are
+physical owned copies with individual links inside physical `node_modules` directories.
+Seven permanent graph/runtime controls cover CJS/peer drift, optional presence,
+unlisted files, post-preflight resolution/byte drift and a positive two-version graph.
+Their probe code cannot run its inert marker on a rejected load. Workers have
 45-second deadlines and their exit records are retained; SQLite connections close
 in `finally`. Providers and key resolution are refusing injected doubles, and
 network fetch is forbidden. No live key or keychain access is involved.

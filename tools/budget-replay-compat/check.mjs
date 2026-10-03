@@ -9,14 +9,16 @@ import {
   readFileSync,
   realpathSync,
   readdirSync,
-  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout, clearTimeout } from 'node:timers';
 import { gunzipSync } from 'node:zlib';
+import { createRequire } from 'node:module';
+import { snapshotDependencyClosure } from './dependency-closure.mjs';
+import { checkClosureGuards } from './closure-smoke.mjs';
 
 const tooling = realpathSync(fileURLToPath(new URL('.', import.meta.url)));
 const repository = realpathSync(join(tooling, '../..'));
@@ -27,7 +29,7 @@ assert.equal(digest(archive), 'cf980edd6d4d8a8652fa236c1c0d46055249fe59944ec284a
 const dependencyBytes = readFileSync(join(tooling, 'frozen/dependencies.json.gz'));
 assert.equal(
   digest(dependencyBytes),
-  '94b86d29f86bdb68d9d5eefe51325917d2999beed69692e293a32ec34b2dbe97',
+  '7cce53b58c5eade131f59dcce426519980b9cdc27644d9fbade5087b625bd529',
 );
 const pins = JSON.parse(gunzipSync(dependencyBytes).toString('utf8'));
 
@@ -58,6 +60,7 @@ const environment = {
   XDG_CACHE_HOME: join(owned, 'cache'),
   XDG_CONFIG_HOME: join(owned, 'config'),
   NODE_COMPILE_CACHE: join(owned, 'cache/node-compile'),
+  NODE_PATH: '',
 };
 writeFileSync(join(owned, 'package.json'), '{"type":"module"}\n');
 writeFileSync(join(owned, 'frozen-pre-w7-source.tar.gz'), archive);
@@ -127,37 +130,39 @@ writeFileSync(
     2,
   )}\n`,
 );
-for (const file of [
+const workerFiles = [
   'loader.mjs',
   'register.mjs',
+  'dependency-runtime.mjs',
   'producer-common.mjs',
   'legacy-producer.mjs',
   'producer.mjs',
   'predecessor.mjs',
-])
-  cpSync(join(tooling, file), join(owned, file));
+];
+for (const file of workerFiles) cpSync(join(tooling, file), join(owned, file));
 
-// Verify every portable dependency byte, then link individual packages into a physical node_modules.
-const linked = new Set();
-for (const pin of pins.packages) {
-  const packageRoot = realpathSync(join(repository, pin.relativePackageRoot));
-  assert.ok(relative(repository, packageRoot).startsWith('node_modules/'), pin.name);
-  const packageBytes = readFileSync(join(packageRoot, 'package.json'));
-  assert.equal(digest(packageBytes), pin.packageJsonSha256, pin.name);
-  assert.equal(JSON.parse(packageBytes.toString('utf8')).version, pin.version, pin.name);
-  for (const file of pin.files) {
-    const bytes = readFileSync(join(packageRoot, file.path));
-    assert.equal(bytes.length, file.bytes, `${pin.name}/${file.path}`);
-    assert.equal(digest(bytes), file.sha256, `${pin.name}/${file.path}`);
-  }
-  if (!linked.has(pin.name)) {
-    const link = join(owned, 'node_modules', pin.name);
-    mkdirSync(dirname(link), { recursive: true });
-    symlinkSync(packageRoot, link, 'dir');
-    linked.add(pin.name);
-  }
-}
 console.log(`Budget replay evidence: ${owned}`);
+const dependencyRuntime = snapshotDependencyClosure(repository, owned, pins);
+for (const file of workerFiles) {
+  const bytes = readFileSync(join(owned, file));
+  dependencyRuntime.files.push({
+    path: file,
+    bytes: bytes.length,
+    sha256: digest(bytes),
+    workerTool: true,
+  });
+}
+writeFileSync(
+  join(owned, 'dependency-runtime.json'),
+  `${JSON.stringify(dependencyRuntime, null, 2)}\n`,
+);
+const requireOwned = createRequire(join(owned, 'package.json'));
+const baselineLock = requireOwned('yaml').parse(
+  readFileSync(join(owned, 'frozen/pnpm-lock.yaml'), 'utf8'),
+);
+for (const pin of pins.packages)
+  assert.ok(Object.hasOwn(baselineLock.packages, pin.baselineLockPackageKey), pin.name);
+checkClosureGuards(owned, tooling, environment);
 const processes = [];
 try {
   for (const [stage, mode, script] of [

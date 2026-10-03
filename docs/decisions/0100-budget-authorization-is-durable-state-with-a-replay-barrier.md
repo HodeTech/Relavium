@@ -73,3 +73,20 @@ After approval, add a dated forward note to ADR-0097 covering the authoritative 
 - Downgrading prevents execution of a run containing the new event. Read-only inspection remains available; upgrading is the remedy, as ADR-0075 already decides.
 - Companion events duplicate displayed values. The authoritative row and explicit consistency checks prevent conflicting copies from silently changing execution.
 - The frozen predecessor harness has a source/manifest maintenance cost. Its baseline stays immutable; a future protocol change adds its own explicit compatibility evidence rather than silently updating this reader to the new semantics.
+
+## Implementation correction — 2026-10-03
+
+The first committed Step 10 review found that the predecessor harness pinned source and
+package bytes but did not bind nested CJS/peer/optional dependency edges. A redirected
+SQLite `bindings` edge executed while all listed hashes and protocol cases passed. The
+parent independently reproduced the same false integrity pass.
+
+The [permanent check](../../tools/budget-replay-compat/README.md) now freezes the complete
+installed declared graph proven by the original predecessor lockfile, preserving the
+original 93 roots' portable bytes and every archived source byte. Exact installed edges,
+missing optionals and duplicate versions are checked before running an owned copied
+closure; both CommonJS and ESM runtime loads verify its file inventory. Seven permanent
+graph controls and parent causal interventions distinguish edge/byte drift from the
+unchanged real predecessor's twelve replay refusals and two legacy positive controls.
+Fresh full-Step-10 acceptance remains pending. This repairs the acceptance mechanism;
+the replay barrier and downgrade policy decided above are unchanged.

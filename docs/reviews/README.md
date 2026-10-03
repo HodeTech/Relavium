@@ -129,6 +129,10 @@ added.
   complete foundation accepted after independent native-loader controls, verified sealed evidence
   and parent replay; harness isolation exception recorded; Step 9 closed.
 
+- [2026-10-03 — W7 step 10, round 1](2026-10-03T08-35-49-w7-step-10-round-1-review.md):
+  passive-resume lease expiry and unbound predecessor CJS/peer/optional edges reproduced and corrected;
+  causal controls, full CI and coverage pass; fresh round 2 pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

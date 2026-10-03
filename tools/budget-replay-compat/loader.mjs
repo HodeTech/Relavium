@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, readFileSync, realpathSync } from 'node:fs'
 import { resolve as resolvePath, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
+import { verifyDependencyFile } from './dependency-runtime.mjs';
 
 const root = realpathSync(fileURLToPath(new URL('.', import.meta.url)));
 const mode = process.env.COMPAT_SOURCE;
@@ -60,12 +61,15 @@ export async function resolve(specifier, context, nextResolve) {
   }
   if (result.url.startsWith('file:')) {
     const path = realpathSync(fileURLToPath(result.url));
-    if (!path.startsWith(`${root}${sep}`) && !path.includes(`${sep}node_modules${sep}`)) {
+    if (!path.startsWith(`${root}${sep}`)) {
       throw new Error(`Workspace or external source/dist forbidden: ${path}`);
     }
     if (path.startsWith(`${root}${sep}${mode === 'producer' ? 'frozen' : 'producer'}${sep}`)) {
       throw new Error(`Mixed producer/predecessor source forbidden: ${path}`);
     }
+    // Project sources have their own immutable/captured manifest. EVERY other loaded file must be a
+    // captured worker tool or copied dependency; an arbitrary file inside the owned tree is not enough.
+    if (!manifest.has(path)) verifyDependencyFile(path);
   }
   log({ phase: 'resolve', specifier, parentURL: context.parentURL, resolved: result.url });
   return result;
