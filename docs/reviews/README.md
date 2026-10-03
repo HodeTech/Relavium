@@ -133,6 +133,10 @@ added.
   passive-resume lease expiry and unbound predecessor CJS/peer/optional edges reproduced and corrected;
   causal controls, full CI and coverage pass; fresh round 2 pending.
 
+- [2026-10-03 — W7 step 10, round 2](2026-10-03T11-47-48-w7-step-10-round-2-review.md):
+  terminal conservative-money ordering, historical input decisions, companion amount symmetry
+  and pinned runtime edges independently reproduced and corrected; full CI/coverage pass, fresh round 3 pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

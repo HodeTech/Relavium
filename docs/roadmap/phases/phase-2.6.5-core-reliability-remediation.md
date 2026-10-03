@@ -3035,3 +3035,25 @@ still refuses twelve prefixes and passes two legacy controls. Corrected full CI 
 coverage pass (320 suites, 7,318 passing tests, 11 existing skips; line/branch/function coverage
 95.79%/92.53%/96.67%). **Fresh full-step round 2 precedes Step 10 closure.** No residual is deferred;
 Step 11 follows that closure, and live captures remain the separate prerequisite for Steps 7–8.
+
+**Step 10, review round 2 — 2026-10-03.** Both fresh reviewers covered the complete 61-file
+committed step at `e6d4e8de`. The parent independently reproduced and corrected two High and
+two Medium findings: the terminal media sweep could outrun its conservative money write;
+a legal historical budget input decision aborted aggregate discovery; a late authority did
+not compare companion amounts; and runtime edges could redirect between already-pinned roots.
+Settlement now joins money before terminal sequencing, stops heartbeat and releases the exact
+lease after persistence before delivery. The one reducer normalizes only historical input as
+fatal rejection and compares companions symmetrically. The predecessor runtime rechecks exact
+issuer/root-import edges alongside unchanged file-byte pins. The immutable old producer supplies
+an actual six-row input prefix, accepted unchanged as rejection by all four current consumers
+with zero egress counters. The [round 2 record](../../reviews/2026-10-03T11-47-48-w7-step-10-round-2-review.md)
+preserves complete scope, parent reproductions, sealed evidence and setup failures.
+
+The permanent native suite passes 78 cases; removing only the money join fails seven intended
+oracles. Restoring the reviewed reducer fails seven historical/companion controls. Thirteen
+permanent graph/runtime controls pass; removing only edge enforcement executes wrong pinned
+code and fails its oracle. Final actual predecessor checks retain twelve refusals and two legacy
+controls. Corrected full CI and sequential coverage pass (320 suites, 7,340 passing tests,
+11 existing skips; line/branch/function coverage 95.83%/92.53%/96.67%). **Fresh complete-Step-10
+round 3 precedes closure.** Step 11 follows that closure; live Steps 7–8 and all six register
+items remain open. No residual is deferred.

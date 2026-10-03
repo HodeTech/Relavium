@@ -142,8 +142,12 @@ merged too (PR #85, 2026-08-28).
 > an owned, versioned dependency closure pass causal controls, full CI and coverage
 > (320 suites, 7,318 passing tests, 11 existing skips), including seventy actual-runner cases,
 > twelve real predecessor refusals, two legacy controls and seven permanent graph/runtime controls.
-> Fresh full-Step-10 round 2 is pending;
-> Step 10 and all six register items remain open. The safe CLI surface follows in Step 11.
+> [Step 10 round 2](../reviews/2026-10-03T11-47-48-w7-step-10-round-2-review.md) verified and corrected
+> terminal conservative-money ordering, historical budget input compatibility, companion amount symmetry
+> and pinned runtime edges. Full CI/coverage pass (320 suites, 7,340 passing tests, 11 existing skips);
+> 78 native runner cases, thirteen graph controls and actual historical-input replay pass causal checks.
+> Fresh full-Step-10 round 3 is pending. Step 10 and all six register items remain open.
+> The safe CLI surface follows in Step 11.
 > Live Step 7 captures, and therefore Step 8, remain pending.
 > Step 1 repaired collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
