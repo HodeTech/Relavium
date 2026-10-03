@@ -203,3 +203,30 @@ write no events, read no credentials, execute no provider/tool/media call, arm n
 leave the successor's fence intact. The parent first reproduced twelve failures across
 these branches, passed all eighteen with the owned correction, and restored the original
 bytes to recover the failures before changing repository source.
+
+## Parallel gate handoff correction — 2026-10-03, W7 step 10 fifth review
+
+Actual SQLite and native engine controls reproduced an inherited handoff race: two parallel
+budget gates, with or without an ordinary sibling, could publish aggregate pause before the
+last companion acknowledgement. That later write reacquired generation 2, while duplicate
+pause suppression left its heartbeat renewing a run waiting only on people. A distinct owner
+could not resume until the original process stopped renewing and the normal TTL expired.
+
+Aggregate pause now waits for every in-flight gate pause publication, including its authority
+and companions, before handing ownership back. A claimed ordinary human gate also stays
+visible while its decision payload is pinned; otherwise the tighter pause ordering exposed
+an idle scheduler treating that unfinished decision as a stalled run. Actual native delayed
+acknowledgement, immediate decision, media success/failure and SQLite fresh-owner controls
+cover the correction. Media-only polling retains its existing ownership. This repairs §4's
+existing handoff invariant without changing lease clocks, TTL, generations or host ports.
+
+The same review distinguished an inherited asynchronous host limitation from that SQLite
+race. A successful final renewal whose acknowledgement is held beyond TTL can be stale when
+it reaches the engine: a successor may acquire before activation. Current and actual
+pre-Step-10 controls expose the equivalent last-await window, shifted from acquire to renew.
+The observed extra operation is one authenticated status poll for an already submitted media
+job, not another paid submission; later writes remain fenced and cannot release the successor.
+The shipping SQLite port performs the lease operation synchronously. This correction adds
+no universal freshness claim for an unbounded asynchronous acknowledgement, timeout policy
+or second engine clock. The final renewal remains an exact-fence admission check at its
+store operation, followed by the existing liveness and write fences.

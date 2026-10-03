@@ -2326,3 +2326,52 @@ describe('resume refusal retains its primary outcome on lease cleanup faults', (
     }
   }
 });
+
+describe('parallel pause publication hands ownership back once all acknowledgements finish', () => {
+  for (const siblingGate of [false, true])
+    for (const phase of ['budget:authorization', 'budget:paused', 'human_gate:paused'] as const) {
+      it(`keeps ownership while ${phase} is pending and releases all parked gates (ordinary=${siblingGate})`, async () => {
+        const entered = deferred<void>();
+        const release = deferred<void>();
+        const run = startRun({
+          siblingBudget: true,
+          siblingGate,
+          beforePersist: async (event) => {
+            if ('nodeId' in event && event.nodeId === 'second' && event.type === phase) {
+              entered.resolve();
+              await release.promise;
+            }
+          },
+        });
+        try {
+          await entered.promise;
+          expect(run.events.filter((event) => event.type === 'run:paused')).toEqual([]);
+          expect(await run.host.runLeases.read(run.handle.runId)).toBeDefined();
+          expect(run.host.livenessCount()).toBe(1);
+          expect(run.keyReads()).toBe(0);
+          expect(run.requests).toEqual([]);
+          expect(run.mediaRequests).toEqual([]);
+          expect(run.toolCalls()).toBe(0);
+          release.resolve();
+          await run.atPause;
+          await expect
+            .poll(() => run.host.runLeases.read(run.handle.runId), { timeout: 300, interval: 10 })
+            .toBeUndefined();
+          expect(run.host.livenessCount()).toBe(0);
+          expect(run.events.filter((event) => event.type === 'run:paused')).toHaveLength(1);
+          const checkpoint = reconstructCheckpointState(run.store.eventsFor(run.handle.runId));
+          expect(checkpoint?.pendingGates.filter((gate) => gate.isBudgetGate)).toHaveLength(2);
+          expect(checkpoint?.pendingGates.filter((gate) => !gate.isBudgetGate)).toHaveLength(
+            siblingGate ? 1 : 0,
+          );
+          expect(run.keyReads()).toBe(0);
+          expect(run.requests).toEqual([]);
+          expect(run.toolCalls()).toBe(0);
+        } finally {
+          release.resolve();
+          run.handle.cancel();
+          await run.drained;
+        }
+      });
+    }
+});

@@ -1983,6 +1983,71 @@ describe('WorkflowEngine — human gate suspend/resume', () => {
     expect(terminalsIn(events)[0]?.type).toBe('run:completed');
   });
 
+  it.each([false, true])(
+    'keeps a human gate visible while an immediate decision pins media (pin fails=%s)',
+    async (failPin) => {
+      let release = () => {};
+      let entered = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const pinEntered = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const original = stubMediaStore().store;
+      const mediaStore: MediaStore = {
+        ...original,
+        put: async (bytes, mimeType) => {
+          entered();
+          await held;
+          if (failPin) throw new Error('offline media pin fault');
+          return original.put(bytes, mimeType);
+        },
+      };
+      const host = createInMemoryHost({ mediaStore });
+      const engine = engineWith(
+        { g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'approve?' } }) },
+        host,
+      );
+      const handle = engine.start({ workflow: workflow(GATED) });
+      const events: RunEvent[] = [];
+      let resume: Promise<void> | undefined;
+      const drained = (async () => {
+        for await (const event of handle.events) {
+          events.push(event);
+          if (event.type === 'human_gate:paused') {
+            resume = engine.resume(handle.runId, event.gateId, {
+              decision: 'approved',
+              decidedBy: 'tester',
+              payload: { image: MEDIA_PART },
+            });
+          }
+        }
+      })();
+      try {
+        await pinEntered;
+        // Let the native scheduler finish the gate publication while the actual media pin stays held.
+        for (let turn = 0; turn < 100; turn += 1) await Promise.resolve();
+        expect(events.some((event) => event.type === 'run:paused')).toBe(false);
+        expect(await host.runLeases.read(handle.runId)).toBeDefined();
+        expect(terminalsIn(events)).toEqual([]);
+        release();
+        await resume;
+        await drained;
+        expect(terminalsIn(events)).toHaveLength(1);
+        expect(terminalsIn(events)[0]?.type).toBe(failPin ? 'run:failed' : 'run:completed');
+        expect(handle.durability()).toBe('durable');
+        expect(JSON.stringify(events)).not.toContain('aGVsbG8=');
+        expect(events.some((event) => event.type === 'human_gate:resumed')).toBe(!failPin);
+      } finally {
+        release();
+        handle.cancel();
+        await resume;
+        await drained;
+      }
+    },
+  );
+
   it('fails the run (no leak, no hang) when a gate decision.payload carries media but no MediaStore', async () => {
     // No store ⇒ resume()'s de-inline of the media payload throws; resume()'s catch fails the run AND always
     // #schedule()s (no stranded run), and the bytes never reach a stamped/persisted event.

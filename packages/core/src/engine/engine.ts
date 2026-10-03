@@ -566,6 +566,9 @@ class RunExecution {
   #scheduling = false;
   #rerun = false;
   #pauseEpisode = false;
+  // A paused vertex frees a dispatch slot before its authority/companions finish writing.
+  // Aggregate pause must keep the writer's lease until every such publication is acknowledged.
+  #publishingPauses = 0;
   /**
    * Serializes the run's durable APPEND, its write and its DELIVERY, in that order (ADR-0078 §1).
    *
@@ -1709,7 +1712,6 @@ class RunExecution {
       await this.#settle('run:failed');
       return;
     }
-    this.#pendingGates.delete(gateId);
     this.#disarmTimer(gateId); // a decision arrived before the timeout — cancel the armed timer (1.Q)
     this.#pauseEpisode = false; // a later idle-with-gates re-emits run:paused for the remaining gates
     // Re-take ownership **only if the pause actually released it** (§4), because a parked run is not being
@@ -1726,17 +1728,17 @@ class RunExecution {
     // kept because `resume()` mutates gate state before its first write.
     if (this.#ownership === 'parked' && !(await this.#reclaim())) return;
 
-    // Mark the gate vertex completed SYNCHRONOUSLY before the await — mirroring #settleCompleted — so a
-    // concurrent #step (e.g. a sibling gate's timeout firing during this persist) never sees this gate as
-    // still `paused` while it is already out of #pendingGates, which would mis-read the run as stalled.
+    // Keep the claimed gate pending through media preparation, then remove it and mark its vertex
+    // completed synchronously before the decision append. A concurrent idle pass must never see a
+    // paused vertex with no pending gate while the pin awaits.
     // PIN the payload's media before it enters the scope (`CR-54`). A gate payload is a first resolution
     // like any node output — a human uploads a file, a surface attaches one — and it took the one route
     // into `#states` that `#settleCompleted` does not cover, so without this the durable event said
     // "handle" while the running run held a url, and the two could resolve to different bytes.
     //
     // Before the status write, because the pin awaits and that write must stay on one tick with the emit
-    // below. A throw here is fatal for the run but must still `#schedule()`: the gate is already out of
-    // `#pendingGates` and its timer disarmed, so returning early would strand the run with no terminal.
+    // below. A throw here is fatal for the run but must still `#schedule()`: the decision is claimed
+    // and its timer disarmed, so returning early would strand the run with no terminal.
     let gateOutput: unknown;
     try {
       gateOutput = await this.#pinMediaValue(
@@ -1751,6 +1753,7 @@ class RunExecution {
       this.#schedule();
       return;
     }
+    this.#pendingGates.delete(gateId);
     const state = this.#states.get(gate.vertexId);
     if (state !== undefined) {
       state.status = 'completed';
@@ -2163,8 +2166,13 @@ class RunExecution {
 
   /** Nothing was ready this step: while idle, pause if a gate pends, else stall loudly (invariant). */
   async #handleIdle(running: number): Promise<void> {
-    if (running > 0) {
-      return; // still executing — wait for the next settlement to re-evaluate
+    if (running > 0 || this.#publishingPauses > 0) {
+      return; // executor or pause publisher is active — its settlement schedules another pass
+    }
+    // A claimed gate still has decision work in flight (effect admission, media pin or authority
+    // append). Keep its lease until the pending entry becomes a completed/failed/pending vertex.
+    for (const gateId of this.#pendingGates.keys()) {
+      if (this.#resolvedGates.has(gateId)) return;
     }
     if (this.#pendingGates.size > 0 || this.#pendingMediaJobs.size > 0) {
       // Parked on a human gate AND/OR an async media job (1.AG Section D, MJ-1) — the run is PAUSED, not
@@ -2910,8 +2918,17 @@ class RunExecution {
     });
   }
 
-  /** Keep the suspension visible while its authoritative append is in flight. */
+  /** Keep all pause publications inside one aggregate handoff barrier. */
   async #settlePaused(vertex: PlanVertex, gate: GateRequest): Promise<void> {
+    this.#publishingPauses += 1;
+    try {
+      await this.#publishPause(vertex, gate);
+    } finally {
+      this.#publishingPauses -= 1;
+    }
+  }
+
+  async #publishPause(vertex: PlanVertex, gate: GateRequest): Promise<void> {
     const gateId = gate.gateId ?? this.#host.ids.newId();
     const isBudgetGate = gate.isBudgetGate === true;
     const effectiveAction =

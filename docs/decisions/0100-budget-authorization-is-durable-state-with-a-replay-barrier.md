@@ -118,3 +118,14 @@ differing optional amounts remain corrupt; contradictory actor, decision, payloa
 still refuse. Historical rows are never rewritten, an amount is never invented, real node outputs
 survive and ordinary sibling gates remain discoverable in checkpoint, reference and SQLite paths.
 This repairs the existing accepted compatibility rule rather than changing approval policy.
+
+## Implementation correction — 2026-10-03, fifth review
+
+The separate identities of parallel budget gates were preserved, but the aggregate pause
+could hand off the lease while a sibling's pause companion was still awaiting durable
+acknowledgement. Its subsequent append reclaimed ownership and duplicate aggregate pause
+suppression retained a heartbeat for a waiting-only run. The engine now waits for all pause
+publications before aggregate handoff. This completes the existing parallel-gate/lifecycle
+acceptance above; authority/companion order, replay joins and approval policy are unchanged.
+The dated [ADR-0079 correction](0079-cross-process-run-ownership-lease-and-fencing-token.md)
+records the related ordinary-gate preparation and asynchronous host boundary.

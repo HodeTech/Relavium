@@ -182,6 +182,13 @@ scalar evidence before claiming the gate, and the prepared request is used for t
 attempt so a second prompt/file read cannot replace the request just approved. Generation notices
 remain deferred until actual execution. Raw options, provider instances and closures stay process-local.
 
+Aggregate pause waits for all in-flight gate pause publications, including each budget authority
+and its companions, before handing back a waiting-only run's lease. Parallel budget gates and
+ordinary human siblings therefore cannot reacquire and retain ownership after aggregate handoff.
+A claimed gate keeps the lease while its decision work is in flight. An ordinary human gate
+also stays visible while its payload is pinned, until its vertex can be completed; that
+preparation is not a stalled run. Media-job polling keeps its existing ownership.
+
 The engine observes durable authority and companion acknowledgements before handing the approved
 safe amount to a new dispatch token. The pre-egress hook remains installed on **every** attempt,
 fallback, tool round and above-chain node retry. One dispatch token spans that node's retry/backoff
@@ -195,7 +202,10 @@ the exact acquired owner/generation fence before any registration or activation.
 precedes a refused admission's settlement. A takeover or unconfirmable lease causes a
 transient, safe `run_owned_elsewhere` refusal before registration, timers, key resolution or
 polling; cleanup releases only the original fence. An expired claim with no successor renews
-without minting another generation. Every pre-activation refusal and already-terminal no-op
+without minting another generation. Renewal confirms ownership at the store operation. An
+unbounded asynchronous host ACK can outlive that renewal's TTL before activation; it is not a
+universal freshness guarantee. Later loss is observed through the existing liveness and write
+fences. The local SQLite lease operation is synchronous. Every pre-activation refusal and already-terminal no-op
 attempts to release its exact acquired fence. A rejected cleanup preserves the primary typed
 refusal or closed handle and leaves the existing bounded TTL; it cannot release a successor
 or surface private cleanup text. A supplied target decision is

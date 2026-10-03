@@ -258,6 +258,10 @@ the concurrent read/claim window on the current substrate. After all passive con
 awaits, the engine atomically renews the exact acquired fence before registration or activation,
 including a refused admission's settlement. If ownership changed or cannot be confirmed, it refuses
 with transient `run_owned_elsewhere`, abandons passive state and releases only its original claim.
+Aggregate gate pause waits until every sibling pause publication is acknowledged before lease
+handoff. A claimed gate retains ownership while its decision work is in flight; human-gate
+payload preparation remains visible to the scheduler until its vertex can complete. Renewal confirms the store operation; an unbounded asynchronous ACK
+can outlive its TTL, so the existing liveness and append fences still govern later loss.
 The canonical resume contract is in [agent-runner.md](../reference/shared-core/agent-runner.md).
 
 ## Retry and fallback

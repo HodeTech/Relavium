@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -5,12 +6,18 @@ import { join } from 'node:path';
 import { createInMemoryHost, parseWorkflow, type McpCapability } from '@relavium/core';
 import { estimateResolvedNextCost, type LlmRequest } from '@relavium/llm';
 import type { RunEvent } from '@relavium/shared';
-import { createClient, runMigrations } from '@relavium/db';
+import {
+  createClient,
+  createRunHistoryStore,
+  createRunLeasePort,
+  runMigrations,
+} from '@relavium/db';
 import { buildServerToolDefs } from '@relavium/mcp';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { buildEngine } from './build-engine.js';
 import { createCliHost } from './host.js';
+import { createHistoryCheckpointer } from './checkpointer.js';
 import { scriptedResolver, textTurn } from '../chat/test-support.js';
 
 describe('buildEngine configured output fallback (ADR-0101)', () => {
@@ -159,4 +166,125 @@ describe('buildEngine MCP wiring (2.R)', () => {
       buildEngine({ toolEnv, mcp: { toolDefs: [...defs, ...defs], capability } }),
     ).rejects.toThrow(/duplicate tool id/);
   });
+});
+
+describe('native SQLite parallel gate handoff', () => {
+  it.each([false, true])(
+    'a fresh owner can immediately reject a parked parallel budget gate (ordinary=%s)',
+    async (ordinary) => {
+      const client = createClient(':memory:');
+      runMigrations(client.db);
+      const model = 'gpt-5.4-mini';
+      const workflow = parseWorkflow(`schema_version: '1.0'
+workflow:
+  id: parallel-pause-ownership
+  budget: {max_cost_microcents: 1, on_exceed: pause_for_approval, strict_cost_cap: true}
+  agents:
+    - {id: worker, model: ${model}, provider: openai, system_prompt: inspect}
+  nodes:
+    - {id: first, type: agent, agent_ref: worker, prompt_template: hello, max_tokens: 64}
+    - {id: second, type: agent, agent_ref: worker, prompt_template: hello, max_tokens: 64}
+${ordinary ? '    - {id: ordinary, type: human_gate, gate_type: approval}\n' : ''}    - {id: out, type: output}
+  edges:
+    - {from: first, to: out}
+    - {from: second, to: out}
+${ordinary ? '    - {from: ordinary, to: out}\n' : ''}`);
+      const store = createRunHistoryStore(client.db, {
+        uuid: randomUUID,
+        now: Date.now,
+        workflow: {
+          slug: workflow.workflow.id,
+          name: workflow.workflow.id,
+          definitionJson: JSON.stringify(workflow),
+        },
+      });
+      const leases = createRunLeasePort(store);
+      let keys = 0;
+      let calls = 0;
+      const resolver = scriptedResolver([textTurn('unused')], 'openai');
+      const provider = resolver.resolveProvider('openai');
+      if (provider === undefined) throw new Error('missing provider');
+      const providers = {
+        ...resolver,
+        keyFor: () => {
+          keys++;
+          return 'offline-key';
+        },
+        resolveProvider: () => ({
+          ...provider,
+          stream: (...args: Parameters<typeof provider.stream>) => {
+            calls++;
+            return provider.stream(...args);
+          },
+        }),
+      };
+      const original = await buildEngine({
+        host: createCliHost(store, { runLeases: leases }),
+        providers,
+      });
+      const handle = original.start({ workflow });
+      try {
+        let gateId: string | undefined;
+        let companions = 0;
+        for await (const event of handle.events) {
+          if (
+            event.type === 'budget:authorization' &&
+            event.authorization.state === 'paused' &&
+            gateId === undefined
+          )
+            gateId = event.gateId;
+          if (event.type === 'human_gate:paused') companions++;
+          if (companions === (ordinary ? 3 : 2)) break;
+        }
+        if (gateId === undefined) throw new Error('missing actual frozen gate');
+        await expect
+          .poll(() => leases.read(handle.runId), { timeout: 300, interval: 10 })
+          .toBeUndefined();
+        const fresh = await buildEngine({
+          host: createCliHost(store, {
+            runLeases: leases,
+            checkpointer: createHistoryCheckpointer(store),
+          }),
+          providers,
+        });
+        const resumed = await fresh.resumeFromCheckpoint({
+          runId: handle.runId,
+          workflow,
+          gateId,
+          decision: { decision: 'rejected', decidedBy: 'offline' },
+        });
+        const events: RunEvent[] = [];
+        for await (const event of resumed.events) events.push(event);
+        expect(events.at(-1)).toMatchObject({
+          type: 'run:failed',
+          error: { code: 'budget_exceeded' },
+        });
+        expect(resumed.durability()).toBe('durable');
+        expect(keys).toBe(0);
+        expect(calls).toBe(0);
+        expect(await leases.read(handle.runId)).toBeUndefined();
+      } finally {
+        if ((await leases.read(handle.runId)) !== undefined) {
+          let unsubscribe = () => {};
+          const stopped = new Promise<void>((resolve) => {
+            unsubscribe = handle.subscribe((event) => {
+              if (
+                event.type === 'run:cancelled' ||
+                event.type === 'run:failed' ||
+                event.type === 'run:completed'
+              )
+                resolve();
+            });
+          });
+          handle.cancel();
+          await stopped;
+          unsubscribe();
+          await expect
+            .poll(() => leases.read(handle.runId), { timeout: 300, interval: 10 })
+            .toBeUndefined();
+        }
+        client.sqlite.close();
+      }
+    },
+  );
 });
