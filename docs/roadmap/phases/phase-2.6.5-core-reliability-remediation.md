@@ -2993,3 +2993,28 @@ write outside an owned root is explicitly recorded; final acceptance runs use co
 dependency directories and native config loading. No tracked implementation changed after the
 green full CI/coverage at `8fb51f42`. **Step 9 is closed; Step 10 proceeds automatically.**
 Live Steps 7–8, Steps 10–11 and all six register items remain pending; no residual was deferred.
+
+**Step 10 implementation checkpoint — 2026-10-03.** Shared strict authorization schemas and one
+ordered suspension reducer now govern checkpoint reconstruction and both interrupted-run discovery
+stores. The workflow acknowledges authoritative pauses/decisions and identified companions before
+approved dispatch, retains its pre-egress hook and owns one ephemeral allowance across retries.
+Request preparation freezes the actual first request; whole-quote and binary-amount refusals precede
+gate claim. Restart admission remains passive through context/effect preflight, acquires ownership
+before strict replay, applies the target decision before timers and preserves sibling deadlines.
+Legacy approval restores no allowance; durable approval invents no node output, and recorded rejection
+remains fatal on an eligible resume.
+
+Sixty actual-runner cases cover acknowledgement/store-fault/cancel/fence boundaries, pre-claim
+refusals, parallel budget/ordinary human gates, every actual pause/decision crash prefix, tool-loop
+exhaustion, zero/unrepresentable quotes, asynchronous effect preflight and funded async media. The
+[permanent offline downgrade check](../../../tools/budget-replay-compat/README.md) runs the immutable
+actual predecessor against twelve current-engine prefixes, proving strict replay refusal before
+registration/dispatch/egress and exact lease release, with two legacy positive controls. Its source
+and portable dependency bytes are pinned; no live credentials or network call is used. The parent
+also independently verified and replayed the supplemental predecessor acceptance evidence.
+
+Full CI exits 0 (23 lint/typecheck/test and 7 build/format tasks, including downgrade smoke), and
+coverage exits 0 (320 suites, 7,308 passing tests, 11 existing skips; line/branch/function coverage
+95.79%/92.51%/96.67%). Adjacent canonical event, runner, checkpoint and execution contracts are updated.
+**Implementation commits and fresh formal review rounds precede Step 10 closure.** The safe CLI
+surface remains Step 11; live captures still block only Steps 7–8. All six register items remain open.
