@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseWorkflow, reconstructCheckpointState } from '@relavium/core';
+import { parseWorkflow, reconstructCheckpointState, type RunStore } from '@relavium/core';
 import {
   createClient,
   createRunHistoryStore,
@@ -1000,9 +1000,9 @@ for (const kind of ['budget', 'human'] as const) {
   });
 }
 
-for (const phase of ['connect', 'build'] as const) {
-  it(`MCP Ctrl-C during ${phase} keeps the native budget gate pending and returns runtime failure`, async () => {
-    const paused = await seed({ mcp: true });
+for (const phase of ['connect', 'build', 'build_without_mcp'] as const) {
+  it(`Ctrl-C during ${phase} keeps the native budget gate pending and returns runtime failure`, async () => {
+    const paused = await seed({ mcp: phase !== 'build_without_mcp' });
     const before = reader().loadRunEventLogForReplay(paused.runId);
     const { io, out, err } = captureIo();
     const signals = [process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')];
@@ -1044,6 +1044,7 @@ for (const phase of ['connect', 'build'] as const) {
             ...options,
             resolvePrice: prices,
           });
+          expect(process.listenerCount('SIGINT')).toBeGreaterThan(signals[0] ?? 0);
           process.emit('SIGINT');
           return engine;
         },
@@ -1059,9 +1060,114 @@ for (const phase of ['connect', 'build'] as const) {
     expect(keyReads).toBe(0);
     expect(builds).toBe(phase === 'connect' ? 0 : 1);
     expect(dbCloses).toBe(1);
-    expect(closes).toBe(phase === 'connect' ? 0 : 2);
+    expect(closes).toBe(phase === 'build' ? 2 : 0);
     expect(reader().loadRunEventLogForReplay(paused.runId)).toEqual(before);
     expect(await createRunLeasePort(reader()).read(paused.runId)).toBeUndefined();
     expect([process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')]).toEqual(signals);
   });
 }
+
+for (const interrupt of [false, true]) {
+  it(`native SQLite approval contention preserves cancellation intent (interrupt=${interrupt})`, async () => {
+    client.sqlite.close();
+    const file = join(root, 'busy-approval.db');
+    client = createClient(file);
+    runMigrations(client.db, { dbPath: file });
+    client.sqlite.pragma('busy_timeout = 0');
+    const blocker = createClient(file);
+    const paused = await seed();
+    const { io } = captureIo();
+    const signals = process.listenerCount('SIGINT');
+    let blocked = false;
+    let interrupted = false;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    try {
+      const code = await budgetCommand(
+        { runId: paused.runId, gate: paused.gateId, approveAmount: String(paused.amount) },
+        {
+          ...deps(io),
+          buildEngine: (options) => {
+            if (options?.host === undefined) throw new Error('missing actual command host');
+            const host = options.host;
+            const store: RunStore = {
+              ...host.store,
+              persistEvent: async (event, context) => {
+                if (
+                  !blocked &&
+                  event.type === 'budget:authorization' &&
+                  event.authorization.state === 'decided'
+                ) {
+                  blocked = true;
+                  blocker.sqlite.exec('BEGIN IMMEDIATE');
+                  if (interrupt)
+                    timers.push(
+                      setTimeout(() => {
+                        interrupted = true;
+                        // Unit-level signal dispatch; actual OS delivery is covered by the bounded child proof.
+                        process.emit('SIGINT');
+                      }, 1),
+                    );
+                  timers.push(setTimeout(() => blocker.sqlite.exec('COMMIT'), 15));
+                }
+                return host.store.persistEvent(event, context);
+              },
+            };
+            return buildEngine({ ...options, host: { ...host, store }, resolvePrice: prices });
+          },
+        },
+      );
+      expect(blocked).toBe(true);
+      expect(interrupted).toBe(interrupt);
+      expect(code).toBe(interrupt ? 1 : 0);
+      expect(calls).toBe(interrupt ? 0 : 1);
+      expect(keyReads).toBe(interrupt ? 0 : 1);
+      const rows = reader().loadRunEventLogForReplay(paused.runId);
+      // A successful late decision append stays durable; cancellation prevents its dispatch.
+      expect(rows.filter((event) => event.type === 'budget:authorization')).toHaveLength(2);
+      expect(rows.at(-1)?.type).toBe(interrupt ? 'run:cancelled' : 'run:completed');
+      expect(await createRunLeasePort(reader()).read(paused.runId)).toBeUndefined();
+      expect(process.listenerCount('SIGINT')).toBe(signals);
+    } finally {
+      for (const timer of timers) clearTimeout(timer);
+      if (blocker.sqlite.inTransaction) blocker.sqlite.exec('ROLLBACK');
+      blocker.sqlite.close();
+    }
+  });
+}
+
+it('a command interrupt during asynchronous effect admission reaches the passively preparing engine', async () => {
+  const paused = await seed();
+  const { io } = captureIo();
+  let interrupted = false;
+  const code = await budgetCommand(
+    { runId: paused.runId, approveAmount: String(paused.amount) },
+    {
+      ...deps(io),
+      buildEngine: (options) => {
+        if (options?.effectResume === undefined)
+          throw new Error('missing actual effect resume port');
+        const effects = options.effectResume;
+        return buildEngine({
+          ...options,
+          resolvePrice: prices,
+          effectResume: {
+            unresolvedForRun: async (runId) => {
+              const rows = await effects.unresolvedForRun(runId);
+              interrupted = true;
+              process.emit('SIGINT');
+              return rows;
+            },
+          },
+        });
+      },
+    },
+  );
+  expect(interrupted).toBe(true);
+  expect(code).toBe(1);
+  expect(calls).toBe(0);
+  expect(keyReads).toBe(0);
+  const rows = reader().loadRunEventLogForReplay(paused.runId);
+  expect(rows.filter((event) => event.type === 'budget:authorization')).toHaveLength(1);
+  expect(rows.at(-1)).toMatchObject({ type: 'run:cancelled' });
+  expect(await createRunLeasePort(reader()).read(paused.runId)).toBeUndefined();
+});

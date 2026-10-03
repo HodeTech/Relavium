@@ -407,8 +407,15 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
     case 'human_gate:resumed':
       return {
         ...base,
-        pendingBudgetNotices: base.pendingBudgetNotices.filter(
-          (gate) => gate.runId !== event.runId || gate.nodeId !== event.nodeId,
+        pendingBudgetNotices: base.pendingBudgetNotices.filter((gate) =>
+          event.gateId === undefined
+            ? gate.runId !== event.runId || gate.nodeId !== event.nodeId
+            : budgetGateIdentity(gate) !==
+              budgetGateIdentity({
+                runId: event.runId,
+                nodeId: event.nodeId,
+                gateId: event.gateId,
+              }),
         ),
         warnings: pushBounded(base.warnings, `gate resumed: ${event.decision}`, MAX_WARNINGS),
       };

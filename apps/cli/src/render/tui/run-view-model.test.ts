@@ -889,3 +889,40 @@ describe('reduceRunEvent — produced media (2.S, the node:completed handle surf
     expect(s.producedMedia.some((m) => m.handle === handle(0))).toBe(false);
   });
 });
+
+describe('budget notice removal uses the resumed gate identity', () => {
+  it.each([
+    ['current gate', RUN, 'agent', 'current', true],
+    ['old gate', RUN, 'agent', 'old', false],
+    ['other run', 'other-run', 'agent', 'current', false],
+    ['other node', RUN, 'other-node', 'current', false],
+    ['legacy companion', RUN, 'agent', undefined, true],
+  ] as const)('%s removes only its matching notice', (_label, runId, nodeId, gateId, removes) => {
+    const pause: Extract<RunEvent, { type: 'budget:paused' }> = {
+      type: 'budget:paused',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 1,
+      nodeId: 'agent',
+      gateId: 'current',
+      spentMicrocents: 0,
+      limitMicrocents: 1,
+    };
+    const before = reduceRunEvent(initialRunViewState(), pause);
+    const after = reduceRunEvent(before, {
+      type: 'human_gate:resumed',
+      runId,
+      timestamp: TS,
+      sequenceNumber: 2,
+      nodeId,
+      ...(gateId === undefined ? {} : { gateId }),
+      decision: 'approved',
+      decidedBy: 'offline',
+    });
+    expect(after.pendingBudgetNotices).toEqual(removes ? [] : before.pendingBudgetNotices);
+    const repeated = reduceRunEvent(after, { ...pause, sequenceNumber: 3 });
+    expect(
+      repeated.warnings.filter((line) => line.startsWith('budget gate current ')),
+    ).toHaveLength(removes ? 2 : 1);
+  });
+});

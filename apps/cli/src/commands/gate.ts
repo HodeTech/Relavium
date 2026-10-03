@@ -63,6 +63,7 @@ import {
 } from '../engine/mcp-servers.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { guardMcpTeardown } from '../engine/mcp-signal-teardown.js';
+import { defaultSubscribeSignals } from '../process/signals.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import type { GatePrompter } from '../gate/prompter.js';
@@ -259,7 +260,9 @@ async function resumeGateCommand(
 
   let mcpRuntime: WorkflowMcpRuntime | undefined;
   let unguardMcp = (): void => undefined;
-  const mcpCancel = new AbortController();
+  let unguardResume = (): void => undefined;
+  let resumeEngine: WorkflowEngine | undefined;
+  const resumeCancel = new AbortController();
   let resumeStarted = false;
   const interruptedBeforeResume = (): ExitCode => {
     deps.io.writeErr(
@@ -358,11 +361,27 @@ async function resumeGateCommand(
     // authored `output_modalities` against the CURRENT catalog, so a model that lost a capability between the
     // original run and this resume is rejected consistently (exit 2), not silently routed at runtime.
     assertWorkflowCatalogValid(workflow, wiring.workflowModelCatalog);
+    // Cancellation belongs to the resume command even when no MCP server is declared. During passive
+    // preparation Core latches cancel(runId); once registered it cancels the actual execution.
+    unguardResume = defaultSubscribeSignals(() => {
+      if (resumeCancel.signal.aborted) return;
+      resumeCancel.abort();
+      if (!resumeStarted || resumeEngine === undefined) return;
+      try {
+        resumeEngine.cancel(args.runId);
+      } catch (error) {
+        if (
+          !(error instanceof EngineStateError) ||
+          (error.code !== 'unknown_run' && error.code !== 'run_already_terminal')
+        )
+          throw error;
+        // The signal can precede registration or follow settlement. The latch is checked on handoff.
+      }
+    });
     // A budget rejection is fatal and dispatches no agent. Do not spawn tools merely to reject it.
     if (workflowDeclaresMcp(workflow) && !(kind === 'budget' && decision.decision === 'rejected')) {
       unguardMcp = guardMcpTeardown(
         async () => {
-          mcpCancel.abort();
           await mcpRuntime?.client.close();
         },
         () => liveMcpChildPids(),
@@ -371,7 +390,7 @@ async function resumeGateCommand(
       mcpRuntime = await connectWorkflowMcp(workflow, {
         cwd: saveToRoot,
         preserveFrozenGrants: true,
-        connectSignal: mcpCancel.signal,
+        connectSignal: resumeCancel.signal,
         registrations: config.mcpServers,
         resolveSecret:
           deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
@@ -462,11 +481,12 @@ async function resumeGateCommand(
         : { mediaCostEstimate: wiring.mediaCostEstimate }),
       ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     });
+    resumeEngine = engine;
     // Same drain as the `run` path (ADR-0078 §4/§5) — a gate resume is equally "the next `relavium` start",
     // and it is the one a user reaches for after seeing the `durabilityUncertain` exit code on a gated run.
-    if (mcpCancel.signal.aborted) return interruptedBeforeResume();
+    if (resumeCancel.signal.aborted) return interruptedBeforeResume();
     await engine.drainTerminalOutbox().catch(() => undefined);
-    if (mcpCancel.signal.aborted) return interruptedBeforeResume();
+    if (resumeCancel.signal.aborted) return interruptedBeforeResume();
     resumeStarted = true;
     const handle = await resumeOrFail(engine, {
       runId: args.runId,
@@ -475,6 +495,8 @@ async function resumeGateCommand(
       gateId: selection.gateId,
       decision,
     });
+
+    if (resumeCancel.signal.aborted) handle.cancel();
 
     const outcome = await driveRun({
       engine,
@@ -546,7 +568,7 @@ async function resumeGateCommand(
   } catch (err) {
     // The pre-connect guard owns child cleanup; this command owns the run-style interruption exit.
     // Once resume has started, the handle/engine error remains authoritative.
-    if (!resumeStarted && mcpCancel.signal.aborted) return interruptedBeforeResume();
+    if (!resumeStarted && resumeCancel.signal.aborted) return interruptedBeforeResume();
     throw err;
   } finally {
     try {
@@ -560,6 +582,7 @@ async function resumeGateCommand(
       }
     } finally {
       unguardMcp();
+      unguardResume();
     }
   }
 }
