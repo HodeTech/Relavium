@@ -341,6 +341,9 @@ optional `allowanceQuote` and the exact approved amount when granted. Matching h
 do not overwrite a real output or resolve a later gate; contradictory persisted companions are corrupt
 in either arrival order. A present companion approval amount must equal the authority's amount;
 absence remains compatible with historical companions and `legacy_no_allowance` cannot grant an amount.
+A decided authority witnesses absent-versus-matching-amount duplicate compatibility: each present
+amount must independently match its grant. Without that decided witness, differing optional amounts
+remain corrupt. This never inserts an amount into a historical row or changes its stored bytes.
 A legacy `human_gate:resumed` without `gateId` joins only the **single then-outstanding** gate at its
 sequence position; zero/multiple matches refuse. Budget identity comes from `budget:paused` or
 `budget:authorization`, never the ordinary `approval` gate type. Checkpoint and interrupted-run

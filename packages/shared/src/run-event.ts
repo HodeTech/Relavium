@@ -1,4 +1,3 @@
-// External Step 10 protocol draft only; not a new producer or tracked implementation.
 import { z } from 'zod';
 import {
   BudgetAuthorizationStateSchema,

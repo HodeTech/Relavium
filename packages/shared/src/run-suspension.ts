@@ -279,7 +279,11 @@ export class RunSuspensionReducer {
         prior.decision !== event.decision ||
         prior.decidedBy !== event.decidedBy ||
         !deepStructuralEquals(prior.payload, event.payload) ||
-        prior.approvedAmountMicrocents !== event.approvedAmountMicrocents
+        // A decided authority independently validates both present amounts. Its witness makes an
+        // absent historical amount equivalent to the matching grant, without inventing an amount.
+        // Without that witness, different optional amounts remain contradictory persisted state.
+        (history.authorityDecision === undefined &&
+          prior.approvedAmountMicrocents !== event.approvedAmountMicrocents)
       )
         corrupt();
       return undefined;

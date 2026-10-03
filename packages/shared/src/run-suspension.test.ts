@@ -394,6 +394,51 @@ it('matching legacy companions with actual key-order-different payloads are idem
   const r = fold([humanPause(), resume('g1', 'agent', { payload: { a: 1, b: 2 } }), completed()]);
   expect(r.apply(resume('g1', 'agent', { payload: { b: 2, a: 1 } }))).toBeUndefined();
 });
+for (const amountFirst of [false, true]) {
+  it(`a decided authority witnesses optional-amount duplicates after completion (amountFirst=${amountFirst})`, () => {
+    const companions = [amountFirst, !amountFirst].map((withAmount) =>
+      resume('g1', 'agent', withAmount ? { approvedAmountMicrocents: 10 } : {}),
+    );
+    const r = fold([paused(), humanPause('sibling', 'human'), decided()]);
+    const first = companions[0];
+    const second = companions[1];
+    if (first === undefined || second === undefined) throw new Error('missing companion fixture');
+    expect(r.apply(first)).toBeUndefined();
+    r.apply(completed());
+    expect(r.apply(second)).toBeUndefined();
+    expect(r.pendingGates(RUN)).toMatchObject([{ gateId: 'sibling', isBudgetGate: false }]);
+    expect(r.budgetRejections(RUN)).toEqual([]);
+  });
+  it(`without a decided authority optional-amount duplicates remain corrupt (amountFirst=${amountFirst})`, () => {
+    corruption(
+      [
+        paused(),
+        ...[amountFirst, !amountFirst].map((withAmount) =>
+          resume('g1', 'agent', withAmount ? { approvedAmountMicrocents: 10 } : {}),
+        ),
+      ],
+      'gate_state_conflict',
+    );
+  });
+  for (const patch of [
+    { approvedAmountMicrocents: 999 },
+    { decidedBy: 'another-user' },
+    { decision: 'rejected' },
+    { payload: { private: 'PRIVATE' } },
+  ]) {
+    it(`a decided authority still refuses conflicting duplicate ${Object.keys(patch)[0]} (amountFirst=${amountFirst})`, () => {
+      const matching = resume('g1', 'agent', amountFirst ? { approvedAmountMicrocents: 10 } : {});
+      const contradictory = resume('g1', 'agent', {
+        ...(!amountFirst ? { approvedAmountMicrocents: 10 } : {}),
+        ...patch,
+      });
+      corruption(
+        [paused(), decided(), matching, completed(), contradictory],
+        'gate_state_conflict',
+      );
+    });
+  }
+}
 it('a node terminal retires its suspension without reopening on a delayed pause companion', () => {
   const r = fold([paused(), completed()]);
   expect(r.pendingGates(RUN)).toEqual([]);

@@ -1,4 +1,5 @@
 import {
+  AllowanceQuoteResultSchema,
   isAppendConflictError,
   isLeaseFencedError,
   RunEventSchema,
@@ -871,6 +872,122 @@ describe('createRunHistoryStore', () => {
         expect(interrupted[0]?.lastSequenceNumber).toBe(withCompanion ? 4 : 3);
       });
     }
+  }
+
+  for (const amountFirst of [false, true]) {
+    it(`SQLite discovery preserves authority-witnessed optional amounts and unrelated work (amountFirst=${amountFirst})`, async () => {
+      const quoted = AllowanceQuoteResultSchema.parse({
+        kind: 'quoted',
+        quote: {
+          amount: { kind: 'representable', microcents: 10 },
+          provenance: {
+            version: 1,
+            route: 'text',
+            calls: 1,
+            attempts: 2,
+            entries: [
+              {
+                index: 0,
+                model: 'offline',
+                provider: 'openai',
+                endpoint: 'custom',
+                attempts: 2,
+                estimate: {
+                  kind: 'priced',
+                  microcents: 5,
+                  basis: {
+                    inputTokensEstimate: 2,
+                    outputTokensReservation: 3,
+                    inputRateKind: 'non_cached',
+                    inputPerMtokMicrocents: 1000000,
+                    outputPerMtokMicrocents: 1000000,
+                    media: [],
+                  },
+                  unpricedModalities: [],
+                },
+              },
+            ],
+          },
+          excludedEntries: [],
+        },
+      });
+      const workflowId = await startRun();
+      const allowance = { kind: 'frozen', quote: quoted } as const;
+      const rows: RunEvent[] = [
+        ev('budget:authorization', 1, {
+          nodeId: 'agent',
+          gateId: 'bg',
+          authorization: {
+            state: 'paused',
+            allowance,
+            spentMicrocents: 2,
+            limitMicrocents: 1,
+          },
+        }),
+        ev('human_gate:paused', 2, {
+          nodeId: 'human',
+          gateId: 'hg',
+          gateType: 'approval',
+          message: 'ordinary',
+        }),
+        ev('budget:authorization', 3, {
+          nodeId: 'agent',
+          gateId: 'bg',
+          authorization: {
+            state: 'decided',
+            allowance,
+            decision: 'approved',
+            decidedBy: 'offline',
+            approvedAmountMicrocents: 10,
+          },
+        }),
+      ];
+      for (const withAmount of [amountFirst, !amountFirst]) {
+        rows.push(
+          ev('human_gate:resumed', rows.length + 1, {
+            nodeId: 'agent',
+            gateId: 'bg',
+            decision: 'approved',
+            decidedBy: 'offline',
+            ...(withAmount ? { approvedAmountMicrocents: 10 } : {}),
+          }),
+        );
+        if (rows.length === 4)
+          rows.push(
+            ev('node:completed', 5, {
+              nodeId: 'agent',
+              output: { real: 'artifact' },
+              tokensUsed: { input: 0, output: 0 },
+              durationMs: 1,
+            }),
+          );
+      }
+      for (const event of rows) await store.persistEvent(event);
+      await store.persistEvent({
+        ...ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+        runId: 'unrelated',
+      });
+      await store.persistEvent({
+        ...ev('human_gate:paused', 1, {
+          nodeId: 'other-human',
+          gateId: 'other-gate',
+          gateType: 'input',
+          message: 'other',
+        }),
+        runId: 'unrelated',
+      });
+      const rawBefore = client.db.select().from(runEvents).all();
+      const replay = store.loadRunEventLogForReplay('run-1');
+      expect(replay.slice(1)).toEqual(rows);
+      const discovered = new Map(
+        (await store.listInterruptedRuns()).map((run) => [run.runId, run]),
+      );
+      expect(discovered.size).toBe(2);
+      expect(discovered.get('run-1')).toMatchObject({ resumable: true, lastSequenceNumber: 6 });
+      expect(discovered.get('unrelated')).toMatchObject({ resumable: true, lastSequenceNumber: 1 });
+      expect(client.db.select().from(runEvents).all()).toEqual(rawBefore);
+      expect(store.loadRunEventLogForReplay('run-1')).toEqual(replay);
+    });
   }
 
   it('marks a retried attempt failed so no step row lingers in `running`', async () => {

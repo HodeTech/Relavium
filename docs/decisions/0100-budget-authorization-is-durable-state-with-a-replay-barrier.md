@@ -107,3 +107,14 @@ relative-import ownership, and recheck declared/absent edges before package exec
 SQLite native addon retains its explicit invocation-hashed exception. Thirteen permanent graph
 controls include pinned-to-pinned CJS/ESM/peer redirects, newly present optionals and changed root
 imports. Archived source, original portable byte pins and the downgrade policy remain unchanged.
+
+## Implementation correction — 2026-10-03, third review
+
+Two identified approval companions could each match a decided authority while differing only in
+optional amount presence. The duplicate check still rejected absent versus exact A, contrary to
+the historical compatibility and matching-duplicate rules above. A decided authority now witnesses
+that equivalence after independently validating every present amount. Without a decided witness,
+differing optional amounts remain corrupt; contradictory actor, decision, payload and present money
+still refuse. Historical rows are never rewritten, an amount is never invented, real node outputs
+survive and ordinary sibling gates remain discoverable in checkpoint, reference and SQLite paths.
+This repairs the existing accepted compatibility rule rather than changing approval policy.
