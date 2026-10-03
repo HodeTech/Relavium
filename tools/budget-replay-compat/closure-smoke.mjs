@@ -49,6 +49,23 @@ export function checkClosureGuards(owned, tooling, environment) {
   const shared1 = packageFixture('fixture-shared', '1.0.0', {}, "module.exports = 'one';\n");
   const shared2 = packageFixture('fixture-shared', '2.0.0', {}, "module.exports = 'two';\n");
   const peer = packageFixture('fixture-peer', '1.0.0', {}, "module.exports = 'peer';\n");
+  // The production ESM loader needs TypeScript only for source transpilation. This synthetic graph loads
+  // no TS source; a pinned inert module permits exercising that EXACT loader's dependency resolve hook.
+  const typescript = packageFixture(
+    'typescript',
+    '1.0.0',
+    {},
+    "module.exports = { version: 'fixture-only' };\n",
+  );
+  const esm = packageFixture(
+    'fixture-esm',
+    '1.0.0',
+    {
+      type: 'module',
+      dependencies: { 'fixture-shared': '^1' },
+    },
+    "import shared from 'fixture-shared'; export default shared;\n",
+  );
   const primary = packageFixture(
     'fixture-primary',
     '1.0.0',
@@ -88,6 +105,7 @@ module.exports = { shared: require('fixture-shared'), peer: require('fixture-pee
   edge(primary, shared1, 'dependencies', '^1');
   edge(primary, peer, 'peerDependencies', '^1');
   edge(secondary, shared2, 'dependencies', '^2');
+  edge(esm, shared1, 'dependencies', '^1');
   primary.edges.push({
     kind: 'optionalDependencies',
     name: 'fixture-optional',
@@ -98,7 +116,7 @@ module.exports = { shared: require('fixture-shared'), peer: require('fixture-pee
   const pins = {
     schemaVersion: 2,
     packages,
-    rootImports: [primary, secondary].map((pin) => ({
+    rootImports: [primary, secondary, esm, typescript].map((pin) => ({
       name: pin.name,
       target: pin.relativePackageRoot,
     })),
@@ -112,8 +130,11 @@ module.exports = { shared: require('fixture-shared'), peer: require('fixture-pee
     return directory;
   }
   const control = caseDirectory('control');
-  snapshotDependencyClosure(repository, control, pins);
-  cpSync(join(tooling, 'dependency-runtime.mjs'), join(control, 'dependency-runtime.mjs'));
+  const runtime = snapshotDependencyClosure(repository, control, pins);
+  mkdirSync(join(control, 'frozen'));
+  writeFileSync(join(control, 'frozen/source-manifest.json'), '{"files":[]}\n');
+  for (const file of ['dependency-runtime.mjs', 'loader.mjs', 'register.mjs'])
+    cpSync(join(tooling, file), join(control, file));
   writeFileSync(
     join(control, 'probe.mjs'),
     `import './dependency-runtime.mjs';
@@ -122,15 +143,30 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 assert.deepEqual(require('fixture-primary'), { shared: 'one', peer: 'peer', absent: true });
 assert.equal(require('fixture-secondary'), 'two');
+assert.equal((await import('fixture-esm')).default, 'one');
 `,
   );
-  function runProbe(label) {
-    const child = spawnSync(process.execPath, [join(control, 'probe.mjs')], {
-      cwd: control,
-      env: { ...environment, COMPAT_LABEL: label, NODE_PATH: '' },
-      encoding: 'utf8',
-      timeout: 8000,
+  for (const file of ['dependency-runtime.mjs', 'loader.mjs', 'register.mjs', 'probe.mjs']) {
+    const bytes = readFileSync(join(control, file));
+    runtime.files.push({
+      path: file,
+      bytes: bytes.length,
+      sha256: digest(bytes),
+      workerTool: true,
     });
+  }
+  writeFileSync(join(control, 'dependency-runtime.json'), `${JSON.stringify(runtime, null, 2)}\n`);
+  function runProbe(label) {
+    const child = spawnSync(
+      process.execPath,
+      ['--import', join(control, 'register.mjs'), join(control, 'probe.mjs')],
+      {
+        cwd: control,
+        env: { ...environment, COMPAT_SOURCE: 'frozen', COMPAT_LABEL: label, NODE_PATH: '' },
+        encoding: 'utf8',
+        timeout: 8000,
+      },
+    );
     writeFileSync(join(control, `logs/${label}.stdout.log`), child.stdout ?? '');
     writeFileSync(join(control, `logs/${label}.stderr.log`), child.stderr ?? '');
     const record = {
@@ -209,7 +245,7 @@ assert.equal(require('fixture-secondary'), 'two');
   try {
     const child = runProbe('runtime-cjs-unpinned-edge');
     assert.notEqual(child.status, 0);
-    assert.match(child.stderr, /Unpinned runtime dependency/);
+    assert.match(child.stderr, /Unpinned runtime dependency|Runtime dependency edge changed/);
     assert.equal(existsSync(marker), false);
   } finally {
     unlinkSync(copiedLink);
@@ -226,6 +262,33 @@ assert.equal(require('fixture-secondary'), 'two');
   } finally {
     writeFileSync(copiedFile, bytes);
   }
+  // All targets below are ALREADY pinned and byte-identical. Membership/digest alone cannot detect a
+  // wrong issuer edge. Each probe uses a fresh worker, and every literal copied link is restored finally.
+  for (const [label, issuer, name, original] of [
+    ['runtime-cjs-pinned-edge', primary, shared1.name, shared1],
+    ['runtime-peer-pinned-edge', primary, peer.name, peer],
+    ['runtime-optional-presence', primary, 'fixture-optional', undefined],
+    ['runtime-esm-pinned-edge', esm, shared1.name, shared1],
+    ['runtime-root-import', undefined, primary.name, primary],
+  ]) {
+    const link = issuer
+      ? join(control, 'dependencies', issuer.relativePackageRoot, 'node_modules', name)
+      : join(control, 'node_modules', name);
+    const target = issuer ? shared2 : secondary;
+    if (original) unlinkSync(link);
+    symlinkSync(join(control, 'dependencies', target.relativePackageRoot), link, 'dir');
+    try {
+      const child = runProbe(label);
+      assert.notEqual(child.status, 0);
+      assert.match(child.stderr, /Runtime dependency (edge|resolution) changed/);
+      assert.equal(existsSync(marker), false);
+    } finally {
+      unlinkSync(link);
+      if (original)
+        symlinkSync(join(control, 'dependencies', original.relativePackageRoot), link, 'dir');
+    }
+  }
+  assert.equal(runProbe('restored-cjs-esm-graph-control').status, 0);
   writeFileSync(
     join(root, 'results.json'),
     `${JSON.stringify({ completed: true, results, markerLoaded: false }, null, 2)}\n`,

@@ -41,11 +41,47 @@ record('results/legacy-producer.json', {
 handle.cancel();
 await drained;
 await run.finish();
+// A second genuine old-engine decision supplies the historical input crash prefix. Preserve the exact
+// successfully stored bytes through that decision; a later old-run terminal is deliberately outside it.
+const historical = fixture('legacy-input', { suppressCapture: true });
+const historicalHandle = historical.engine.start({ workflow });
+const historicalDrained = historical.drain(historicalHandle);
+await historical.paused.promise;
+const historicalGate = historical.rows
+  .map((line) => JSON.parse(line))
+  .find((event) => event.type === 'budget:paused');
+assert.ok(historicalGate);
+await historical.engine.resume(historicalHandle.runId, historicalGate.gateId, {
+  decision: 'input_provided',
+  decidedBy: 'historical-user',
+  payload: { historical: 'answer' },
+});
+await historicalDrained;
+const inputIndex = historical.rows.findIndex(
+  (line) => JSON.parse(line).type === 'human_gate:resumed',
+);
+assert.ok(inputIndex >= 0);
+const inputRows = historical.rows.slice(0, inputIndex + 1);
+const inputBytes = `${inputRows.join('\n')}\n`;
+writeFileSync(resolve(root, 'raw/legacy-input.ndjson'), inputBytes);
+await historical.finish();
+record('results/legacy-input-producer.json', {
+  sourceCommit: '1b3f8d70c05c9152043dcc476eaa1afaaa87381d',
+  rawPath: 'raw/legacy-input.ndjson',
+  sha256: digest(inputBytes),
+  bytes: Buffer.byteLength(inputBytes),
+  rows: inputRows.length,
+  gateId: historicalGate.gateId,
+  attribution:
+    'Actual frozen engine input decision; unchanged durable producer bytes through the decision, before its terminal.',
+  counters: historical.counters,
+});
 assert.equal(fetches, 0);
 console.log(
   JSON.stringify({
     completed: true,
     legacyRows: raw.length,
+    historicalInputRows: inputRows.length,
     gateId: budget.gateId,
     providerCalls: 0,
     keyResolutions: 0,

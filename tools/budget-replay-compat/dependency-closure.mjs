@@ -173,7 +173,15 @@ export function snapshotDependencyClosure(repository, owned, pins) {
   }
   // Check the reconstructed lookup, including absent edges, so root imports cannot change a peer's presence.
   for (const pin of pins.packages) verifyEdges(copied.get(pin.relativePackageRoot), pin, copied);
-  const runtime = { files: files.sort((a, b) => a.path.localeCompare(b.path)) };
+  const runtime = {
+    files: files.sort((a, b) => a.path.localeCompare(b.path)),
+    packages: pins.packages.map(({ name, relativePackageRoot, edges }) => ({
+      name,
+      relativePackageRoot,
+      edges,
+    })),
+    rootImports: pins.rootImports,
+  };
   writeFileSync(join(owned, 'dependency-runtime.json'), `${JSON.stringify(runtime, null, 2)}\n`);
   return runtime;
 }

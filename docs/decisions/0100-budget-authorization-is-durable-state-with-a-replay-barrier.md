@@ -90,3 +90,20 @@ graph controls and parent causal interventions distinguish edge/byte drift from 
 unchanged real predecessor's twelve replay refusals and two legacy positive controls.
 Fresh full-Step-10 acceptance remains pending. This repairs the acceptance mechanism;
 the replay barrier and downgrade policy decided above are unchanged.
+
+## Implementation correction — 2026-10-03, second review
+
+A late decided authority compared an earlier companion's decision and actor but omitted its
+approval amount; reversing arrival order refused the same contradictory money. Both directions
+now use one consistency rule: a present amount must equal authority, while an absent historical
+amount remains compatible. Frozen and legacy-no-allowance permutations have positive and
+conflicting controls. This repairs the existing conflicting-companion refusal policy.
+
+The runtime predecessor fence also accepted a copied edge redirected to another already-pinned
+package version after preflight. An actual SDK/content-type intervention reproduced that gap
+without altering any package bytes. Runtime metadata now retains exact issuer edges/root
+imports. CJS and ESM admission compare the actual target to that mapping, enforce portable
+relative-import ownership, and recheck declared/absent edges before package execution. The
+SQLite native addon retains its explicit invocation-hashed exception. Thirteen permanent graph
+controls include pinned-to-pinned CJS/ESM/peer redirects, newly present optionals and changed root
+imports. Archived source, original portable byte pins and the downgrade policy remain unchanged.

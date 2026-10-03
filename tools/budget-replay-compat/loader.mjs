@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, readFileSync, realpathSync } from 'node:fs'
 import { resolve as resolvePath, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { verifyDependencyFile } from './dependency-runtime.mjs';
+import { verifyDependencyResolution } from './dependency-runtime.mjs';
 
 const root = realpathSync(fileURLToPath(new URL('.', import.meta.url)));
 const mode = process.env.COMPAT_SOURCE;
@@ -69,7 +69,7 @@ export async function resolve(specifier, context, nextResolve) {
     }
     // Project sources have their own immutable/captured manifest. EVERY other loaded file must be a
     // captured worker tool or copied dependency; an arbitrary file inside the owned tree is not enough.
-    if (!manifest.has(path)) verifyDependencyFile(path);
+    if (!manifest.has(path)) verifyDependencyResolution(parentPath, specifier, path);
   }
   log({ phase: 'resolve', specifier, parentURL: context.parentURL, resolved: result.url });
   return result;

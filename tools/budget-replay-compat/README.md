@@ -8,7 +8,10 @@ It is also part of `pnpm run ci`. The canonical authorization contract is
 The check freezes the actual predecessor at
 `1b3f8d70c05c9152043dcc476eaa1afaaa87381d`, snapshots the current production
 sources, and executes each version in a separate Node worker. The predecessor
-first produces a genuine legacy budget pause. The current engine then produces
+first produces a genuine legacy budget pause and a historical `input_provided` decision prefix.
+The current checkpoint, admitted engine and both strict discovery stores read the latter as a
+fatal budget rejection, retaining its original bytes and producing no agent output or egress.
+The current engine then produces
 12 durable pause/decision prefixes, including its decisions of that legacy gate.
 The predecessor's actual parser, SQLite strict reader, CLI checkpointer and
 engine entry must refuse every prefix before execution registration, scheduling,
@@ -39,7 +42,11 @@ Node lookup edges before a worker starts. It copies verified bytes into its owne
 tree and reconstructs each explicit dependency link, including Drizzle's SQLite peer.
 It verifies lookup again in the copied graph. A redirected edge or a newly resolving
 optional package is refused. Both the ESM loader and CommonJS `module.require` check
-the resolved file against the copied byte inventory before loading it; neither accepts
+the resolved file against the copied byte inventory and its issuer-specific frozen edge before loading it;
+neither accepts a switch to a different already-pinned version. Root imports and same-package
+relative imports are bound too. Declared lookup edges, including absent optionals, are rechecked
+before package execution so `require.resolve` cannot silently acquire a previously absent optional.
+Neither runtime accepts
 an arbitrary `node_modules` path. CommonJS uses the public `module.require` and
 `createRequire.resolve` APIs, including in the loader thread, without a private loader
 hook or a newer Node minimum. `NODE_PATH` is empty in workers.
@@ -59,8 +66,11 @@ directory printed by the command. Its `OWNER` identifies the invocation. The
 directory is preserved on success and failure for inspection. No old source or
 test is extracted into the repository or normal Vitest collection. Dependencies are
 physical owned copies with individual links inside physical `node_modules` directories.
-Seven permanent graph/runtime controls cover CJS/peer drift, optional presence,
-unlisted files, post-preflight resolution/byte drift and a positive two-version graph.
+Thirteen permanent graph/runtime controls cover CJS/ESM/peer drift, optional presence,
+unlisted files, post-preflight unpinned and pinned-to-pinned resolution, root-import/byte drift,
+and positive/restored two-version graphs. The ESM control uses the actual production loader
+with an inert, pinned TypeScript stand-in; it loads no TS source and is separate from the
+real predecessor/source/dependency acceptance workers.
 Their probe code cannot run its inert marker on a rejected load. Workers have
 45-second deadlines and their exit records are retained; SQLite connections close
 in `finally`. Providers and key resolution are refusing injected doubles, and
