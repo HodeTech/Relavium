@@ -42,6 +42,7 @@ import {
   FallbackChain,
   LlmProviderError,
   estimateRequestTokens,
+  prepareOutputCapPlan,
   type AttemptRecord,
   type FallbackChainOptions,
   type FallbackPlanEntry,
@@ -474,7 +475,22 @@ function throwIfAborted(signal: AbortSignalLike): void {
 }
 
 /** Build the per-iteration `LlmRequest` from the current message list + the turn's static fields. */
-function buildRequest(messages: readonly LlmMessage[], params: AgentTurnParams): LlmRequest {
+type AgentTurnRequestParams = Pick<
+  AgentTurnParams,
+  | 'system'
+  | 'messages'
+  | 'tools'
+  | 'planEntries'
+  | 'responseFormat'
+  | 'temperature'
+  | 'maxTokens'
+  | 'reasoningEffort'
+  | 'outputModalities'
+  | 'signal'
+  | 'preparedOutputCaps'
+>;
+
+function buildRequest(messages: readonly LlmMessage[], params: AgentTurnRequestParams): LlmRequest {
   return {
     model: params.planEntries[0]?.model ?? '',
     ...(params.system === undefined ? {} : { system: params.system }),
@@ -502,6 +518,31 @@ function buildRequest(messages: readonly LlmMessage[], params: AgentTurnParams):
       : { outputModalities: [...params.outputModalities] }),
     signal: params.signal,
   };
+}
+
+/** The real request builder, including inline-tool removal, without any attempt capability. */
+export function prepareAgentTurnRequest(params: AgentTurnRequestParams): {
+  readonly request: LlmRequest;
+  readonly inputTokensEstimate: number;
+  readonly preparedOutputCaps: readonly PreparedOutputCapPlan[];
+} {
+  const request = buildRequest(params.messages, params);
+  const preparedOutputCaps = Object.freeze(
+    params.planEntries.map((entry) =>
+      prepareOutputCapPlan({
+        model: entry.model,
+        provider: entry.provider.id,
+        endpoint: entry.provider.customEndpoint === true ? 'custom' : 'official',
+        maxTokens: request.maxTokens,
+        providerOptions: request.providerOptions,
+      }),
+    ),
+  );
+  return Object.freeze({
+    request: { ...request, preparedOutputCaps: [...preparedOutputCaps] },
+    inputTokensEstimate: estimateRequestTokens({ ...request, system: params.system ?? '' }),
+    preparedOutputCaps,
+  });
 }
 
 /**
@@ -638,7 +679,7 @@ export function foldRetryable(error: LlmError, turnCommitted = false): boolean {
  * (The turn core is correlation-agnostic and holds no `CapabilityFlags`, so the surface check rightly lives
  * at the routing layer that resolves the provider, not in this predicate.)
  */
-function requestsMediaOutput(params: AgentTurnParams): boolean {
+function requestsMediaOutput(params: Pick<AgentTurnParams, 'outputModalities'>): boolean {
   return params.outputModalities?.some((m) => m !== 'text') ?? false;
 }
 

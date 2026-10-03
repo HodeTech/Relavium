@@ -1,4 +1,17 @@
-import type { MediaBilledModality } from '@relavium/shared';
+import type {
+  MediaBilledModality,
+  MediaUnitsEstimate,
+  MediaEstimateBasis,
+  RequestEstimateBasis,
+  ResolvedRequestEstimate,
+} from '@relavium/shared';
+
+export type {
+  MediaUnitsEstimate,
+  MediaEstimateBasis,
+  RequestEstimateBasis,
+  ResolvedRequestEstimate,
+} from '@relavium/shared';
 
 import {
   priceModel,
@@ -36,37 +49,6 @@ export function estimateMaxNextCost(
   // side is the guess that lets money escape.
   return Math.round((capped * worstCaseRates(p).output) / TOKENS_PER_MTOK);
 }
-
-/** Assumed billed output units, after lowering the requested modalities. */
-export interface MediaUnitsEstimate {
-  readonly modality: MediaBilledModality;
-  readonly units: number;
-}
-
-/** Copied scalar evidence for one media estimate, including a rate gap at an authored zero volume. */
-export interface MediaEstimateBasis extends MediaUnitsEstimate {
-  readonly rateMicrocents?: number;
-}
-
-/** Pure frozen pricing evidence; contains no request, native options, closures or provider objects. */
-export interface RequestEstimateBasis {
-  readonly inputTokensEstimate: number;
-  readonly outputTokensReservation: number;
-  readonly inputRateKind: 'non_cached';
-  readonly inputPerMtokMicrocents: number;
-  readonly outputPerMtokMicrocents: number;
-  readonly contextTierAboveTokens?: number;
-  readonly media: readonly MediaEstimateBasis[];
-}
-
-interface EstimateEvidence {
-  readonly basis: RequestEstimateBasis;
-  readonly unpricedModalities: readonly MediaBilledModality[];
-}
-
-export type ResolvedRequestEstimate =
-  | (EstimateEvidence & { readonly kind: 'priced'; readonly microcents: number })
-  | (EstimateEvidence & { readonly kind: 'unrepresentable' });
 
 function assertEstimate(value: number): void {
   if (!Number.isFinite(value) || value < 0) throw new InvalidTokenEstimateError();

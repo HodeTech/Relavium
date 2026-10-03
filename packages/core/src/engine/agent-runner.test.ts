@@ -12,7 +12,7 @@ import type {
   PricingOverlay,
   StreamChunk,
 } from '@relavium/llm';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentPlanConfig, PlanVertex } from '../run-plan.js';
 import { BUILTIN_TOOLS } from '../tools/builtins.js';
@@ -27,7 +27,8 @@ import {
   type AgentRunnerDeps,
 } from './agent-runner.js';
 import { BudgetExceededError, BudgetPauseError, BudgetGovernor } from './budget-governor.js';
-import type { NodeExecContext, NodeStreamEvent } from './node-executor.js';
+import type { NodeExecContext, NodeStreamEvent, NodePreparationContext } from './node-executor.js';
+import { createDispatchingNodeExecutor } from './node-handlers/dispatcher.js';
 import type { PreEgressInfo } from './agent-turn.js';
 import { parseWorkflow } from '../parser.js';
 import { createInMemoryHost } from './execution-host.js';
@@ -1813,5 +1814,81 @@ describe('createAgentNodeExecutor — reasoning-effort gate (ADR-0066, the workf
       AGENT,
     );
     expect(req?.reasoningEffort).toBeUndefined();
+  });
+});
+
+describe('approval preparation through the actual dispatcher', () => {
+  it('prepares without keys, notices, tools or egress and executes the retained first request', async () => {
+    const requests: LlmRequest[] = [];
+    const underlying = provider([{ type: 'text_delta', text: 'ANSWER' }, STOP]);
+    const stream = vi.fn((request: LlmRequest, key: string) => {
+      requests.push(request);
+      return underlying.stream(request, key);
+    });
+    const keyFor = vi.fn(() => 'offline-key');
+    const notice = vi.fn();
+    const runner = createAgentNodeExecutor(
+      deps(
+        { ...underlying, stream },
+        {
+          keyFor,
+          onEffortWithheld: notice,
+          resolveEffortTiers: () => undefined,
+        },
+      ),
+    );
+    const executor = createDispatchingNodeExecutor({ agent: runner });
+    const config: AgentPlanConfig = {
+      kind: 'agent',
+      node: agentNode({ max_tokens: 1 }),
+      resolvedAgent: { ...AGENT, reasoning_effort: 'high' },
+    };
+    const inputs = { text: 'original' };
+    const { ctx, events } = ctxFor(vertexFor(config), inputs);
+    const preparationContext: NodePreparationContext = {
+      vertex: ctx.vertex,
+      runOutputs: ctx.runOutputs,
+      inputs: ctx.inputs,
+      ctx: ctx.ctx,
+      secretInputNames: ctx.secretInputNames,
+      toolPolicy: ctx.toolPolicy,
+      signal: ctx.signal,
+    };
+    const prepare = executor.prepareBudgetDispatch?.bind(executor);
+    expect(prepare).toBeTypeOf('function');
+    if (prepare === undefined) throw new Error('dispatcher dropped preparation capability');
+    const prepared = await prepare(preparationContext);
+    expect(prepared.kind).toBe('prepared');
+    if (prepared.kind !== 'prepared') throw new Error('preparation failed');
+    const resolvePrice: PricingOverlay = new Map([
+      [
+        AGENT.model,
+        {
+          provider: 'anthropic',
+          nativeId: AGENT.model,
+          displayName: AGENT.model,
+          contextWindowTokens: 1000000,
+          maxOutputTokens: 128000,
+          inputPerMtokMicrocents: 1000000,
+          outputPerMtokMicrocents: 1000000,
+          cachedInputPerMtokMicrocents: 1000000,
+        },
+      ],
+    ]);
+    const quote = prepared.preparation.quote({ strictCostCap: true, resolvePrice });
+    expect(quote.kind).toBe('quoted');
+    expect(keyFor).not.toHaveBeenCalled();
+    expect(stream).not.toHaveBeenCalled();
+    expect(notice).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    inputs.text = 'changed after preparation';
+    expect(await prepared.preparation.execute(ctx)).toMatchObject({
+      kind: 'completed',
+      output: 'ANSWER',
+    });
+    expect(keyFor).toHaveBeenCalledTimes(1);
+    expect(stream).toHaveBeenCalledTimes(1);
+    expect(notice).toHaveBeenCalledTimes(1);
+    expect(requests[0]?.messages).toMatchObject([{ content: [{ text: 'Summarize: original' }] }]);
   });
 });

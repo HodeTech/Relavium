@@ -12,6 +12,14 @@
 > companion identity, acknowledgment barriers or dispatch ownership. Implementation is staged in
 > W7. The historical body remains unchanged.
 
+> Implementation checkpoint 2026-10-03 — W7 Step 10 implements this protocol with shared strict
+> schemas and one ordered suspension reducer for checkpoints and interrupted-run discovery. Explicit
+> persistence acknowledgement and admitted-owner barriers protect every authority/companion boundary.
+> Sixty actual-runner cases cover crash, cancellation, fencing, write faults, sibling identities and
+> preflight precedence. The [immutable actual-predecessor check](../../tools/budget-replay-compat/README.md)
+> passes twelve refusal prefixes and two legacy controls and runs in full CI. Formal committed-step
+> reviews remain pending; CLI confirmation/discovery is Step 11. Historical bodies remain unchanged.
+
 ## Context
 
 ADR-0097 freezes an allowance and its provenance on optional fields of existing budget/gate events. The pre-`W7` reader recognises those event types and strips the new fields: it records no skipped row, so ADR-0075's replay refusal never fires. Its checkpoint fold still completes the agent with `{ decision: 'approved' }`, and its live budget approval still removes the pre-egress hook. An older binary can therefore approve or replay a new bounded authorization under the old uncapped semantics.

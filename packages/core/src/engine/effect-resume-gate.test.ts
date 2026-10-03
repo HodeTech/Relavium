@@ -240,7 +240,10 @@ workflow:
 
     const failure = events.find((e) => e.type === 'run:failed');
     expect(failure?.type === 'run:failed' && failure.error.code).toBe('effect_needs_attention');
-    expect(failure?.type === 'run:failed' && failure.error.message).toContain('corrupt');
+    expect(failure?.type === 'run:failed' && failure.error.message).toContain(
+      'the effect journal could not be read',
+    );
+    expect(failure?.type === 'run:failed' && failure.error.message).not.toContain('corrupt');
   });
 });
 

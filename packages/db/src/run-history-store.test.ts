@@ -780,6 +780,61 @@ describe('createRunHistoryStore', () => {
     expect(byId.get('run-m')?.resumable).toBe(false);
   });
 
+  for (const sibling of [false, true]) {
+    for (const withCompanion of [false, true]) {
+      it(`discovers outstanding gates after budget authority (sibling=${sibling}, companion=${withCompanion})`, async () => {
+        await startRun();
+        await store.persistEvent(
+          ev('budget:authorization', 1, {
+            nodeId: 'agent',
+            gateId: 'bg',
+            authorization: {
+              state: 'paused',
+              allowance: { kind: 'legacy_no_allowance' },
+              spentMicrocents: 2,
+              limitMicrocents: 1,
+            },
+          }),
+        );
+        expect((await store.listInterruptedRuns())[0]?.resumable).toBe(true);
+        if (sibling)
+          await store.persistEvent(
+            ev('human_gate:paused', 2, {
+              nodeId: 'human',
+              gateId: 'hg',
+              gateType: 'approval',
+              message: 'offline',
+            }),
+          );
+        await store.persistEvent(
+          ev('budget:authorization', 3, {
+            nodeId: 'agent',
+            gateId: 'bg',
+            authorization: {
+              state: 'decided',
+              allowance: { kind: 'legacy_no_allowance' },
+              decision: 'approved',
+              decidedBy: 'offline',
+            },
+          }),
+        );
+        if (withCompanion)
+          await store.persistEvent(
+            ev('human_gate:resumed', 4, {
+              nodeId: 'agent',
+              gateId: 'bg',
+              decision: 'approved',
+              decidedBy: 'offline',
+            }),
+          );
+        const interrupted = await store.listInterruptedRuns();
+        expect(interrupted).toHaveLength(1);
+        expect(interrupted[0]?.resumable).toBe(sibling);
+        expect(interrupted[0]?.lastSequenceNumber).toBe(withCompanion ? 4 : 3);
+      });
+    }
+  }
+
   it('marks a retried attempt failed so no step row lingers in `running`', async () => {
     await startRun();
     await store.persistEvent(ev('node:started', 1, { nodeId: 'flaky', nodeType: 'agent' }));

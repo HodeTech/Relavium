@@ -207,8 +207,20 @@ running token/cost tallies. The exact field set is the `CheckpointState` interfa
 authoritative shape; this section does not restate it. The same derivation is what the Phase-2 cloud
 layer uses for durable execution — see [cloud-phase-2.md](cloud-phase-2.md).
 
-**Reconstruction is total and deterministic** (same events → same state — the basis of idempotent
-resume). A node that emitted `node:started` but no terminal event (it was running when the process
+**Reconstruction is deterministic and refuses contradictory authoritative state** (same valid events
+→ same state — the basis of idempotent resume). The derived checkpoint uses schema version 2; the
+engine refuses an unsupported derivation and releases its acquired lease. This is an in-process
+checkpoint contract, not a database migration or new log-version mechanism.
+
+The checkpoint and both stores' interrupted-run discovery share one ordered suspension reducer.
+Budget authority restores a frozen pending gate independently of its companions; approval makes the
+agent pending without inventing an output or restoring an allowance, and a recorded rejection stays
+fatal when an eligible sibling or resolved-gate kick resumes the run. Ordinary human-gate output
+semantics remain unchanged. Identified historical duplicates cannot resolve a later gate or overwrite
+a real node result; contradictory/missing/ambiguous joins refuse. The exact durable protocol is in
+[sse-event-schema.md](../reference/contracts/sse-event-schema.md#durable-budget-authorization).
+
+A node that emitted `node:started` but no terminal event (it was running when the process
 died) is simply **absent** from `nodeStates`, so the rehydrating engine seeds it `pending` and re-runs
 it. The effect journal records every effectful dispatch and refuses to retry a node past one, and the resume gate refuses the RE-RUN when a prior attempt's effect is unresolved ([effect-journal.md](../reference/shared-core/effect-journal.md) §4). What is
 **not** in the checkpoint: the eager-once resolved `context` (`ctx.*`) is **re-resolved at run start**,
@@ -237,10 +249,11 @@ the caller re-supplies it by name or the resume is refused; §6 states exactly w
 these refusals releases the lease it acquired. **Idempotent re-delivery** never advances a run twice: re-delivering a decision to an
 already-terminal run is a no-op (a closed handle, nothing re-emitted or re-persisted); re-delivering an
 already-resolved gate on a still-running run drives the remaining work without re-applying the decision.
-This holds within a process, and across processes once the prior process's `human_gate:resumed` is
-persisted; the residual concurrent window (two processes loading the *same* still-pending gate before
-either persists) is closed by a Phase-2 store-level uniqueness constraint on `human_gate:resumed` per
-gate, not by the in-memory reference.
+This holds within a process and across processes once the durable decision is recorded. The engine
+acquires its cross-process lease **before** reading the checkpoint; a competing live owner is refused,
+and ordered writes carry that owner/generation fence ([ADR-0079](../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md)).
+An in-flight passive resume is also excluded from the same engine's reconciliation claims. This closes
+the concurrent read/claim window on the current substrate.
 
 ## Retry and fallback
 

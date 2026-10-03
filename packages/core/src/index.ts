@@ -170,6 +170,9 @@ export type {
 export type {
   NodeExecutor,
   NodeExecContext,
+  NodePreparationContext,
+  BudgetDispatchPreparation,
+  BudgetDispatchPreparationResult,
   NodeOutcome,
   NodeFailure,
   NodeStreamEvent,

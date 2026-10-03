@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-02
+> Last updated: 2026-10-03
 
 - **Related**: [llm-provider-seam.md](llm-provider-seam.md), [tool-registry.md](tool-registry.md), [run-plan.md](run-plan.md), [built-in-tools.md](built-in-tools.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../../decisions/0038-agentrunner-llm-call-boundary.md](../../decisions/0038-agentrunner-llm-call-boundary.md), [../../decisions/0039-same-provider-reasoning-replay.md](../../decisions/0039-same-provider-reasoning-replay.md), [../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md), [../../decisions/0037-engine-tool-execution-boundary.md](../../decisions/0037-engine-tool-execution-boundary.md), [../../standards/error-handling.md](../../standards/error-handling.md)
 
@@ -30,7 +30,7 @@ The runner owns the **cost path** itself — one `CostTracker` per node executio
 ## What the adapter does for an `agent` vertex
 
 1. **Resolve the agent.** An absent `resolvedAgent` ([run-plan.md §AgentPlanConfig](run-plan.md)) ⇒ `NodeFailure{ code: 'validation' }` naming the `agent_ref` (an authoring error — distinct from an unresolved provider id, which is `internal`). Never a raw throw.
-2. **Build the fallback plan.** Primary `{ provider, model: node.model ?? agent.model, maxAttempts: (node.retry ?? agent.retry)?.max ?? 1, backoff: (node.retry ?? agent.retry)?.backoff }` (node-retry overrides the agent default) + each `fallback_chain` entry. **One `FallbackChain` per node execution**, reused across the tool loop so per-provider cooldown and the [ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md) strip-latch survive.
+2. **Build the fallback plan.** The primary uses `node.model ?? agent.model`. With an authored `node.retry ?? agent.retry` budget it has one within-chain attempt; without one it has the shared runner's unauthored two-attempt default. Above-chain node retry does not multiply within-chain primary attempts ([ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md)). Each `fallback_chain` entry keeps its own `max_attempts`. **One `FallbackChain` per node execution**, reused across the tool loop so per-provider cooldown and the [ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md) strip-latch survive.
    - **Generative fork (1.AG Section C, [ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §1/§6).** After the plan + the resolved prompt, the primary model's surface is read via `resolveMediaSurface?.(primary.model) ?? 'chat'`. A **`'generative'`** result dispatches to the separate-endpoint `generateMedia` (**one** provider, **no** chain failover — a generative call is provider-bound) and returns early: an empty-prompt / multi-modality node fails `validation`; a pre-egress budget gate runs first (gate-only — the [ADR-0028](../../decisions/0028-workflow-resource-governance.md) pre-egress governor; the token estimate is pinned to zero for a token-free generative call, see the code comment); the SYNC `{ media }` becomes the `{ text: '', media: [part] }` node output (de-inlined to a `media://` handle like the inline path); exactly **one** realized `cost:updated` is emitted (request volume × per-model media rate) — **unless a rate is missing**, which since [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §4 is **unpriced, not zero**: under the non-strict default the numeric total may still floor at 0 but the event carries `priced: false` and the modality is counted in `unpriced_calls`, and under the authored `strict_cost_cap` the call is **refused before provider egress**, so no realized event is emitted at all. *(This clause said "degrade-to-0" until 2026-09-02; that behaviour is exactly the `CR-55` defect — a `0` the governor cannot tell from "nothing to charge".)* A `jobId` (async LRO) is Section D. A **`'chat'`** model continues to the turn core below.
 3. **Narrow the tool grant.** `node.tools` must be a **subset** of `agent.tools` — a widening attempt ⇒ `validation` ([ADR-0029](../../decisions/0029-tool-policy-hardening.md)).
 4. **Assemble messages.** `system` = **authored text ONLY** (`agent.system_prompt` + `node.system_prompt_append`), concatenated **verbatim — 1.O does not interpolate the system role**, so an untrusted `{{ run.outputs }}` / `read_file` reference can never resolve into `system` (it ships as literal authored text). The parser still *collects* a `{{ … }}` reference in `system_prompt_append` for the parse-time **secret-taint** scan (catching a stray `{{ secrets.* }}`), but does not promise dispatch-time resolution of system fields. Only the resolved `prompt_template` — which may draw on untrusted `run.outputs` / `read_file` — lands in a **`user`** position, never `system` ([security-review.md §Prompt-injection](../../standards/security-review.md#prompt-injection-posture), the structural placement guarantee — no value-level taint carrier needed for an agent node, which cannot launder a secret into `run.outputs`). *(A future parse-time gate that admits trusted `{{ inputs }}` / `{{ ctx }}` in system fields while rejecting untrusted sources is a recorded follow-up.)*
@@ -166,9 +166,38 @@ without a fabricated global reservation; a later known actual debits that same o
 has an explicit zero reservation and cannot manufacture a positive commitment event. Strict-cost
 refusals are never overridden.
 
-**W7 steps 6/9, 2026-10-02:** request pricing, frozen quote calculation and dispatch debit/reconciliation
-are implemented foundations. Trusted activation is not yet supplied by the workflow's legacy approval
-boolean. Authoritative authorization/observed ACK, checkpoint/replay and live/cross-process resume
-are Step 10; production engine approvals remain staged until that protocol replaces the legacy
-bypass. Automatic session pre-send/summary handoff remains Step 8. See the
+### Preparing and resuming a budget dispatch
+
+The optional `NodeExecutor.prepareBudgetDispatch(NodePreparationContext)` capability prepares the
+actual next request without events, credentials, provider calls, tool dispatch, monetary admission or
+host notices. Its context contains only the vertex, admitted inputs, completed outputs, resolved
+context, secret names, tool policy, signal and configured output estimate. The standard runner and
+node dispatcher provide it through the same prompt/tool/plan construction used by ordinary execution.
+An executor without this capability can reject a frozen gate; it cannot approve its allowance.
+
+A successful preparation retains ephemeral `quote(...)` and `execute(ctx)` capabilities. Text retains
+the actual request and candidate-specific cap plans; generative media retains its primary request and
+authored volume. The current price overlay is read at validation. The full quote must match the frozen
+scalar evidence before claiming the gate, and the prepared request is used for the first approved
+attempt so a second prompt/file read cannot replace the request just approved. Generation notices
+remain deferred until actual execution. Raw options, provider instances and closures stay process-local.
+
+The engine observes durable authority and companion acknowledgements before handing the approved
+safe amount to a new dispatch token. The pre-egress hook remains installed on **every** attempt,
+fallback, tool round and above-chain node retry. One dispatch token spans that node's retry/backoff
+lifetime and closes when it completes, fails, parks, is cancelled, abandoned or loses ownership.
+Exhaustion is fatal `budget_exceeded`; it neither retries nor creates a fresh budget pause.
+
+Cross-process amount/kind/request validation occurs before execution registration. Constructor seeding
+is passive; context and effect-journal admission precede timers, media polling and dispatch. After an
+asynchronous preflight, the engine rechecks the whole current quote. A supplied target decision is
+applied before its timer could be armed; surviving gates keep their absolute remaining deadlines.
+Effect refusal retains priority over authorization. A reconstructed approval does not restore a
+token or pretend the agent completed: an eligible kick re-runs under the current budget checks.
+Legacy approval likewise grants no allowance. The durable protocol and join rules have one home in
+[sse-event-schema.md](../contracts/sse-event-schema.md#durable-budget-authorization).
+
+**W7 Step 10, 2026-10-03:** the workflow approval bypass is replaced by this protocol; implementation
+verification and independent review are in progress. The safe CLI surface remains Step 11, and
+automatic session pre-send/summary handoff remains Step 8. See the
 [W7 execution plan](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md).

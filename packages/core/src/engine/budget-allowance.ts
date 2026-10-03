@@ -5,53 +5,31 @@ import {
   supportsRequest,
   InvalidTokenEstimateError,
   UnknownModelError,
-  type EndpointKind,
   type FallbackPlanEntry,
   type LlmRequest,
   type MediaUnitsEstimate,
   type PricingOverlay,
-  type ProviderId,
-  type ResolvedRequestEstimate,
 } from '@relavium/llm';
 
-export interface AllowanceEntryIdentity {
-  readonly index: number;
-  readonly model: string;
-  readonly provider: ProviderId;
-  readonly endpoint: EndpointKind;
-}
+import type {
+  AllowanceEntryIdentity,
+  AllowanceExcludedEntry,
+  AllowancePricedEntry,
+  AllowanceProvenance,
+  AllowanceQuote,
+  AllowanceQuoteResult,
+  ResolvedRequestEstimate,
+} from '@relavium/shared';
 
-export interface AllowanceExcludedEntry extends AllowanceEntryIdentity {
-  readonly reason: 'unsupported' | 'unpriced_model' | 'unpriced_modality';
-}
-
-export interface AllowancePricedEntry extends AllowanceEntryIdentity {
-  readonly attempts: number;
-  readonly estimate: ResolvedRequestEstimate;
-}
-
-export interface AllowanceProvenance {
-  readonly version: 1;
-  readonly route: 'text' | 'generative';
-  readonly calls: number;
-  readonly attempts: number;
-  readonly entries: readonly AllowancePricedEntry[];
-}
-
-export type AllowanceAmount =
-  | { readonly kind: 'representable'; readonly microcents: number }
-  | { readonly kind: 'unrepresentable' };
-
-export interface AllowanceQuote {
-  readonly amount: AllowanceAmount;
-  readonly provenance: AllowanceProvenance;
-  readonly excludedEntries: readonly AllowanceExcludedEntry[];
-}
-
-/** An entirely unpriced plan cannot manufacture a priced zero allowance. */
-export type AllowanceQuoteResult =
-  | { readonly kind: 'quoted'; readonly quote: AllowanceQuote }
-  | { readonly kind: 'unpriced'; readonly excludedEntries: readonly AllowanceExcludedEntry[] };
+export type {
+  AllowanceEntryIdentity,
+  AllowanceExcludedEntry,
+  AllowancePricedEntry,
+  AllowanceProvenance,
+  AllowanceAmount,
+  AllowanceQuote,
+  AllowanceQuoteResult,
+} from '@relavium/shared';
 
 interface QuoteCommon {
   readonly entries: readonly FallbackPlanEntry[];

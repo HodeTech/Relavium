@@ -146,6 +146,16 @@ continues); `reject` **fails** the run with `run_timeout` (the `AwaitingGate →
 this is what stops a forgotten gate from blocking a run forever. A decision that arrives first
 disarms the timer.
 
+A new frozen **budget** gate has different semantics: approval requires its exact amount and leaves
+the agent pending for a governed dispatch; rejection fails `budget_exceeded`. A legacy approval
+grants no allowance and re-runs under current budget checks. Neither form completes
+the agent with a decision object or removes its pre-egress hook. The engine acknowledges durable
+authorization before companions or approved work, and an unresolved external effect still refuses
+resume. During restart admission, the supplied target decision precedes timer construction;
+surviving gates re-arm at their absolute remaining time. The authoritative protocol is in
+[sse-event-schema.md](../reference/contracts/sse-event-schema.md#durable-budget-authorization),
+and preparation/debit behaviour in [agent-runner.md](../reference/shared-core/agent-runner.md#preparing-and-resuming-a-budget-dispatch).
+
 The gate event/decision shapes are part of the
 [SSE event schema](../reference/contracts/sse-event-schema.md) and the
 [IPC contract](../reference/contracts/ipc-contract.md).

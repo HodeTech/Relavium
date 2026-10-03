@@ -69,12 +69,14 @@ import {
   DEFAULT_AGENT_TURN_LIMITS,
   codeForLlmError,
   runAgentTurn,
+  prepareAgentTurnRequest,
   type AgentTurnLimits,
   type AgentTurnResult,
   type ChainCapabilities,
   type PreEgressHook,
 } from './agent-turn.js';
 import { BudgetExceededError, BudgetPauseError, type BudgetAdmission } from './budget-governor.js';
+import { quoteBudgetAllowance } from './budget-allowance.js';
 import { effortToSend, gateReasoningEffort } from './reasoning-effort.js';
 import type {
   EffortGateResult,
@@ -86,6 +88,8 @@ import type {
   NodeExecContext,
   NodeExecutor,
   NodeOutcome,
+  NodePreparationContext,
+  BudgetDispatchPreparationResult,
 } from './node-executor.js';
 
 type AgentNode = AgentPlanConfig['node'];
@@ -257,6 +261,15 @@ function isBilledModality(modality: OutputModality): modality is MediaBilledModa
 export function createAgentNodeExecutor(deps: AgentRunnerDeps): NodeExecutor {
   return {
     execute: (ctx) => executeNode(ctx, deps),
+    prepareBudgetDispatch: (ctx) => {
+      const config = ctx.vertex.config;
+      if (ctx.vertex.type !== 'agent' || config.kind !== 'agent') {
+        return Promise.resolve(
+          failed('validation', 'budget preparation requires an agent vertex', false),
+        );
+      }
+      return prepareAgentDispatch(ctx, config, deps);
+    },
     // The engine owns the async media-job poll loop (1.AG Section D), but provider + credential resolution
     // lives here (the AgentRunnerDeps), so the engine delegates the actual poll back through the executor.
     pollMediaJob: (job, signal) => pollMediaJobThroughDeps(deps, job, signal),
@@ -319,7 +332,11 @@ async function pollMediaJobThroughDeps(
 
 // The agent arm's local `failed` factory — the parallel of the canonical one in
 // node-handlers/scope.ts; keep the two in lockstep if the NodeFailure shape ever changes.
-function failed(code: ErrorCode, message: string, retryable: boolean): NodeOutcome {
+function failed(
+  code: ErrorCode,
+  message: string,
+  retryable: boolean,
+): Extract<NodeOutcome, { kind: 'failed' }> {
   return { kind: 'failed', error: { code, message, retryable } };
 }
 
@@ -355,6 +372,16 @@ async function executeAgent(
   config: AgentPlanConfig,
   deps: AgentRunnerDeps,
 ): Promise<NodeOutcome> {
+  const result = await prepareAgentDispatch(ctx, config, deps);
+  return result.kind === 'failed' ? result : result.preparation.execute(ctx);
+}
+
+/** Shared by ordinary execution and approval: one lowering path, with no egress capability invoked. */
+async function prepareAgentDispatch(
+  ctx: NodePreparationContext,
+  config: AgentPlanConfig,
+  deps: AgentRunnerDeps,
+): Promise<BudgetDispatchPreparationResult> {
   const node = config.node;
   const agent = config.resolvedAgent;
   if (agent === undefined) {
@@ -393,80 +420,125 @@ async function executeAgent(
     primary !== undefined &&
     (deps.resolveMediaSurface?.(primary.model) ?? 'chat') === 'generative'
   ) {
-    return executeGenerativeMedia(ctx, node, primary, prompt.text, deps);
+    const modality = singleBilledModality(node.output_modalities, node.id);
+    if (!modality.ok) return failed('validation', modality.message, false);
+    if (prompt.text.length === 0)
+      return failed(
+        'validation',
+        `agent node '${node.id}': a media_surface 'generative' model requires a non-empty prompt`,
+        false,
+      );
+    if (primary.provider.generateMedia === undefined)
+      return failed(
+        'internal',
+        `agent node '${node.id}': model '${primary.model}' is media_surface 'generative' but provider '${primary.provider.id}' implements no generateMedia (host-wiring gap)`,
+        false,
+      );
+    const frozenNode = { ...node };
+    const units = generativeUnits(modality.modality, frozenNode);
+    return {
+      kind: 'prepared',
+      preparation: {
+        quote: (context) =>
+          quoteBudgetAllowance({
+            route: 'generative',
+            entries: [primary],
+            mediaUnitsEstimate: [{ modality: modality.modality, units }],
+            strictCostCap: context.strictCostCap,
+            ...(context.resolvePrice === undefined ? {} : { overlay: context.resolvePrice }),
+          }),
+        execute: (execution) =>
+          executeGenerativeMedia(execution, frozenNode, primary, prompt.text, deps),
+      },
+    };
   }
 
   const messages = assembleMessages(agent, node, prompt.text);
   const outputSchema = node.output_schema ?? agent.output_schema;
   const responseFormat = lowerOutputSchema(outputSchema);
 
-  const dispatchContext: Omit<ToolDispatchContext, 'signal'> = {
-    // The journal, and the run-path correlation only the run loop can supply — the same reasoning that puts
-    // the money ledger here (ADR-0076): `ctx.attemptNumber` is the NODE-RETRY attempt (ADR-0040), which the
-    // turn has never carried and which the correlation needs for its audit arm.
+  const previewDispatch = makeAgentDispatchContext(ctx, node.id, grantedToolIds, deps);
+  const llmTools = buildLlmTools(deps.tools, grantedToolIds, previewDispatch);
+  const generation = prepareGenKnobs(agent, node, deps);
+  const maxTokensEstimate = ctx.maxTokensEstimate ?? deps.maxTokensEstimate;
+  const limits = deps.limits ?? DEFAULT_AGENT_TURN_LIMITS;
+  const mediaUnitsEstimate =
+    node.output_modalities === undefined
+      ? undefined
+      : buildMediaUnitsEstimate(node.output_modalities, deps.mediaCostEstimate);
+  const fields = {
+    system: messages.system,
+    messages: messages.messages,
+    ...(llmTools.length === 0 ? {} : { tools: llmTools }),
+    planEntries: plan.entries,
+    ...(responseFormat === undefined ? {} : { responseFormat }),
+    ...generation.fields,
+    ...(maxTokensEstimate === undefined ? {} : { maxTokensEstimate }),
+    ...(node.output_modalities === undefined ? {} : { outputModalities: node.output_modalities }),
+    ...(mediaUnitsEstimate === undefined ? {} : { mediaUnitsEstimate }),
+  };
+  const first = prepareAgentTurnRequest({ ...fields, signal: ctx.signal });
+  return {
+    kind: 'prepared',
+    preparation: {
+      quote: (context) =>
+        quoteBudgetAllowance({
+          route: 'text',
+          entries: plan.entries,
+          request: first.request,
+          inputTokensEstimate: first.inputTokensEstimate,
+          maxTokensEstimate,
+          maxToolTurns: limits.maxToolTurns,
+          ...(mediaUnitsEstimate === undefined ? {} : { mediaUnitsEstimate }),
+          strictCostCap: context.strictCostCap,
+          ...(context.resolvePrice === undefined ? {} : { overlay: context.resolvePrice }),
+        }),
+      execute: async (execution) => {
+        const preEgress = execution.preEgress ?? deps.preEgress;
+        let result: AgentTurnResult;
+        try {
+          generation.notify();
+          result = await runAgentTurn({
+            ...fields,
+            preparedOutputCaps: first.preparedOutputCaps,
+            chainCapabilities: chainCapabilities(deps),
+            nodeId: node.id,
+            emit: execution.emit,
+            signal: execution.signal,
+            registry: deps.registry,
+            dispatchContext: makeAgentDispatchContext(execution, node.id, grantedToolIds, deps),
+            limits,
+            ...(execution.whenReady === undefined ? {} : { whenReady: execution.whenReady }),
+            ...(preEgress === undefined ? {} : { preEgress }),
+            ...(execution.money === undefined ? {} : { money: execution.money }),
+            ...(deps.resolvePrice === undefined ? {} : { resolvePrice: deps.resolvePrice }),
+          });
+        } catch (err) {
+          return turnOutcomeForError(err);
+        }
+        return buildChatTurnOutcome(node, result, outputSchema);
+      },
+    },
+  };
+}
+
+/** The same delegate visibility for preparation and dispatch; preparation cannot prepare an effect. */
+function makeAgentDispatchContext(
+  ctx: NodePreparationContext & Partial<Pick<NodeExecContext, 'effects'>>,
+  nodeId: string,
+  grantedToolIds: ReadonlySet<string>,
+  deps: AgentRunnerDeps,
+): Omit<ToolDispatchContext, 'signal'> {
+  return {
     effects: ctx.effects ?? unwiredEffectJournal(),
-    effectSlot: 0, // per-CALL; `dispatchToolCalls` overrides it with the tool call's ordinal
-    nodeId: node.id,
+    effectSlot: 0,
+    nodeId,
     grantedToolIds,
-    config: {}, // an agent-invoked tool carries no per-tool config block in v1.0
+    config: {},
     toolPolicy: ctx.toolPolicy,
     fsScope: deps.fsScope ?? 'sandboxed',
-    gateApproved: false, // an agent loop provides no human gate — git_commit stays denied
+    gateApproved: false,
   };
-
-  // AFTER `dispatchContext`, because the model-visible set now depends on which delegates that context will
-  // actually carry (`CR-73`) — a tool whose delegate is absent is never offered.
-  const llmTools = buildLlmTools(deps.tools, grantedToolIds, dispatchContext);
-
-  // The per-dispatch `ctx.preEgress` (the engine's budget governor, 1.AC) takes precedence; `deps.preEgress`
-  // is the fallback for a host that wires a runner directly. Reading ctx here lets the dispatcher build the
-  // runner ONCE (no per-call rebuild) and keeps the engine's H3 one-shot bypass (ctx.preEgress=undefined) working.
-  const preEgress = ctx.preEgress ?? deps.preEgress;
-  let result: AgentTurnResult;
-  try {
-    result = await runAgentTurn({
-      system: messages.system,
-      messages: messages.messages,
-      ...(llmTools.length > 0 ? { tools: llmTools } : {}),
-      planEntries: plan.entries,
-      chainCapabilities: chainCapabilities(deps),
-      ...(responseFormat === undefined ? {} : { responseFormat }),
-      ...resolveGenKnobs(agent, node, deps),
-      nodeId: node.id,
-      emit: ctx.emit,
-      // ADR-0036's producer-await, forwarded verbatim (`CR-30`) — the turn's chunk loop is what awaits it.
-      ...(ctx.whenReady === undefined ? {} : { whenReady: ctx.whenReady }),
-      signal: ctx.signal,
-      registry: deps.registry,
-      dispatchContext,
-      limits: deps.limits ?? DEFAULT_AGENT_TURN_LIMITS,
-      ...((ctx.maxTokensEstimate ?? deps.maxTokensEstimate) === undefined
-        ? {}
-        : { maxTokensEstimate: ctx.maxTokensEstimate ?? deps.maxTokensEstimate }),
-      ...(preEgress === undefined ? {} : { preEgress }),
-      // Straight from the ctx, with no `deps` fallback — the ledger belongs to a RUN and only the run loop can
-      // supply it. A host wiring a runner directly gets no ledger, which is correct: there is no run to
-      // record against (ADR-0076 / ADR-0077).
-      ...(ctx.money === undefined ? {} : { money: ctx.money }),
-      ...(deps.resolvePrice === undefined ? {} : { resolvePrice: deps.resolvePrice }), // user-pricing overlay (S10)
-      // Media cost governance (1.AF/D17): forward the node's requested output modalities + a per-modality
-      // unit estimate so the budget governor prices a media-output turn pre-egress. Both omitted for a
-      // text-only node (no `output_modalities`), so a text turn pays no media-estimate work.
-      ...(node.output_modalities === undefined
-        ? {}
-        : {
-            outputModalities: node.output_modalities,
-            mediaUnitsEstimate: buildMediaUnitsEstimate(
-              node.output_modalities,
-              deps.mediaCostEstimate,
-            ),
-          }),
-    });
-  } catch (err) {
-    return turnOutcomeForError(err);
-  }
-
-  return buildChatTurnOutcome(node, result, outputSchema);
 }
 
 /**
@@ -1111,11 +1183,14 @@ function buildLlmTools(
 }
 
 /** Node-over-agent generation knobs (the node override wins; ADR-0038). */
-function resolveGenKnobs(
+function prepareGenKnobs(
   agent: Agent,
   node: AgentNode,
   deps: AgentRunnerDeps,
-): { temperature?: number; maxTokens?: number; reasoningEffort?: ReasoningEffort } {
+): {
+  readonly fields: { temperature?: number; maxTokens?: number; reasoningEffort?: ReasoningEffort };
+  readonly notify: () => void;
+} {
   const temperature = node.temperature ?? agent.temperature;
   const maxTokens = node.max_tokens ?? agent.max_tokens;
   // ADR-0066/0071: send the tier ONLY when the model is on record as ACCEPTING it — not merely as reasoning.
@@ -1135,14 +1210,19 @@ function resolveGenKnobs(
   // knob the author deliberately set is the worse of the two: the run succeeds, the field is gone, and the bill
   // lands at the provider's default tier with nothing in the output to explain why. `capped` — a budget model whose
   // tier this node's `max_tokens` withholds (review M6) — is the same silent no-op and rides the same channel.
-  if (gate.kind === 'rejected' || gate.kind === 'uncontrollable' || gate.kind === 'capped') {
-    deps.onEffortWithheld?.(gate, agent.model);
-  }
+  const notify = (): void => {
+    if (gate.kind === 'rejected' || gate.kind === 'uncontrollable' || gate.kind === 'capped') {
+      deps.onEffortWithheld?.(gate, agent.model);
+    }
+  };
   const reasoningEffort = effortToSend(gate);
   return {
-    ...(temperature === undefined ? {} : { temperature }),
-    ...(maxTokens === undefined ? {} : { maxTokens }),
-    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+    fields: {
+      ...(temperature === undefined ? {} : { temperature }),
+      ...(maxTokens === undefined ? {} : { maxTokens }),
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+    },
+    notify,
   };
 }
 
@@ -1239,7 +1319,7 @@ function chainCapabilities(deps: AgentRunnerDeps): ChainCapabilities {
 
 async function resolvePrompt(
   template: string,
-  ctx: NodeExecContext,
+  ctx: Pick<NodeExecContext, 'inputs' | 'ctx' | 'runOutputs'>,
   deps: AgentRunnerDeps,
 ): Promise<{ ok: true; text: string } | { ok: false; message: string }> {
   // The resolved prompt may draw on untrusted run.outputs / read_file — it lands in a USER message

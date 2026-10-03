@@ -894,7 +894,7 @@ workflow:
 
 describe('selectGate', () => {
   const checkpoint = (over: Partial<CheckpointState> = {}): CheckpointState => ({
-    schemaVersion: 1,
+    schemaVersion: 2,
     runStatus: 'paused',
     workflowId: 'wf',
     startedAtMs: 0,
@@ -904,6 +904,7 @@ describe('selectGate', () => {
     nodeStates: new Map(),
     completedNodeIds: [],
     pendingGates: [],
+    budgetRejections: [],
     pendingMediaJobs: [],
     resolvedGateIds: [],
     lastSequenceNumber: 0,

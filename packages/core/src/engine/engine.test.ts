@@ -2647,7 +2647,7 @@ ${chain
   // timer at all, so their deadlines stopped existing until the next restart. The data needed was already
   // durable on `human_gate:paused` (its schema says it rides there for exactly this); only the checkpoint
   // fold and the rehydration loop were missing. See ADR-0028 and `CR-22`.
-  it('re-arms a rehydrated gate at its REMAINING time, not its full `timeout_ms`', async () => {
+  it('does not arm a rehydrated target gate when its decision has already arrived', async () => {
     const store = new InMemoryRunStore();
     const engineA = engineWith(
       {
@@ -2697,17 +2697,12 @@ ${chain
     });
     await drain(handleB);
 
-    // The load-bearing assertion: 250, not 1000. Arming the full `timeout_ms` would renew the deadline on
-    // every resume — a gate crashed and resumed ten times would get ten times its authored patience, which
-    // is the defect `CR-22` names.
-    //
-    // `toEqual` on the whole array, not `toContain`. A first version used `toContain(250)` plus
-    // `not.toContain(1000)` and justified it by saying "the resume also arms unrelated work timers" — which
-    // is measurably false: this resume arms exactly one. With a single-element array the negative assertion
-    // was implied by the positive one and no mutation could make it the failing line, and the superseded
-    // test's EXACT count (`toBe(0)`) had also proved "no other work timer is armed anywhere". `toEqual`
-    // restores that second guarantee at zero cost.
-    expect(armedWork).toEqual([250]);
+    // ADR-0100 admission is passive: a supplied target decision precedes timer construction.
+    // Surviving gates still retain their remaining deadlines (the multi-gate control below).
+    expect(armedWork).toEqual([]);
+    expect(
+      store.eventsFor(handleA.runId).find((e) => e.type === 'human_gate:resumed'),
+    ).toMatchObject({ decision: 'approved', decidedBy: 'h' });
   });
 
   it('a resuming clock running BEHIND cannot grant more patience than the author wrote', async () => {
@@ -4098,16 +4093,18 @@ ${line
     expect(armedWork.every((ms) => ms >= 0)).toBe(true);
   });
 
-  it('a SURVIVING gate keeps its deadline across the resume — the case the item exists for', async () => {
-    // **The motivating case, and it had no test.** The sibling tests all resume a run's ONLY gate — which
-    // `resume()` disarms two lines later, i.e. precisely the "target gate" case the old deferral was right
-    // to say did not matter. What `CR-22` actually fixes is a gate that survives the resume: a multi-gate
-    // run, or a crash while parked, rehydrated its remaining gates with NO timer, so their deadlines
-    // stopped existing until the next restart.
-    //
-    // Two gates, resume one, assert the OTHER still holds a deadline — at its remaining time, and still
-    // armed after the resume has settled into its next park.
-    const MULTIGATE = `  id: multigate
+  it.each([4000, -60_000])(
+    'a SURVIVING gate keeps its deadline across resume with %i ms remaining on the target',
+    async (remaining) => {
+      // **The motivating case, and it had no test.** The sibling tests all resume a run's ONLY gate — which
+      // `resume()` disarms two lines later, i.e. precisely the "target gate" case the old deferral was right
+      // to say did not matter. What `CR-22` actually fixes is a gate that survives the resume: a multi-gate
+      // run, or a crash while parked, rehydrated its remaining gates with NO timer, so their deadlines
+      // stopped existing until the next restart.
+      //
+      // Two gates, resume one, assert the OTHER still holds a deadline — at its remaining time, and still
+      // armed after the resume has settled into its next park.
+      const MULTIGATE = `  id: multigate
   nodes:
     - { id: start, type: input }
     - { id: g1, type: human_gate, gate_type: approval }
@@ -4118,70 +4115,71 @@ ${line
     - { from: start, to: g2 }
     - { from: g1, to: out }
     - { from: g2, to: out }`;
-    const store = new InMemoryRunStore();
-    const gate = (message: string) => ({
-      kind: 'paused' as const,
-      gate: {
-        gateType: 'approval' as const,
-        message,
-        timeoutMs: 5000,
-        timeoutAction: 'reject' as const,
-      },
-    });
-    const engineA = engineWith(
-      { g1: () => gate('first?'), g2: () => gate('second?') },
-      createInMemoryHost({ store }),
-    );
-    const handleA = engineA.start({ workflow: workflow(MULTIGATE) });
-    const gateIds: string[] = [];
-    const expiries: string[] = [];
-    for await (const event of handleA.events) {
-      if (event.type === 'human_gate:paused') {
-        gateIds.push(event.gateId);
-        expiries.push(event.expiresAt ?? '');
+      const store = new InMemoryRunStore();
+      const gate = (message: string) => ({
+        kind: 'paused' as const,
+        gate: {
+          gateType: 'approval' as const,
+          message,
+          timeoutMs: 5000,
+          timeoutAction: 'reject' as const,
+        },
+      });
+      const engineA = engineWith(
+        { g1: () => gate('first?'), g2: () => gate('second?') },
+        createInMemoryHost({ store }),
+      );
+      const handleA = engineA.start({ workflow: workflow(MULTIGATE) });
+      const gateIds: string[] = [];
+      const expiries: string[] = [];
+      for await (const event of handleA.events) {
+        if (event.type === 'human_gate:paused') {
+          gateIds.push(event.gateId);
+          expiries.push(event.expiresAt ?? '');
+        }
+        if (event.type === 'run:paused' && gateIds.length === 2) break;
       }
-      if (event.type === 'run:paused' && gateIds.length === 2) break;
-    }
-    expect(gateIds).toHaveLength(2);
+      expect(gateIds).toHaveLength(2);
 
-    // The two gates park a few clock ticks apart (the in-memory clock advances per read), so they expire at
-    // slightly different instants. Pin `now` off the first and compute BOTH expected remainings exactly —
-    // a band assertion would hide an off-by-one in the arithmetic this test exists to check.
-    const nowB = new Date(Date.parse(expiries[0] ?? '') - 4000).toISOString();
-    const expectedRemaining = expiries.map((e) => Date.parse(e) - Date.parse(nowB));
-    const baseHostB = createInMemoryHost({ store });
-    const armedWork: number[] = [];
-    const hostB: typeof baseHostB = {
-      ...baseHostB,
-      clock: { now: () => nowB },
-      setTimer: (ms, onFire, kind = 'work') => {
-        if (kind === 'work') armedWork.push(ms);
-        return baseHostB.setTimer(ms, onFire, kind);
-      },
-    };
-    const engineB = engineWith({ g2: () => gate('second?') }, hostB);
-    const handleB = await engineB.resumeFromCheckpoint({
-      runId: handleA.runId,
-      workflow: workflow(MULTIGATE),
-      gateId: gateIds[0] ?? '',
-      decision: { decision: 'approved', decidedBy: 'h' },
-    });
-    for await (const event of handleB.events) {
-      if (event.type === 'run:paused') break; // re-parked on the surviving gate
-    }
+      // The two gates park a few clock ticks apart (the in-memory clock advances per read), so they expire at
+      // slightly different instants. Pin `now` off the first and compute BOTH expected remainings exactly —
+      // a band assertion would hide an off-by-one in the arithmetic this test exists to check.
+      const nowB = new Date(Date.parse(expiries[0] ?? '') - remaining).toISOString();
+      const expectedRemaining = expiries.map((e) => Math.max(0, Date.parse(e) - Date.parse(nowB)));
+      const baseHostB = createInMemoryHost({ store });
+      const armedWork: number[] = [];
+      const hostB: typeof baseHostB = {
+        ...baseHostB,
+        clock: { now: () => nowB },
+        setTimer: (ms, onFire, kind = 'work') => {
+          if (kind === 'work') armedWork.push(ms);
+          return baseHostB.setTimer(ms, onFire, kind);
+        },
+      };
+      const engineB = engineWith({ g2: () => gate('second?') }, hostB);
+      const handleB = await engineB.resumeFromCheckpoint({
+        runId: handleA.runId,
+        workflow: workflow(MULTIGATE),
+        gateId: gateIds[0] ?? '',
+        decision: { decision: 'approved', decidedBy: 'h' },
+      });
+      for await (const event of handleB.events) {
+        if (event.type === 'run:paused') break; // re-parked on the surviving gate
+      }
 
-    // BOTH gates were re-armed at their own remaining time — the surviving one is the point. Before the fix
-    // this array was empty, because rehydration armed nothing at all.
-    expect(expectedRemaining[0]).toBe(4000); // …and the arithmetic is what it claims
-    for (const ms of expectedRemaining) expect(armedWork).toContain(ms);
-    // …and the survivor's timer is still live after the resume settled: the decision disarmed only its own.
-    expect(baseHostB.armedCount()).toBeGreaterThan(0);
-  });
+      // Only the survivor is armed, at its exact remaining time. An expired survivor travels
+      // the timer path at zero; admission does not resolve it inline or renew its patience.
+      expect(expectedRemaining[0]).toBe(Math.max(0, remaining));
+      expect(armedWork).toEqual([expectedRemaining[1]]);
+      expect(
+        store.eventsFor(handleA.runId).filter((e) => e.type === 'human_gate:resumed'),
+      ).toMatchObject([{ decision: 'approved', decidedBy: 'h' }]);
+      // …and the survivor's timer is still live after the resume settled: the decision disarmed only its own.
+      expect(baseHostB.armedCount()).toBeGreaterThan(0);
+    },
+  );
 
-  it('a gate whose deadline ALREADY passed re-arms at zero rather than resolving inline', async () => {
-    // The past-deadline case has to travel the same `#onGateTimeout` path as a live expiry, or a
-    // past-deadline resume and an expiring live run would produce two differently-shaped exits for one
-    // condition. Arming at zero is what keeps it to one: the timer fires on the next tick.
+  it('does not arm an expired target gate over a decision already supplied at admission', async () => {
     const store = new InMemoryRunStore();
     const engineA = engineWith(
       {
@@ -4223,10 +4221,10 @@ ${line
     });
     await drain(handleB);
 
-    // Clamped at zero — never a negative duration handed to a host timer. Exact, for the same reason as
-    // its siblings: with a one-element array `every(ms => ms >= 0)` was implied by the value assertion and
-    // could never be the failing line.
-    expect(armedWork).toEqual([0]);
+    expect(armedWork).toEqual([]);
+    expect(
+      store.eventsFor(handleA.runId).find((e) => e.type === 'human_gate:resumed'),
+    ).toMatchObject({ decision: 'approved', decidedBy: 'h' });
   });
 });
 
@@ -5915,8 +5913,8 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
  * A `media_job` outcome from a stub handler — the engine parks the node and emits `media_job:submitted`.
  *
  * No budget admission is attached, and cannot be: `retainMediaJobAdmission` is module-private to
- * `agent-runner`. That is not a limitation here — it is exactly the shape the approved-bypass case has
- * anyway, since an approved re-dispatch runs with `preEgress: undefined` and therefore holds no admission.
+ * `agent-runner`. This injected executor therefore tests the honest unknown-basis zero. The actual runner's
+ * governed approval and nonzero reservation are pinned by `budget-authorization-live.test.ts`.
  * `units` is FRACTIONAL on purpose: `duration_seconds` is fractional by contract (ADR-0074 §3), and an
  * integer bound here once made a 12.5-second job unwritable after the provider had accepted it.
  */
@@ -5949,8 +5947,8 @@ async function untilMediaJobSubmitted(handle: RunHandle): Promise<RunEvent[]> {
 }
 
 // A REAL `budget:` block, so a governor exists and `#makePreEgressHook()` returns a hook. Without it
-// `ctx.preEgress` is `undefined` on every dispatch and the bypass assertion below would be vacuous — it would
-// pass on a build where `budgetApproved` never gated anything. The cap is large enough that nothing here
+// `ctx.preEgress` is `undefined` on every dispatch and the governance assertion below would be vacuous.
+// The cap is large enough that nothing here
 // legitimately trips it.
 const MEDIA_GATED = `  id: media-gate
   nodes:
@@ -5963,18 +5961,10 @@ const MEDIA_GATED = `  id: media-gate
     on_exceed: pause_for_approval`;
 
 describe('WorkflowEngine — media_job:submitted freezes its money basis (ADR-0074 §3)', () => {
-  it('OMITS acceptedCostMicrocents under the H3 approved bypass (#W15-20)', async () => {
-    // `0` means "the gate RAN and reserved nothing" — an unpriced model's allow-degrade path. Under H3's
-    // approved bypass NO hook runs at all (`#runAttempt` passes `preEgress: undefined`), so there is no
-    // priced basis to freeze and emitting `0` would claim one.
-    //
-    // Not cosmetic: on resume the frozen branch would call `reserveAcceptedCost(model, 0)`, reserve NOTHING,
-    // and skip `registerLegacyMediaJob` — so a job deliberately submitted OVER the cap comes back holding no
-    // reservation and no hold, letting a sibling spend headroom that is still owed. Omitting it routes the
-    // resume through the legacy branch, which re-prices AND fails closed.
-    // Captured, never asserted INSIDE the handler: `#runAttempt`'s catch-all turns any handler throw into a
-    // generic `internal` node failure, so a failing in-handler `expect` would surface as a confusing
-    // `run:failed` rather than as itself.
+  it('retains governance after a legacy approval and records honest zero for an executor without admission', async () => {
+    // This injected executor supplies no admission. Legacy approval grants no allowance,
+    // and every re-dispatch still receives the governor hook. The real runner's priced
+    // reservation is covered by the media admission integration suites.
     const hookPresent: boolean[] = [];
     let dispatches = 0;
     const engine = engineWith({
@@ -6013,18 +6003,16 @@ describe('WorkflowEngine — media_job:submitted freezes its money basis (ADR-00
     }
 
     expect(dispatches).toBe(2); // the approval RE-DISPATCHED the node rather than completing it
-    // The bypass, observed rather than assumed: the hook is there on the first dispatch and GONE on the
-    // approved one. That contrast is what makes the omission below attributable to `budgetApproved`.
-    expect(hookPresent).toEqual([true, false]);
+    expect(hookPresent).toEqual([true, true]);
     const submitted = events.find((e) => e.type === 'media_job:submitted');
     expect(submitted?.type).toBe('media_job:submitted');
     if (submitted?.type !== 'media_job:submitted') return;
-    expect(submitted).not.toHaveProperty('acceptedCostMicrocents');
-    // …while the BASIS is still frozen. `units` alone is the legitimate half-populated row (#W15-7).
+    expect(submitted.acceptedCostMicrocents).toBe(0);
+    // The authored volume remains frozen alongside that honest zero.
     expect(submitted.units).toBe(12.5);
   });
 
-  it('carries acceptedCostMicrocents when the bypass did NOT fire', async () => {
+  it('carries explicit acceptedCostMicrocents even when an injected executor has no admission', async () => {
     // Without this row the assertion above would also pass on a build that never emitted the field at all.
     //
     // What it pins is PRESENCE, not the amount. `retainMediaJobAdmission` is module-private to `agent-runner`,

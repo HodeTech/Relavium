@@ -210,8 +210,8 @@ export interface NodeExecContext {
    * single barrier the turn core joins at.
    *
    * Optional on this seam so a stub executor and the session path stay unchanged, but the run loop supplies it
-   * UNCONDITIONALLY — unlike {@link preEgress}, which is budget-scoped and is deliberately dropped for an
-   * approved re-dispatch. A run with no `budget` still spends real money.
+   * UNCONDITIONALLY. {@link preEgress} is budget-scoped and remains installed after approval;
+   * a run with no `budget` still spends real money.
    */
   readonly money?: import('./money-durability.js').TurnMoneyPort;
   /**
@@ -225,6 +225,32 @@ export interface NodeExecContext {
    */
   readonly effects?: import('@relavium/shared').EffectDispatchPort;
 }
+
+/** No execution, accounting or effect capability is available while preparing an approval. */
+export type NodePreparationContext = Pick<
+  NodeExecContext,
+  | 'vertex'
+  | 'runOutputs'
+  | 'inputs'
+  | 'ctx'
+  | 'secretInputNames'
+  | 'toolPolicy'
+  | 'signal'
+  | 'maxTokensEstimate'
+>;
+
+/** Process-local first-request preparation. Neither callback nor request data is durable. */
+export interface BudgetDispatchPreparation {
+  quote(context: {
+    readonly strictCostCap: boolean;
+    readonly resolvePrice?: import('@relavium/llm').PricingOverlay;
+  }): import('@relavium/shared').AllowanceQuoteResult;
+  execute(ctx: NodeExecContext): Promise<NodeOutcome>;
+}
+
+export type BudgetDispatchPreparationResult =
+  | { readonly kind: 'prepared'; readonly preparation: BudgetDispatchPreparation }
+  | Extract<NodeOutcome, { kind: 'failed' }>;
 
 /** The injected per-vertex executor. 1.O (`AgentRunner`) and 1.P (node handlers) implement it. */
 export interface NodeExecutor {
@@ -249,6 +275,8 @@ export interface NodeExecutor {
    * every attempt and re-dispatch of the node (§2).
    */
   execute(ctx: NodeExecContext): Promise<NodeOutcome>;
+  /** Resolve and lower the same first request, without credentials, tools, notices or provider calls. */
+  prepareBudgetDispatch?(ctx: NodePreparationContext): Promise<BudgetDispatchPreparationResult>;
   /**
    * Poll an async media job the executor previously submitted (1.AG Section D, ADR-0045 §3). The ENGINE owns
    * the poll/checkpoint/resume/cancel loop, but provider + credential resolution lives in the executor (the

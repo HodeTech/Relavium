@@ -1,4 +1,10 @@
+// External Step 10 protocol draft only; not a new producer or tracked implementation.
 import { z } from 'zod';
+import {
+  BudgetAuthorizationStateSchema,
+  AllowanceQuoteResultSchema,
+  BudgetMicrocentsSchema,
+} from './budget-authorization.js';
 
 import { nonEmptyString, nonNegativeInt, positiveInt, preservingUnknownRecord } from './common.js';
 import {
@@ -449,6 +455,7 @@ export const HumanGatePausedEventSchema = z.object({
   // engine derives no separate gate record — execution-model.md). Absent ⇒ no timeout configured.
   timeoutAction: TimeoutActionSchema.optional(),
   expiresAt: z.string().datetime({ offset: true }).optional(),
+  allowanceQuote: AllowanceQuoteResultSchema.optional(),
 });
 export type HumanGatePausedEvent = z.infer<typeof HumanGatePausedEventSchema>;
 
@@ -459,6 +466,9 @@ export const HumanGateResumedEventSchema = z.object({
   decision: GateDecisionValueSchema,
   decidedBy: nonEmptyString, // user id, or 'timeout' when a gate auto-resolves on timeout
   payload: z.unknown().optional(),
+  allowanceQuote: AllowanceQuoteResultSchema.optional(),
+  gateId: nonEmptyString.optional(),
+  approvedAmountMicrocents: BudgetMicrocentsSchema.optional(),
 });
 export type HumanGateResumedEvent = z.infer<typeof HumanGateResumedEventSchema>;
 
@@ -527,6 +537,15 @@ export const BudgetWarningEventSchema = z.object({
   thresholdPct: z.number().int().min(0).max(100), // a whole-percent figure (e.g. 90), clamped to [0, 100]
 });
 
+export const BudgetAuthorizationEventSchema = z.object({
+  type: z.literal('budget:authorization'),
+  ...runBase,
+  nodeId: nonEmptyString,
+  gateId: nonEmptyString,
+  authorization: BudgetAuthorizationStateSchema,
+});
+export type BudgetAuthorizationEvent = z.infer<typeof BudgetAuthorizationEventSchema>;
+
 export const BudgetPausedEventSchema = z.object({
   type: z.literal('budget:paused'),
   ...runBase,
@@ -534,6 +553,7 @@ export const BudgetPausedEventSchema = z.object({
   spentMicrocents: nonNegativeInt,
   limitMicrocents: nonNegativeInt,
   gateId: nonEmptyString, // stable id of the budget gate; required by engine.resume(runId, gateId, decision)
+  allowanceQuote: AllowanceQuoteResultSchema.optional(),
 });
 
 /**
@@ -733,6 +753,7 @@ const RunEventUnionSchema = z.discriminatedUnion('type', [
   RunTimeoutEventSchema,
   BudgetWarningEventSchema,
   BudgetPausedEventSchema,
+  BudgetAuthorizationEventSchema,
   BudgetEstimateCommittedEventSchema,
   CostAttemptSettledEventSchema,
 ]);
@@ -1109,6 +1130,7 @@ export type SessionExportedEvent = z.infer<typeof SessionExportedEventSchema>;
 
 /** The decision applied to resume a human gate (`engine.resume(runId, gateId, decision)`). */
 export const GateDecisionSchema = z.object({
+  approvedAmountMicrocents: BudgetMicrocentsSchema.optional(),
   decision: GateDecisionValueSchema,
   decidedBy: nonEmptyString, // user id, or 'timeout' when a gate auto-resolves on timeout
   payload: z.unknown().optional(),

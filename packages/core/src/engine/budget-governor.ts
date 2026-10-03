@@ -145,15 +145,22 @@ export class BudgetPauseError extends Error {
 
   /**
    * Build a `GateRequest` the engine can park like a human gate. The engine assigns the stable
-   * `gateId` when it persists `budget:paused`.
+   * `gateId` when it acknowledges the durable `budget:authorization` pause.
    */
   toGateRequest(): GateRequest {
+    const quote = this.allowanceQuote;
+    const approval =
+      quote === undefined
+        ? 'No allowance was recorded; approving retries under the current budget checks. '
+        : quote.kind === 'quoted' && quote.quote.amount.kind === 'representable'
+          ? `Approve exactly ${quote.quote.amount.microcents} micro-cents for this dispatch; its calls remain budget-governed. `
+          : 'This quote cannot grant an allowance; rejection is available. ';
     return {
       gateType: 'approval',
       message:
         `This agent step's next LLM call would push the run past its budget cap of ${this.limitMicrocents} ` +
-        `micro-cents (already spent ${this.spentMicrocents}). Approve to let the step run to completion past ` +
-        `the cap; reject to fail the run with budget_exceeded.`,
+        `micro-cents (already spent ${this.spentMicrocents}). ${approval}` +
+        `Reject to fail the run with budget_exceeded.`,
       spentMicrocents: this.spentMicrocents,
       limitMicrocents: this.limitMicrocents,
       isBudgetGate: true,

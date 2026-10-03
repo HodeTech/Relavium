@@ -37,6 +37,7 @@ import {
   type MediaWritePort,
   nodeIdFromRunScope,
   type RunEvent,
+  RunSuspensionReducer,
   type RunLeaseInfo,
   type RunLeasePort,
   type TerminalOutbox,
@@ -335,18 +336,6 @@ const TERMINAL_TYPES: ReadonlySet<RunEvent['type']> = new Set([
   'run:failed',
   'run:cancelled',
 ]);
-const RESUMABLE_LAST_TYPES: ReadonlySet<RunEvent['type']> = new Set([
-  'human_gate:paused',
-  'run:paused',
-  'budget:paused',
-  // An async media-job park (1.AG Section D, ADR-0045 §2-3): `media_job:submitted` is persisted in its own
-  // turn BEFORE the later `run:paused`, so a crash in that window leaves it as the durable last event. The
-  // run is re-attachable — the checkpoint fold derives a `pendingMediaJobs` slot from it and
-  // `resumeFromCheckpoint` re-polls the opaque jobId (never re-submits). Reconciling it to `run:failed` would
-  // orphan a paid, still-generating provider LRO, so it must be left for the resume path — like a gate park.
-  'media_job:submitted',
-]);
-
 /** Format a counter into a syntactically-valid (RFC-4122-shaped) UUID — deterministic for tests. */
 function counterUuid(n: number): string {
   const hex = n.toString(16).padStart(12, '0');
@@ -479,11 +468,12 @@ export class InMemoryRunStore implements RunStore {
       if (events.some((e) => TERMINAL_TYPES.has(e.type))) {
         continue; // already settled
       }
-      const last = events.at(-1);
+      const suspension = new RunSuspensionReducer();
+      for (const event of events) suspension.apply(event);
       interrupted.push({
         runId,
         workflowId: started.workflowId,
-        resumable: last !== undefined && RESUMABLE_LAST_TYPES.has(last.type),
+        resumable: suspension.isResumable(runId),
         lastSequenceNumber: events.reduce((max, e) => Math.max(max, e.sequenceNumber), -1),
       });
     }

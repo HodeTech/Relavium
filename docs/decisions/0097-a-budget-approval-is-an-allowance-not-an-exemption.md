@@ -135,6 +135,13 @@
 > frozen amount/provenance, dispatch ownership and ADR-0100 authorization ordering stay unchanged.
 > Implementation is staged in W7. The historical body remains unchanged.
 
+> Implementation checkpoint 2026-10-03 — W7 Steps 9–10 implement the frozen quote, dispatch-owned
+> debit and acknowledged authorization protocol. The actual prepared first request and whole current
+> quote are checked before claim; every attempt retains governance. Checkpoint/restart restores neither
+> an allowance nor an invented agent output. Actual runner crash/race, sibling, deadline and effect
+> controls pass, as does the actual-predecessor downgrade check. Step 10's formal reviews and Step 11's
+> safe CLI confirmation/discovery remain pending. The historical implementation snippet below is preserved.
+
 ## Context
 
 Under `on_exceed: pause_for_approval`, approving a paused step removes the cap for that step:

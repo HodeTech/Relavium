@@ -1,6 +1,7 @@
 import { catalogModel } from './catalog/lookup.js';
 import { LlmConfigError } from './errors.js';
 import type { LlmRequest, ProviderId } from './types.js';
+import type { EndpointKind } from '@relavium/shared';
 
 /**
  * The request's output cap, held **at or below the model's own ceiling**
@@ -28,7 +29,7 @@ import type { LlmRequest, ProviderId } from './types.js';
  * decision — and it lands the other way, because the two failures are not symmetric. Withholding a field we
  * cannot justify is safe; lowering a number the user typed is not.
  */
-export type EndpointKind = 'official' | 'custom';
+export type { EndpointKind } from '@relavium/shared';
 
 /** Estimate-only fallback; never inserted into an uncapped wire request (ADR-0101). */
 export const DEFAULT_OUTPUT_TOKENS_ESTIMATE = 4096;

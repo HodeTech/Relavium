@@ -12,6 +12,13 @@
 > No general log-version system or attempt-level durable barrier is introduced. Implementation is staged
 > in `W7`; this ADR's decision and historical bodies are unchanged.
 
+> Implementation checkpoint 2026-10-03 — W7 Step 10 implements the ADR-0100 application above.
+> The [offline compatibility check](../../tools/budget-replay-compat/README.md) runs the immutable
+> actual predecessor's parser, SQLite replay read, CLI checkpointer and engine entry against current
+> engine logs. Twelve prefixes refuse before registration or egress and release the acquired lease;
+> tolerant display and two legacy positive controls pass. Full CI includes this check. Independent
+> committed-step reviews remain pending; this is not whole-W7 acceptance.
+
 ## Context
 
 [ADR-0074](0074-durable-conservative-budget-commitments.md) §5 made the stored-event read boundary **tolerant**: an unknown event `type` is dropped, a known type with an invalid body still fails loud. That decision was right, and it fixed a real doc↔code contradiction — `sse-event-schema.md` had always promised that adding a new event type is not a breaking change "provided consumers ignore unknown `type`s", while all three schema unions actually threw.

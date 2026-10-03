@@ -20,6 +20,9 @@
 
 export * from './bytes.js';
 export * from './canonical.js';
+export * from './deep-equal.js';
+export * from './budget-authorization.js';
+export * from './run-suspension.js';
 export * from './json-schema-compiler.js';
 export * from './ordering.js';
 export * from './terminal-safe.js';

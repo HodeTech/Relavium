@@ -3,6 +3,7 @@ import {
   LeaseFencedError,
   parseStoredRunEvent,
   RunEventSchema,
+  RunSuspensionReducer,
   type DurableWriteContext,
   type ExecutionMode,
   type RunEvent,
@@ -480,23 +481,85 @@ function readEventLog(
   const events: RunEvent[] = [];
   const skipped: SkippedRunEvent[] = [];
   for (const row of rows) {
-    let event: RunEvent | undefined;
-    try {
-      event = parseStoredRunEvent(JSON.parse(row.payloadJson));
-    } catch (cause) {
-      throw new CorruptRunEventError(runId, row.seq, row.eventType, cause);
-    }
+    const event = readStoredEventRow(runId, row);
     if (event === undefined) {
       skipped.push({ sequenceNumber: row.seq, type: row.eventType });
       continue;
     }
-    const mismatch = projectionMismatch(event, runId, row);
-    if (mismatch !== undefined) {
-      throw new CorruptRunEventError(runId, row.seq, row.eventType, new Error(mismatch));
-    }
     events.push(event);
   }
   return { events, skipped };
+}
+
+/** The shared row parser for ordinary log reads and ordered interruption discovery. */
+function readStoredEventRow(
+  runId: string,
+  row: { readonly seq: number; readonly eventType: string; readonly payloadJson: string },
+): RunEvent | undefined {
+  try {
+    const event = parseStoredRunEvent(JSON.parse(row.payloadJson));
+    if (event === undefined) return undefined;
+    const mismatch = projectionMismatch(event, runId, row);
+    if (mismatch !== undefined) throw new Error(mismatch);
+    return event;
+  } catch (cause) {
+    throw new CorruptRunEventError(runId, row.seq, row.eventType, cause);
+  }
+}
+
+/**
+ * One ordered join over active runs, without an N+1 read or an inArray(ids) parameter limit.
+ * All stored rows contribute to the high-water mark. Only non-streaming rows need parsing;
+ * unknown newer events retain the same tolerant discovery policy as the display reader.
+ * Strict replay still refuses every skipped row before execution.
+ */
+function readInterruptedRuns(db: Db): InterruptedRunInfo[] {
+  const rows = db
+    .select({
+      id: runs.id,
+      workflowId: runs.workflowId,
+      seq: runEvents.seq,
+      eventType: runEvents.eventType,
+      payloadJson: runEvents.payloadJson,
+    })
+    .from(runs)
+    .leftJoin(runEvents, eq(runEvents.runId, runs.id))
+    .where(and(inArray(runs.status, [...NON_TERMINAL_STATUSES]), isNull(runs.deletedAt)))
+    .orderBy(asc(runs.id), asc(runEvents.seq))
+    .all();
+  const interrupted = new Map<string, InterruptedRunInfo>();
+  const suspension = new RunSuspensionReducer();
+  for (const row of rows) {
+    const prior = interrupted.get(row.id);
+    interrupted.set(row.id, {
+      runId: row.id,
+      workflowId: row.workflowId,
+      resumable: false,
+      lastSequenceNumber: Math.max(prior?.lastSequenceNumber ?? 0, row.seq ?? 0),
+    });
+    if (
+      row.seq === null ||
+      row.eventType === null ||
+      row.payloadJson === null ||
+      STREAMING_EVENT_TYPES.includes(row.eventType)
+    )
+      continue;
+    const event = readStoredEventRow(row.id, {
+      seq: row.seq,
+      eventType: row.eventType,
+      payloadJson: row.payloadJson,
+    });
+    if (event === undefined) continue;
+    try {
+      suspension.apply(event);
+    } catch (cause) {
+      throw new CorruptRunEventError(row.id, row.seq, row.eventType, cause);
+    }
+  }
+  return [...interrupted.values()].map((row) => ({
+    ...row,
+    resumable: suspension.isResumable(row.runId),
+  }));
 }
 
 /**
@@ -832,6 +895,11 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         tx.update(runs).set({ status: 'paused', updatedAt: ts }).where(eq(runs.id, runId)).run();
         return;
       }
+      case 'budget:authorization': {
+        const status = event.authorization.state === 'paused' ? 'paused' : 'running';
+        tx.update(runs).set({ status, updatedAt: ts }).where(eq(runs.id, runId)).run();
+        return;
+      }
       case 'human_gate:resumed': {
         tx.update(runs).set({ status: 'running', updatedAt: ts }).where(eq(runs.id, runId)).run();
         return;
@@ -1163,33 +1231,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
     readWorkflowSnapshot: (runId: string) =>
       Promise.resolve(loadRunSnapshot(db, runId)?.workflowDefinitionSnapshot),
 
-    listInterruptedRuns: () => {
-      // One pass: a LEFT JOIN + coalesce(max(seq),0), grouped by the run PK. No second round-trip and no
-      // `inArray(ids)` (which would hit SQLite's host-parameter limit when many runs are interrupted) — this
-      // is a RunStore port method the desktop/cloud surfaces also implement, so it must scale.
-      const rows = db
-        .select({
-          id: runs.id,
-          workflowId: runs.workflowId,
-          status: runs.status,
-          lastSeq: sql<number>`coalesce(max(${runEvents.seq}), 0)`,
-        })
-        .from(runs)
-        .leftJoin(runEvents, eq(runEvents.runId, runs.id))
-        .where(and(inArray(runs.status, [...NON_TERMINAL_STATUSES]), isNull(runs.deletedAt)))
-        .groupBy(runs.id)
-        .all();
-      return Promise.resolve(
-        rows.map(
-          (row): InterruptedRunInfo => ({
-            runId: row.id,
-            workflowId: row.workflowId,
-            resumable: row.status === 'paused',
-            lastSequenceNumber: row.lastSeq,
-          }),
-        ),
-      );
-    },
+    listInterruptedRuns: () => Promise.resolve(readInterruptedRuns(db)),
 
     listRuns: reader.listRuns,
     loadRun: reader.loadRun,

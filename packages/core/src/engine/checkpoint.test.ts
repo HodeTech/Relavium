@@ -352,7 +352,9 @@ describe('reconstructCheckpointState', () => {
     ]);
     expect(state?.runStatus).toBe('paused');
     expect(state?.nodeStates.get('n')).toEqual({ status: 'paused' });
-    expect(state?.pendingGates).toEqual([{ gateId: 'g1', nodeId: 'n', isBudgetGate: true }]);
+    expect(state?.pendingGates).toEqual([
+      { gateId: 'g1', nodeId: 'n', isBudgetGate: true, allowance: { kind: 'legacy_no_allowance' } },
+    ]);
     // H2: the durable budget:paused.spentMicrocents restores the running cost (cost:updated is streamed,
     // not persisted), so the re-seeded governor blocks correctly after resume.
     expect(state?.cumulativeCostMicrocents).toBe(900);
@@ -388,6 +390,7 @@ describe('reconstructCheckpointState', () => {
         gateId: 'g1',
         nodeId: 'n',
         isBudgetGate: true,
+        allowance: { kind: 'legacy_no_allowance' },
         expiresAt: '2026-01-01T00:00:01.000Z',
         timeoutAction: 'reject',
         timeoutMs: 1000,
