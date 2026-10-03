@@ -3121,3 +3121,21 @@ sequential coverage pass (321 suites, 7,398 tests, 11 existing skips; line/branc
 95.87%/92.58%/96.72%). **Fresh full-Step-10 round 7 precedes closure.** Step 11 follows that
 closure; live Steps 7–8 and all six register items remain open. No verified late-completion defect
 is deferred, and no new deadline, clock or lease policy is chosen.
+
+
+**Step 10, review round 7 — 2026-10-03.** Both fresh reviewers covered the complete 70-file
+step with explicit depth ledgers and sealed evidence verified entry by entry. One Medium inherited
+retention race was reproduced independently: a late ordinary-gate CAS completion recorded media
+references before SQLite refused its old event fence, after a distinct successor had completed.
+A later other-run GC pass recovers these references; no read-authority bypass, extra spend or
+successor terminal corruption was demonstrated. Produced handles now follow append acknowledgement;
+an owned terminal refused for another store fault retains its media before outbox handoff.
+Seven permanent controls cover two file-backed native SQLite clients/real CAS and separate
+acknowledged, uncertain-outbox and typed fenced-terminal retention paths. Causal/exact-restoration
+and uncertain-terminal branch-removal controls distinguish the repair. No clock, TTL, host port,
+financial acknowledgement or publication policy changed; no residual is deferred.
+[Full review record](../../reviews/2026-10-03T16-54-28-w7-step-10-round-7-review.md). Full CI and sequential coverage exit 0
+(323 files, 7,405 tests, 11 existing skips; line/branch/function coverage
+95.88%/92.58%/96.72%). **Fresh full-Step-10 round 8 precedes closure.** Step 11 follows that
+closure; its external process prototype is not permanent acceptance. Live Steps 7–8 and all
+six register items remain open.

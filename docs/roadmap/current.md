@@ -165,6 +165,11 @@ merged too (PR #85, 2026-08-28).
 > Core/actual SQLite-CAS regressions prevent late subscriber success and renewed run references;
 > guard removal/restoration confirms the failure. Full CI/coverage pass (321 suites, 7,398 tests,
 > 11 existing skips). Fresh full-Step-10 round 7 precedes closure.
+> [Step 10 round 7](../reviews/2026-10-03T16-54-28-w7-step-10-round-7-review.md) corrects inherited media references written before a stale
+> event fence is refused. Produced handles now follow append acknowledgement; owned uncertain-terminal
+> media remains retained for the outbox. Seven permanent successor/terminal controls and independently
+> verified sealed evidence pass, with full CI and sequential coverage (323 files, 7,405 tests,
+> 11 existing skips). Fresh full-Step-10 round 8 precedes closure.
 > The safe CLI surface follows in Step 11.
 > Live Step 7 captures, and therefore Step 8, remain pending.
 > Step 1 repaired collection without deleting private artifacts and provides the

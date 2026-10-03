@@ -152,6 +152,10 @@ added.
   inherited ordinary gate media completion after cancel/deadline/fence corrected; twelve permanent
   regressions and verified sealed evidence; fresh full-step round 7 pending.
 
+- [2026-10-03 — W7 step 10, round 7](2026-10-03T16-54-28-w7-step-10-round-7-review.md):
+  inherited stale media retention before fence acknowledgement corrected; seven permanent controls,
+  verified sealed evidence and green CI/coverage; fresh full-step round 8 pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and
