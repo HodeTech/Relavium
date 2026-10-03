@@ -151,6 +151,10 @@ merged too (PR #85, 2026-08-28).
 > genuine output and unrelated pending work. Eighteen permanent regressions and 300 native selected
 > cases pass. Full CI/coverage pass (320 suites, 7,358 tests, 11 existing skips); fresh full-Step-10
 > round 4 precedes closure. All six register items remain open.
+> [Step 10 round 4](../reviews/2026-10-03T13-33-00-w7-step-10-round-4-review.md) corrects lease cleanup rejection replacing
+> primary typed refusals or an already-terminal no-op. Eighteen native regressions cover all six
+> guards and successor takeover; full CI/coverage pass (320 suites, 7,376 tests, 11 existing skips).
+> Fresh whole-Step-10 round 5 precedes closure; no residual is deferred.
 > The safe CLI surface follows in Step 11.
 > Live Step 7 captures, and therefore Step 8, remain pending.
 > Step 1 repaired collection without deleting private artifacts and provides the

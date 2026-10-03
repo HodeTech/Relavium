@@ -3073,3 +3073,17 @@ before terminal delivery. The [round 3 record](../../reviews/2026-10-03T12-39-00
 records complete sealed provenance, setup corrections and limits. Full CI and sequential coverage
 pass (320 suites, 7,358 tests, 11 existing skips; line/branch/function 95.83%/92.54%/96.67%).
 **Fresh full-Step-10 round 4 precedes closure.** Step 11 follows that closure; live Steps 7–8 and all six register items stay open.
+
+
+**Step 10, review round 4 — 2026-10-03.** Both fresh reviewers covered the complete 64-file
+step. One Medium finding group was independently reproduced and corrected: rejecting direct
+lease cleanup replaced the new schema refusal and five inherited primary outcomes. All six
+now use the existing exact-fence best-effort helper; cleanup faults retain the bounded TTL
+without replacing a typed refusal/no-op or releasing a successor. Eighteen permanent native
+regressions cover success, rejection and takeover for every guard. The parent's original
+96-definition run fails twelve fault cases; its owned correction passes all 96 and exact
+restoration returns the twelve failures. The [round 4 record](../../reviews/2026-10-03T13-33-00-w7-step-10-round-4-review.md)
+records full sealed provenance, independent counts, setup corrections and limits. Full CI
+and sequential coverage pass (320 suites, 7,376 tests, 11 existing skips; line/branch/function
+95.85%/92.55%/96.72%). **Fresh full-Step-10 round 5 precedes closure.** Step 11 follows that
+closure; live Steps 7–8 and all six register items stay open. No residual is deferred.

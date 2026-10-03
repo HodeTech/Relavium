@@ -140,6 +140,10 @@ added.
 - [2026-10-03 — W7 step 10, round 3](2026-10-03T12-39-00-w7-step-10-round-3-review.md):
   authority-witnessed optional-amount duplicates corrected with strict money controls; stale comments and terminal cleanup assertion corrected; fresh round 4 pending.
 
+- [2026-10-03 — W7 step 10, round 4](2026-10-03T13-33-00-w7-step-10-round-4-review.md):
+  primary resume outcomes survive lease cleanup rejection across six guards; eighteen permanent
+  regressions and green CI/coverage; fresh full-step round 5 pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and
