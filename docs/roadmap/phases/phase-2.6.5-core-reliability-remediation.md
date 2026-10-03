@@ -3103,3 +3103,21 @@ limit; no new lease policy is chosen. Full CI and sequential coverage pass (320 
 7,386 tests, 11 existing skips; line/branch/function 95.87%/92.56%/96.72%). **Fresh full-Step-10
 round 6 precedes closure.** Step 11 follows that closure; live Steps 7–8 and all six register
 items remain open. No verified handoff defect is deferred.
+
+
+**Step 10, review round 6 — 2026-10-03.** Both fresh reviewers covered the complete 67-file
+step with sealed source/dependency provenance and separate ledgers. One High inherited failure
+was independently reproduced with the actual engine, CAS and native SQLite media-reference port:
+a held ordinary decision pin could complete after cancel/run-timeout/node-timeout/fenced closure,
+publish a late success to persistent subscribers and reinsert a run media reference. The durable
+log correctly refused its late row. The continuation now checks the run and vertex after the pin,
+before completion or publication. Six Core and six actual SQLite/CAS regressions cover four cutoffs,
+success and late rejection; removing the guard restores eight failures and exact restoration passes
+163 native leaves. Eight additional finite parent publication controls pass. The
+[round 6 record](../../reviews/2026-10-03T15-42-00-w7-step-10-round-6-review.md) separates actual DB retention from
+reference run leases, inherited-source proof from current installed dependency bytes, setup mistakes
+from product failures, and unreferenced CAS completion from retained run authority. Full CI and
+sequential coverage pass (321 suites, 7,398 tests, 11 existing skips; line/branch/function
+95.87%/92.58%/96.72%). **Fresh full-Step-10 round 7 precedes closure.** Step 11 follows that
+closure; live Steps 7–8 and all six register items remain open. No verified late-completion defect
+is deferred, and no new deadline, clock or lease policy is chosen.

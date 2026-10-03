@@ -148,6 +148,10 @@ added.
   inherited parallel pause/lease handoff and immediate human-decision preparation corrected;
   ten permanent regressions, scoped async ACK limits and green CI/coverage; fresh full-step round 6 pending.
 
+- [2026-10-03 — W7 step 10, round 6](2026-10-03T15-42-00-w7-step-10-round-6-review.md):
+  inherited ordinary gate media completion after cancel/deadline/fence corrected; twelve permanent
+  regressions and verified sealed evidence; fresh full-step round 7 pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

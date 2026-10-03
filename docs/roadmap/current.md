@@ -160,6 +160,11 @@ merged too (PR #85, 2026-08-28).
 > actual SQLite fresh-owner resume and immediate human-decision media preparation. Async final-ACK
 > limits are explicit; no new clock/timeout policy is chosen. Full CI/coverage pass (320 suites,
 > 7,386 tests, 11 existing skips). Fresh whole-Step-10 round 6 precedes closure.
+> [Step 10 round 6](../reviews/2026-10-03T15-42-00-w7-step-10-round-6-review.md) corrects inherited ordinary
+> decision media completion after cancellation, deadline or fenced closure. Twelve permanent
+> Core/actual SQLite-CAS regressions prevent late subscriber success and renewed run references;
+> guard removal/restoration confirms the failure. Full CI/coverage pass (321 suites, 7,398 tests,
+> 11 existing skips). Fresh full-Step-10 round 7 precedes closure.
 > The safe CLI surface follows in Step 11.
 > Live Step 7 captures, and therefore Step 8, remain pending.
 > Step 1 repaired collection without deleting private artifacts and provides the
