@@ -16,6 +16,7 @@ import { WorkflowEngine } from './engine.js';
 import {
   createInMemoryEffectJournalStore,
   createInMemoryHost,
+  createInMemoryRunLeases,
   InMemoryRunStore,
   type TimerKind,
 } from './execution-host.js';
@@ -373,7 +374,251 @@ async function parallelParkedRun(options: Parameters<typeof startRun>[0] = {}) {
   return run;
 }
 
+async function fundedMediaPrefix() {
+  const parked = deferred<void>();
+  let pauses = 0;
+  const run = await parkedRun({
+    mediaJob: true,
+    onEvent: (event) => {
+      if (event.type === 'run:paused' && ++pauses === 2) parked.resolve();
+    },
+  });
+  await run.engine.resume(run.handle.runId, run.authority.gateId, {
+    decision: 'approved',
+    decidedBy: 'offline',
+    approvedAmountMicrocents: run.amount,
+  });
+  await parked.promise;
+  const prefix = [...run.store.eventsFor(run.handle.runId)];
+  expect(reconstructCheckpointState(prefix)?.pendingMediaJobs).toMatchObject([
+    { acceptedCostMicrocents: 2000 },
+  ]);
+  expect(run.keyReads()).toBe(1);
+  expect(run.polls()).toBe(0);
+  run.handle.cancel();
+  await run.drained;
+  return { run, prefix };
+}
+
 describe('durable budget authorization through the actual runner', () => {
+  it.each([
+    ['media_only', 'takeover'],
+    ['media_only', 'expired_same_fence'],
+    ['media_only', 'renewed'],
+    ['resolved_budget_gate', 'takeover'],
+    ['resolved_budget_gate', 'expired_same_fence'],
+    ['resolved_budget_gate', 'renewed'],
+  ] as const)(
+    '%s validates the exact fence after slow passive admission (%s)',
+    async (kind, ownership) => {
+      const { run, prefix } = await fundedMediaPrefix();
+      let now = 1000;
+      const leases = createInMemoryRunLeases(() => now);
+      const store = new InMemoryRunStore();
+      for (const event of prefix) await store.persistEvent(event);
+      const host = createInMemoryHost({ store, runLeases: leases });
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      const engine = new WorkflowEngine({
+        host,
+        executor: run.executor,
+        resolvePrice: new Map([[MODEL, run.price]]),
+        effectResume: {
+          unresolvedForRun: async () => {
+            entered.resolve();
+            await release.promise;
+            return [];
+          },
+        },
+      });
+      const resumed = engine.resumeFromCheckpoint({
+        runId: run.handle.runId,
+        workflow: run.workflow,
+        ...(kind === 'media_only'
+          ? {}
+          : {
+              gateId: run.authority.gateId,
+              decision: { decision: 'rejected' as const, decidedBy: 'duplicate' },
+            }),
+      });
+      await entered.promise;
+      const original = await leases.read(run.handle.runId);
+      if (original === undefined) throw new Error('missing admission fence');
+      expectUnknownRun(engine, run.handle.runId);
+      expect(host.armedCount()).toBe(0);
+      expect(host.livenessCount()).toBe(0);
+      expect(host.deadlineCount()).toBe(0);
+      now += 40_000;
+      host.fireLiveness();
+      if (ownership === 'renewed')
+        expect(await leases.heartbeat(run.handle.runId, original, 60_000)).toBe(true);
+      now += 40_000;
+      const successor =
+        ownership === 'expired_same_fence'
+          ? undefined
+          : await leases.acquire(run.handle.runId, 'successor', 60_000);
+      if (ownership === 'takeover') expect(successor).toBeDefined();
+      else expect(successor).toBeUndefined();
+      const successorLease = await leases.read(run.handle.runId);
+      release.resolve();
+      if (successor !== undefined) {
+        await expect(resumed).rejects.toMatchObject({ code: 'run_owned_elsewhere' });
+        expectUnknownRun(engine, run.handle.runId);
+        host.fireTimers();
+        host.fireLiveness();
+        expect(store.eventsFor(run.handle.runId)).toEqual(prefix);
+        expect(run.keyReads()).toBe(1);
+        expect(run.polls()).toBe(0);
+        expect(await leases.read(run.handle.runId)).toEqual(successorLease);
+        await leases.release(run.handle.runId, successor);
+      } else {
+        const handle = await resumed;
+        expect(await leases.read(run.handle.runId)).toEqual({
+          ...original,
+          expiresAt: now + 60_000,
+        });
+        const events: RunEvent[] = [];
+        const drained = (async () => {
+          for await (const event of handle.events) events.push(event);
+        })();
+        host.fireTimers();
+        await drained;
+        expect(events.at(-1)).toMatchObject({
+          type: 'run:completed',
+          totalCostMicrocents: 2000,
+        });
+        expect(run.keyReads()).toBe(2);
+        expect(run.polls()).toBe(1);
+        let cleanupWaits = 0;
+        while ((await leases.read(run.handle.runId)) !== undefined)
+          if (++cleanupWaits > 1000) throw new Error('terminal run retained its lease');
+      }
+      expect(run.mediaRequests).toHaveLength(1);
+      expect(run.requests).toEqual([]);
+      expect(host.armedCount()).toBe(0);
+      expect(host.livenessCount()).toBe(0);
+      expect(host.deadlineCount()).toBe(0);
+      expect(await leases.read(run.handle.runId)).toBeUndefined();
+    },
+  );
+
+  it.each([false, true])(
+    'slow failed effect admission checks ownership before settlement (takeover %s)',
+    async (takeover) => {
+      const { run, prefix } = await fundedMediaPrefix();
+      let now = 1000;
+      const leases = createInMemoryRunLeases(() => now);
+      const store = new InMemoryRunStore();
+      for (const event of prefix) await store.persistEvent(event);
+      const host = createInMemoryHost({ store, runLeases: leases });
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      const engine = new WorkflowEngine({
+        host,
+        executor: run.executor,
+        resolvePrice: new Map([[MODEL, run.price]]),
+        effectResume: {
+          unresolvedForRun: async () => {
+            entered.resolve();
+            await release.promise;
+            throw new Error('PRIVATE effect storage path');
+          },
+        },
+      });
+      const resumed = engine.resumeFromCheckpoint({
+        runId: run.handle.runId,
+        workflow: run.workflow,
+      });
+      await entered.promise;
+      now += 80_000;
+      const successor = takeover
+        ? await leases.acquire(run.handle.runId, 'successor', 60_000)
+        : undefined;
+      const successorLease = await leases.read(run.handle.runId);
+      release.resolve();
+      if (takeover) {
+        expect(successor).toBeDefined();
+        await expect(resumed).rejects.toMatchObject({ code: 'run_owned_elsewhere' });
+        expectUnknownRun(engine, run.handle.runId);
+        expect(store.eventsFor(run.handle.runId)).toEqual(prefix);
+        expect(await leases.read(run.handle.runId)).toEqual(successorLease);
+        if (successor !== undefined) await leases.release(run.handle.runId, successor);
+      } else {
+        const handle = await resumed;
+        const events: RunEvent[] = [];
+        for await (const event of handle.events) events.push(event);
+        expect(events.at(-1)).toMatchObject({
+          type: 'run:failed',
+          error: { code: 'effect_needs_attention' },
+          cumulativeCostMicrocents: 2000,
+        });
+        expect(JSON.stringify(events)).not.toContain('PRIVATE');
+      }
+      expect(run.keyReads()).toBe(1);
+      expect(run.polls()).toBe(0);
+      expect(run.mediaRequests).toHaveLength(1);
+      expect(host.armedCount()).toBe(0);
+      expect(host.livenessCount()).toBe(0);
+      expect(host.deadlineCount()).toBe(0);
+      expect(await leases.read(run.handle.runId)).toBeUndefined();
+    },
+  );
+
+  it.each([false, true])(
+    'an admission heartbeat fault stays private and never activates work (release fault %s)',
+    async (releaseFault) => {
+      const run = await parkedRun();
+      const { host, store } = await hostFromLog(run.store.eventsFor(run.handle.runId));
+      run.handle.cancel();
+      await run.drained;
+      const prefix = [...store.eventsFor(run.handle.runId)];
+      const engine = new WorkflowEngine({
+        host: {
+          ...host,
+          runLeases: {
+            ...host.runLeases,
+            heartbeat: () => Promise.reject(new Error('PRIVATE lease storage path')),
+            release: (runId, fence) =>
+              releaseFault
+                ? Promise.reject(new Error('PRIVATE release storage path'))
+                : host.runLeases.release(runId, fence),
+          },
+        },
+        executor: run.executor,
+        resolvePrice: new Map([[MODEL, run.price]]),
+      });
+      let refusal: unknown;
+      try {
+        await engine.resumeFromCheckpoint({
+          runId: run.handle.runId,
+          workflow: run.workflow,
+          gateId: run.authority.gateId,
+          decision: {
+            decision: 'approved',
+            decidedBy: 'offline',
+            approvedAmountMicrocents: run.amount,
+          },
+        });
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toMatchObject({ code: 'run_owned_elsewhere' });
+      expect(refusal instanceof Error && refusal.message).not.toContain('PRIVATE');
+      expectUnknownRun(engine, run.handle.runId);
+      expect(store.eventsFor(run.handle.runId)).toEqual(prefix);
+      expect(run.keyReads()).toBe(0);
+      expect(run.requests).toEqual([]);
+      expect(host.armedCount()).toBe(0);
+      expect(host.livenessCount()).toBe(0);
+      expect(host.deadlineCount()).toBe(0);
+      const held = await host.runLeases.read(run.handle.runId);
+      if (releaseFault) {
+        expect(held).toBeDefined(); // cleanup failure leaves the original bounded TTL, never work
+        if (held !== undefined) await host.runLeases.release(run.handle.runId, held);
+      } else expect(held).toBeUndefined();
+    },
+  );
+
   it.each([
     ['agent', 'budget:authorization'],
     ['agent', 'budget:paused'],

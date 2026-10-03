@@ -5092,7 +5092,33 @@ export class WorkflowEngine {
         }),
     );
     try {
-      if (!(await execution.prepareResumeAdmission())) {
+      const admitted = await execution.prepareResumeAdmission();
+      // Passive admission can outlive the lease TTL. Renew the EXACT acquired fence after every
+      // preparation/context/effect await, before registration, checkpoint activation or any key/poll.
+      // A second acquire would mint a generation and could replace a successor's claim. Heartbeat
+      // instead renews the same owner/generation atomically, including an expired but untaken claim.
+      // Refused admission also needs this proof before its ordered writer settles the run.
+      let ownershipConfirmed: boolean;
+      try {
+        ownershipConfirmed = await this.#host.runLeases.heartbeat(
+          input.runId,
+          fence,
+          RUN_LEASE_TTL_MS,
+        );
+      } catch (cause) {
+        throw new EngineStateError(
+          'run_owned_elsewhere',
+          'run ownership could not be confirmed; retry the resume',
+          { runId: input.runId, cause },
+        );
+      }
+      if (!ownershipConfirmed)
+        throw new EngineStateError(
+          'run_owned_elsewhere',
+          'run ownership changed during resume preparation; retry the resume',
+          { runId: input.runId },
+        );
+      if (!admitted) {
         execution.adoptLease(fence, false);
         await execution.refuseResume();
         this.#runs.set(input.runId, execution); // retain the already-closed outcome, never dispatch it
@@ -5123,7 +5149,9 @@ export class WorkflowEngine {
       // provider for a run the caller saw rejected (and a natural retry could double-attach the same jobId).
       execution.abandon();
       this.#runs.delete(input.runId);
-      await this.#host.runLeases.release(input.runId, fence);
+      // A cleanup I/O fault must not replace the safe admission refusal with raw host content.
+      // This exact-fence release cannot delete a successor; failure leaves only our original TTL.
+      await this.#releaseReconcileClaim(input.runId, fence);
       throw error;
     }
     // **No release here — the resumed execution owns its own lease lifetime now.**

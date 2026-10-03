@@ -155,3 +155,23 @@ The CLI maps a lease loss to **exit code 6**, distinct from the blanket `EngineS
 - **A fenced loser reports `uncertain` and writes nothing**, so a user watching that process sees the run stop with no terminal of its own. That is honest — the run's real outcome is in the durable log the new owner is writing — but it is a new thing for a surface to explain, and the CLI's exit code 6 is what makes it actionable rather than merely puzzling.
 - **The two-process race cannot be proven in one Node process.** `better-sqlite3` is synchronous, so in-process concurrency is serialized by construction. The regression follows `migrate-lock.e2e.test.ts`: spawn real children, and be **visibly skipped** rather than silently passing when the build output is absent.
 - **The observer handle is deferred**, with its trigger named in §4. Until then a loser is refused rather than able to watch.
+
+## Implementation correction — 2026-10-03
+
+W7 Step 10 moved checkpoint construction and context/effect admission ahead of heartbeat
+activation. An independent review and parent causal replay found that this passive wait
+could exceed the TTL: an old media-only resume or resolved-gate kick then read a credential
+and polled once after a successor acquired the run. Its later durable append was fenced,
+but the authenticated work had already occurred. The pre-Step-10 control renewed during
+preflight and did not expose this window.
+
+Resume now renews the exact acquired owner/generation through the existing lease port
+after all passive awaits and before registration, adoption or checkpoint activation.
+The refused-admission settlement path takes the same barrier. Renewal of an expired,
+untaken claim retains its generation; takeover or an unconfirmable claim produces a safe,
+transient `run_owned_elsewhere` refusal. Cleanup releases only that fence; a cleanup I/O
+fault leaves the bounded TTL and cannot replace the safe refusal with private host text.
+Ten actual-runner controls cover both kicks, takeover, expiry without takeover, explicit
+renewal, slow failed-effect admission and heartbeat/release faults. Fresh corrective review
+and whole-Step-10 acceptance remain required. This repairs §4/§5's implementation; it adds
+no observer, owner type, lease clock, dependency or schema migration.

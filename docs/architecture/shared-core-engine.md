@@ -253,7 +253,11 @@ This holds within a process and across processes once the durable decision is re
 acquires its cross-process lease **before** reading the checkpoint; a competing live owner is refused,
 and ordered writes carry that owner/generation fence ([ADR-0079](../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md)).
 An in-flight passive resume is also excluded from the same engine's reconciliation claims. This closes
-the concurrent read/claim window on the current substrate.
+the concurrent read/claim window on the current substrate. After all passive context/effect/request
+awaits, the engine atomically renews the exact acquired fence before registration or activation,
+including a refused admission's settlement. If ownership changed or cannot be confirmed, it refuses
+with transient `run_owned_elsewhere`, abandons passive state and releases only its original claim.
+The canonical resume contract is in [agent-runner.md](../reference/shared-core/agent-runner.md).
 
 ## Retry and fallback
 

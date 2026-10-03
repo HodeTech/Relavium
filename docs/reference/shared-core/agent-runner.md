@@ -190,7 +190,12 @@ Exhaustion is fatal `budget_exceeded`; it neither retries nor creates a fresh bu
 
 Cross-process amount/kind/request validation occurs before execution registration. Constructor seeding
 is passive; context and effect-journal admission precede timers, media polling and dispatch. After an
-asynchronous preflight, the engine rechecks the whole current quote. A supplied target decision is
+asynchronous preflight, the engine rechecks the whole current quote. It then atomically renews
+the exact acquired owner/generation fence before any registration or activation. This check also
+precedes a refused admission's settlement. A takeover or unconfirmable lease causes a
+transient, safe `run_owned_elsewhere` refusal before registration, timers, key resolution or
+polling; cleanup releases only the original fence. An expired claim with no successor renews
+without minting another generation. A supplied target decision is
 applied before its timer could be armed; surviving gates keep their absolute remaining deadlines.
 Effect refusal retains priority over authorization. A reconstructed approval does not restore a
 token or pretend the agent completed: an eligible kick re-runs under the current budget checks.

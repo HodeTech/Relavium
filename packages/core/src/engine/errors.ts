@@ -25,7 +25,7 @@ export type EngineStateErrorCode =
   | 'invalid_decision' // the supplied `GateDecision` failed schema validation at the boundary
   | 'pending_gate_requires_decision' // a media-only `resumeFromCheckpoint` hit a run also parked on a gate (pass gateId + decision)
   | 'workflow_mismatch' // `resumeFromCheckpoint` was handed a workflow that is not the one the run started on
-  | 'run_owned_elsewhere' // ANOTHER PROCESS holds a live lease on this run (ADR-0079 §4) — transient; retry later
+  | 'run_owned_elsewhere' // another owner holds it, or resume cannot confirm its acquired claim (ADR-0079 §4/§5); transient
   // ADR-0083 §1: the caller's inputs did not satisfy the authored contract. A PERMANENT invocation fault —
   // the same call will fail identically forever — and it happens before a run exists, so there is no runId
   // to report, no `run:started`, and nothing in the store.
@@ -45,7 +45,8 @@ export type EngineStateErrorCode =
  * The codes that are TRANSIENT — worth retrying unchanged — as opposed to permanent invocation faults.
  *
  * Only one today, and the distinction is the reason it exists: `run_owned_elsewhere` means "somebody else is
- * running this right now", which resolves on its own when they finish or their lease expires. Every other
+ * running this right now", or a passive resume could not confirm its claim after an I/O fault. Both can
+ * resolve when ownership is available or the lease port recovers. Every other
  * code is a mistake in the call itself (an unknown run, the wrong workflow, a run that already settled) and
  * will fail identically forever. A surface uses this to tell a caller "try again shortly" from "never call
  * this again" — the CLI maps it to its own exit code (ADR-0079 §7).
