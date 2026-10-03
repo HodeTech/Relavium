@@ -292,6 +292,13 @@ export interface GateDecision {
 
 Timeout behavior (`timeout_action` on the node) maps to `decidedBy: 'timeout'` when a gate auto-resolves. The `timeout_action: escalate` value is **reserved** in v1.0 (a timeout resolves only as `approve` or `reject`); see [workflow-yaml-spec.md](workflow-yaml-spec.md#human_gate-node).
 
+Ordinary gate payload pinning is asynchronous. The claimed gate stays pending during preparation;
+after the pin, the engine rechecks the run's settlement/cancellation/abort state and the vertex's
+paused state before completing it or publishing the decision. A pin finishing after cancellation,
+a deadline or fenced closure produces no late decision event for persistent subscribers and no
+new run-scoped media reference. An uncancellable CAS write may still finish with an unreferenced
+blob; storage completion is distinct from retained run authority ([ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md)).
+
 ### Durable budget authorization
 
 `budget:authorization` is a **run-only, durable** event with required `runId`, `nodeId`, `gateId`

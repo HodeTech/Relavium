@@ -558,3 +558,20 @@ These land with the implementation, not after it:
 - **The fence adds a check to five hot-path sites and a per-vertex map to the run.** The cost is a
   comparison and one small map; the alternative is four unguarded mutation points, one of which writes to
   the user's filesystem.
+
+
+## Implementation correction — 2026-10-03, ordinary gate media completion
+
+W7 Step 10 review confirms that §5's abandoned-work completion fences also apply to an ordinary
+human decision's asynchronous payload pin. Previously a held CAS write could finish after cancellation,
+run/node timeout or fenced closure, then mark the gate complete, publish a late decision to persistent
+subscribers and insert a run media reference after its terminal sweep. The durable event store correctly
+refused the late row, so local lifecycle and retention still disagreed with durable truth.
+
+The ordinary resume continuation now checks settlement, cancellation, the run abort signal and the
+vertex's paused state immediately after the pin, before mutating output or publishing its event.
+Normal completion and late pin rejection keep their existing outcomes. Native Core controls and
+actual SQLite media-reference/CAS controls cover all four cutoffs; the reference host supplies run
+logs and leases in the latter, rather than a new SQLite lease proof. The uncancellable CAS write can
+still finish with an unreferenced object. No new deadline, clock, lease policy or store-port contract
+is introduced. The canonical details remain in the [event contract](../reference/contracts/sse-event-schema.md#human-gate-suspendresume-across-the-stream).

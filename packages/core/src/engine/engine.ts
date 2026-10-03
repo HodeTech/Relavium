@@ -1753,6 +1753,16 @@ class RunExecution {
       this.#schedule();
       return;
     }
+    // Host pinning may finish after cancellation, a deadline or ownership loss closed the run.
+    // The claimed decision must not revive its vertex, retain media or publish a late success.
+    if (
+      this.#settled ||
+      this.#cancelling ||
+      this.#abort.signal.aborted ||
+      this.#states.get(gate.vertexId)?.status !== 'paused'
+    ) {
+      return;
+    }
     this.#pendingGates.delete(gateId);
     const state = this.#states.get(gate.vertexId);
     if (state !== undefined) {
