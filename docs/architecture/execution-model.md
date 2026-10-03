@@ -155,6 +155,9 @@ resume. During restart admission, the supplied target decision precedes timer co
 surviving gates re-arm at their absolute remaining time. The authoritative protocol is in
 [sse-event-schema.md](../reference/contracts/sse-event-schema.md#durable-budget-authorization),
 and preparation/debit behaviour in [agent-runner.md](../reference/shared-core/agent-runner.md#preparing-and-resuming-a-budget-dispatch).
+The CLI offers exact-amount inline confirmation and the out-of-band
+[`budget resume` command](../reference/cli/commands.md#relavium-budget-resume), with strict authority-based
+discovery and the existing secret/MCP resume obligations.
 
 The gate event/decision shapes are part of the
 [SSE event schema](../reference/contracts/sse-event-schema.md) and the

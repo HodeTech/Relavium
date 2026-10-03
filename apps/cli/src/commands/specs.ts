@@ -12,7 +12,7 @@ import { executeCommand } from './dispatch.js';
  * `commander` adapter: it parses argv into a uniform {@link import('./dispatch.js').CommandInput} and calls the
  * shared {@link executeCommand} table ([dispatch.ts](dispatch.ts), [ADR-0056](../../../../docs/decisions/0056-cli-in-app-slash-command-system-and-manifest.md)),
  * so the per-command dependency wiring lives once and the `commander` / palette / slash surfaces can never
- * diverge. The remaining `STUB_COMMANDS` are `init` (a later workstream) and `budget` (a tracked follow-up) —
+ * diverge. The remaining `STUB_COMMANDS` contains `init` (a later workstream) —
  * each shows the documented "not available yet (lands in …)" message until it lands.
  */
 
@@ -31,11 +31,6 @@ interface StubSpec {
 
 export const STUB_COMMANDS: readonly StubSpec[] = [
   {
-    name: 'budget',
-    summary: 'Budget commands (resume a budget-paused run, etc.) — not yet available.',
-    landsIn: 'a tracked follow-up',
-  },
-  {
     name: 'init',
     summary: 'Initialize a .relavium/ directory in the current project.',
     landsIn: 'a later workstream',
@@ -53,6 +48,7 @@ export function registerCommands(program: Command, ctx?: CommandContext): void {
   registerImport(program, ctx);
   registerAgent(program, ctx);
   registerGate(program, ctx);
+  registerBudget(program, ctx);
   registerModels(program, ctx);
   registerProvider(program, ctx);
   registerList(program, ctx);
@@ -328,7 +324,11 @@ function registerAgent(program: Command, ctx?: CommandContext): void {
   run.action(
     async (
       agentRef: string,
-      opts: { input?: readonly string[]; fixture?: string; allowMcpStdio?: readonly string[] },
+      opts: {
+        input?: readonly string[];
+        fixture?: string;
+        allowMcpStdio?: readonly string[];
+      },
     ) => {
       ctx.result.exitCode = await executeCommand(
         'agent.run',
@@ -371,6 +371,10 @@ function registerGate(program: Command, ctx?: CommandContext): void {
     .option(
       '--secret-stdin',
       "read the run's secret inputs from stdin as name=value lines (never passed as arguments)",
+    )
+    .option(
+      '--allow-mcp-stdio <digest...>',
+      'authorize a stdio MCP server by its consent digest for this invocation (repeatable)',
     );
   const gateList = gate
     .command('list [runId]')
@@ -398,6 +402,8 @@ function registerGate(program: Command, ctx?: CommandContext): void {
         comment?: string;
         input?: string;
         gate?: string;
+        secretStdin?: boolean;
+        allowMcpStdio?: readonly string[];
       },
     ) => {
       ctx.result.exitCode = await executeCommand(
@@ -410,6 +416,8 @@ function registerGate(program: Command, ctx?: CommandContext): void {
             comment: opts.comment,
             input: opts.input,
             gate: opts.gate,
+            secretStdin: opts.secretStdin,
+            allowMcpStdio: opts.allowMcpStdio,
           },
         },
         ctx,
@@ -424,6 +432,63 @@ function registerGate(program: Command, ctx?: CommandContext): void {
       ctx,
     );
   });
+}
+
+function registerBudget(program: Command, ctx?: CommandContext): void {
+  const budget = program.command('budget').description('Resolve recorded budget authorization.');
+  const resume = budget
+    .command('resume <runId>')
+    .description('Approve the exact frozen microcents or reject a budget gate.')
+    .option(
+      '--approve-amount <microcents>',
+      'approve exactly the recorded frozen amount (including zero)',
+    )
+    .option('--abort', 'reject the budget gate without provider or tool execution')
+    .option('--gate <gateId>', 'which budget gate to resolve when multiple are pending')
+    .option(
+      '--secret-stdin',
+      "read the run's secret inputs from stdin as name=value lines (never passed as arguments)",
+    )
+    .option(
+      '--allow-mcp-stdio <digest...>',
+      'authorize a stdio MCP server by its consent digest for this invocation (repeatable)',
+    );
+  if (ctx === undefined) {
+    resume.action(() => {
+      throw new CliError(
+        'not_implemented',
+        '`relavium budget resume` requires the CLI runtime context.',
+      );
+    });
+    return;
+  }
+  resume.action(
+    async (
+      runId: string,
+      opts: {
+        approveAmount?: string;
+        abort?: boolean;
+        gate?: string;
+        secretStdin?: boolean;
+        allowMcpStdio?: readonly string[];
+      },
+    ) => {
+      ctx.result.exitCode = await executeCommand(
+        'budget.resume',
+        {
+          positionals: [runId],
+          options: {
+            approveAmount: opts.approveAmount,
+            abort: opts.abort,
+            gate: opts.gate,
+            secretStdin: opts.secretStdin,
+            allowMcpStdio: opts.allowMcpStdio,
+          },
+        },
+        ctx,
+      );
+    },
+  );
 }
 
 /** Register `relavium list [--agents]` (2.I) — the disk catalog + last-run overlay from durable history. */

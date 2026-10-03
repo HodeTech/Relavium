@@ -1,6 +1,13 @@
 import { collectDurableMediaHandles, type RunEvent } from '@relavium/shared';
 
 import type { CliIo } from '../process/io.js';
+import {
+  budgetAllowanceLabel,
+  budgetGateIdentity,
+  budgetIdentifier,
+  budgetPromptContext,
+  budgetResumeHints,
+} from '../gate/budget.js';
 import { formatProducedMedia } from './tui/format.js';
 import { sanitizeInline, stringifyJsonLine } from './sanitize.js';
 
@@ -65,8 +72,35 @@ export function createJsonRenderer(io: CliIo): RunRenderer {
  * would forge extra rows in a CI log just as it would on a terminal.
  */
 export function createPlainRenderer(io: CliIo): RunRenderer {
+  const shownBudgetGates = new Set<string>();
   return {
     onEvent: (event) => {
+      if (
+        event.type === 'budget:paused' ||
+        (event.type === 'budget:authorization' && event.authorization.state === 'paused')
+      ) {
+        const identity = budgetGateIdentity(event);
+        if (shownBudgetGates.has(identity)) return;
+        shownBudgetGates.add(identity);
+        const allowance =
+          event.type === 'budget:authorization'
+            ? event.authorization.allowance
+            : event.allowanceQuote === undefined
+              ? undefined
+              : { kind: 'frozen' as const, quote: event.allowanceQuote };
+        io.writeOut(
+          `  pending budget gate ${budgetIdentifier(event.gateId)} at ${budgetIdentifier(event.nodeId)} — ${budgetAllowanceLabel(allowance)}\n`,
+        );
+        for (const hint of budgetResumeHints(
+          event.runId,
+          event.gateId,
+          budgetPromptContext(allowance),
+        ))
+          io.writeOut(`    ${hint}\n`);
+        return;
+      }
+      if (event.type === 'human_gate:paused' && shownBudgetGates.has(budgetGateIdentity(event)))
+        return;
       const line = describe(event);
       if (line !== undefined) {
         // `describe()` sanitizes each untrusted FIELD as it interpolates it (the `final-summary.ts` pattern), so

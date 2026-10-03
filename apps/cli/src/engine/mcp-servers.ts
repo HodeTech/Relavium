@@ -119,7 +119,9 @@ export type StdioConsentGate = (
  * `McpServerRefSchema` is `.strict()`, so the registration name has no field to live in — and this shape is
  * host-internal and deliberately never re-parsed, which is what makes an extra property safe here.
  */
-export type ResolvedServerRef = McpServerRef & { readonly registrationName?: string };
+export type ResolvedServerRef = McpServerRef & {
+  readonly registrationName?: string;
+};
 
 /**
  * Sanitize a registration `name` into a namespace-safe server segment for `mcp_{server}_{tool}` (ADR-0052 §4/§5
@@ -750,15 +752,17 @@ export function buildChildEnv(
   return env;
 }
 
-/** A live MCP client plus the workflow rewritten so each inline agent's grant includes its servers' tool ids. */
+/** A live MCP client plus its granted workflow; resume retains an exactly matched frozen grant. */
 export interface WorkflowMcpRuntime {
   readonly client: McpClient;
-  /** The input workflow with each MCP-declaring inline agent's `tools` unioned with its discovered tool ids. */
+  /** Fresh workflows union discovered ids; a frozen resume verifies its existing grant without rewriting it. */
   readonly workflow: WorkflowDefinition;
 }
 
 /** Options for {@link connectWorkflowMcp} — the run cwd + an injectable client starter (tests). */
 export interface ConnectWorkflowMcpOptions {
+  /** Resume compares the current discovered set with the frozen grant, without widening or reordering it. */
+  readonly preserveFrozenGrants?: boolean;
   readonly cwd: string;
   readonly startMcpClient?: (
     servers: readonly McpServerConfig[],
@@ -852,7 +856,9 @@ export async function connectWorkflowMcp(
   try {
     // Augment each inline agent's grant with ONLY its own servers' discovered ids (a `$ref` entry passes through).
     const agents = (def.workflow.agents ?? []).map((entry) =>
-      isInlineAgent(entry) ? withWorkflowMcpGrant(entry, client.toolIdsByServer) : entry,
+      isInlineAgent(entry)
+        ? withWorkflowMcpGrant(entry, client.toolIdsByServer, opts.preserveFrozenGrants === true)
+        : entry,
     );
     const workflow: WorkflowDefinition = {
       ...def,
@@ -860,11 +866,8 @@ export async function connectWorkflowMcp(
     };
     return { client, workflow };
   } catch (err) {
-    // DEFENSIVE: the augmentation above is pure today (map + spreads + a regex `sanitizeServerSegment`) and
-    // cannot throw — the genuinely-throwing assembly (resolveServerConfigs / the dedup) ran BEFORE the client
-    // was opened. This guard exists so that if a future throwing transform is added here, the live connection is
-    // torn down rather than leaked (uniform all-or-nothing with the self-cleaning chat builders), not because the
-    // current body throws. Do not assume `withWorkflowMcpGrant` can fail.
+    // A resumed workflow's frozen-grant check can refuse after discovery. Tear down the live
+    // connection before forwarding that refusal, just as the chat builders do on assembly failure.
     // Best-effort: a teardown rejection must NOT replace the original augmentation error (preserve the primary).
     await client.close().catch(() => undefined);
     throw err;
@@ -880,6 +883,7 @@ function isInlineAgent(entry: Agent | AgentRef): entry is Agent {
 function withWorkflowMcpGrant(
   agent: Agent,
   toolIdsByServer: ReadonlyMap<string, readonly string[]>,
+  preserveFrozen = false,
 ): Agent {
   // The grant key is the entry's server id — its `ref` registration name (Step 4b) or inline `id` — which is the
   // same id `resolveMcpServerRef` assigned the connection, so `toolIdsByServer` is keyed by it.
@@ -887,6 +891,22 @@ function withWorkflowMcpGrant(
     const serverId = entryServerId(server);
     return serverId === undefined ? [] : (toolIdsByServer.get(serverId) ?? []);
   });
+  if (preserveFrozen && (agent.mcp_servers?.length ?? 0) > 0) {
+    // Namespace classification only: dispatch still uses the manager's captured origin closures.
+    // mcp_call is the existing builtin; it is not a discovered namespaced tool.
+    const frozen = new Set(
+      (agent.tools ?? []).filter((id) => id.startsWith('mcp_') && id !== 'mcp_call'),
+    );
+    const current = new Set(ids);
+    if (frozen.size !== current.size || [...frozen].some((id) => !current.has(id))) {
+      throw new CliError(
+        'invalid_invocation',
+        'the current MCP tool set differs from the frozen run; its gates remain pending. ' +
+          'Restore the original tools or reject the budget gate and start a new run.',
+      );
+    }
+    return agent; // retain exact stored ordering and all non-MCP grants
+  }
   if (ids.length === 0) return agent;
   return { ...agent, tools: [...new Set([...(agent.tools ?? []), ...ids])] };
 }

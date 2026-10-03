@@ -16,7 +16,7 @@ import { STUB_COMMANDS } from './specs.js';
  */
 
 /** Permanent parent-only containers — a parent whose only real form is a subcommand; never a manifest entry. */
-const CONTAINER_PATHS = ['agent', 'provider'] as const;
+const CONTAINER_PATHS = ['agent', 'budget', 'provider'] as const;
 /**
  * The not-yet-available stubs are excluded too — but **derived from `STUB_COMMANDS`**, not hardcoded, so a stub
  * that graduates to a real command (removed from `STUB_COMMANDS` + given a real registration) automatically stops

@@ -401,3 +401,24 @@ payload never becomes agent output or spending authority. Live input refusal and
 corruption checks are unchanged. The [predecessor check](../../tools/budget-replay-compat/README.md)
 now generates that exact old-producer prefix and exercises the current checkpoint, admitted
 engine and both discovery stores. Historical ADR bodies remain intact.
+
+
+## W7 step 11 CLI implementation checkpoint — 2026-10-03
+
+Step 10 is accepted after eight independent review rounds. Step 11 now transports the selected
+recorded gate and exact scalar amount through `relavium budget resume`; the engine remains the
+single authority for quote validation, ownership and debit. The canonical flags, status projection,
+inline legacy compatibility, secret stdin, frozen MCP grant and signal lifecycle live in
+[the CLI command reference](../reference/cli/commands.md#relavium-budget-resume).
+
+Invalid amounts and unapprovable quotes refuse before credentials, secret input or MCP connection.
+An abort constructs no credential factory or MCP client. Matching authority/companions share a raw
+run/node/gate display identity; redacted labels and the bounded warning tail cannot establish it.
+Compiled-process smoke checks run offline against public built packages and native SQLite, including
+an actual stdio child interrupted before ownership. They prove refusal/status/abort and cleanup,
+not paid SDK egress or keychain access. Native approved-resume tests inject providers and verify
+real engine authority, debit, secret/MCP grants and durable rows.
+
+Required full CI and sequential coverage exit 0 (327 files, 7,506 passing tests, 11 existing skips).
+Step 11's implementation commit and fresh independent reviews precede its closure. Steps 7–8 still
+require separate maintainer live captures; no new decision or dependency is introduced here.

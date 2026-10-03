@@ -3,6 +3,8 @@ import type { HumanGatePausedEvent } from '@relavium/shared';
 
 import { approvalDecision, inputDecision, rejectionDecision } from './decision.js';
 import type { GatePrompter } from './prompter.js';
+import { budgetIdentifier, type BudgetPromptContext } from './budget.js';
+import { DECIDED_BY_CLI } from './decision.js';
 import { sanitizeInline, stripTerminalControls } from '../render/sanitize.js';
 
 /**
@@ -56,7 +58,8 @@ function cardBody(event: HumanGatePausedEvent): string {
 
 export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): GatePrompter {
   return {
-    prompt: async (event) => {
+    prompt: async (event, budget) => {
+      if (budget !== undefined) return promptBudget(deps, event, budget);
       deps.note(
         cardBody(event),
         `⏸ ${GATE_TITLE[event.gateType]} · ${sanitizeInline(event.nodeId)}`,
@@ -89,4 +92,51 @@ export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): Ga
       return deps.isCancel(comment) ? null : rejectionDecision(comment);
     },
   };
+}
+
+/** Budget confirmation is binary and bound to the recorded scalar A, including explicit zero. */
+async function promptBudget(
+  deps: ClackPromptDeps,
+  event: HumanGatePausedEvent,
+  budget: BudgetPromptContext,
+): Promise<Awaited<ReturnType<GatePrompter['prompt']>>> {
+  const body =
+    budget.kind === 'amount'
+      ? `Frozen allowance: ${budget.microcents} microcents. Approval funds this agent execution only.`
+      : budget.kind === 'legacy'
+        ? 'Legacy budget gate: no frozen allowance. Continuing grants no allowance; current budget checks still apply.'
+        : budget.reason === 'unpriced'
+          ? 'Reject only: this execution has no priced allowance.'
+          : 'Reject only: this execution allowance cannot be represented safely.';
+  const lines = [body];
+  if (event.expiresAt !== undefined) lines.push(`Expires at ${budgetIdentifier(event.expiresAt)}`);
+  deps.note(
+    lines.join('\n'),
+    `⏸ Budget gate · ${budgetIdentifier(event.gateId)} · ${budgetIdentifier(event.nodeId)}`,
+  );
+  if (budget.kind === 'reject_only') {
+    const rejected = await deps.confirm({
+      message: 'Reject this budget gate?',
+      active: 'Reject',
+      inactive: 'Cancel run',
+    });
+    return deps.isCancel(rejected) || !rejected ? null : rejectionDecision();
+  }
+  const approved = await deps.confirm({
+    message:
+      budget.kind === 'amount'
+        ? `Approve exactly ${budget.microcents} microcents?`
+        : 'Continue without a budget allowance?',
+    active: budget.kind === 'amount' ? 'Approve exact amount' : 'Continue',
+    inactive: 'Reject',
+  });
+  if (deps.isCancel(approved)) return null;
+  if (!approved) return rejectionDecision();
+  return budget.kind === 'amount'
+    ? {
+        decision: 'approved',
+        decidedBy: DECIDED_BY_CLI,
+        approvedAmountMicrocents: budget.microcents,
+      }
+    : approvalDecision();
 }

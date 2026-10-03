@@ -8,6 +8,7 @@ import {
   buildChatExportArgs,
   buildExportArgs,
   buildGateArgs,
+  buildBudgetArgs,
   buildImportArgs,
   buildProviderAddArgs,
   buildProviderListArgs,
@@ -207,10 +208,17 @@ describe('build*Args (argv → typed core args)', () => {
       approve: true,
       reject: false,
       secretStdin: false,
+      allowMcpStdio: [],
       comment: 'lgtm',
     });
     const bare = buildGateArgs(input(['run-1']));
-    expect(bare).toEqual({ runId: 'run-1', approve: false, reject: false, secretStdin: false });
+    expect(bare).toEqual({
+      runId: 'run-1',
+      approve: false,
+      reject: false,
+      secretStdin: false,
+      allowMcpStdio: [],
+    });
     expect('comment' in bare).toBe(false);
     expect('gate' in bare).toBe(false);
   });
@@ -221,12 +229,14 @@ describe('build*Args (argv → typed core args)', () => {
       approve: false,
       reject: true,
       secretStdin: false,
+      allowMcpStdio: [],
     });
     expect(buildGateArgs(input(['run-1'], { input: '{"ok":true}', gate: 'g-1' }))).toEqual({
       runId: 'run-1',
       approve: false,
       reject: false,
       secretStdin: false,
+      allowMcpStdio: [],
       input: '{"ok":true}',
       gate: 'g-1',
     });
@@ -321,5 +331,43 @@ describe('executeCommand', () => {
     expect(new Set(DISPATCHABLE_COMMAND_IDS)).toEqual(
       new Set(COMMAND_MANIFEST.map((entry) => entry.id)),
     );
+  });
+});
+
+describe('budget resume exact transport', () => {
+  it('forwards zero, identity, stdin and every stdio consent digest', () => {
+    expect(
+      buildBudgetArgs(
+        input(['r'], {
+          approveAmount: '0',
+          gate: 'g',
+          secretStdin: true,
+          allowMcpStdio: ['a', 'b'],
+        }),
+      ),
+    ).toEqual({
+      runId: 'r',
+      approveAmount: '0',
+      abort: false,
+      gate: 'g',
+      secretStdin: true,
+      allowMcpStdio: ['a', 'b'],
+    });
+    expect(buildBudgetArgs(input(['r'], { abort: true }))).toEqual({
+      runId: 'r',
+      abort: true,
+      secretStdin: false,
+      allowMcpStdio: [],
+    });
+  });
+  it('refuses absent, dual, unsafe and non-decimal decisions before execution', () => {
+    for (const options of [
+      {},
+      { abort: true, approveAmount: '1' },
+      { approveAmount: '1e3' },
+      { approveAmount: '9007199254740992' },
+    ]) {
+      expect(() => buildBudgetArgs(input(['r'], options))).toThrow();
+    }
   });
 });

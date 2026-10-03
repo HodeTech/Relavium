@@ -42,6 +42,7 @@ describe('RunApp terminal projection', () => {
       cumulativeCostMicrocents: 0,
       gapDetected: false,
       warnings: [`warning visible${ATTACK}\nforged warning row`],
+      pendingBudgetNotices: [],
       producedMedia: [
         {
           nodeId: `media node visible${ATTACK}\nforged media node`,

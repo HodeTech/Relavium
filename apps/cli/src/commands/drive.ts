@@ -16,6 +16,8 @@ import type {
 } from '@relavium/shared';
 
 import type { GatePrompter } from '../gate/prompter.js';
+import { budgetIdentifier, budgetPromptContext, type BudgetPromptContext } from '../gate/budget.js';
+import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
@@ -78,6 +80,11 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
   let cancelRequested = false;
   /** gateIds a prompter handled inline (resolved OR cancelled) — so a stale aggregate `run:paused` is ignored. */
   const handledGates = new Set<string>();
+  // A rendering projection of emitted authority, never a second authorization reducer.
+  const budgetContexts = new Map<
+    string,
+    { readonly nodeId: string; readonly context: BudgetPromptContext }
+  >();
 
   // Register the cancel handler the instant the run is live — BEFORE constructing the renderer — so a failure
   // building the renderer (ink's `render()` throwing) can never leave a running engine with no cooperative-cancel
@@ -109,9 +116,33 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
       renderer.onEvent(event);
       outcome = nextOutcome(outcome, event);
 
+      if (event.runId === handle.runId) {
+        if (event.type === 'budget:authorization' && event.authorization.state === 'paused') {
+          budgetContexts.set(event.gateId, {
+            nodeId: event.nodeId,
+            context: budgetPromptContext(event.authorization.allowance),
+          });
+        } else if (event.type === 'budget:paused') {
+          // Legacy event-only producers have no authoritative quote; they grant no amount.
+          if (!budgetContexts.has(event.gateId))
+            budgetContexts.set(event.gateId, {
+              nodeId: event.nodeId,
+              context: budgetPromptContext(
+                event.allowanceQuote === undefined
+                  ? undefined
+                  : { kind: 'frozen', quote: event.allowanceQuote },
+              ),
+            });
+        }
+      }
       if (event.type === 'human_gate:paused' && gatePrompter !== undefined) {
-        handledGates.add(event.gateId);
-        await resolveGateInline(engine, handle, renderer, gatePrompter, event, io);
+        const recorded = budgetContexts.get(event.gateId);
+        const context =
+          event.runId === handle.runId && recorded?.nodeId === event.nodeId
+            ? recorded.context
+            : undefined;
+        if (await resolveGateInline(engine, handle, renderer, gatePrompter, event, io, context))
+          handledGates.add(event.gateId);
         continue; // a resolve continues the run; a cancel drains it to run:cancelled — keep consuming either way
       }
       // A non-breaking run:paused (a prompter handled every gate inline, no media park) is informational —
@@ -163,11 +194,13 @@ async function resolveGateInline(
   prompter: GatePrompter,
   event: HumanGatePausedEvent,
   io: CliIo,
-): Promise<void> {
+  budget?: BudgetPromptContext,
+): Promise<boolean> {
   let decision: Awaited<ReturnType<GatePrompter['prompt']>>;
   await renderer.suspend?.();
   try {
-    decision = await prompter.prompt(event);
+    decision =
+      budget === undefined ? await prompter.prompt(event) : await prompter.prompt(event, budget);
   } finally {
     // Re-mount best-effort: a re-mount failure (ink's render() throwing) must NOT mask the prompt's decision
     // or its error — a throwing `finally` would replace the try's outcome. Surface it to stderr and move on,
@@ -182,10 +215,11 @@ async function resolveGateInline(
   }
   if (decision === null) {
     handle.cancel();
-    return;
+    return true;
   }
   try {
     await engine.resume(event.runId, event.gateId, decision);
+    return true;
   } catch (err) {
     // A Ctrl-C during the prompt cooperatively cancels the run (the SIGINT handler calls handle.cancel());
     // if that settles the run in the window between the prompt returning and this await, the engine refuses
@@ -193,7 +227,17 @@ async function resolveGateInline(
     // and let the loop drain the buffered run:cancelled (→ outcome 'cancelled'), never a generic "internal
     // error". Any other engine refusal is a real bug and re-throws.
     if (err instanceof EngineStateError && err.code === 'run_already_terminal') {
-      return;
+      return true;
+    }
+    if (
+      budget !== undefined &&
+      err instanceof EngineStateError &&
+      err.code === 'invalid_decision'
+    ) {
+      io.writeErr(
+        `budget gate ${budgetIdentifier(event.gateId)} remains pending: ${sanitizeUntrustedInline(err.message)}\n`,
+      );
+      return false;
     }
     throw err;
   }

@@ -169,6 +169,72 @@ describe('commander action → executeCommand forwarding (S10)', () => {
   it('models refresh forwards --catalog (the ADR-0071 §4a axis flag)', () => {
     const { id, input } = drive(['models', 'refresh', '--catalog']);
     expect(id).toBe('models.refresh');
-    expect(input).toMatchObject({ positionals: [], options: { catalog: true } });
+    expect(input).toMatchObject({
+      positionals: [],
+      options: { catalog: true },
+    });
+  });
+});
+
+describe('W7 native budget and secret/MCP flag forwarding', () => {
+  it('ordinary gate forwards secret stdin and every consent digest', () => {
+    const result = drive([
+      'gate',
+      'run-1',
+      '--approve',
+      '--secret-stdin',
+      '--allow-mcp-stdio',
+      'v1:aa',
+      '--allow-mcp-stdio',
+      'v1:bb',
+    ]);
+    expect(result).toMatchObject({
+      id: 'gate',
+      input: {
+        positionals: ['run-1'],
+        options: {
+          approve: true,
+          secretStdin: true,
+          allowMcpStdio: ['v1:aa', 'v1:bb'],
+        },
+      },
+    });
+  });
+  it('budget resume forwards explicit zero, gate identity, secret stdin and all consent digests', () => {
+    const result = drive([
+      'budget',
+      'resume',
+      'run-1',
+      '--gate',
+      'budget-2',
+      '--approve-amount',
+      '0',
+      '--secret-stdin',
+      '--allow-mcp-stdio',
+      'v1:aa',
+      '--allow-mcp-stdio',
+      'v1:bb',
+    ]);
+    expect(result).toMatchObject({
+      id: 'budget.resume',
+      input: {
+        positionals: ['run-1'],
+        options: {
+          approveAmount: '0',
+          gate: 'budget-2',
+          secretStdin: true,
+          allowMcpStdio: ['v1:aa', 'v1:bb'],
+        },
+      },
+    });
+  });
+  it('budget abort is its own binary resolution option', () => {
+    expect(drive(['budget', 'resume', 'run-1', '--abort'])).toMatchObject({
+      id: 'budget.resume',
+      input: {
+        positionals: ['run-1'],
+        options: { abort: true, approveAmount: undefined },
+      },
+    });
   });
 });

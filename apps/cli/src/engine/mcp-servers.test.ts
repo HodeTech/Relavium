@@ -1422,3 +1422,83 @@ describe('surfaceMcpSkipped', () => {
     expect(written).not.toContain('\x1b'); // the ESC that opens every escape sequence is gone
   });
 });
+
+describe('resume preserves each frozen discovered MCP grant — ADR-0083', () => {
+  function workflow(tools: readonly string[]): WorkflowDefinition {
+    return parseWorkflow(
+      `schema_version: '1.0'\nworkflow:\n  id: frozen-mcp\n  agents:\n    - { id: scanner, model: gpt-4o, provider: openai, system_prompt: go, tools: ${JSON.stringify(tools)}, mcp_servers: [{ id: fs, transport: stdio, command: node }] }\n  nodes:\n    - {id: start, type: input}\n    - {id: agent, type: agent, agent_ref: scanner, prompt_template: go}\n    - {id: out, type: output}\n  edges:\n    - {from: start, to: agent}\n    - {from: agent, to: out}\n`,
+    );
+  }
+  for (const current of [[], ['mcp_fs_write'], ['mcp_fs_read', 'mcp_fs_write']]) {
+    it(`refuses removed/renamed/added set ${JSON.stringify(current)} and closes the client`, async () => {
+      let closed = 0;
+      const def = workflow(['read_file', 'mcp_call', 'mcp_fs_read']);
+      await expect(
+        connectWorkflowMcp(def, {
+          cwd: '/original',
+          preserveFrozenGrants: true,
+          consentGate: PASS_CONSENT,
+          startMcpClient: () =>
+            Promise.resolve(
+              fakeClient({
+                toolIdsByServer: new Map([['fs', current]]),
+                close: () => {
+                  closed++;
+                  return Promise.resolve();
+                },
+              }),
+            ),
+        }),
+      ).rejects.toThrow(/differs from the frozen run/);
+      expect(closed).toBe(1);
+      expect(def.workflow.agents?.[0]).toMatchObject({
+        tools: ['read_file', 'mcp_call', 'mcp_fs_read'],
+      });
+    });
+  }
+  it('same set in different discovery order retains exact frozen ordering and builtin grants', async () => {
+    const def = workflow(['read_file', 'mcp_call', 'mcp_fs_write', 'mcp_fs_read']);
+    const runtime = await connectWorkflowMcp(def, {
+      cwd: '/original',
+      preserveFrozenGrants: true,
+      consentGate: PASS_CONSENT,
+      startMcpClient: () =>
+        Promise.resolve(
+          fakeClient({
+            toolIdsByServer: new Map([['fs', ['mcp_fs_read', 'mcp_fs_write']]]),
+          }),
+        ),
+    });
+    expect(runtime?.workflow).toEqual(def);
+    expect(runtime?.workflow.workflow.agents?.[0]).toBe(def.workflow.agents?.[0]);
+    await runtime?.client.close();
+  });
+  it('never adopts a different agent/server tool set with matching cardinality', async () => {
+    const def = workflow(['mcp_fs_read']);
+    await expect(
+      connectWorkflowMcp(def, {
+        cwd: '/original',
+        preserveFrozenGrants: true,
+        consentGate: PASS_CONSENT,
+        startMcpClient: () =>
+          Promise.resolve(fakeClient({ toolIdsByServer: new Map([['fs', ['mcp_gh_read']]]) })),
+      }),
+    ).rejects.toThrow(/frozen run/);
+  });
+  it('preserves refusal if client close itself throws, without exposing transport detail', async () => {
+    await expect(
+      connectWorkflowMcp(workflow(['mcp_fs_read']), {
+        cwd: '/original',
+        preserveFrozenGrants: true,
+        consentGate: PASS_CONSENT,
+        startMcpClient: () =>
+          Promise.resolve(
+            fakeClient({
+              toolIdsByServer: new Map(),
+              close: () => Promise.reject(new Error('PRIVATE_TRANSPORT')),
+            }),
+          ),
+      }),
+    ).rejects.toThrow(/frozen run/);
+  });
+});

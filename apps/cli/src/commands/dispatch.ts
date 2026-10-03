@@ -36,7 +36,13 @@ import { chatExportCommand, type ChatExportCommandArgs } from './chat-export.js'
 import { chatListCommand } from './chat-list.js';
 import { createCommand } from './create.js';
 import { exportCommand, type ExportCommandArgs } from './export.js';
-import { gateCommand, type GateCommandArgs } from './gate.js';
+import {
+  budgetCommand,
+  gateCommand,
+  type BudgetCommandArgs,
+  type GateCommandArgs,
+} from './gate.js';
+import { budgetDecisionFromFlags } from '../gate/budget.js';
 import { gateListCommand } from './gate-list.js';
 import { importCommand, type ImportCommandArgs } from './import.js';
 import { listCommand } from './list.js';
@@ -184,10 +190,27 @@ export function buildGateArgs(input: CommandInput): GateCommandArgs {
     approve: boolFlag(input.options['approve']),
     reject: boolFlag(input.options['reject']),
     secretStdin: boolFlag(input.options['secretStdin']),
+    allowMcpStdio: stringList(input.options['allowMcpStdio']),
     ...(comment === undefined ? {} : { comment }),
     ...(inputValue === undefined ? {} : { input: inputValue }),
     ...(gate === undefined ? {} : { gate }),
   };
+}
+
+/** Budget transport is checked before production resolver factories can touch local history. */
+export function buildBudgetArgs(input: CommandInput): BudgetCommandArgs {
+  const gate = optString(input.options['gate']);
+  const approveAmount = optString(input.options['approveAmount']);
+  const args: BudgetCommandArgs = {
+    runId: reqPositional(input, 0, 'runId'),
+    abort: boolFlag(input.options['abort']),
+    secretStdin: boolFlag(input.options['secretStdin']),
+    allowMcpStdio: stringList(input.options['allowMcpStdio']),
+    ...(gate === undefined ? {} : { gate }),
+    ...(approveAmount === undefined ? {} : { approveAmount }),
+  };
+  budgetDecisionFromFlags(args);
+  return args;
 }
 
 export function buildProviderListArgs(input: CommandInput): ProviderCommandArgs {
@@ -381,11 +404,6 @@ function keyResolvers(ctx: DispatchContext): {
   };
 }
 
-/** The store-aware provider resolver alone (a command — like `gate` — that needs keys but not MCP secrets). */
-function providerResolver(ctx: DispatchContext): ReturnType<typeof createProviderResolver> {
-  return storeAwareResolver(ctx, createOsKeychainStore());
-}
-
 const executeRun: CommandExecutor = (input, ctx) =>
   runCommand(buildRunArgs(input), {
     io: ctx.io,
@@ -447,8 +465,14 @@ const executeGate: CommandExecutor = (input, ctx) =>
   gateCommand(buildGateArgs(input), {
     io: ctx.io,
     global: ctx.global,
-    // Production resolves a post-gate agent's key via the OS keychain → env var (2.C), like `run`.
-    providers: providerResolver(ctx),
+    resolveKeys: () => keyResolvers(ctx),
+  });
+
+const executeBudget: CommandExecutor = (input, ctx) =>
+  budgetCommand(buildBudgetArgs(input), {
+    io: ctx.io,
+    global: ctx.global,
+    resolveKeys: () => keyResolvers(ctx),
   });
 
 const executeGateList: CommandExecutor = (input, ctx) => {
@@ -590,7 +614,9 @@ const executeModelsRefresh: CommandExecutor = (input, ctx) =>
  * `--providers` / `--catalog` (ADR-0071 §4a) — which axis to refresh. Neither ⇒ BOTH, because "refresh what I know
  * about models" is one intent. Both flags together is the same as neither, and saying so beats a pedantic error.
  */
-function buildRefreshAxis(input: CommandInput): { axis?: 'providers' | 'catalog' } {
+function buildRefreshAxis(input: CommandInput): {
+  axis?: 'providers' | 'catalog';
+} {
   const providers = input.options['providers'] === true;
   const catalog = input.options['catalog'] === true;
   if (providers && !catalog) return { axis: 'providers' };
@@ -677,6 +703,7 @@ const COMMAND_EXECUTORS: ReadonlyMap<string, CommandExecutor> = new Map<string, 
   ['import', executeImport],
   ['agent.run', executeAgentRun],
   ['gate', executeGate],
+  ['budget.resume', executeBudget],
   ['gate.list', executeGateList],
   ['list', executeList],
   ['logs', executeLogs],

@@ -3158,3 +3158,37 @@ round 8 does not claim another full toolchain run. **Step 10 is closed; approved
 automatically.** Its CLI implementation receives permanent compiled-process coverage and fresh
 independent review rounds. Live Steps 7–8, Step 12 and all six register items remain open.
 No verified residual is deferred and no new lease, clock or acknowledgement policy is selected.
+
+
+**Step 11 implementation checkpoint — 2026-10-03.** The shared CLI command table and Commander
+surface implement `budget resume` with exact decimal-safe `--approve-amount` or `--abort`, explicit
+multi-gate selection and early typed refusals. Native SQLite/Core tests cover zero allowance, current
+price revalidation, ordinary siblings, secret re-provision with the selected gate, frozen MCP tools
+and original workspace, rejection without credentials/client construction, idempotence and cleanup.
+The inline prompter receives only scalar amount/legacy/reject-only context; invalid live decisions
+leave a pending gate instead of cancelling it as an internal failure. Strict discovery distinguishes
+authority-only crash prefixes from unreadable logs and exposes separate human/budget arrays.
+
+Plain/TUI notices join raw run/node/gate identities rather than redacted text. Ten initial semantic
+regressions produce six failures/four passes before repair; all fourteen final identity/lifecycle
+cases pass. Active TUI identities survive warning-tail eviction and are released on decision/terminal.
+Copyable hints refuse shell-active, option-shaped or redacted identifiers. Pre-claim MCP interruption
+returns exit 1, writes no decision, reaps its actual child and restores signal subscriptions.
+Removing only its guard path fails both native interruption controls; exact restoration passes.
+
+Permanent post-build smoke uses public compiled packages and native SQLite to seed actual frozen
+pauses, then executes the compiled CLI for help, invalid amounts, scalar status, abort/idempotence,
+strict corrupt-authority refusal and MCP consent/interruption. Owned homes and offline preloads keep
+keys/network out of these checks; approved provider calls are injected in the native CLI tests,
+not represented as real SDK or paid provider proof. The CLI reference owns flags and lifecycle;
+architecture/event pages link it. A dated ADR-0097 checkpoint preserves the historical body.
+
+**`pnpm run ci` exits 0, followed sequentially by `pnpm coverage` exiting 0**: 327 files, 7,506 tests,
+11 existing skips; global line/branch/function coverage 95.88%/92.58%/96.72%. All source-adjacent tests,
+strict semantic types, seam/purity/dependency/bundle gates, seven build tasks and compiled CLI/capture/
+actual predecessor smokes pass. Parent logs and exact-source controls remain under the owned Step 11
+prototype/evidence root. Earlier prototype checks are nonadditive. Invalid lifecycle-fixture setup
+and the mechanical-cleanup tool's initially inadequate comparison are retained separately from
+semantic product failures; full semantic AST verification precedes the final formatting cleanup.
+**Implementation commit and two fresh independent complete-Step-11 review rounds precede closure.**
+Steps 7–8, Step 12 and all six register items remain open; no verified residual is deferred.

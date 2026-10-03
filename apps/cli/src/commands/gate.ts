@@ -20,7 +20,13 @@ import {
   loadRunSnapshot,
   type Db,
 } from '@relavium/db';
-import { MaskedSecretSchema, WorkflowSchema, type RunStatus } from '@relavium/shared';
+import {
+  MaskedSecretSchema,
+  WorkflowSchema,
+  type GateDecision,
+  type RunStatus,
+} from '@relavium/shared';
+import { liveMcpChildPids, type McpClient, type McpServerConfig } from '@relavium/mcp';
 
 import { loadResolvedConfig } from '../config/load.js';
 import { openLocalDb } from '../db/open.js';
@@ -41,6 +47,24 @@ import { buildMediaEngineWiring } from '../engine/media-wiring.js';
 import { readUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { decisionFromFlags, type GateFlags } from '../gate/decision.js';
+import {
+  assertBudgetDecision,
+  budgetDecisionFromFlags,
+  resumeCommandBase,
+  selectBudgetGate,
+  type BudgetDecisionFlags,
+} from '../gate/budget.js';
+import {
+  connectWorkflowMcp,
+  workflowDeclaresMcp,
+  surfaceMcpSkipped,
+  type StdioConsentGate,
+  type WorkflowMcpRuntime,
+} from '../engine/mcp-servers.js';
+import { createConsentGate } from '../engine/mcp-consent-gate.js';
+import { guardMcpTeardown } from '../engine/mcp-signal-teardown.js';
+import { createConsentPrompter } from '../mcp/consent-prompt.js';
+import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import type { GatePrompter } from '../gate/prompter.js';
 import { selectGatePrompter } from '../gate/select-prompter.js';
 import { readSecretFromStdin, type StdinSecretContext } from '../secrets/read-secret.js';
@@ -87,7 +111,7 @@ export function legacyMediaJobHoldNotice(nodeIds: readonly string[]): string {
   );
 }
 
-export interface GateCommandArgs extends GateFlags {
+export interface ResumeGateArgs {
   readonly runId: string;
   /** `--gate <gateId>`: which pending gate to resolve (required only when more than one is pending). */
   readonly gate?: string;
@@ -102,7 +126,11 @@ export interface GateCommandArgs extends GateFlags {
    * takes a key on stdin for exactly this reason.
    */
   readonly secretStdin?: boolean;
+  readonly allowMcpStdio?: readonly string[];
 }
+
+export interface GateCommandArgs extends ResumeGateArgs, GateFlags {}
+export interface BudgetCommandArgs extends ResumeGateArgs, BudgetDecisionFlags {}
 
 export interface GateCommandDeps {
   readonly io: CliIo;
@@ -122,6 +150,14 @@ export interface GateCommandDeps {
    * never has to put a credential-shaped string anywhere but its own closure.
    */
   readonly readSecretInput?: () => Promise<string>;
+  readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  readonly consentGate?: StdioConsentGate;
+  readonly mcpSecretResolver?: McpSecretResolver;
+  /** Production creates keychain-backed resolvers only after strict selection/amount refusal. */
+  readonly resolveKeys?: () => {
+    readonly providers: ProviderResolver;
+    readonly mcpSecretResolver: McpSecretResolver;
+  };
 }
 
 const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(['completed', 'failed', 'cancelled']);
@@ -189,8 +225,23 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
   if (!flags.ok) {
     throw new CliError('invalid_invocation', flags.error);
   }
-  const decision = flags.decision;
+  return resumeGateCommand(args, deps, 'human', flags.decision);
+}
 
+/** Exact amount transport is validated before any database, secret, MCP or ownership access. */
+export async function budgetCommand(
+  args: BudgetCommandArgs,
+  deps: GateCommandDeps,
+): Promise<ExitCode> {
+  return resumeGateCommand(args, deps, 'budget', budgetDecisionFromFlags(args));
+}
+
+async function resumeGateCommand(
+  args: ResumeGateArgs,
+  deps: GateCommandDeps,
+  kind: 'human' | 'budget',
+  decision: GateDecision,
+): Promise<ExitCode> {
   const { config, homeDir } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
@@ -206,6 +257,16 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     );
   }
 
+  let mcpRuntime: WorkflowMcpRuntime | undefined;
+  let unguardMcp = (): void => undefined;
+  const mcpCancel = new AbortController();
+  let resumeStarted = false;
+  const interruptedBeforeResume = (): ExitCode => {
+    deps.io.writeErr(
+      'resume interrupted before a decision was recorded; the gate remains pending\n',
+    );
+    return EXIT_CODES.workflowFailed;
+  };
   try {
     const snapshot = loadRunSnapshot(opened.db, args.runId);
     if (snapshot === undefined) {
@@ -213,11 +274,6 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     }
 
     const workflow = parseSnapshot(snapshot.workflowDefinitionSnapshot, args.runId);
-    const inputs = await resolveSecretInputs(
-      parseInputs(snapshot.inputJson, args.runId),
-      args,
-      deps,
-    );
 
     // The workflow-scoped store records the NEW resume events (persist-before-deliver) and resolves the
     // workflow id for the engine's identity guard; the checkpointer reconstructs the paused state from the log.
@@ -249,17 +305,46 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     // right here), so it drives the terminal/idempotency decision — not the `runs.status` column, which a
     // racing process could have advanced between the snapshot read and now (and which the engine would then
     // surface as a closed-handle resume → a misleading exit 1).
-    const selection = selectGate(checkpoint, checkpoint.runStatus, args.gate);
+    const selection =
+      kind === 'budget'
+        ? selectBudgetGate(checkpoint, args.gate)
+        : selectGate(checkpoint, checkpoint.runStatus, args.gate);
     if (selection.kind === 'invalid') {
       throw new CliError('invalid_invocation', selection.message);
     }
     if (selection.kind === 'idempotent') {
       // A doubled decision (run finished / gate already resolved) — a clean no-op, NOT a double-advance.
-      deps.io.writeOut(`${selection.message}\n`);
+      if (deps.global.json) deps.io.writeErr(`${selection.message}\n`);
+      else deps.io.writeOut(`${selection.message}\n`);
       return EXIT_CODES.success;
     }
 
-    const providers = deps.providers ?? createProviderResolver(deps.io.env);
+    if (kind === 'budget') {
+      const gate = checkpoint.pendingGates.find((entry) => entry.gateId === selection.gateId);
+      assertBudgetDecision(gate?.allowance, decision);
+    }
+    const commandBase = resumeCommandBase(kind, args.runId, selection.gateId);
+    const resumeInvocation =
+      commandBase === undefined || decision.decision === 'input_provided'
+        ? undefined
+        : `${commandBase} ${
+            kind === 'budget'
+              ? decision.decision === 'rejected'
+                ? '--abort'
+                : `--approve-amount ${decision.approvedAmountMicrocents}`
+              : decision.decision === 'rejected'
+                ? '--reject'
+                : '--approve'
+          }`;
+    const inputs = await resolveSecretInputs(
+      parseInputs(snapshot.inputJson, args.runId),
+      args,
+      deps,
+      resumeInvocation,
+    );
+    const keys =
+      kind === 'budget' && decision.decision === 'rejected' ? undefined : deps.resolveKeys?.();
+    const providers = deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env);
     // Media host-wiring (2.S), the SAME helper `run` uses: a gate-resumed run that produces media must wire the
     // same CAS + retention + catalog as the original run (else it would be silently text-only). The checkpointer
     // stays. `save_to`'s scope root is the ORIGINAL run's project root when it still exists here (see
@@ -273,12 +358,52 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     // authored `output_modalities` against the CURRENT catalog, so a model that lost a capability between the
     // original run and this resume is rejected consistently (exit 2), not silently routed at runtime.
     assertWorkflowCatalogValid(workflow, wiring.workflowModelCatalog);
+    // A budget rejection is fatal and dispatches no agent. Do not spawn tools merely to reject it.
+    if (workflowDeclaresMcp(workflow) && !(kind === 'budget' && decision.decision === 'rejected')) {
+      unguardMcp = guardMcpTeardown(
+        async () => {
+          mcpCancel.abort();
+          await mcpRuntime?.client.close();
+        },
+        () => liveMcpChildPids(),
+        { reapOnly: true },
+      );
+      mcpRuntime = await connectWorkflowMcp(workflow, {
+        cwd: saveToRoot,
+        preserveFrozenGrants: true,
+        connectSignal: mcpCancel.signal,
+        registrations: config.mcpServers,
+        resolveSecret:
+          deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
+        artifact: `frozen run ${args.runId}`,
+        consentGate:
+          deps.consentGate ??
+          createConsentGate({
+            io: deps.io,
+            global: deps.global,
+            homeDir,
+            allowedDigests: args.allowMcpStdio ?? [],
+            prompt: createConsentPrompter(),
+          }),
+        ...(deps.startMcpClient === undefined ? {} : { startMcpClient: deps.startMcpClient }),
+      });
+      if (mcpRuntime !== undefined) surfaceMcpSkipped(deps.io, mcpRuntime.client.skipped);
+    }
+
     // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — read from the SAME durable `history.db`, so the resumed
     // workflow's post-gate continuation enforces `budget.max_cost_microcents` on a user-priced model exactly like
     // the original `run` did (pre-egress + realized). Without it a gated run would silently uncap that model on the
     // far side of the gate — the very ADR-0064 §6 gap this closes. Non-fatal read (an empty map ⇒ no user pricing).
     const resolvePrice = readUserPricingOverlay(opened.db);
     const engine = await (deps.buildEngine ?? defaultBuildEngine)({
+      ...(mcpRuntime === undefined
+        ? {}
+        : {
+            mcp: {
+              toolDefs: mcpRuntime.client.toolDefs,
+              capability: mcpRuntime.client.capability,
+            },
+          }),
       // The durable effect journal (ADR-0080). A gate resume runs the FAR side of a human gate, which is
       // precisely where a tool-using agent node does its work — leaving it unwired refused every effectful
       // tool on exactly the path the gate exists to enable.
@@ -339,7 +464,10 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     });
     // Same drain as the `run` path (ADR-0078 §4/§5) — a gate resume is equally "the next `relavium` start",
     // and it is the one a user reaches for after seeing the `durabilityUncertain` exit code on a gated run.
+    if (mcpCancel.signal.aborted) return interruptedBeforeResume();
     await engine.drainTerminalOutbox().catch(() => undefined);
+    if (mcpCancel.signal.aborted) return interruptedBeforeResume();
+    resumeStarted = true;
     const handle = await resumeOrFail(engine, {
       runId: args.runId,
       workflow,
@@ -384,7 +512,9 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       // is the worst available answer: the run is executing elsewhere, this process's gate decision was
       // never made durable, and an automation loop records success. The disposition separates them at no
       // cost: `createClosedRunHandle` reports `durable`, a fenced handle reports `uncertain`.
-      deps.io.writeOut(`run ${args.runId} already settled; nothing to resume\n`);
+      const notice = `run ${args.runId} already settled; nothing to resume\n`;
+      if (deps.global.json) deps.io.writeErr(notice);
+      else deps.io.writeOut(notice);
       return EXIT_CODES.success;
     }
 
@@ -413,8 +543,24 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     // a run that had stopped for an unresolved external effect. `terminalError()` is captured on the
     // handle's own construction-time subscription, which no ordering can outrun.
     return outcomeToExitCode(outcome, handle.durability(), handle.terminalError());
+  } catch (err) {
+    // The pre-connect guard owns child cleanup; this command owns the run-style interruption exit.
+    // Once resume has started, the handle/engine error remains authoritative.
+    if (!resumeStarted && mcpCancel.signal.aborted) return interruptedBeforeResume();
+    throw err;
   } finally {
-    opened.close();
+    try {
+      try {
+        opened.close();
+      } finally {
+        // Cleanup must not replace a primary refusal or a durably completed command result.
+        await mcpRuntime?.client.close().catch(() => {
+          deps.io.writeErr('warning: the MCP client could not close cleanly\n');
+        });
+      }
+    } finally {
+      unguardMcp();
+    }
   }
 }
 
@@ -445,7 +591,10 @@ export function selectGate(
       return { kind: 'resume', gateId: requested };
     }
     if (resolved.has(requested)) {
-      return { kind: 'idempotent', message: `gate ${requested} already resolved` };
+      return {
+        kind: 'idempotent',
+        message: `gate ${requested} already resolved`,
+      };
     }
     return {
       kind: 'invalid',
@@ -527,12 +676,20 @@ function nameList(names: readonly string[]): string {
     : `${names.slice(0, MAX_REPORTED_SECRET_NAMES).join(', ')}, and ${String(names.length - MAX_REPORTED_SECRET_NAMES)} more`;
 }
 
+function secretPipeHint(resumeInvocation: string | undefined): string {
+  return resumeInvocation === undefined
+    ? 'Re-run the same decision with the recorded run and gate IDs and --secret-stdin, supplying name=value lines on stdin.'
+    : "Pipe the run's secret inputs as name=value lines on stdin — e.g. " +
+        `\`printf 'api_key=%s\\n' "$VALUE" | ${resumeInvocation} --secret-stdin\` ` +
+        '(a credential is never passed as an argument).';
+}
+
 /** The two refusals `readSecretFromStdin` prints, written for THIS command rather than `provider set-key`. */
-const SECRET_STDIN_CONTEXT = (runId: string): StdinSecretContext => ({
-  pipeHint:
-    "pipe the run's `secret` inputs on stdin as `name=value` lines — e.g. " +
-    `\`printf 'api_key=%s\\n' "$VALUE" | relavium gate ${runId} --approve --secret-stdin\` ` +
-    '(a credential is never passed as an argument).',
+const SECRET_STDIN_CONTEXT = (
+  runId: string,
+  resumeInvocation: string | undefined,
+): StdinSecretContext => ({
+  pipeHint: secretPipeHint(resumeInvocation),
   emptyMessage: `no \`secret\` inputs were read from stdin for run ${runId} (empty input).`,
 });
 
@@ -558,8 +715,9 @@ const SECRET_STDIN_CONTEXT = (runId: string): StdinSecretContext => ({
  */
 async function resolveSecretInputs(
   inputs: Record<string, unknown>,
-  args: GateCommandArgs,
+  args: ResumeGateArgs,
   deps: GateCommandDeps,
+  resumeInvocation: string | undefined,
 ): Promise<Record<string, unknown>> {
   const masked = Object.keys(inputs).filter(
     (key) => MaskedSecretSchema.safeParse(inputs[key]).success,
@@ -577,13 +735,13 @@ async function resolveSecretInputs(
     throw new CliError(
       'invalid_invocation',
       `run ${args.runId} needs its \`secret\` input(s) [${masked.join(', ')}] re-supplied to resume — ` +
-        `they are never persisted. Pipe them on stdin as \`name=value\` lines with --secret-stdin ` +
-        `(e.g. \`printf '${masked[0] ?? 'name'}=%s\\n' "$VALUE" | relavium gate ${args.runId} --approve --secret-stdin\`).`,
+        `they are never persisted. ${secretPipeHint(resumeInvocation)}`,
     );
   }
   const read =
     deps.readSecretInput ??
-    ((): Promise<string> => readSecretFromStdin(SECRET_STDIN_CONTEXT(args.runId)));
+    ((): Promise<string> =>
+      readSecretFromStdin(SECRET_STDIN_CONTEXT(args.runId, resumeInvocation)));
   const supplied = parseSecretLines(await read(), args.runId);
   const missing = masked.filter((name) => !Object.hasOwn(supplied, name));
   if (missing.length > 0) {

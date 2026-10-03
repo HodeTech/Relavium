@@ -370,6 +370,11 @@ The new discriminator enforces [ADR-0100](../../decisions/0100-budget-authorizat
 through the existing strict replay read: a pre-W7 binary refuses the unknown authoritative row before
 execution, while read-only display remains tolerant. A current binary still reads legacy logs.
 
+CLI status folds this strict authority into separate human/budget discovery. Plain and TUI consumers
+join authority and companions by the same triple identity to render one scalar budget card; JSON
+run output remains the original event stream. Exact CLI flags, scalar status fields, confirmation
+and resume lifecycle are defined in [commands.md](../cli/commands.md#relavium-budget-resume).
+
 ## Session event namespace
 
 An [agent session](agent-session-spec.md) ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)) is driven on the **same** `RunEventBus`, but emits a **disjoint `session:*` namespace** keyed by `sessionId` instead of `runId`. Consumers route purely on the `type` discriminant, so the two namespaces never collide.

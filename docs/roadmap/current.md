@@ -174,6 +174,9 @@ merged too (PR #85, 2026-08-28).
 > Both fresh reviewers pass 857 permanent tests and separate five/six fresh probes; complete reports and
 > every sealed inventory entry are parent-verified. **Step 10 is closed; approved Step 11 proceeds automatically**
 > with the safe CLI surface, permanent compiled-process smoke coverage and fresh independent reviews.
+> Step 11 implementation now passes full CI and sequential coverage (327 files, 7,506 tests, 11 existing skips),
+> including permanent compiled CLI refusal/status/abort/MCP-interruption smokes and raw-triple display regressions.
+> Its implementation commit and two fresh independent review rounds precede closure.
 > Live Step 7 captures, and therefore Step 8, remain pending.
 > Step 1 repaired collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).

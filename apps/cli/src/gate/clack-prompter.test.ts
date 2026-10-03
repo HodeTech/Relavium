@@ -190,3 +190,85 @@ describe('createClackGatePrompter', () => {
     expect(body).toContain('auto-reject');
   });
 });
+
+describe('budget confirmation from recorded scalar context', () => {
+  for (const amount of [0, 20, Number.MAX_SAFE_INTEGER]) {
+    it(`binds exactly ${amount} and does not request input/comment`, async () => {
+      const d = deps();
+      const result = await createClackGatePrompter(d).prompt(
+        gate({
+          gateType: 'input',
+          message: 'PRIVATE_MODEL secret-shaped provenance',
+        }),
+        { kind: 'amount', microcents: amount },
+      );
+      expect(result).toEqual({
+        decision: 'approved',
+        decidedBy: 'cli',
+        approvedAmountMicrocents: amount,
+      });
+      expect(d.confirm).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: `Approve exactly ${amount} microcents?`,
+        }),
+      );
+      expect(d.note).toHaveBeenCalledWith(
+        expect.stringContaining(`${amount} microcents`),
+        expect.stringContaining('Budget gate'),
+      );
+      expect(d.note).not.toHaveBeenCalledWith(
+        expect.stringContaining('PRIVATE_MODEL'),
+        expect.anything(),
+      );
+      expect(d.text).not.toHaveBeenCalled();
+    });
+  }
+  for (const reason of ['unpriced', 'unrepresentable'] as const) {
+    it(`offers only rejection/cancel when ${reason}`, async () => {
+      const d = deps();
+      expect(
+        await createClackGatePrompter(d).prompt(gate(), {
+          kind: 'reject_only',
+          reason,
+        }),
+      ).toEqual({ decision: 'rejected', decidedBy: 'cli' });
+      expect(d.confirm).toHaveBeenCalledWith({
+        message: 'Reject this budget gate?',
+        active: 'Reject',
+        inactive: 'Cancel run',
+      });
+      expect(d.text).not.toHaveBeenCalled();
+      expect(
+        await createClackGatePrompter(deps({ confirm: () => Promise.resolve(false) })).prompt(
+          gate(),
+          { kind: 'reject_only', reason },
+        ),
+      ).toBeNull();
+    });
+  }
+  it('legacy continuation has no amount and states governance remains installed', async () => {
+    const d = deps();
+    expect(await createClackGatePrompter(d).prompt(gate(), { kind: 'legacy' })).toEqual({
+      decision: 'approved',
+      decidedBy: 'cli',
+    });
+    expect(d.note).toHaveBeenCalledWith(
+      expect.stringContaining('current budget checks still apply'),
+      expect.anything(),
+    );
+  });
+  it('amount rejection is binary and cancel never constructs approval', async () => {
+    expect(
+      await createClackGatePrompter(deps({ confirm: () => Promise.resolve(false) })).prompt(
+        gate(),
+        { kind: 'amount', microcents: 20 },
+      ),
+    ).toEqual({ decision: 'rejected', decidedBy: 'cli' });
+    expect(
+      await createClackGatePrompter(deps({ confirm: () => Promise.resolve(CANCEL) })).prompt(
+        gate(),
+        { kind: 'amount', microcents: 20 },
+      ),
+    ).toBeNull();
+  });
+});

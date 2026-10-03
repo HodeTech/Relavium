@@ -1,5 +1,7 @@
 import type { GateDecision, HumanGatePausedEvent } from '@relavium/shared';
 
+import type { BudgetPromptContext } from './budget.js';
+
 /**
  * Resolves an interactive human gate during a live run (**2.G**). The interactive TUI path supplies a
  * `@clack/prompts`-backed implementation ({@link createClackGatePrompter}); the non-interactive paths
@@ -12,5 +14,8 @@ import type { GateDecision, HumanGatePausedEvent } from '@relavium/shared';
  * (Ctrl-C / ESC) — the run core then cooperatively cancels the whole run.
  */
 export interface GatePrompter {
-  prompt: (event: HumanGatePausedEvent) => Promise<GateDecision | null>;
+  prompt: (
+    event: HumanGatePausedEvent,
+    budget?: BudgetPromptContext,
+  ) => Promise<GateDecision | null>;
 }

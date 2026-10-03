@@ -512,7 +512,11 @@ describe('reduceRunEvent — previously-uncovered events + edge cases', () => {
         gateId: 'budget-1',
       },
     ]);
-    expect(paused.warnings.some((w) => w.includes('budget cap reached'))).toBe(true);
+    expect(
+      paused.warnings.some(
+        (w) => w.includes('budget gate budget-1') && w.includes('legacy gate: no frozen allowance'),
+      ),
+    ).toBe(true);
   });
 
   it('human_gate:paused and human_gate:resumed each push a warning', () => {
@@ -528,7 +532,7 @@ describe('reduceRunEvent — previously-uncovered events + edge cases', () => {
         message: 'approve?',
       },
     ]);
-    expect(paused.warnings.some((w) => w.includes('"g1"') && w.includes('awaiting input'))).toBe(
+    expect(paused.warnings.some((w) => w.includes('"g1"') && w.includes('awaiting decision'))).toBe(
       true,
     );
 

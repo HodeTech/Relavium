@@ -291,7 +291,10 @@ describe('gateCommand', () => {
       const { io } = captureIo();
       const code = await gateCommand(
         { runId, approve: true, secretStdin: true },
-        { ...deps(io), readSecretInput: () => Promise.resolve(`api_key=${SECRET}\n`) },
+        {
+          ...deps(io),
+          readSecretInput: () => Promise.resolve(`api_key=${SECRET}\n`),
+        },
       );
       expect(code).toBe(EXIT_CODES.success);
       // The run continued past the gate — `double` ran on the RECORDED `n`, not on anything re-supplied.
@@ -350,14 +353,14 @@ describe('gateCommand', () => {
       //
       // Driven through the TTY guard rather than through the stream: flipping `isTTY` makes the reader
       // refuse immediately, which exercises the real function and its message without touching stdin.
-      const { runId } = await seedSecretRun();
+      const { runId, gateIds } = await seedSecretRun();
       const { io } = captureIo();
       const original = process.stdin.isTTY;
       try {
         Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
         await expect(
           gateCommand({ runId, approve: true, secretStdin: true }, deps(io)),
-        ).rejects.toThrow(new RegExp(`relavium gate ${runId} --approve --secret-stdin`));
+        ).rejects.toThrow(`relavium gate ${runId} --gate ${gateIds[0]} --approve --secret-stdin`);
       } finally {
         Object.defineProperty(process.stdin, 'isTTY', { value: original, configurable: true });
       }
@@ -376,7 +379,10 @@ describe('gateCommand', () => {
       const { io } = captureIo();
       const code = await gateCommand(
         { runId, approve: true, secretStdin: true },
-        { ...deps(io), readSecretInput: () => Promise.resolve(`__proto__=${SECRET}\n`) },
+        {
+          ...deps(io),
+          readSecretInput: () => Promise.resolve(`__proto__=${SECRET}\n`),
+        },
       );
       expect(code).toBe(EXIT_CODES.success);
       expect(({} as Record<string, unknown>)[SECRET]).toBeUndefined();

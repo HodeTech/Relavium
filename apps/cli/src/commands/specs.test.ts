@@ -85,13 +85,23 @@ describe('command registration (specs)', () => {
     );
   });
 
-  it('gives the documented "not available yet" message for the unshipped budget stub', () => {
-    // commands.md promises a clean "not available yet (lands in …)" message — not commander's "unknown
-    // command" — for `budget resume` (a tracked follow-up). It is the last registered stub.
+  it('registers real budget resume and both exact approval/rejection options', () => {
     const program = buildProgram(captureIo().io);
     program.exitOverride();
-    expect(() => program.parse(['node', 'relavium', 'budget', 'resume', 'run-1'])).toThrow(
-      /is not available yet/,
+    const command = program.commands
+      .find((c) => c.name() === 'budget')
+      ?.commands.find((c) => c.name() === 'resume');
+    expect(command?.options.map((o) => o.long)).toEqual(
+      expect.arrayContaining([
+        '--approve-amount',
+        '--abort',
+        '--gate',
+        '--secret-stdin',
+        '--allow-mcp-stdio',
+      ]),
     );
+    expect(() =>
+      program.parse(['node', 'relavium', 'budget', 'resume', 'run-1', '--approve-amount', '0']),
+    ).toThrow(/budget resume.*runtime context/);
   });
 });
