@@ -1020,13 +1020,13 @@ describe('createRunHistoryStore', () => {
     ]);
   });
 
-  // Security fixture — the engine masks a secret-typed value at the bus as { secret: true, ref }; the store is
-  // pass-through. Assert the masked placeholder lands and the RAW value never appears in ANY unsafe column
-  // (database-schema.md §"Secrets at the write boundary"): run_events.payload_json, runs.input_json,
-  // runs.workflow_definition_snapshot, and the step_executions input/output/error JSON. Defense in depth, ADR-0050.
-  it('never persists a raw secret — the masked placeholder only, across every unsafe column', async () => {
+  // Pass-through fixture: already-masked input/output slots remain placeholders in history columns.
+  // RAW is never submitted here; this does not exercise upstream input masking, tool-event scrubbing or
+  // general content redaction. The ref names the supplied input slot, not a credential resolver.
+  // See database-schema.md §"Secrets at the write boundary" and ADR-0050's at-rest correction.
+  it('preserves supplied masked input and output placeholders in history columns', async () => {
     const RAW = ['sk', 'live', 'DEADBEEF'].join('-'); // a fake key, built so no contiguous literal exists
-    const masked = { secret: true, ref: 'keychain://relavium/anthropic' } as const;
+    const masked = { secret: true, ref: 'inputs.api_key' } as const;
     const workflowId = await store.resolveWorkflowId('secret-wf');
     await store.persistEvent({
       ...ev('run:started', 0, { workflowId, inputs: { api_key: masked }, executionMode: 'local' }),
@@ -1056,10 +1056,12 @@ describe('createRunHistoryStore', () => {
     const eventRows = client.db.select().from(runEvents).where(eq(runEvents.runId, 'run-s')).all();
 
     expect(runRow?.inputJson).toContain('"secret":true');
+    expect(runRow?.inputJson).toContain('"ref":"inputs.api_key"');
     expect(stepRow?.outputJson).toContain('"secret":true');
-    // No unsafe column contains the raw value. `stepRow.inputJson` is always '{}' (node:started carries no
-    // runtime input payload by design — the store never writes it), so its check is vacuous-but-complete:
-    // it documents that the column is covered and stays empty, not that node inputs are captured here.
+    expect(stepRow?.outputJson).toContain('"ref":"inputs.api_key"');
+    // RAW was never supplied; these absence checks do not establish upstream redaction.
+    // `stepRow.inputJson` is always '{}' (node:started carries no runtime input payload by design),
+    // so that empty-column check does not exercise masking of a node's runtime inputs.
     for (const value of [
       runRow?.inputJson,
       runRow?.workflowDefinitionSnapshot,
