@@ -2,6 +2,7 @@ import type { LlmProvider, StreamChunk } from '@relavium/llm';
 import { AgentSchema, SessionContextSchema } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
+import { ToolArgsInvalidError } from '../tools/errors.js';
 import { createToolRegistry } from '../tools/registry.js';
 import type { ToolDef } from '../tools/types.js';
 import { AgentSession, type SessionDeps, type SessionStreamEvent } from './agent-session.js';
@@ -20,7 +21,13 @@ const CONTEXT = SessionContextSchema.parse({
 });
 const OBSERVERS = ['agent:tool_call', 'agent:tool_result'] as const;
 
-function harness(journaled: boolean, observe: (event: SessionStreamEvent) => void) {
+type ToolFailure = 'invalid_args' | 'read_execution';
+
+function harness(
+  journaled: boolean,
+  observe: (event: SessionStreamEvent) => void,
+  failure?: ToolFailure,
+) {
   const events: SessionStreamEvent[] = [];
   const journal = createInMemoryEffectJournalStore();
   const counts = { provider: 0, tools: 0, keys: 0 };
@@ -28,12 +35,17 @@ function harness(journaled: boolean, observe: (event: SessionStreamEvent) => voi
     id: 'echo',
     source: 'builtin',
     description: 'offline tool',
-    parseArgs: (args) => args,
+    parseArgs: (args) => {
+      if (failure === 'invalid_args')
+        throw new ToolArgsInvalidError('echo', ['value'], 'tool arguments are invalid');
+      return args;
+    },
     llmVisibleParams: { type: 'object' },
     policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
     ...(journaled ? { effect: (): 3 => 3 } : {}),
     dispatch: () => {
       counts.tools += 1;
+      if (failure === 'read_execution') throw new Error('private-tool-cause');
       return Promise.resolve('done');
     },
   };
@@ -65,7 +77,7 @@ function harness(journaled: boolean, observe: (event: SessionStreamEvent) => voi
         }
         yield { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 2, outputTokens: 3 } };
       } else {
-        yield { type: 'text_delta', text: 'unexpected second provider call' };
+        yield { type: 'text_delta', text: 'tool recovery completed' };
         yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } };
       }
     },
@@ -76,6 +88,9 @@ function harness(journaled: boolean, observe: (event: SessionStreamEvent) => voi
     registry: createToolRegistry({ tools: [tool], host: {} }),
     tools: [tool],
     maxTurns: 1,
+    ...(failure === undefined
+      ? {}
+      : { limits: { maxToolTurns: 4, maxToolCorrections: 3, recoverToolFailures: true } }),
     reserveEffectTurnKey: () => ++turnKey,
     effects: (correlation) => journal.for(correlation),
     keyFor: () => {
@@ -163,6 +178,90 @@ describe('successful tool observer failures retain session engagement (ADR-0055 
       expect(h.journal.rows()).toHaveLength(1);
       expect(h.journal.rows()[0]).toMatchObject({ state: 'committed', slot: 0 });
       expect(JSON.stringify(h.events)).not.toContain('private-observer-cause');
+    },
+  );
+});
+
+describe('failed tool observers retain session engagement (ADR-0055 EA2 / ADR-0057 EA7)', () => {
+  for (const failure of ['invalid_args', 'read_execution'] as const) {
+    for (const aborting of [false, true]) {
+      it.each(OBSERVERS)(
+        `%s failure retains billed usage and the hard cap (${failure}, ${aborting ? 'abort' : 'error'})`,
+        async (observer) => {
+          let abort = (): void => {};
+          let throws = 0;
+          const h = harness(
+            false,
+            (event) => {
+              if (event.type !== observer || throws++ !== 0) return;
+              if (aborting) abort();
+              throw new Error('private-observer-cause');
+            },
+            failure,
+          );
+          abort = () => h.session.abort();
+          let rawFailure: unknown;
+          try {
+            await h.session.sendMessage('run the tools');
+          } catch (err) {
+            rawFailure = err;
+          }
+          await h.session.sendMessage('must be over the cap');
+          expect(h.counts).toEqual({
+            provider: 1,
+            tools: failure === 'invalid_args' ? 0 : 1,
+            keys: 1,
+          });
+          expect(rawFailure).toBeUndefined();
+          const terminals = h.events.filter((event) => event.type === 'session:turn_completed');
+          expect(terminals).toHaveLength(2);
+          expect(terminals[0]).toMatchObject({
+            stopReason: aborting ? 'aborted' : 'error',
+            tokensUsed: { input: 2, output: 3 },
+          });
+          if (aborting) expect(terminals[0]).not.toHaveProperty('error');
+          else
+            expect(terminals[0]).toMatchObject({
+              error: {
+                code: 'internal',
+                retryable: false,
+                message: 'the tool outcome could not be delivered',
+              },
+            });
+          expect(terminals[1]).toMatchObject({
+            tokensUsed: { input: 0, output: 0 },
+            error: { code: 'turn_limit' },
+          });
+          expect(h.events.filter((event) => event.type === 'agent:tool_call')).toHaveLength(1);
+          expect(h.events.filter((event) => event.type === 'agent:tool_result')).toHaveLength(
+            observer === 'agent:tool_call' ? 0 : 1,
+          );
+          expect(h.events.filter((event) => event.type === 'cost:updated')).toHaveLength(1);
+          expect(h.events.some((event) => event.type === 'session:cancelled')).toBe(false);
+          expect(h.journal.rows()).toHaveLength(0);
+          expect(JSON.stringify(h.events)).not.toContain('private-observer-cause');
+          expect(JSON.stringify(h.events)).not.toContain('private-tool-cause');
+        },
+      );
+    }
+  }
+
+  it.each(['invalid_args', 'read_execution'] as const)(
+    '%s remains model-correctable when the observers succeed',
+    async (failure) => {
+      const h = harness(false, () => {}, failure);
+      await h.session.sendMessage('run the tools');
+      expect(h.counts).toEqual({ provider: 2, tools: failure === 'invalid_args' ? 0 : 2, keys: 2 });
+      const terminals = h.events.filter((event) => event.type === 'session:turn_completed');
+      expect(terminals).toHaveLength(1);
+      expect(terminals[0]).toMatchObject({
+        stopReason: 'stop',
+        tokensUsed: { input: 3, output: 4 },
+      });
+      expect(terminals[0]).not.toHaveProperty('error');
+      expect(h.events.filter((event) => event.type === 'agent:tool_call')).toHaveLength(2);
+      expect(h.events.filter((event) => event.type === 'agent:tool_result')).toHaveLength(2);
+      expect(JSON.stringify(h.events)).not.toContain('private-tool-cause');
     },
   );
 });

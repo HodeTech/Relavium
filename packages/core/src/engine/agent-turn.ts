@@ -910,8 +910,8 @@ function sessionToolHistoryEntry(
  * The failure half of one tool dispatch: announce the attempted call with a REDACTED input, then either
  * return the model-correctable `isError` result or throw a classified {@link AgentTurnError}.
  *
- * Extracted from `dispatchToolCalls`'s loop, whose `catch` carried this whole ladder inline. Behaviour is
- * unchanged — the `continue` became a return, and the throw is still a throw.
+ * Both notifications use the same classified observer boundary as successful tool outcomes. A sink
+ * failure must retain the provider engagement and usage already accumulated before this dispatch.
  */
 function toolFailureMessage(
   err: unknown,
@@ -922,7 +922,7 @@ function toolFailureMessage(
 ): LlmMessage {
   // No registry outcome ⇒ no sanitized payload (resolve / grant / policy / args rejected before dispatch).
   // Announce the attempted call with a REDACTED (empty) input — never the raw model args — then classify.
-  params.emit({
+  emitToolOutcome(params, {
     type: 'agent:tool_call',
     nodeId: params.nodeId,
     model,
@@ -931,7 +931,7 @@ function toolFailureMessage(
     attemptNumber,
   });
   if (err instanceof ToolDispatchError && isRecoverableToolError(err, params.limits)) {
-    params.emit({
+    emitToolOutcome(params, {
       type: 'agent:tool_result',
       nodeId: params.nodeId,
       toolId: call.name,
@@ -974,7 +974,7 @@ function assertAttachmentBudget(pending: readonly PendingAttachment[]): void {
   }
 }
 
-/** Keep a post-dispatch observer failure classified so EA2 retains engagement and billed usage. */
+/** Keep a tool observer failure classified so EA2 retains engagement and billed usage. */
 function emitToolOutcome(
   params: AgentTurnParams,
   event: Extract<NodeStreamEvent, { type: 'agent:tool_call' | 'agent:tool_result' }>,
