@@ -972,7 +972,10 @@ followed by each authored `fallback_chain` entry:
   Typed provider diagnostics are detached and validated inside guarded normalization, including
   nested fields. The original cause remains private. Hostile prototype inspection during pricing or
   core cause classification cannot replace that cause; opaque causes follow normal turn mapping.
-  A consumer observer exception propagates once outside provider and accounting guards. An admission
+  A consumer observer exception propagates once outside provider and accounting guards. Core retains
+  its exact attempt-observer provenance through generated-result handling; throwing a provider error
+  class from that observer does not make a successful paid call retryable. Genuine provider failures
+  still enter provider classification. An admission
   stays owned until its release or settlement succeeds, so a diagnostic failure reaches conservative
   cleanup rather than losing the lease.
 - Surface **per-attempt usage** to the injected `CostTracker` (against that

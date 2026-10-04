@@ -170,3 +170,16 @@ remains in [the LLM
 seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter) and [session
 contract](../reference/contracts/agent-session-spec.md). Whole-request ownership under Proposed
 ADR-0102 remains a separate approval gate.
+
+## 2026-10-04 implementation correction — observer provenance after generation
+
+A complete independent W7 contracts review reproduces a typed attempt observer failure being
+misclassified as a provider timeout after a successful generated response. The actual workflow
+retries a paid call and exposes the private observer diagnostic. Core now retains the exact escape
+from its attempt observer before generated provider classification. Genuine provider failures still
+map normally. Budget reflection after completed tools is guarded so a callback's prototype or
+diagnostic trap cannot replace the original failure. This repairs existing observer/privacy
+guarantees; canonical behaviour remains in [the session contract](../reference/contracts/agent-session-spec.md)
+and [LLM seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter).
+The [round-7 record](../reviews/2026-10-04T23-06-22-w7-systematic-group-2a-round-7-review.md)
+qualifies the incomplete runtime review and requires a fresh complete corrective round.

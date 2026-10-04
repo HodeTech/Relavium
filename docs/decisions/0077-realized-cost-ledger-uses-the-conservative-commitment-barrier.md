@@ -300,3 +300,14 @@ both successful and failed accounting, including direct CostTracker entry. This 
 realised-price distinction and ordering; it does not introduce a new financial policy. The canonical
 producer contract is [the LLM
 seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter).
+
+## 2026-10-04 implementation correction — typed realised-cost observer escape
+
+A successful paid generation followed by a typed cost observer failure previously entered provider
+retry classification, producing two truthful realised rows for two unintended paid calls. Core now
+records the observer's exact thrown value and preserves it outside generated provider classification.
+The existing cost-emission finally still starts mandatory realised recording; no row, usage or
+cumulative total is suppressed or invented. Real provider failure classification and B1/B2/B3 remain
+unchanged. An [actual workflow regression](../../packages/core/src/engine/observer-error-provenance.test.ts)
+verifies one paid call, one realised row and a fixed non-retryable internal terminal without the private
+observer diagnostic. This corrects existing provenance and privacy, without a new financial policy.

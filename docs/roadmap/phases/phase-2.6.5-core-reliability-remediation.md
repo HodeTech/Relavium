@@ -3408,3 +3408,13 @@ keeps admission ownership through discharge and rechecks lookup cancellation. Ex
 7,738 tests/12 skips, six builds, formatting and test isolation. Both complete reports and all
 3,922 sealed entries/source/link/bootstrap pins are independently verified before Original resumes.
 **Fresh complete round 7 is required; group 2a, ownership, remaining groups, Steps 7–8/12, Sonar and PR remain open.**
+
+**Systematic group 2a, round 7 — 2026-10-04.** [The complete contracts review and incomplete runtime observations](../../reviews/2026-10-04T23-06-22-w7-systematic-group-2a-round-7-review.md)
+reproduce generated observer errors causing paid retries/private public diagnostics and second tool-round
+reflection replacing callback failures. `dd9d5a7d` retains exact attempt-observer provenance and guards
+budget inspection. Original permanent baseline: 7 failing/24 passing; corrected focus: 200 passing.
+Final forced root passes 23 tasks, 335 files, 7,769 tests/12 skips, six builds and test isolation.
+Both entire reports and all 4,140 sealed entries/source/link/bootstrap pins are independently verified
+before Original resumes. Runtime's platform-interrupted review is explicitly incomplete, with no
+restored runtime certification. **Fresh complete round 8 is required; group 2a, ADR-0102 approval,
+remaining groups, Steps 7–8/12, Sonar and PR remain open.**

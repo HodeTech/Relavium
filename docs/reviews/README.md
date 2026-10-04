@@ -221,6 +221,10 @@ added.
 - [2026-10-04 — W7 systematic group 2a, round 6](2026-10-04T21-48-21-w7-systematic-group-2a-round-6-review.md):
   six verified accounting/invocation/diagnostic families corrected; fresh complete round 7 required.
 
+- [2026-10-04 — W7 systematic group 2a, round 7](2026-10-04T23-06-22-w7-systematic-group-2a-round-7-review.md):
+  complete contracts review and incomplete runtime observations; generated observer provenance and
+  second tool-round reflection reproduced and corrected, fresh complete round 8 required.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

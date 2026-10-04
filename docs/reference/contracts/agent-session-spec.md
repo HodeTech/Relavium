@@ -148,6 +148,12 @@ Provider diagnostic normalization and cause classification follow the normal tur
 provider causes kept private. Nested diagnostics must retain actual invocation evidence and cannot
 permit another send past the hard turn cap.
 
+The shared turn driver records the exact throwable escaping its attempt observer. Inline generated
+responses preserve that observer failure without entering provider classification, even when the
+observer throws an `LlmProviderError`; genuine provider failures retain their normal mapping. A later
+tool round guards budget-error inspection so a throwing prototype or diagnostic cannot replace the
+original callback failure. The session still publishes its fixed terminal and canonical accounting.
+
 ## Session context
 
 `SessionContext` is the workspace situation a session runs against, auto-detected from the launching
