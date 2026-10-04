@@ -8,9 +8,10 @@ import type { LlmError, LlmErrorKind, ProviderId } from './types.js';
  */
 
 /**
- * The four retryable kinds — the fallback chain advances to the next provider on these (with
- * backoff) and records the failed attempt's usage so cost stays accurate. Every other kind is fatal:
- * it stops the chain rather than silently masking a real problem.
+ * The four retryable kinds. Failover also checks whether content was committed; a pre-content
+ * protocol violation may advance even though its kind is not retryable. Attempt records carry
+ * actual usage only when available. The consumer retains a bounded conservative reservation for
+ * an engaged attempt without trustworthy usage unless a proven refusal permits release.
  */
 export const RETRYABLE_KINDS: ReadonlySet<LlmErrorKind> = new Set<LlmErrorKind>([
   'rate_limit',
