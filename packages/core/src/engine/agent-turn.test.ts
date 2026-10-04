@@ -1,4 +1,9 @@
-import { LlmProviderError, makeLlmError, estimateRequestTokens } from '@relavium/llm';
+import {
+  LlmProviderError,
+  makeLlmError,
+  estimateRequestTokens,
+  prepareOutputCapPlan,
+} from '@relavium/llm';
 import type {
   CapabilityFlags,
   LlmMessage,
@@ -29,6 +34,8 @@ import type {
   ToolResultPart,
 } from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
+import { createToolRegistry } from '../tools/registry.js';
+import type { ToolDef as RegistryToolDef } from '../tools/types.js';
 import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
 import {
   AgentTurnError,
@@ -2300,4 +2307,151 @@ describe('pre-egress current-round request estimation (ADR-0096/0101)', () => {
         .some((part) => part.type === 'reasoning'),
     ).toBe(false);
   });
+});
+
+describe('local preparation and structural tool failures (PR 90)', () => {
+  function toolUseTurn(id: string): StreamChunk[] {
+    return [
+      { type: 'tool_call_start', id, name: 'echo' },
+      { type: 'tool_call_end', id },
+      STOP('tool_use'),
+    ];
+  }
+  it.each(['stream', 'generate'] as const)(
+    '%s keeps mismatched prepared caps as nonretryable validation before admission or credentials',
+    async (path) => {
+      const provider =
+        path === 'stream'
+          ? scriptedProvider('anthropic', [])
+          : mediaGenerateProvider('anthropic', {
+              content: [],
+              stopReason: 'stop',
+              usage: { inputTokens: 0, outputTokens: 0 },
+            });
+      const plan = prepareOutputCapPlan({
+        model: 'claude-opus-4-8',
+        provider: 'anthropic',
+        endpoint: 'custom',
+        maxTokens: 10,
+        providerOptions: undefined,
+      });
+      let admissions = 0;
+      let credentials = 0;
+      const params = baseParams(provider, {
+        maxTokens: 10,
+        preparedOutputCaps: [plan],
+        ...(path === 'generate' ? { outputModalities: ['image'] } : {}),
+        preEgress: () => {
+          admissions += 1;
+        },
+        chainCapabilities: {
+          ...CAPABILITIES,
+          keyFor: () => {
+            credentials += 1;
+            return 'test-key';
+          },
+        },
+      });
+      await expect(runAgentTurn(params)).rejects.toMatchObject({
+        code: 'validation',
+        retryable: false,
+      });
+      expect({ admissions, credentials }).toEqual({ admissions: 0, credentials: 0 });
+      expect(
+        eventsOf(params).some(
+          (event) => event.type === 'agent:token' || event.type === 'agent:tool_call',
+        ),
+      ).toBe(false);
+    },
+  );
+
+  const cycle: Record<string, unknown> = {};
+  cycle['self'] = cycle;
+  const badResults = [
+    { label: 'BigInt', value: 1n },
+    { label: 'cycle', value: cycle },
+    {
+      label: 'throwing serializer',
+      value: {
+        toJSON: (): never => {
+          throw new Error('private-tool-result');
+        },
+      },
+    },
+  ];
+  it.each(badResults)(
+    '$label from a real registry fails structural recording once without becoming a dispatch failure',
+    async ({ value }) => {
+      let dispatches = 0;
+      const tool: RegistryToolDef = {
+        id: 'echo',
+        source: 'builtin',
+        description: 'offline result',
+        parseArgs: (args) => args,
+        llmVisibleParams: { type: 'object' },
+        policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
+        dispatch: () => {
+          dispatches += 1;
+          return Promise.resolve(value);
+        },
+      };
+      const registry = createToolRegistry({ tools: [tool], host: {} });
+      const provider = scriptedProvider('anthropic', [toolUseTurn('model-id')]);
+      const params = baseParams(provider, {
+        registry,
+        sessionToolCallId: () => 'session-tool:42:0',
+      });
+      await expect(runAgentTurn(params)).rejects.toMatchObject({
+        code: 'tool_failed',
+        retryable: false,
+        message: 'tool payload could not be represented as JSON',
+      });
+      expect(dispatches).toBe(1);
+      const events = eventsOf(params);
+      expect(events.filter((event) => event.type === 'agent:tool_call')).toHaveLength(1);
+      expect(events.some((event) => event.type === 'agent:tool_result')).toBe(false);
+      expect(JSON.stringify(events)).not.toContain('private-tool-result');
+    },
+  );
+  it.each([
+    { label: 'Map', value: new Map([['key', 1]]), bytes: 2 },
+    { label: 'Set', value: new Set([1]), bytes: 2 },
+    { label: 'undefined', value: undefined, bytes: 0 },
+  ])(
+    'retains native $label result accounting with a real registry and a successful continuation',
+    async ({ value, bytes }) => {
+      let dispatches = 0;
+      const tool: RegistryToolDef = {
+        id: 'echo',
+        source: 'builtin',
+        description: 'offline result',
+        parseArgs: (args) => args,
+        llmVisibleParams: { type: 'object' },
+        policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
+        dispatch: () => {
+          dispatches += 1;
+          return Promise.resolve(value);
+        },
+      };
+      const registry = createToolRegistry({ tools: [tool], host: {} });
+      const provider = scriptedProvider('anthropic', [
+        toolUseTurn('model-id'),
+        [{ type: 'text_delta', text: 'done' }, STOP()],
+      ]);
+      const params = baseParams(provider, {
+        registry,
+        sessionToolCallId: () => 'session-tool:42:0',
+      });
+      const result = await runAgentTurn(params);
+      expect(result.text).toBe('done');
+      expect(result.toolHistory).toHaveLength(1);
+      expect(result.toolHistory[0]?.call).toMatchObject({ id: 'session-tool:42:0', name: 'echo' });
+      expect(result.toolHistory[0]?.result.resultBytes).toBe(bytes);
+      expect(dispatches).toBe(1);
+      expect(eventsOf(params).filter((event) => event.type === 'agent:tool_call')).toHaveLength(1);
+      expect(eventsOf(params).filter((event) => event.type === 'agent:tool_result')).toHaveLength(
+        1,
+      );
+    },
+  );
 });

@@ -67,6 +67,7 @@ import { ToolDispatchError } from '../tools/errors.js';
 import type {
   ToolCallPart,
   ToolDispatchContext,
+  ToolDispatchOutcome,
   ToolRegistry,
   ToolResultPart,
 } from '../tools/types.js';
@@ -1015,51 +1016,15 @@ async function dispatchToolCalls(
   for (const [slot, call] of toolCalls.entries()) {
     throwIfAborted(params.signal);
     const id = params.sessionToolCallId?.(slotBase + slot);
+    let outcome: ToolDispatchOutcome;
     try {
-      const outcome = await params.registry.dispatch(call, {
+      outcome = await params.registry.dispatch(call, {
         ...params.dispatchContext,
         effectSlot: slotBase + slot,
         ...(id === undefined
           ? {}
           : { effectAttempt: { providerAttempt: attemptNumber, toolCallId: id } }),
         signal: params.signal,
-      });
-      // Emit AFTER dispatch: the registry's `events.call.toolInput` is the SANITIZED payload
-      // (config-only + secret-tainted keys stripped — registry `sanitizeInput`), never the raw model
-      // args, so the event contract that `agent:tool_call.toolInput` carries no secrets holds.
-      params.emit({
-        type: 'agent:tool_call',
-        nodeId: params.nodeId,
-        model: getModel(),
-        toolId: outcome.events.call.toolId,
-        toolInput: outcome.events.call.toolInput,
-        attemptNumber,
-      });
-      const part = unwrapUntrusted(outcome.toolResult);
-      if (id !== undefined)
-        history.push(
-          sessionToolHistoryEntry(
-            id,
-            outcome.events.call.toolId,
-            call,
-            part,
-            unwrapUntrusted(outcome.mediaAttachments),
-          ),
-        );
-      results.push({ role: 'tool', content: [part] });
-      // The bytes a media-answering tool owes the model ride the media-INPUT rail (`CR-50`, ADR-0089 §1) —
-      // `tool_result.media` is handle-only and nothing lowers it. HELD until every call in this response has
-      // been dispatched, so the tool results stay contiguous; see `synthesizedMediaMessage`.
-      if (unwrapUntrusted(outcome.mediaAttachments).length > 0) {
-        pending.push({ toolName: call.name, media: outcome.mediaAttachments });
-      }
-      params.emit({
-        type: 'agent:tool_result',
-        nodeId: params.nodeId,
-        toolId: outcome.events.result.toolId,
-        success: outcome.events.result.success,
-        outputSummary: outcome.events.result.outputSummary,
-        attemptNumber,
       });
     } catch (err) {
       // Either a model-correctable result to feed back, or a classified throw — see `toolFailureMessage`.
@@ -1085,7 +1050,45 @@ async function dispatchToolCalls(
       }
       results.push(failure);
       correctable = true;
+      continue;
     }
+    // Emit AFTER dispatch: the registry's `events.call.toolInput` is the SANITIZED payload
+    // (config-only + secret-tainted keys stripped — registry `sanitizeInput`), never the raw model
+    // args, so the event contract that `agent:tool_call.toolInput` carries no secrets holds.
+    params.emit({
+      type: 'agent:tool_call',
+      nodeId: params.nodeId,
+      model: getModel(),
+      toolId: outcome.events.call.toolId,
+      toolInput: outcome.events.call.toolInput,
+      attemptNumber,
+    });
+    const part = unwrapUntrusted(outcome.toolResult);
+    if (id !== undefined)
+      history.push(
+        sessionToolHistoryEntry(
+          id,
+          outcome.events.call.toolId,
+          call,
+          part,
+          unwrapUntrusted(outcome.mediaAttachments),
+        ),
+      );
+    results.push({ role: 'tool', content: [part] });
+    // The bytes a media-answering tool owes the model ride the media-INPUT rail (`CR-50`, ADR-0089 §1) —
+    // `tool_result.media` is handle-only and nothing lowers it. HELD until every call in this response has
+    // been dispatched, so the tool results stay contiguous; see `synthesizedMediaMessage`.
+    if (unwrapUntrusted(outcome.mediaAttachments).length > 0) {
+      pending.push({ toolName: call.name, media: outcome.mediaAttachments });
+    }
+    params.emit({
+      type: 'agent:tool_result',
+      nodeId: params.nodeId,
+      toolId: outcome.events.result.toolId,
+      success: outcome.events.result.success,
+      outputSummary: outcome.events.result.outputSummary,
+      attemptNumber,
+    });
   }
   // ONE synthesized message for the whole response, after every tool result — never interleaved between
   // them. A turn that threw above never reaches here, so a failed dispatch delivers no media either.

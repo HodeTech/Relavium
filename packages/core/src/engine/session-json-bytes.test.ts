@@ -40,12 +40,28 @@ describe('session JSON byte measurement', () => {
     expect(sessionJsonBytes(cycle)).toBeUndefined();
   });
 
-  it('retains native custom serialization and refuses a deep hook rather than guessing its encoding', () => {
+  it('retains native custom serialization and refuses hooks only when native encoding fails', () => {
     const custom = { toJSON: () => 'é' };
     expect(sessionJsonBytes(custom)).toBe(4);
     let deep: unknown = custom;
     for (let index = 0; index < 15_000; index += 1) deep = [deep];
-    expect(sessionJsonBytes(deep)).toBeUndefined();
+    // Native JSON nesting limits vary by Node/V8 worker stack. A native success is valid;
+    // only its failure may enter the conservative fallback that refuses executable hooks.
+    let nativeBytes: number | undefined;
+    try {
+      nativeBytes = utf8ByteLength(JSON.stringify(deep));
+    } catch {
+      nativeBytes = undefined;
+    }
+    expect(sessionJsonBytes(deep)).toBe(nativeBytes);
+    const refusing = {
+      toJSON: (): never => {
+        throw new Error('offline serialization refusal');
+      },
+    };
+    let refusingDeep: unknown = refusing;
+    for (let index = 0; index < 15_000; index += 1) refusingDeep = [refusingDeep];
+    expect(sessionJsonBytes(refusingDeep)).toBeUndefined();
     expect(sessionJsonBytes(1n)).toBeUndefined();
     expect(sessionJsonBytes(undefined)).toBe(0);
   });
