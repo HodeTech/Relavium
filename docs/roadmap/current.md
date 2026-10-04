@@ -1448,3 +1448,11 @@ inference** ([phase-5-managed-inference.md](phases/phase-5-managed-inference.md)
 ([phase-6-cloud-execution-portal.md](phases/phase-6-cloud-execution-portal.md)), the two
 decoupled per Option B. See the [phase index](README.md#phase-index) and the
 [milestone spine](README.md#global-milestone-spine) (M3 onward).
+
+**Systematic group 2a, round 3 — 2026-10-04.** [Two complete independent reviews](../reviews/2026-10-04T15-44-35-w7-systematic-group-2a-round-3-review.md)
+verify all four tool notifications, then reproduce an inherited raw-callback usage/hard-cap gap and
+skipped realized recording. `e7973031` preserves original error identity while carrying canonical
+accounting and starts mandatory recording after authoritative cost aggregation despite delivery failure.
+Original baseline: 40 failing/13 passing; corrected root: 7,625 passing/12 skipped across 331 files,
+23 forced tasks and six forced builds. Every sealed report/entry is verified before Original resumes.
+**Fresh complete round 4 is required; group 2a, ownership, remaining groups, Steps 7–8/12, Sonar and PR remain open.**

@@ -3369,3 +3369,13 @@ regressions fail before repair; root lint/typecheck/test passes 23 tasks, 330 fi
 with 12 skips; forced build passes six tasks. Both full reports and every sealed entry/pin are
 verified before Original resumes. **Fresh complete round 3 is required; group 2a, ownership,
 remaining corrections and whole W7 remain open.**
+
+**Systematic group 2a, round 3 — 2026-10-04.** [Both fresh reviewers](../../reviews/2026-10-04T15-44-35-w7-systematic-group-2a-round-3-review.md)
+verify the four repaired tool notifications, then reproduce inherited post-engagement raw callback
+failures returning hard-cap slots/losing known usage and cost notifications skipping realized writes.
+`e7973031` preserves raw/pause/money error identity with an internal canonical outcome and starts the
+realized write after the authoritative fold despite delivery failure. Original baseline has 40 failures
+and 13 controls; corrected root passes 7,625 tests/12 skips across 331 files, all 23 forced tasks,
+six forced builds and test isolation. Complete reports and every sealed entry/pin are independently
+verified before Original resumes. **Fresh complete round 4 is required; group 2a, ownership,
+remaining groups, Steps 7–8/12, Sonar and PR acceptance remain open.**

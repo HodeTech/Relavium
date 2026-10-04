@@ -258,6 +258,9 @@ touches rather than restating it.
 An automated reviewer uses its stable task identity rather than an invented account handle.
 Record its model, effort and review scope in the coverage section where available.
 
+- [2026-10-04 — W7 systematic group 2a, round 3](2026-10-04T15-44-35-w7-systematic-group-2a-round-3-review.md):
+  inherited raw-callback accounting and skipped realized recording corrected; fresh complete round 4 required.
+
 ## Conventions
 
 - **Append-only.** A review record is a snapshot; never rewrite an old one. A new review
