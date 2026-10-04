@@ -27,6 +27,7 @@ import { catalogModel } from './catalog/lookup.js';
 import { acceptedTiers } from './reasoning-wire.js';
 import {
   prepareOutputCapRequest,
+  InvalidOutputCapPlanError,
   type OutputCapIdentity,
   type PreparedOutputCapPlan,
 } from './output-cap.js';
@@ -1170,6 +1171,14 @@ export class FallbackChain {
   #errorOf(caught: unknown, provider: ProviderId): LlmError {
     if (caught instanceof LlmProviderError) {
       return caught.llmError;
+    }
+    if (caught instanceof InvalidOutputCapPlanError) {
+      return makeLlmError({
+        provider,
+        kind: 'bad_request',
+        message: caught.message,
+        cause: caught,
+      });
     }
     return makeLlmError({
       provider,

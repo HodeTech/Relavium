@@ -14,6 +14,7 @@ import {
   type FallbackPlanEntry,
 } from './fallback-chain.js';
 import { UnknownModelError } from './errors.js';
+import { InvalidOutputCapPlanError, prepareOutputCapPlan } from './output-cap.js';
 import { LlmProviderError, makeLlmError } from './llm-error.js';
 import type {
   CapabilityFlags,
@@ -3015,6 +3016,59 @@ describe('FallbackChain — the grammar and the deadline are wired', () => {
 });
 
 describe('chain-owned failure evidence and staged caps (ADR-0096/0101)', () => {
+  it.each(['generate', 'stream'] as const)(
+    '%s rejects a mismatched prepared cap as a fatal local bad_request before admission or credentials',
+    async (path) => {
+      const primary = makeProvider({
+        id: 'openai',
+        generate: resolves('primary'),
+        stream: () => streamFrom([STOP_CHUNK]),
+      });
+      const fallback = makeProvider({
+        id: 'anthropic',
+        generate: resolves('fallback'),
+        stream: () => streamFrom([STOP_CHUNK]),
+      });
+      const plan = prepareOutputCapPlan({
+        model: 'gpt-4o',
+        provider: 'openai',
+        endpoint: 'custom',
+        maxTokens: 10,
+        providerOptions: undefined,
+      });
+      let admissions = 0;
+      let credentials = 0;
+      const { options, trace, sleeps } = makeOptions({
+        preAttempt: () => {
+          admissions += 1;
+        },
+        keyFor: () => {
+          credentials += 1;
+          return 'test-key';
+        },
+      });
+      const chain = new FallbackChain(
+        [entry(primary, 'gpt-4o', 2), entry(fallback, 'claude-opus-4-8')],
+        options,
+      );
+      const request = { ...userReq, maxTokens: 10, preparedOutputCaps: [plan] };
+      const error =
+        path === 'generate'
+          ? await rejectedError(chain.generate(request))
+          : (await collect(chain.stream(request))).find((chunk) => chunk.type === 'error')?.error;
+      expect(error).toMatchObject({ kind: 'bad_request', retryable: false });
+      expect(error?.cause).toBeInstanceOf(InvalidOutputCapPlanError);
+      expect(error?.message).toBe(
+        'prepared output cap plan does not match the request and actual endpoint',
+      );
+      expect({ admissions, credentials }).toEqual({ admissions: 0, credentials: 0 });
+      expect(primary.calls).toHaveLength(0);
+      expect(fallback.calls).toHaveLength(0);
+      expect(sleeps).toHaveLength(0);
+      expect(trace).toHaveLength(1);
+    },
+  );
+
   it.each(['generate', 'stream'] as const)(
     '%s copies native cap controls before admission and credential awaits',
     async (path) => {
