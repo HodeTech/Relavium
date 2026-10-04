@@ -974,6 +974,19 @@ function assertAttachmentBudget(pending: readonly PendingAttachment[]): void {
   }
 }
 
+/** Keep a post-dispatch observer failure classified so EA2 retains engagement and billed usage. */
+function emitToolOutcome(
+  params: AgentTurnParams,
+  event: Extract<NodeStreamEvent, { type: 'agent:tool_call' | 'agent:tool_result' }>,
+): void {
+  try {
+    params.emit(event);
+  } catch {
+    throwIfAborted(params.signal);
+    throw new AgentTurnError('internal', 'the tool outcome could not be delivered', false);
+  }
+}
+
 /**
  * Dispatch each tool call of a tool-use turn through the registry, emitting `agent:tool_call` /
  * `agent:tool_result` and returning the `role:'tool'` result messages. A model-correctable throw
@@ -1055,7 +1068,7 @@ async function dispatchToolCalls(
     // Emit AFTER dispatch: the registry's `events.call.toolInput` is the SANITIZED payload
     // (config-only + secret-tainted keys stripped — registry `sanitizeInput`), never the raw model
     // args, so the event contract that `agent:tool_call.toolInput` carries no secrets holds.
-    params.emit({
+    emitToolOutcome(params, {
       type: 'agent:tool_call',
       nodeId: params.nodeId,
       model: getModel(),
@@ -1081,7 +1094,7 @@ async function dispatchToolCalls(
     if (unwrapUntrusted(outcome.mediaAttachments).length > 0) {
       pending.push({ toolName: call.name, media: outcome.mediaAttachments });
     }
-    params.emit({
+    emitToolOutcome(params, {
       type: 'agent:tool_result',
       nodeId: params.nodeId,
       toolId: outcome.events.result.toolId,
@@ -1196,10 +1209,9 @@ export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnRe
       }
       throw err;
     }
-    // A non-AgentTurnError escaping here is either a `BudgetPauseError` (a pre-egress `pause_for_approval` —
-    // the session/runner handles it in its own catch branch; it engaged no provider) or an unexpected engine
-    // bug (the driver classifies every other reachable failure into an AgentTurnError). Both re-throw bare and
-    // report a truthful `{0,0}` — the pause did no egress, and an unclassified bug has no usage to attach.
+    // The pre-egress `BudgetPauseError` belongs to the session/runner's separate pause branch. Unexpected
+    // engine/host errors also remain visible to that boundary. Successful-tool observer failures are
+    // classified by `emitToolOutcome`, so their billed usage and engagement take the EA2 branch above.
     throw err;
   }
 }
