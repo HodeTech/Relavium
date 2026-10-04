@@ -623,11 +623,15 @@ async function generateOneTurn(
   chain: FallbackChain,
   messages: readonly LlmMessage[],
   params: AgentTurnParams,
+  wasObserverFailure: (error: unknown) => boolean,
 ): Promise<{ content: ContentPart[]; stopReason: StopReason }> {
   try {
     const result = await chain.generate(buildRequest(messages, params));
     return { content: result.content, stopReason: result.stopReason };
   } catch (err) {
+    // A successful provider call can be followed by a host/money observer throwing this same class.
+    // Only provider-origin failures enter the provider taxonomy; the observer's exact escape stays raw.
+    if (wasObserverFailure(err)) throw err;
     let diagnostic: LlmError | undefined;
     try {
       if (err instanceof LlmProviderError) diagnostic = err.llmError;
@@ -1478,10 +1482,18 @@ async function driveAgentTurn(
     }
   };
 
+  let observerFailure: { readonly error: unknown } | undefined;
   const chain = new FallbackChain([...params.planEntries], {
     ...params.chainCapabilities,
     costTracker,
-    onAttempt,
+    onAttempt: (record) => {
+      try {
+        onAttempt(record);
+      } catch (error) {
+        observerFailure = { error };
+        throw error;
+      }
+    },
     // The pre-egress budget hook runs before EVERY provider attempt, not just the first turn, so a failover
     // to a more expensive model is also gated (1.AC). The chain's PreAttemptHook supplies `{ model, provider,
     // maxTokens }` — `provider` is THIS attempt's routing provider (review M2) — so wrap the hook to also carry
@@ -1563,7 +1575,12 @@ async function driveAgentTurn(
     // per-attempt `preAttempt`, which retains the admission through the matching attempt record.
     if (requestsMediaOutput(params)) {
       throwIfAborted(params.signal);
-      const turn = await generateOneTurn(chain, messages, params);
+      const turn = await generateOneTurn(
+        chain,
+        messages,
+        params,
+        (error) => observerFailure !== undefined && Object.is(observerFailure.error, error),
+      );
       throwIfAborted(params.signal); // cancel-wins independent of adapter cooperation (mirrors the stream path)
       if (turn.stopReason === 'tool_use') {
         // A media-output turn is single-shot/terminal (ADR-0046): generate() is one round-trip with no tool
@@ -1625,19 +1642,27 @@ async function driveAgentTurn(
         ? streamOneTurn(chain, messages, params, () => activeModel, usage)
         : streamOneTurn(chain, messages, params, () => activeModel, usage, turnCommitted).catch(
             (error: unknown) => {
-              if (error instanceof BudgetPauseError) {
-                // NOT `error.message` — it ends "run paused for approval", which is exactly what does not
-                // happen here. Reported verbatim on `relavium run` and both `--json` surfaces it told the
-                // operator to go approve a pause that will never arrive, for a run that had already failed.
-                throw new AgentTurnError(
-                  'budget_exceeded',
-                  `pre-egress budget check would exceed the cap of ${error.limitMicrocents} micro-cents ` +
-                    `(spent ${error.spentMicrocents}); the node had already run tools this turn, so it failed ` +
-                    `instead of pausing — approving and resuming would re-fire them (ADR-0080 §7). Raise the ` +
-                    `budget cap and start a new run.`,
-                  false,
-                );
+              let budgetFailure: AgentTurnError | undefined;
+              try {
+                if (error instanceof BudgetPauseError) {
+                  // NOT `error.message` — it ends "run paused for approval", which is exactly what does not
+                  // happen here. Reported verbatim on `relavium run` and both `--json` surfaces it told the
+                  // operator to go approve a pause that will never arrive, for a run that had already failed.
+                  budgetFailure = new AgentTurnError(
+                    'budget_exceeded',
+                    `pre-egress budget check would exceed the cap of ${error.limitMicrocents} micro-cents ` +
+                      `(spent ${error.spentMicrocents}); the node had already run tools this turn, so it failed ` +
+                      `instead of pausing — approving and resuming would re-fire them (ADR-0080 §7). Raise the ` +
+                      `budget cap and start a new run.`,
+                    false,
+                  );
+                }
+              } catch {
+                // A host exception can reject prototype/diagnostic reflection. Preserve that exact
+                // failure rather than replacing it with an exception thrown while classifying it.
+                throw error;
               }
+              if (budgetFailure !== undefined) throw budgetFailure;
               throw error;
             },
           ));
