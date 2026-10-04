@@ -628,42 +628,42 @@ async function generateOneTurn(
     const result = await chain.generate(buildRequest(messages, params));
     return { content: result.content, stopReason: result.stopReason };
   } catch (err) {
-    if (err instanceof LlmProviderError) {
-      throwMappedChainError(err.llmError);
+    let diagnostic: LlmError | undefined;
+    try {
+      if (err instanceof LlmProviderError) diagnostic = err.llmError;
+    } catch {
+      throw err;
     }
+    if (diagnostic !== undefined) throwMappedChainError(diagnostic);
     throw err;
   }
 }
 
 /** Map a chain failure — a streamed `error` chunk or a thrown `generate()` error — into the turn taxonomy. */
 function throwMappedChainError(error: LlmError, turnCommitted = false): never {
-  // A pre-egress budget hook may throw its own AgentTurnError or Budget*Error; preserve it rather than
-  // remapping the wrapped LlmError to a generic internal code.
-  if (error.cause instanceof AgentTurnError) {
-    throw error.cause;
+  // Preserve host/money identities without letting hostile prototype or diagnostic access replace them.
+  // Shared commitment/realised barriers retain the failing writer's node, rather than this observer's node.
+  const cause = error.cause;
+  let mapped:
+    | { readonly kind: 'original' }
+    | { readonly kind: 'budget'; readonly message: string }
+    | undefined;
+  try {
+    if (
+      cause instanceof AgentTurnError ||
+      cause instanceof BudgetPauseError ||
+      cause instanceof CommitmentDurabilityError ||
+      cause instanceof LedgerDurabilityError
+    ) {
+      mapped = { kind: 'original' };
+    } else if (cause instanceof BudgetExceededError) {
+      mapped = { kind: 'budget', message: cause.message };
+    }
+  } catch {
+    // An opaque cause remains on the chain diagnostic; map it through the normal turn taxonomy.
   }
-  if (error.cause instanceof BudgetExceededError) {
-    throw new AgentTurnError('budget_exceeded', error.cause.message, false);
-  }
-  if (error.cause instanceof BudgetPauseError) {
-    throw error.cause;
-  }
-  // ADR-0074 §2. `checkPreEgress` awaits the commitment barrier BEFORE admitting, so it can throw a
-  // `CommitmentDurabilityError` from inside `preAttempt` — and the chain wraps that into a generic
-  // `LlmError{kind:'unknown'}`. Remapping it would discard the `nodeId` the class exists to carry (under a
-  // `fan_out` both branches await the same chain link, so the observer is not necessarily the owner) and would
-  // report a money-durability failure as an ordinary provider fault. Rethrown intact, like `BudgetPauseError`.
-  if (error.cause instanceof CommitmentDurabilityError) {
-    throw error.cause;
-  }
-  // ADR-0076/ADR-0077's realized twin, for the SAME two reasons — barrier B1 joins the money chain inside
-  // `preAttempt`, so a ledger failure arrives here wrapped exactly like a commitment failure. Without this
-  // arm the class is flattened away: `isLedgerDurabilityError` stops narrowing at the engine's B3 catch, and
-  // the `nodeId` identifying WHOSE write broke is replaced by whichever node's turn happened to observe the
-  // barrier — the fan-out misattribution `CommitmentDurabilityError` got this arm to prevent.
-  if (error.cause instanceof LedgerDurabilityError) {
-    throw error.cause;
-  }
+  if (mapped?.kind === 'original') throw cause;
+  if (mapped?.kind === 'budget') throw new AgentTurnError('budget_exceeded', mapped.message, false);
   throw new AgentTurnError(
     codeForLlmError(error),
     error.message,
@@ -1333,12 +1333,15 @@ async function driveAgentTurn(
     // mutation-killed there — releasing instead of retaining, and passing the un-incremented counter.
     active?.settleAtReservedEstimate({ nodeId: params.nodeId });
   };
-  const takeAttemptAdmission = (): BudgetAdmission | undefined => {
-    if (!admissionPending) return undefined;
+  const dischargeAttemptAdmission = (
+    discharge: (active: BudgetAdmission | undefined) => void,
+  ): void => {
+    const active = admissionPending ? attemptAdmission : undefined;
+    // Keep the slot owned until the lease action succeeds. A diagnostic/callback failure then reaches
+    // the outer conservative cleanup with its original admission still available.
+    discharge(active);
     admissionPending = false;
-    const active = attemptAdmission;
     attemptAdmission = undefined;
-    return active;
   };
 
   const onAttempt = (record: AttemptRecord): void => {
@@ -1347,11 +1350,10 @@ async function driveAgentTurn(
     if (record.outcome === 'skipped') return;
     // The chain owns the actual seam-invocation boundary, independent of governor presence.
     const providerMayHaveEngaged = record.providerInvoked;
-    const admission = takeAttemptAdmission();
     if (!providerMayHaveEngaged) {
       // A successful pre-attempt check followed by a credential failure/cancellation never reached a provider.
       // Proven pre-provider failure: the held admission is safe to release after the hook returned.
-      admission?.release();
+      dischargeAttemptAdmission((active) => active?.release());
       return;
     }
     activeModel = record.model;
@@ -1366,16 +1368,18 @@ async function driveAgentTurn(
         status !== undefined &&
         PRE_CONTENT_REFUSAL_STATUSES.has(status)
       ) {
-        admission?.release();
+        dischargeAttemptAdmission((active) => active?.release());
         return;
       }
       // A clean EOF and a partial-stream failure can both omit terminal usage AFTER provider egress. Dropping the
       // reservation would silently reopen cap capacity for money that may already be owed, so fail closed at the
       // bounded estimate. A credential/materialization failure before the true attempt boundary never reaches here.
-      admission?.settleAtReservedEstimate({
-        nodeId: params.nodeId,
-        attemptNumber: nonSkippedAttempts,
-      });
+      dischargeAttemptAdmission((active) =>
+        active?.settleAtReservedEstimate({
+          nodeId: params.nodeId,
+          attemptNumber: nonSkippedAttempts,
+        }),
+      );
       return;
     }
     // This AttemptRecord consumes the stop chunk's quantities exactly once. A host failure before
@@ -1403,21 +1407,26 @@ async function driveAgentTurn(
     // implication holds today, but it is an invariant of a type in another package, and the compiler cannot see
     // it — leaning on it here would be a narrowing that a future chain change could silently invalidate.
     if (record.priced === false || record.cost === undefined) {
-      admission?.settleAtReservedEstimate({
-        nodeId: params.nodeId,
-        attemptNumber: nonSkippedAttempts,
-      });
-    } else {
-      try {
-        admission?.settle(record.cost.costMicrocents);
-      } catch (error) {
-        // Settlement rejects an unsafe actual before consuming the lease. This observer already took the
-        // attempt's admission, so outer cleanup cannot recover it: retain E here before propagating the fault.
-        // A lease already settled before another callback fault makes this conservative fallback a no-op.
-        admission?.settleAtReservedEstimate({
+      dischargeAttemptAdmission((active) =>
+        active?.settleAtReservedEstimate({
           nodeId: params.nodeId,
           attemptNumber: nonSkippedAttempts,
-        });
+        }),
+      );
+    } else {
+      try {
+        const actualCost = record.cost.costMicrocents;
+        dischargeAttemptAdmission((active) => active?.settle(actualCost));
+      } catch (error) {
+        // Settlement rejects an unsafe actual before consuming the lease. Retain E with this recorded
+        // attempt number before propagating the fault. The slot stays owned if this action also fails.
+        // A lease already settled before another callback fault makes this conservative fallback a no-op.
+        dischargeAttemptAdmission((active) =>
+          active?.settleAtReservedEstimate({
+            nodeId: params.nodeId,
+            attemptNumber: nonSkippedAttempts,
+          }),
+        );
         throw error;
       }
     }

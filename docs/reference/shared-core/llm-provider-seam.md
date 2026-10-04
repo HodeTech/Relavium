@@ -947,7 +947,8 @@ followed by each authored `fallback_chain` entry:
   next model still needs, so only the token goes.
 - `AttemptRecord` carries chain-owned `providerInvoked`, `contentReceived` and `customEndpoint`
   independently of `LlmError`. `providerInvoked` becomes true immediately before calling the
-  already-resolved and receiver-bound `generate` or `stream` method. Local cap preparation, pre-attempt
+  already-resolved and receiver-bound `generate` or `stream` method, after a final cancellation check
+  following method lookup and request setup. Local cap preparation, pre-attempt
   hooks, credential resolution, cancellation before invocation, deadline setup and method lookup
   failures keep it false. Core uses
   this boundary with or without a budget governor; a failed record alone does not prove invocation.
@@ -960,10 +961,20 @@ followed by each authored `fallback_chain` entry:
   statuses, transport failures and timeouts retain conservative commitment. Existing proven
   pre-provider failures still release. Accounting failures after a resolved generation use a fixed
   non-retryable `unknown` error and preserve a detached schema-valid usage copy that also passes the
-  cost tracker's safe-integer checks, even if pricing fails. A throwing usage accessor is recorded
-  without invented quantities; the response usage property is read once. No priced amount is invented.
-  A consumer observer exception propagates once outside accounting guards. Hostile exception
-  reflection cannot replace an untyped failure's original cause or omit its attempt record.
+  cost tracker's safe-integer checks, even if pricing fails. Required counts cannot be absent. One
+  owned, validated, frozen quantity snapshot feeds pricing, attempt records and the generated result;
+  streamed stop usage is captured before yielding to consumer readiness or notification callbacks.
+  Cache and media quantities are included. The direct `CostTracker` entry point owns its input before
+  consulting host pricing too. A pricing failure with trustworthy quantities explicitly marks its
+  record `priced: false`; its realized zero placeholder never claims a complete price, and the
+  governor retains its conservative reservation. A throwing usage accessor is recorded without
+  invented quantities; the response usage property is read once.
+  Typed provider diagnostics are detached and validated inside guarded normalization, including
+  nested fields. The original cause remains private. Hostile prototype inspection during pricing or
+  core cause classification cannot replace that cause; opaque causes follow normal turn mapping.
+  A consumer observer exception propagates once outside provider and accounting guards. An admission
+  stays owned until its release or settlement succeeds, so a diagnostic failure reaches conservative
+  cleanup rather than losing the lease.
 - Surface **per-attempt usage** to the injected `CostTracker` (against that
   attempt's model) so cost stays accurate across a failover, and report each
   attempt (succeeded / failed / skipped) via an `onAttempt` observer so the

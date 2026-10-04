@@ -138,12 +138,15 @@ Accounting uses an internal outcome carrier without mutating the thrown value, i
 classified exceptions. Terminal usage retains known prior attempts and an observed valid terminal
 usage chunk; an unreported current attempt adds no
 invented usage. Ordinary raw callback/money errors remain visible to the API caller after the fixed,
-secret-free session terminal. If prototype or diagnostic-field inspection itself throws, the fixed
+secret-free session terminal. If prototype or diagnostic-field inspection during session presentation itself throws, the fixed
 terminal still uses canonical accounting and the original throwable is rethrown. A successful turn
 counted before its later durability flush is counted
 once even if that flush fails; its known quantities outrank unrelated exception metadata for every
 error class. A later-round budget pause retains earlier engagement and usage. Terminal `cancel()`
 retains its sole cancellation event.
+Provider diagnostic normalization and cause classification follow the normal turn taxonomy, with opaque
+provider causes kept private. Nested diagnostics must retain actual invocation evidence and cannot
+permit another send past the hard turn cap.
 
 ## Session context
 

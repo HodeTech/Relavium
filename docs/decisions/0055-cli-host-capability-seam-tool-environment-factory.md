@@ -158,3 +158,15 @@ approval or financial policy. The canonical contracts remain
 [agent-session-spec.md](../reference/contracts/agent-session-spec.md) and
 [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md). Complete fresh corrective
 review is required before the group is accepted.
+
+## 2026-10-04 implementation correction — guarded nested diagnostics
+
+A further independent W7 review verifies that nested typed diagnostics and downstream cause
+classifiers also need guarded ownership. The implementation now captures nested diagnostics before
+record delivery, preserves private original accounting causes under hostile reflection, and keeps
+admission ownership until its lease action succeeds. Method lookup/setup cancellation is rechecked
+before invocation. These repair the existing engagement and error contracts; canonical behaviour
+remains in [the LLM
+seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter) and [session
+contract](../reference/contracts/agent-session-spec.md). Whole-request ownership under Proposed
+ADR-0102 remains a separate approval gate.

@@ -1,6 +1,6 @@
 import type { AbortSignalLike, BackoffStrategy, ContentPart, MediaSource } from '@relavium/shared';
 
-import { assertAccountableUsage, type CostTracker, type CostUpdate } from './cost-tracker.js';
+import { snapshotAccountableUsage, type CostTracker, type CostUpdate } from './cost-tracker.js';
 import { UnknownModelError } from './errors.js';
 import {
   DEFAULT_ATTEMPT_TIMEOUT_MS,
@@ -11,7 +11,7 @@ import {
 } from './attempt-deadline.js';
 import { isRetryable, LlmProviderError, makeLlmError } from './llm-error.js';
 import { verifyStreamGrammar } from './stream-grammar.js';
-import { ProviderIdSchema, UsageSchema } from './types.js';
+import { LlmErrorSchema, ProviderIdSchema } from './types.js';
 import type {
   LlmError,
   LlmMessage,
@@ -674,6 +674,9 @@ export class FallbackChain {
       deadline = this.#openDeadline(entryReq);
       const generate = entry.provider.generate.bind(entry.provider);
       const request = deadline === undefined ? entryReq : withSignal(entryReq, deadline.signal);
+      if (this.#aborted(entryReq)) {
+        throw new LlmProviderError(this.#cancelledError(entry.provider.id));
+      }
       record = { ...record, providerInvoked: true };
       const call = generate(request, key);
       // A `generate()` has no chunks, so there is nothing to commit: a deadline here is always pre-content
@@ -710,12 +713,9 @@ export class FallbackChain {
       // fail or mutate its own response; never copy invalid counts into failed-attempt accounting.
       usage = result.usage;
       if (usage !== undefined) {
-        const parsed = UsageSchema.safeParse(usage);
-        if (parsed.success) {
-          assertAccountableUsage(entry.model, parsed.data);
-          knownUsage = parsed.data;
-        }
-        folded = this.#foldUsage(entry.model, usage);
+        knownUsage = snapshotAccountableUsage(entry.model, usage);
+        usage = knownUsage;
+        folded = this.#foldUsage(entry.model, knownUsage);
       } else {
         folded = { unpriced: false };
       }
@@ -728,7 +728,7 @@ export class FallbackChain {
       });
       this.#emit({
         ...receivedRecord,
-        ...(knownUsage === undefined ? {} : { usage: knownUsage }),
+        ...(knownUsage === undefined ? {} : { usage: knownUsage, priced: false }),
         outcome: 'failed',
         error,
       });
@@ -737,7 +737,13 @@ export class FallbackChain {
     // The observer is consumer code: its exception propagates once, outside the provider catch.
     if (usage === undefined) this.#emitSuccess(receivedRecord, entry.model, undefined);
     else this.#emitFolded(receivedRecord, usage, folded);
-    return { status: 'success', result };
+    return {
+      status: 'success',
+      result:
+        usage === undefined
+          ? result
+          : { content: result.content, stopReason: result.stopReason, usage, raw: result.raw },
+    };
   }
 
   /**
@@ -816,6 +822,9 @@ export class FallbackChain {
       deadline = this.#openDeadline(entryReq);
       const stream = entry.provider.stream.bind(entry.provider);
       const request = deadline === undefined ? entryReq : withSignal(entryReq, deadline.signal);
+      if (this.#aborted(entryReq)) {
+        throw new LlmProviderError(this.#cancelledError(entry.provider.id));
+      }
       record = { ...record, providerInvoked: true };
       const verified = verifyStreamGrammar(stream(request, key), entry.provider.id);
       // Manual iteration, not `for await`: every `next()` is raced against the ABSOLUTE deadline. A
@@ -832,7 +841,10 @@ export class FallbackChain {
           throw new LlmProviderError(chunk.error);
         }
         if (chunk.type === 'stop') {
-          usage = chunk.usage;
+          usage = snapshotAccountableUsage(entry.model, chunk.usage);
+          state.committed = state.committed || isContentChunk(chunk);
+          yield { ...chunk, usage };
+          continue;
         }
         state.committed = state.committed || isContentChunk(chunk);
         yield chunk;
@@ -906,7 +918,7 @@ export class FallbackChain {
       });
       // The fold runs BEFORE the emit, so no success record was written — this `failed` record is the
       // attempt's only one, not a duplicate.
-      this.#emit({ ...record, outcome: 'failed', error });
+      this.#emit({ ...record, usage, priced: false, outcome: 'failed', error });
       // SURFACED, not returned. `#runEntryStream` checks `state.committed` before it looks at the returned
       // failure, so on the committed path a returned error is dropped on the floor — silence, in the one
       // place the money path was made loud on purpose.
@@ -1185,7 +1197,10 @@ export class FallbackChain {
   /** Preserve provider errors, classify local cap refusals as `bad_request`, and keep other diagnostics fixed. */
   #errorOf(caught: unknown, provider: ProviderId): LlmError {
     try {
-      if (caught instanceof LlmProviderError) return caught.llmError;
+      if (caught instanceof LlmProviderError) {
+        // Detach and validate nested diagnostics while reflection is still guarded. Cause stays private.
+        return Object.freeze(LlmErrorSchema.parse(caught.llmError));
+      }
       if (caught instanceof InvalidOutputCapPlanError) {
         return makeLlmError({
           provider,
@@ -1296,7 +1311,13 @@ export class FallbackChain {
     try {
       cost = this.#options.costTracker?.record(model, usage);
     } catch (error_) {
-      if (!(error_ instanceof UnknownModelError)) throw error_;
+      let unknownModel = false;
+      try {
+        unknownModel = error_ instanceof UnknownModelError;
+      } catch {
+        // Reflection cannot replace the original accounting failure.
+      }
+      if (!unknownModel) throw error_;
       return { unpriced: true };
     }
     // TWO ways an egress fails to be priced, and they arrive by different routes (ADR-0089 §4). The throw above

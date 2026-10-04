@@ -3187,7 +3187,8 @@ describe('chain-owned failure evidence and staged caps (ADR-0096/0101)', () => {
       expect(observed).toBe(1);
       expect(provider.calls).toHaveLength(1);
       expect(trace).toHaveLength(1);
-      expect(trace[0]?.error).toBe(refused);
+      expect(trace[0]?.error).toStrictEqual(refused);
+      expect(Object.isFrozen(trace[0]?.error)).toBe(true);
     },
   );
 

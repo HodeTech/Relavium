@@ -3,7 +3,7 @@ import type { MediaBilledModality } from '@relavium/shared';
 import { catalogPricing, pricedModelIds } from './catalog/pricing.js';
 import { UnknownModelError } from './errors.js';
 import type { ModelPricing } from './pricing.js';
-import type { MediaUnitsEntry, Usage } from './types.js';
+import { UsageSchema, type MediaUnitsEntry, type Usage } from './types.js';
 
 /**
  * Cost tracking Relavium owns, keyed on the canonical model id — never read from a provider
@@ -168,8 +168,8 @@ export function assertAccountableUsage(modelId: string, usage: Usage): void {
     ['cacheWriteTokens', usage.cacheWriteTokens],
   ];
   for (const [field, value] of counts) {
-    if (value === undefined) continue;
-    if (!Number.isSafeInteger(value) || value < 0) {
+    if (value === undefined && field !== 'inputTokens' && field !== 'outputTokens') continue;
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
       throw new TypeError(
         `cost accounting for '${modelId}' received a non-accountable ${field}: expected a non-negative safe integer`,
       );
@@ -194,7 +194,24 @@ export function assertAccountableUsage(modelId: string, usage: Usage): void {
   }
 }
 
+/** Capture provider quantities once, before host pricing can run or mutate them. */
+export function snapshotAccountableUsage(modelId: string, usage: Usage): Usage {
+  const parsed = UsageSchema.safeParse(usage);
+  if (!parsed.success) {
+    throw new TypeError('cost accounting received non-accountable usage');
+  }
+  const snapshot = parsed.data;
+  assertAccountableUsage(modelId, snapshot);
+  for (const entry of snapshot.mediaUnits ?? []) Object.freeze(entry);
+  if (snapshot.mediaUnits !== undefined) Object.freeze(snapshot.mediaUnits);
+  return Object.freeze(snapshot);
+}
+
 export function cost(modelId: string, usage: Usage, overlay?: PricingOverlay): MediaCost {
+  return costSnapshot(modelId, snapshotAccountableUsage(modelId, usage), overlay);
+}
+
+function costSnapshot(modelId: string, usage: Usage, overlay?: PricingOverlay): MediaCost {
   const p = priceModel(modelId, overlay);
   const cacheReadTokens = usage.cacheReadTokens ?? 0;
   const cacheWriteTokens = usage.cacheWriteTokens ?? 0;
@@ -319,15 +336,15 @@ export class CostTracker {
    * where the arithmetic actually happens. Fail loud: a bad number is a defect, never something to round away.
    */
   record(modelId: string, usage: Usage): CostUpdate {
-    assertAccountableUsage(modelId, usage);
-    const priced = cost(modelId, usage, this.#overlay);
+    const snapshot = snapshotAccountableUsage(modelId, usage);
+    const priced = costSnapshot(modelId, snapshot, this.#overlay);
     // The PRICED part is what folds into the running total. An unpriced modality adds nothing here on purpose:
     // fabricating a figure for it would put an invented number inside the cap, which is worse than a known gap.
     // The gap rides out on `unpricedModalities` so the caller can mark the egress unpriced (ADR-0089 §4).
     this.#cumulativeMicrocents += priced.microcents;
     return {
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
+      inputTokens: snapshot.inputTokens,
+      outputTokens: snapshot.outputTokens,
       costMicrocents: priced.microcents,
       cumulativeCostMicrocents: this.#cumulativeMicrocents,
       ...(priced.unpricedModalities.length === 0

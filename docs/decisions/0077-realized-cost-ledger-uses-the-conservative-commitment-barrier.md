@@ -288,3 +288,15 @@ cover notification, durable sink, snapshot and combined failures. An
 [actual WorkflowEngine control](../../packages/core/src/engine/budget-approved-failover.test.ts)
 throws its transient cost timestamp after the counter fold and verifies one durable realized row
 with the correct total. Historical text is preserved; fresh systematic acceptance remains required.
+
+## 2026-10-04 implementation correction — known quantities with unknown price
+
+W7 systematic review reproduces generated pricing failure with trustworthy token quantities but no
+trustworthy actual price. Forwarding those quantities without an explicit unpriced flag incorrectly
+creates a fully-priced zero realized row, while the governor correctly retains its reservation.
+Failed generated and streamed pricing records now state `priced: false`; no actual charge is
+invented and conservative commitment remains intact. Owned validated quantity snapshots are used for
+both successful and failed accounting, including direct CostTracker entry. This repairs the existing
+realised-price distinction and ordering; it does not introduce a new financial policy. The canonical
+producer contract is [the LLM
+seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter).
