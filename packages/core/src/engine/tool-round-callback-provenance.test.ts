@@ -5,6 +5,7 @@ import { AgentSession, type SessionStreamEvent } from './agent-session.js';
 import { createToolRegistry } from '../tools/registry.js';
 import type { ToolDef } from '../tools/types.js';
 import { createAbortController, createInMemoryEffectJournalStore } from './execution-host.js';
+import { BudgetPauseError } from './budget-governor.js';
 
 const supports: LlmProvider['supports'] = {
   tools: true,
@@ -33,15 +34,28 @@ function sessionFixture(
   second: boolean,
   aborting: boolean,
   hostile: boolean,
+  pause = false,
 ) {
   const reflection = new Error('private reflected failure');
-  const marker = hostile
-    ? new Proxy(new Error('private original callback'), {
-        getPrototypeOf() {
-          throw reflection;
-        },
-      })
-    : new Error('private ordinary callback');
+  let pauseReads = 0;
+  const marker = pause
+    ? new BudgetPauseError(1, 2, 3)
+    : hostile
+      ? new Proxy(new Error('private original callback'), {
+          getPrototypeOf() {
+            throw reflection;
+          },
+        })
+      : new Error('private ordinary callback');
+  if (pause) {
+    Object.defineProperty(marker, 'message', { value: 'private pause callback' });
+    Object.defineProperty(marker, 'limitMicrocents', {
+      get: () => {
+        pauseReads++;
+        return 999;
+      },
+    });
+  }
   const journal = createInMemoryEffectJournalStore();
   const events: SessionStreamEvent[] = [];
   let calls = 0;
@@ -122,10 +136,37 @@ function sessionFixture(
     },
   });
   session.start();
-  return { session, events, marker, reflection, count: () => ({ calls, tools }) };
+  return {
+    session,
+    events,
+    marker,
+    reflection,
+    count: () => ({ calls, tools }),
+    pauseReads: () => pauseReads,
+  };
 }
 
 describe('tool-round callback provenance', () => {
+  for (const site of ['cost', 'token', 'ready'] as const) {
+    it(`a later ${site} callback cannot acquire budget authority by throwing a pause class`, async () => {
+      const h = sessionFixture(site, true, false, false, true);
+      await expect(h.session.sendMessage('run')).resolves.toBeUndefined();
+      const base = { input: 2, output: 3 };
+      expect(h.events.filter((event) => event.type === 'session:turn_completed')).toMatchObject([
+        {
+          stopReason: 'error',
+          tokensUsed: site === 'token' ? base : { input: 7, output: 10 },
+          error: { code: 'internal', retryable: false },
+        },
+      ]);
+      expect(h.count()).toEqual({ calls: 2, tools: 1 });
+      expect(h.pauseReads()).toBe(0);
+      expect(JSON.stringify(h.events)).not.toContain('private');
+      await h.session.sendMessage('blocked');
+      expect(h.count()).toEqual({ calls: 2, tools: 1 });
+      expect(h.events.at(-1)).toMatchObject({ error: { code: 'turn_limit' } });
+    });
+  }
   for (const site of ['cost', 'token', 'ready'] as const)
     for (const second of [false, true])
       for (const hostile of [false, true])

@@ -561,7 +561,7 @@ describe('runAgentTurn — inline media-out (1.AG/ADR-0046)', () => {
     expect(result.model).toBe('gpt-image-1'); // attributed to the succeeding (failed-over) model
   });
 
-  it('maps a generate() budget-exceeded cause to budget_exceeded (the throwMappedChainError cause unwrap)', async () => {
+  it('does not grant budget authority to a generated provider error cause', async () => {
     const provider: LlmProvider = {
       id: 'gemini',
       supports: MEDIA_CAPS,
@@ -584,8 +584,52 @@ describe('runAgentTurn — inline media-out (1.AG/ADR-0046)', () => {
       planEntries: [{ provider, model: 'gemini-2.5-flash', maxAttempts: 1 }],
       outputModalities: ['image'],
     });
-    await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'budget_exceeded' });
+    await expect(runAgentTurn(params)).rejects.toMatchObject({
+      code: 'internal',
+      retryable: false,
+    });
   });
+
+  it.each(['fail', 'pause'] as const)(
+    'preserves the real generated pre-egress %s decision without a provider call',
+    async (decision) => {
+      let calls = 0;
+      const provider = mediaGenerateProvider('gemini', {
+        content: [image],
+        stopReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      });
+      const marker =
+        decision === 'fail'
+          ? new BudgetExceededError(120, 50, 130)
+          : new BudgetPauseError(120, 50, 130);
+      const params = baseParams(
+        {
+          ...provider,
+          generate: (...args) => {
+            calls++;
+            return provider.generate(...args);
+          },
+        },
+        {
+          outputModalities: ['image'],
+          preEgress: () => {
+            throw marker;
+          },
+        },
+      );
+      if (decision === 'fail') {
+        await expect(runAgentTurn(params)).rejects.toMatchObject({
+          code: 'budget_exceeded',
+          retryable: false,
+          engaged: false,
+        });
+      } else {
+        await expect(runAgentTurn(params)).rejects.toBe(marker);
+      }
+      expect(calls).toBe(0);
+    },
+  );
 
   it('a pre-aborted signal on the media path fails cancelled with zero generate() egress', async () => {
     let called = false;

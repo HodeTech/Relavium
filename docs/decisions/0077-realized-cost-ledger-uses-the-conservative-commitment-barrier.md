@@ -326,3 +326,20 @@ B1/B2/B3 are unchanged. The [actual workflow tests](../../packages/core/src/engi
 cover stream/generate and provider/turn/budget-shaped host failures; the existing
 [unsafe settlement controls](../../packages/core/src/engine/agent-runner-allowance-settlement.test.ts)
 remain unchanged. This repairs provenance without changing financial or approval policy.
+
+## 2026-10-05 implementation correction — admission cause and writer provenance
+
+The ninth independent W7 review verifies that a pricing/provider cause shaped as a turn or budget
+error can acquire retry/gate authority, and an external observer's money error can nominate a false
+ledger writer. Only the exact error retained at the current pre-attempt admission/money boundary
+may be unwrapped as that control flow. Observer-origin money classes receive the same fixed internal
+presentation as other observer failures. Genuine B1/B2/B3 failures retain their actual writer;
+invalid actual-cost settlement remains raw and conservatively charged.
+
+Generated result projection now completes inside the guarded post-response path before observer
+delivery. A projection fault retains an already folded actual price on one failed record; pricing
+failure instead retains trustworthy quantities with `priced: false`, never a known actual charge.
+The [actual workflow/session controls](../../packages/core/src/engine/accounting-cause-provenance.test.ts)
+and unchanged [unsafe settlement tests](../../packages/core/src/engine/agent-runner-allowance-settlement.test.ts)
+pin these distinctions. Canonical behaviour remains in [the LLM seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter).
+No financial policy changes; historical text is preserved.

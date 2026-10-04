@@ -75,13 +75,7 @@ import {
   type ChainCapabilities,
   type PreEgressHook,
 } from './agent-turn.js';
-import {
-  BudgetExceededError,
-  BudgetPauseError,
-  CommitmentDurabilityError,
-  type BudgetAdmission,
-} from './budget-governor.js';
-import { LedgerDurabilityError } from './money-durability.js';
+import { BudgetExceededError, BudgetPauseError, type BudgetAdmission } from './budget-governor.js';
 import { quoteBudgetAllowance } from './budget-allowance.js';
 import { effortToSend, gateReasoningEffort } from './reasoning-effort.js';
 import type {
@@ -521,17 +515,6 @@ async function prepareAgentDispatch(
           // A consumer may throw a genuine core error class after a paid attempt. Its origin,
           // rather than its prototype, keeps it outside retry and budget-gate authority.
           if (outcome.failureOrigin === 'observer') {
-            let moneyFailure = false;
-            try {
-              moneyFailure =
-                outcome.error instanceof CommitmentDurabilityError ||
-                outcome.error instanceof LedgerDurabilityError;
-            } catch {
-              // A callback's opaque prototype cannot replace its failure with a private trap.
-            }
-            // Shared money barriers retain their original failure-writer owner. Other observer
-            // failures already have canonical accounting and settle with fixed internal presentation.
-            if (moneyFailure) throw outcome.error;
             return failed(
               'internal',
               'the agent turn failed with an unexpected observer error',

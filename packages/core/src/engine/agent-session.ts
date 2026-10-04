@@ -75,7 +75,6 @@ import { delegateAvailable, type ToolDelegates } from '../tools/delegates.js';
 import {
   AgentTurnError,
   DEFAULT_AGENT_TURN_LIMITS,
-  runAgentTurn,
   captureAgentTurnOutcome,
   type AgentTurnLimits,
   type AgentTurnResult,
@@ -1275,6 +1274,15 @@ export class AgentSession {
     this.#status = 'running';
     const abort = this.#deps.newAbortController();
     this.#abort = abort;
+    let observerFailure: { readonly error: unknown } | undefined;
+    const observeCompactionEvent = (emit: () => void): void => {
+      try {
+        emit();
+      } catch (error) {
+        observerFailure = { error };
+        throw error;
+      }
+    };
     try {
       // Announce the compaction MOMENT (ADR-0062 §7) — emitted AFTER the nothing-to-fold / plan-resolution guards
       // (so a no-op never flashes the indicator) so the host can drive a labeled "Summarizing…" indicator while the
@@ -1282,11 +1290,11 @@ export class AgentSession {
       // `session:compacted` (success) / `session:trimmed` auto-fallback (failure→trim) ends the moment; a manual
       // failure emits no terminal, so the manual host clears the moment when `compact()` resolves. Inside the `try`
       // (like the estimate below) so nothing escapes past the `finally` that resets `#status`.
-      this.#deps.emit({ type: 'session:compacting', reason });
+      observeCompactionEvent(() => this.#deps.emit({ type: 'session:compacting', reason }));
       // Inside the `try` so a provider whose optional `estimateTokens` throws cannot escape past the `finally`
       // and leave `#status` wedged at 'running' (the seam method is provider-supplied).
       const tokensBefore = this.#estimateContextTokens();
-      const result = await runAgentTurn({
+      const outcome = await captureAgentTurnOutcome({
         system: authoredSystemPrompt({ kind: 'engine', prompt: 'compaction' }),
         messages: [renderConversationToSummarise(this.#compactionSummary, split.foldable)],
         planEntries: plan.entries,
@@ -1312,6 +1320,11 @@ export class AgentSession {
           : { maxTokensEstimate: this.#maxTokensEstimate }),
         ...(this.#deps.resolvePrice === undefined ? {} : { resolvePrice: this.#deps.resolvePrice }),
       });
+      if (outcome.kind === 'failed') {
+        if (outcome.failureOrigin === 'observer') observerFailure = { error: outcome.error };
+        throw outcome.error;
+      }
+      const result = outcome.result;
       const summary = result.text.trim();
       if (summary.length === 0) {
         // The model returned no summary text — treat as a failure (the caller degrades to /trim) rather than
@@ -1324,16 +1337,18 @@ export class AgentSession {
       this.#compactionSummary = markUntrusted(summary);
       this.#replaceHistory(split.kept);
       const tokensAfter = this.#estimateContextTokens();
-      this.#deps.emit({
-        type: 'session:compacted',
-        reason,
-        summary,
-        keptMessageCount: split.kept.length,
-        keptTurnCount: split.kept.filter((message) => message.role === 'user').length,
-        tokensBefore,
-        tokensAfter,
-        tokensUsed: { input: result.usage.input, output: result.usage.output },
-      });
+      observeCompactionEvent(() =>
+        this.#deps.emit({
+          type: 'session:compacted',
+          reason,
+          summary,
+          keptMessageCount: split.kept.length,
+          keptTurnCount: split.kept.filter((message) => message.role === 'user').length,
+          tokensBefore,
+          tokensAfter,
+          tokensUsed: { input: result.usage.input, output: result.usage.output },
+        }),
+      );
       return {
         kind: 'compacted',
         reason,
@@ -1344,7 +1359,7 @@ export class AgentSession {
         summaryTokens: { input: result.usage.input, output: result.usage.output },
       };
     } catch (err) {
-      return this.#classifyCompactionError(err); // may re-throw an unclassified error (surfaced loudly)
+      return this.#classifyCompactionError(err, observerFailure);
     } finally {
       this.#abort = undefined;
       this.#abortingTurn = false;
@@ -1359,16 +1374,34 @@ export class AgentSession {
    * {@link BudgetPauseError} ⇒ `failed` (the caller degrades to `/trim`); a truly UNCLASSIFIED error is a bug and
    * is RE-THROWN so it surfaces loudly (never silently masked as an ordinary `failed`).
    */
-  #classifyCompactionError(err: unknown): CompactionResult {
-    if (this.#statusIs('cancelled') || err instanceof ToolCancelledError || this.#abortingTurn) {
+  #classifyCompactionError(
+    err: unknown,
+    observerFailure?: { readonly error: unknown },
+  ): CompactionResult {
+    if (this.#statusIs('cancelled') || this.#abortingTurn) {
       return { kind: 'cancelled' };
     }
-    if (err instanceof AgentTurnError) {
-      return err.code === 'cancelled'
-        ? { kind: 'cancelled' }
-        : { kind: 'failed', message: err.message };
+    if (observerFailure !== undefined && Object.is(observerFailure.error, err)) {
+      if (this.#hasReadableObserverDiagnostic(err)) {
+        return {
+          kind: 'failed',
+          message: 'the compaction failed with an unexpected observer error',
+        };
+      }
+      throw err;
     }
-    if (err instanceof BudgetPauseError) return { kind: 'failed', message: err.message };
+    try {
+      if (err instanceof ToolCancelledError) return { kind: 'cancelled' };
+      if (err instanceof AgentTurnError) {
+        return err.code === 'cancelled'
+          ? { kind: 'cancelled' }
+          : { kind: 'failed', message: err.message };
+      }
+      if (err instanceof BudgetPauseError) return { kind: 'failed', message: err.message };
+    } catch {
+      // Classification cannot replace an opaque original with a private reflection trap.
+      throw err;
+    }
     throw err;
   }
 

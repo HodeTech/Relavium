@@ -152,11 +152,17 @@ The shared turn driver records the exact throwable escaping its attempt observer
 responses preserve that observer failure without entering provider classification, even when the
 observer throws an `LlmProviderError`; genuine provider failures retain their normal mapping. A later
 tool round guards budget-error inspection so a throwing prototype or diagnostic cannot replace the
-original callback failure. External emit/readiness/record failures have call-local origin distinct
-from internal admission settlement. Workflow callers refuse retry/gate authority from that origin.
+original callback failure. External emit/readiness/record and chain clock/backoff failures have
+call-local origin distinct from internal admission settlement. Workflow callers refuse retry/gate
+and failure-writer authority from that origin. Admission/money causes are unwrapped only with exact
+current pre-attempt provenance, never solely by error class.
 Session preserves classified-error delivery and raw rejection while using fixed internal,
 non-retryable observer presentation; the callback diagnostic cannot become public authority.
-The session still publishes its fixed terminal and canonical accounting.
+The session still publishes its fixed terminal and canonical accounting. Compaction uses the same
+captured outcome and preserves observer origin through its start/finish lifecycle notifications.
+Readable classified observer failures return a fixed private-safe `failed` result; ordinary raw or
+opaque observer failures reject with the original value. Actual cancellation and genuine pre-egress
+budget refusal retain their existing handling. Compaction always clears its running/abort state.
 
 ## Session context
 

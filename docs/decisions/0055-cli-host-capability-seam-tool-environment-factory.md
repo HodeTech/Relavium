@@ -195,3 +195,15 @@ contract, with canonical usage/engagement and fixed private-safe observer presen
 reflection still rethrows the original value after the fixed terminal. No host dependency or
 whole measured-request ownership decision changes. The canonical producer contract remains
 [the session spec](../reference/contracts/agent-session-spec.md). Historical text is preserved.
+
+## 2026-10-05 implementation correction — complete callback provenance
+
+The ninth independent W7 review reproduces later tool-round readiness/token observers losing their
+origin and compaction publishing a classified callback's private message or replacing an opaque
+throwable. The same captured outcome now reaches compaction; its lifecycle observers are tracked
+locally. Classified delivery versus raw rejection, original opaque identity and state cleanup remain
+intact, with fixed private-safe presentation. Clock/backoff callback failures also retain exact
+external origin. Error classes grant no provider, budget or money-writer authority on that path.
+The canonical [session contract](../reference/contracts/agent-session-spec.md) describes the
+mechanism. This repairs the existing callback boundary, without a new host capability or whole-request
+ownership policy. Historical text is preserved.

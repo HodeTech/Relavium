@@ -603,7 +603,7 @@ async function streamOneTurn(
     await params.whenReady?.();
     foldChunk(chunk, acc, params, getModel);
     if (chunk.type === 'error') {
-      throwMappedChainError(chunk.error, turnCommitted);
+      throwMappedChainError(chunk.error, turnCommitted, usage.preAttemptFailure);
     }
     if (chunk.type === 'stop') stopReason = chunk.stopReason;
   }
@@ -624,6 +624,7 @@ async function generateOneTurn(
   messages: readonly LlmMessage[],
   params: AgentTurnParams,
   wasObserverFailure: (error: unknown) => boolean,
+  preAttemptFailure: () => { readonly error: unknown } | undefined,
 ): Promise<{ content: ContentPart[]; stopReason: StopReason }> {
   try {
     const result = await chain.generate(buildRequest(messages, params));
@@ -638,13 +639,17 @@ async function generateOneTurn(
     } catch {
       throw err;
     }
-    if (diagnostic !== undefined) throwMappedChainError(diagnostic);
+    if (diagnostic !== undefined) throwMappedChainError(diagnostic, false, preAttemptFailure());
     throw err;
   }
 }
 
 /** Map a chain failure — a streamed `error` chunk or a thrown `generate()` error — into the turn taxonomy. */
-function throwMappedChainError(error: LlmError, turnCommitted = false): never {
+function throwMappedChainError(
+  error: LlmError,
+  turnCommitted = false,
+  preAttemptFailure?: { readonly error: unknown },
+): never {
   // Preserve host/money identities without letting hostile prototype or diagnostic access replace them.
   // Shared commitment/realised barriers retain the failing writer's node, rather than this observer's node.
   const cause = error.cause;
@@ -653,15 +658,19 @@ function throwMappedChainError(error: LlmError, turnCommitted = false): never {
     | { readonly kind: 'budget'; readonly message: string }
     | undefined;
   try {
-    if (
-      cause instanceof AgentTurnError ||
-      cause instanceof BudgetPauseError ||
-      cause instanceof CommitmentDurabilityError ||
-      cause instanceof LedgerDurabilityError
-    ) {
-      mapped = { kind: 'original' };
-    } else if (cause instanceof BudgetExceededError) {
-      mapped = { kind: 'budget', message: cause.message };
+    // Only the actual pre-attempt boundary may supply budget/money authority through a cause.
+    // A provider result or a pricing callback can throw those same public classes after egress.
+    if (preAttemptFailure !== undefined && Object.is(preAttemptFailure.error, cause)) {
+      if (
+        cause instanceof AgentTurnError ||
+        cause instanceof BudgetPauseError ||
+        cause instanceof CommitmentDurabilityError ||
+        cause instanceof LedgerDurabilityError
+      ) {
+        mapped = { kind: 'original' };
+      } else if (cause instanceof BudgetExceededError) {
+        mapped = { kind: 'budget', message: cause.message };
+      }
     }
   } catch {
     // An opaque cause remains on the chain diagnostic; map it through the normal turn taxonomy.
@@ -1227,12 +1236,35 @@ export async function captureAgentTurnOutcome(
 ): Promise<CapturedAgentTurnOutcome> {
   const acc: TurnUsageAccumulator = { input: 0, output: 0, engaged: false };
   const supplied = Object.freeze({ ...params });
+  const suppliedCapabilities = Object.freeze({ ...supplied.chainCapabilities });
+  const suppliedClock = suppliedCapabilities.now;
   const noteObserverFailure = (error: unknown): never => {
     acc.observerFailure = { error };
     throw error;
   };
   const observed: AgentTurnParams = {
     ...supplied,
+    chainCapabilities: {
+      ...suppliedCapabilities,
+      sleep: async (...args) => {
+        try {
+          await suppliedCapabilities.sleep(...args);
+        } catch (error) {
+          noteObserverFailure(error);
+        }
+      },
+      ...(suppliedClock === undefined
+        ? {}
+        : {
+            now: () => {
+              try {
+                return suppliedClock();
+              } catch (error) {
+                return noteObserverFailure(error);
+              }
+            },
+          }),
+    },
     ...(supplied.money === undefined
       ? {}
       : {
@@ -1340,6 +1372,8 @@ interface TurnUsageAccumulator {
   observerFailure?: { readonly error: unknown };
   /** A core attempt callback may also fail during internal admission settlement. */
   attemptFailure?: { readonly error: unknown };
+  /** Exact escape from this turn's current pre-attempt budget/money boundary. */
+  preAttemptFailure?: { readonly error: unknown };
   /** A terminal usage chunk observed before readiness/folding, not yet consumed by onAttempt. */
   observedStopUsage?: { readonly input: number; readonly output: number };
 }
@@ -1560,57 +1594,63 @@ async function driveAgentTurn(
       ? {}
       : {
           preAttempt: async (info: PreAttemptInfo) => {
-            // **Barrier B1 (ADR-0077)** — before the next egress admission, and before the governor call, so a
-            // run whose ledger write did not land admits nothing further. It awaits AND observes: `join()`
-            // throws the retained failure rather than returning, which is the only way a caller here can see
-            // it (`#emitDurable` absorbs a store fault and resolves).
-            //
-            // A concurrent sibling can leave this run's realized write pending before THIS turn's first
-            // call. Pending-write success/failure/cancellation controls pin B1 independently of B2/B3 in
-            // agent-turn-money-admission.test.ts, including turns with no budget hook.
-            await params.money?.join();
-            settleUnreportedAttemptAdmission();
-            // The money join can suspend a budgetless turn too. Observe cancellation before returning from
-            // that branch, so an aborted wait reaches neither credential resolution nor provider egress.
-            throwIfAborted(params.signal);
-            if (preEgress === undefined) return;
-            // This is the only admitting boundary. Re-check after the governor await and release any newly
-            // acquired lease before propagating a cancellation during warning durability/admission.
-            const request = buildRequest(messages, params);
-            const inputTokensEstimate = estimateRequestTokens({
-              ...request,
-              system: params.system ?? '',
-            });
-            const nextAdmission = await preEgress({
-              ...info,
-              route: 'text',
-              maxTokensEstimate: params.maxTokensEstimate,
-              inputTokensEstimate,
-              allowanceQuoteContext: {
+            delete usage.preAttemptFailure;
+            try {
+              // **Barrier B1 (ADR-0077)** — before the next egress admission, and before the governor call, so a
+              // run whose ledger write did not land admits nothing further. It awaits AND observes: `join()`
+              // throws the retained failure rather than returning, which is the only way a caller here can see
+              // it (`#emitDurable` absorbs a store fault and resolves).
+              //
+              // A concurrent sibling can leave this run's realized write pending before THIS turn's first
+              // call. Pending-write success/failure/cancellation controls pin B1 independently of B2/B3 in
+              // agent-turn-money-admission.test.ts, including turns with no budget hook.
+              await params.money?.join();
+              settleUnreportedAttemptAdmission();
+              // The money join can suspend a budgetless turn too. Observe cancellation before returning from
+              // that branch, so an aborted wait reaches neither credential resolution nor provider egress.
+              throwIfAborted(params.signal);
+              if (preEgress === undefined) return;
+              // This is the only admitting boundary. Re-check after the governor await and release any newly
+              // acquired lease before propagating a cancellation during warning durability/admission.
+              const request = buildRequest(messages, params);
+              const inputTokensEstimate = estimateRequestTokens({
+                ...request,
+                system: params.system ?? '',
+              });
+              const nextAdmission = await preEgress({
+                ...info,
                 route: 'text',
-                entries: params.planEntries,
-                request,
-                inputTokensEstimate,
                 maxTokensEstimate: params.maxTokensEstimate,
-                maxToolTurns: params.limits.maxToolTurns,
+                inputTokensEstimate,
+                allowanceQuoteContext: {
+                  route: 'text',
+                  entries: params.planEntries,
+                  request,
+                  inputTokensEstimate,
+                  maxTokensEstimate: params.maxTokensEstimate,
+                  maxToolTurns: params.limits.maxToolTurns,
+                  ...(params.mediaUnitsEstimate === undefined
+                    ? {}
+                    : { mediaUnitsEstimate: params.mediaUnitsEstimate }),
+                },
+                ...(params.outputModalities === undefined
+                  ? {}
+                  : { outputModalities: params.outputModalities }),
                 ...(params.mediaUnitsEstimate === undefined
                   ? {}
                   : { mediaUnitsEstimate: params.mediaUnitsEstimate }),
-              },
-              ...(params.outputModalities === undefined
-                ? {}
-                : { outputModalities: params.outputModalities }),
-              ...(params.mediaUnitsEstimate === undefined
-                ? {}
-                : { mediaUnitsEstimate: params.mediaUnitsEstimate }),
-            });
-            if (params.signal.aborted) {
-              nextAdmission?.release();
-              throwIfAborted(params.signal);
-            }
-            if (nextAdmission !== undefined) {
-              attemptAdmission = nextAdmission;
-              admissionPending = true;
+              });
+              if (params.signal.aborted) {
+                nextAdmission?.release();
+                throwIfAborted(params.signal);
+              }
+              if (nextAdmission !== undefined) {
+                attemptAdmission = nextAdmission;
+                admissionPending = true;
+              }
+            } catch (error) {
+              usage.preAttemptFailure = { error };
+              throw error;
             }
           },
         }),
@@ -1633,7 +1673,9 @@ async function driveAgentTurn(
         messages,
         params,
         (error) =>
-          usage.attemptFailure !== undefined && Object.is(usage.attemptFailure.error, error),
+          (usage.attemptFailure !== undefined && Object.is(usage.attemptFailure.error, error)) ||
+          (usage.observerFailure !== undefined && Object.is(usage.observerFailure.error, error)),
+        () => usage.preAttemptFailure,
       );
       throwIfAborted(params.signal); // cancel-wins independent of adapter cooperation (mirrors the stream path)
       if (turn.stopReason === 'tool_use') {
@@ -1697,8 +1739,10 @@ async function driveAgentTurn(
         : streamOneTurn(chain, messages, params, () => activeModel, usage, turnCommitted).catch(
             (error: unknown) => {
               if (
-                usage.attemptFailure !== undefined &&
-                Object.is(usage.attemptFailure.error, error)
+                (usage.attemptFailure !== undefined &&
+                  Object.is(usage.attemptFailure.error, error)) ||
+                (usage.observerFailure !== undefined &&
+                  Object.is(usage.observerFailure.error, error))
               )
                 throw error;
               let budgetFailure: AgentTurnError | undefined;

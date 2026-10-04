@@ -10,8 +10,8 @@ import {
 } from './agent-turn.js';
 import type { AgentTurnParams } from './agent-turn.js';
 import { createToolRegistry } from '../tools/registry.js';
-import { MoneyDurability } from './money-durability.js';
-import { BudgetPauseError } from './budget-governor.js';
+import { LedgerDurabilityError, MoneyDurability } from './money-durability.js';
+import { BudgetPauseError, CommitmentDurabilityError } from './budget-governor.js';
 import type { SettledAttemptDraft } from './money-durability.js';
 import { createAgentNodeExecutor } from './agent-runner.js';
 import { WorkflowEngine } from './engine.js';
@@ -111,7 +111,111 @@ function diagnostic() {
   );
 }
 
+function observerDiagnostic(kind: 'provider' | 'turn' | 'budget' | 'ledger' | 'commitment'): Error {
+  switch (kind) {
+    case 'provider':
+      return diagnostic();
+    case 'turn':
+      return new AgentTurnError(
+        'provider_unavailable',
+        'observer private token eyReviewSecret',
+        true,
+      );
+    case 'budget':
+      return new BudgetPauseError(0, 10, 100);
+    case 'ledger':
+      return new LedgerDurabilityError(new Error('private false writer'), 'private-false-writer');
+    case 'commitment':
+      return new CommitmentDurabilityError(
+        new Error('private false writer'),
+        'private-false-writer',
+      );
+  }
+}
+
 describe('observer error provenance', () => {
+  for (const path of ['generate', 'stream'] as const)
+    for (const site of ['clock', 'backoff'] as const) {
+      for (const kind of ['provider', 'turn', 'budget', 'ledger', 'commitment'] as const)
+        it(`${path}/${site}/${kind}: host chain callbacks retain observer origin`, async () => {
+          const marker = observerDiagnostic(kind);
+          const calls = { count: 0 };
+          const provider = providerFor(
+            calls,
+            new LlmProviderError(
+              makeLlmError({
+                provider: 'openai',
+                kind: 'rate_limit',
+                message: 'synthetic quota refusal',
+                status: 429,
+              }),
+            ),
+          );
+          const outcome = await captureAgentTurnOutcome(
+            paramsFor(provider, {
+              planEntries: [{ provider, model: MODEL, maxAttempts: 2 }],
+              ...(path === 'generate' ? { outputModalities: ['image'] } : {}),
+              chainCapabilities: {
+                keyFor: () => 'synthetic-no-key',
+                now: () => {
+                  if (site === 'clock') throw marker;
+                  return 0;
+                },
+                sleep: () => {
+                  if (site === 'backoff') throw marker;
+                  return Promise.resolve();
+                },
+              },
+            }),
+          );
+          expect(outcome.kind).toBe('failed');
+          if (outcome.kind !== 'failed') throw new Error('unexpected success');
+          expect(outcome.error === marker).toBe(true);
+          expect(outcome.failureOrigin).toBe('observer');
+          expect(outcome.engaged).toBe(true);
+          expect(outcome.usage).toEqual({ input: 0, output: 0 });
+          expect(calls.count).toBe(1);
+        });
+      it(`${path}/${site}: successful host callbacks preserve genuine provider retries`, async () => {
+        const calls = { count: 0 };
+        let clocks = 0;
+        let sleeps = 0;
+        const provider = providerFor(
+          calls,
+          new LlmProviderError(
+            makeLlmError({
+              provider: 'openai',
+              kind: 'rate_limit',
+              message: 'synthetic quota refusal',
+              status: 429,
+            }),
+          ),
+        );
+        const outcome = await captureAgentTurnOutcome(
+          paramsFor(provider, {
+            planEntries: [{ provider, model: MODEL, maxAttempts: 2 }],
+            ...(path === 'generate' ? { outputModalities: ['image'] } : {}),
+            chainCapabilities: {
+              keyFor: () => 'synthetic-no-key',
+              now: () => {
+                clocks++;
+                return 0;
+              },
+              sleep: () => {
+                sleeps++;
+                return Promise.resolve();
+              },
+            },
+          }),
+        );
+        expect(outcome).toMatchObject({ kind: 'failed', failureOrigin: 'turn', engaged: true });
+        if (outcome.kind !== 'failed') throw new Error('unexpected success');
+        expect(outcome.error).toMatchObject({ code: 'provider_rate_limit', retryable: true });
+        expect(calls.count).toBe(2);
+        expect(clocks).toBe(2);
+        expect(sleeps).toBe(1);
+      });
+    }
   for (const path of ['generate', 'stream'] as const)
     for (const site of ['cost', 'ledger'] as const) {
       it(`consumer typed error stays raw ${path}/${site}`, async () => {
@@ -193,20 +297,11 @@ describe('observer error provenance', () => {
     expect(outcome.error === marker).toBe(true);
   });
   for (const path of ['generate', 'stream'] as const)
-    for (const kind of ['provider', 'turn', 'budget'] as const)
+    for (const kind of ['provider', 'turn', 'budget', 'ledger', 'commitment'] as const)
       it(`actual WorkflowEngine does not retry or pause for a paid ${path}/${kind} clock observer failure`, async () => {
         const store = new InMemoryRunStore();
         const host = createInMemoryHost({ store });
-        const marker =
-          kind === 'provider'
-            ? diagnostic()
-            : kind === 'turn'
-              ? new AgentTurnError(
-                  'provider_unavailable',
-                  'observer private token eyReviewSecret',
-                  true,
-                )
-              : new BudgetPauseError(0, 10, 100);
+        const marker = observerDiagnostic(kind);
         const calls = { count: 0 };
         let pending = false;
         const provider = providerFor(calls);
@@ -293,5 +388,9 @@ workflow:
           .toBe(false);
         expect.soft(JSON.stringify(events)).not.toContain(marker.message);
         expect.soft(JSON.stringify(events)).not.toContain('eyReviewSecret');
+        expect.soft(JSON.stringify(events)).not.toContain('private-false-writer');
+        expect
+          .soft(events.find((event) => event.type === 'node:failed'))
+          .toMatchObject({ nodeId: 'n' });
       });
 });
