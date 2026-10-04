@@ -98,3 +98,20 @@ the safety complement, not a substitute for wiring the capability).
   hook **denies** — so even if the advertise-filter is bypassed, `ask` mode cannot write. (Crucially,
   `enforcePolicy` alone is **inert** for `write_file` — its `FS_POLICY` triggers none of `enforcePolicy`'s
   arms — so the floor is `confirmAction`, not `enforcePolicy`.) Protected paths apply in every mode.
+
+## Implementation correction — 2026-10-04, W7 systematic group 2a third review
+
+EA2's realized failed-turn usage guarantee was carried only by `AgentTurnError`. Independent review
+reproduced trusted cost/token/reasoning/readiness/sleep/clock callback failures after actual provider
+engagement that preserved a raw error but lost known usage and returned the hard-cap slot. This
+predates the W7 repair. The correction retains the original public error identity and carries canonical
+usage/engagement in a package-internal outcome consumed by `AgentSession`; classified errors keep
+their existing metadata. A non-error provider chunk establishes engagement before readiness, and
+valid observed stop usage is consumed once by the attempt record or retained on interrupted failure.
+Pre-egress refusal alone establishes neither provider engagement nor invented usage.
+
+[Actual-session regressions](../../packages/core/src/engine/session-callback-accounting.test.ts)
+cover billed/zero-use engagement, original raw identity, EA7 abort, first-content/first-stop failure,
+terminal cancellation and successful once-only accounting. This repairs EA2 and the existing hard-cap
+contract without changing capability/approval policy. Historical text is preserved; the full systematic
+review gate remains open until a fresh complete round accepts the correction.

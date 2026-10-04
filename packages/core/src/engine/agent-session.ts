@@ -76,6 +76,7 @@ import {
   AgentTurnError,
   DEFAULT_AGENT_TURN_LIMITS,
   runAgentTurn,
+  captureAgentTurnOutcome,
   type AgentTurnLimits,
   type AgentTurnResult,
   type ChainCapabilities,
@@ -520,8 +521,9 @@ export class AgentSession {
   readonly #completedTurnSpans: CompletedTurnSpan[] = [];
   #pendingUser: LlmMessage | undefined;
   /**
-   * Turns where a provider actually engaged — a success, or a failure whose {@link AgentTurnError.engaged} is
-   * `true` (a non-skipped attempt ran). The hard cap counts ONLY these, so a pre-egress failure (no plan
+   * Turns where a provider actually engaged — a success, or a failed canonical outcome that observed
+   * provider content/an actual attempt. Error type and positive token counts are not engagement proxies.
+   * The hard cap counts ONLY these, so a pre-egress failure (no plan
    * entries, a budget refusal, a pre-flight cancel) never burns a turn the model never took.
    */
   #turnCount = 0;
@@ -534,6 +536,13 @@ export class AgentSession {
    * turn so a later failure can never inherit an earlier turn's numbers.
    */
   #lastEngagedUsage: { input: number; output: number } | undefined;
+  /** Failed turn accounting is independent of raw/pause/money exception identity. */
+  #failedTurnAccounting:
+    | {
+        readonly engaged: boolean;
+        readonly usage: { readonly input: number; readonly output: number };
+      }
+    | undefined;
   /** Session-wide running cost total, authoritatively stamped onto every `cost:updated`. */
   #cumulativeCostMicrocents = 0;
   #status: SessionStatus = 'created';
@@ -804,9 +813,10 @@ export class AgentSession {
     // Snapshot the reseat-less mode policy for the whole turn (ADR-0057): a mid-turn setTurnPolicy applies
     // only on the NEXT turn, so the advertise-filter + approval regime stay consistent within this turn.
     const turnPolicy = this.#turnPolicy;
+    this.#failedTurnAccounting = undefined;
+    this.#lastEngagedUsage = undefined;
     try {
       this.#reserveEffectTurnKey();
-      this.#lastEngagedUsage = undefined; // never inherit an earlier turn's numbers
       const result = await this.#runTurn(abort.signal, turnPolicy);
       // A cancel landed mid-turn — the cancel path owns the terminal session:cancelled; stay quiet, but
       // roll the user message back so a cancelled turn leaves no dangling user turn in the transcript
@@ -885,12 +895,19 @@ export class AgentSession {
         // against the hard cap only when a provider engaged + report its real EA2 usage (consistent with
         // #settleTurnError). It is NOT `cancel()`/`session:cancelled` (which is terminal).
         const aborted = err instanceof AgentTurnError ? err : undefined;
-        if (aborted?.engaged === true) this.#turnCount += 1;
-        this.#emitTurnCompleted('aborted', aborted?.usage ?? { input: 0, output: 0 });
+        const failedAccounting = this.#readFailedTurnAccounting();
+        if ((failedAccounting?.engaged ?? aborted?.engaged) === true) this.#turnCount += 1;
+        this.#emitTurnCompleted(
+          'aborted',
+          failedAccounting?.usage ??
+            aborted?.usage ??
+            this.#lastEngagedUsage ?? { input: 0, output: 0 },
+        );
         return;
       }
       this.#settleTurnError(err); // emits the terminal by error class; RE-THROWS an unclassified error
     } finally {
+      this.#failedTurnAccounting = undefined;
       this.#pendingUser = undefined;
       this.#effectTurnKey = undefined; // consumed even by an errored, aborted or crashed turn
       this.#userCommandSeq = 0;
@@ -943,14 +960,18 @@ export class AgentSession {
       // explicit signal the turn core attaches). A failure BEFORE any egress (no plan entries, a pre-egress
       // budget refusal, a pre-flight cancel) must not burn a turn the model never got to take; `engaged !== true`
       // (covering an undefined from an error that bypassed the wrapper) leaves the counter untouched.
-      if (err.engaged === true) this.#turnCount += 1;
+      if ((this.#failedTurnAccounting?.engaged ?? err.engaged) === true) this.#turnCount += 1;
       // EA2 (ADR-0055): report the turn's REAL accumulated usage when a provider engaged (the turn core attaches
       // it), not a hardcoded zero — `?? {0,0}` covers a failure that never engaged a provider.
-      this.#emitTurnCompleted('error', err.usage ?? { input: 0, output: 0 }, {
-        code: err.code,
-        message: err.message,
-        retryable: err.retryable,
-      });
+      this.#emitTurnCompleted(
+        'error',
+        this.#failedTurnAccounting?.usage ?? err.usage ?? { input: 0, output: 0 },
+        {
+          code: err.code,
+          message: err.message,
+          retryable: err.retryable,
+        },
+      );
       return;
     }
     if (err instanceof BudgetPauseError) {
@@ -968,18 +989,25 @@ export class AgentSession {
     // An unexpected (non-classified) error — settle the turn LOUDLY first so the stream stays balanced (every
     // session:turn_started gets a terminal), then re-raise so the caller still sees the bug.
     //
-    // `#lastEngagedUsage`, not a hardcoded zero (`CR-02`). The only unclassified error that reaches here in
-    // practice is a `flushBudgetCommitments` rejection — a turn whose provider ALREADY engaged and billed,
-    // which is exactly why the same decision counts it against the cap. Reporting `{0,0}` here consumed the
-    // cap slot and silently dropped the turn's real tokens from every total, which is the mirror of the error
-    // the counter decision refuses to make, and contradicts EA2/ADR-0055's rule to report real usage whenever
-    // a provider engaged. Falls back to zero when nothing engaged, which stays truthful.
-    this.#emitTurnCompleted('error', this.#lastEngagedUsage ?? { input: 0, output: 0 }, {
-      code: 'internal',
-      message: 'the session turn failed with an unexpected error',
-      retryable: false,
-    });
+    // A failed canonical outcome consumes its engaged slot here. A successful turn whose later
+    // durability/completion callback failed was already counted before that callback; no outcome is
+    // stored for it, so do not count twice. Both paths retain known usage and preserve the raw error.
+    if (this.#failedTurnAccounting?.engaged === true) this.#turnCount += 1;
+    this.#emitTurnCompleted(
+      'error',
+      this.#failedTurnAccounting?.usage ?? this.#lastEngagedUsage ?? { input: 0, output: 0 },
+      {
+        code: 'internal',
+        message: 'the session turn failed with an unexpected error',
+        retryable: false,
+      },
+    );
     throw err;
+  }
+
+  /** Read through a method: a called/awaited turn mutates this private field outside TS narrowing. */
+  #readFailedTurnAccounting() {
+    return this.#failedTurnAccounting;
   }
 
   /**
@@ -1483,7 +1511,7 @@ export class AgentSession {
       this.#deps.onEffortWithheld?.(effortGate, this.#agent.model);
     }
     const reasoningEffort = effortToSend(effortGate);
-    return runAgentTurn({
+    const outcome = await captureAgentTurnOutcome({
       system: this.#systemPrompt(),
       messages: this.#turnMessages(),
       ...(llmTools.length > 0 ? { tools: llmTools } : {}),
@@ -1510,6 +1538,11 @@ export class AgentSession {
         : { maxTokensEstimate: this.#maxTokensEstimate }),
       ...(this.#deps.resolvePrice === undefined ? {} : { resolvePrice: this.#deps.resolvePrice }),
     });
+    if (outcome.kind === 'failed') {
+      this.#failedTurnAccounting = { engaged: outcome.engaged, usage: outcome.usage };
+      throw outcome.error;
+    }
+    return outcome.result;
   }
 
   /**

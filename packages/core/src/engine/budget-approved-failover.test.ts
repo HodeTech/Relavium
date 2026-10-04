@@ -5,7 +5,7 @@ import type { RunEvent } from '@relavium/shared';
 import { parseWorkflow } from '../parser.js';
 import { createAgentNodeExecutor } from './agent-runner.js';
 import { WorkflowEngine } from './engine.js';
-import { createInMemoryHost } from './execution-host.js';
+import { createInMemoryHost, InMemoryRunStore } from './execution-host.js';
 import { createDispatchingNodeExecutor } from './node-handlers/dispatcher.js';
 
 it('one approved default call covers both primary attempts and successful fallback without another pause (ADR-0097)', async () => {
@@ -129,4 +129,110 @@ workflow:
     events.some((event) => event.type === 'node:completed' && event.output === 'fallback answer'),
   ).toBe(true);
   expect(events.at(-1)?.type).toBe('run:completed');
+});
+
+it('WorkflowEngine durably records aggregated cost when the transient cost timestamp throws (ADR-0076/0077)', async () => {
+  const store = new InMemoryRunStore();
+  const host = createInMemoryHost({ store });
+  let costStampPending = false;
+  let calls = 0;
+  const marker = new Error('private clock callback failure');
+  const wrappedHost = {
+    ...host,
+    clock: {
+      now: () => {
+        if (costStampPending) {
+          costStampPending = false;
+          throw marker;
+        }
+        return host.clock.now();
+      },
+    },
+  };
+  const provider: LlmProvider = {
+    id: 'openai',
+    supports: {
+      tools: false,
+      streaming: true,
+      parallelToolCalls: false,
+      vision: false,
+      promptCache: false,
+      reasoning: false,
+      media: {
+        input: { image: false, audio: false, video: false, document: false },
+        outputCombinations: [],
+      },
+    },
+    generate: () => {
+      throw new Error('unused');
+    },
+    stream: async function* (): AsyncGenerator<StreamChunk> {
+      await Promise.resolve();
+      calls += 1;
+      costStampPending = true;
+      yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 7, outputTokens: 10 } };
+    },
+  };
+  const prices = new Map<string, ModelPricing>([
+    [
+      'gpt-4o',
+      {
+        provider: 'openai',
+        nativeId: 'gpt-4o',
+        displayName: 'offline',
+        contextWindowTokens: 128000,
+        maxOutputTokens: 1000,
+        inputPerMtokMicrocents: 1000000,
+        outputPerMtokMicrocents: 1000000,
+        cachedInputPerMtokMicrocents: 0,
+      },
+    ],
+  ]);
+  const runner = createAgentNodeExecutor({
+    resolveProvider: () => provider,
+    keyFor: () => 'synthetic-offline-key',
+    sleep: () => Promise.resolve(),
+    tools: [],
+    resolvePrice: prices,
+    registry: {
+      has: () => false,
+      list: () => [],
+      dispatch: () => {
+        throw new Error('unused');
+      },
+    },
+  });
+  const engine = new WorkflowEngine({
+    host: wrappedHost,
+    executor: createDispatchingNodeExecutor({ agent: runner }),
+    resolvePrice: prices,
+  });
+  const workflow = parseWorkflow(`schema_version: '1.0'
+workflow:
+  id: paid-clock-fault
+  budget: { max_cost_microcents: 1000, on_exceed: fail }
+  agents:
+    - { id: a, model: gpt-4o, provider: openai, system_prompt: hi }
+  nodes:
+    - { id: n, type: agent, agent_ref: a, prompt_template: go, max_tokens: 10 }
+  edges: []
+`);
+  const handle = engine.start({ workflow, inputs: {} });
+  const events: RunEvent[] = [];
+  for await (const event of handle.events) events.push(event);
+  expect(calls).toBe(1);
+  const ledger = events.filter((event) => event.type === 'cost:attempt_settled');
+  expect(ledger).toHaveLength(1);
+  expect(ledger[0]).toMatchObject({
+    nodeId: 'n',
+    attemptNumber: 1,
+    inputTokens: 7,
+    outputTokens: 10,
+    costMicrocents: 17,
+    cumulativeCostMicrocents: 17,
+  });
+  expect(events.at(-1)).toMatchObject({ type: 'run:failed', cumulativeCostMicrocents: 17 });
+  expect(JSON.stringify(events)).not.toContain(marker.message);
+  const persisted = store.eventsFor(handle.runId);
+  expect(persisted.filter((event) => event.type === 'cost:attempt_settled')).toHaveLength(1);
 });

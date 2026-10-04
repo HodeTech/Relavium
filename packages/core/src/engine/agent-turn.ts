@@ -216,7 +216,11 @@ export interface AgentTurnParams {
   readonly reasoningEffort?: ReasoningEffort;
   /** The id stamped on emitted events (a workflow vertex id on the run path; a synthetic id on a session). */
   readonly nodeId: string;
-  /** Emit an envelope-less streaming event; the engine/bus attaches the correlation key + sequence. */
+  /**
+   * Emit an envelope-less event. For cost:updated the host MUST advance its authoritative cumulative
+   * counter before governor/external callbacks; money.record snapshots that counter even if delivery
+   * throws. WorkflowEngine and AgentSession implement this ordering.
+   */
   readonly emit: (event: NodeStreamEvent) => void;
   /**
    * The producer-await half of ADR-0036's **no-drop, bounded-per-consumer** buffering (`CR-30`): resolves
@@ -556,6 +560,7 @@ async function streamOneTurn(
   messages: readonly LlmMessage[],
   params: AgentTurnParams,
   getModel: () => string,
+  usage: TurnUsageAccumulator,
   /**
    * Has an EARLIER round of this turn already produced content? (ADR-0082 §4.)
    *
@@ -569,6 +574,22 @@ async function streamOneTurn(
   const acc = newAccumulator();
   let stopReason: StopReason = 'stop';
   for await (const chunk of chain.stream(buildRequest(messages, params))) {
+    // An error alone may be a local pre-egress refusal. Every other actual provider chunk proves
+    // engagement before a host readiness/sink fault can prevent the chain's AttemptRecord.
+    if (chunk.type !== 'error') usage.engaged = true;
+    if (
+      chunk.type === 'stop' &&
+      chunk.usage !== undefined &&
+      Number.isSafeInteger(chunk.usage.inputTokens) &&
+      chunk.usage.inputTokens >= 0 &&
+      Number.isSafeInteger(chunk.usage.outputTokens) &&
+      chunk.usage.outputTokens >= 0
+    ) {
+      usage.observedStopUsage = {
+        input: chunk.usage.inputTokens,
+        output: chunk.usage.outputTokens,
+      };
+    }
     // **ADR-0036's producer-await, at the only place a streaming turn can honour it (`CR-30`).**
     // `foldChunk` emits `agent:token` / `agent:reasoning` per chunk through a synchronous `emit`, so
     // without this the buffer grows for as long as the model talks and the "bounded per consumer" the ADR
@@ -1180,47 +1201,58 @@ async function dispatchToolUseTurn(
   return { corrections: next, slotBase: slotBase + toolCalls.length };
 }
 
+/** Internal outcome carrier; the public turn API still rethrows the exact original failure. */
+export type CapturedAgentTurnOutcome =
+  | { readonly kind: 'succeeded'; readonly result: AgentTurnResult }
+  | {
+      readonly kind: 'failed';
+      readonly error: unknown;
+      readonly engaged: boolean;
+      readonly usage: { readonly input: number; readonly output: number };
+    };
+
 /**
- * Drive one agent turn end to end. Resolves with the settled {@link AgentTurnResult}, or throws an
- * {@link AgentTurnError} classified to the closed `ErrorCode` taxonomy (the caller maps it to a node
- * failure). Never throws a raw error for a classified condition.
- *
- * EA2 (ADR-0055): this thin wrapper attaches the turn's accumulated token usage to a thrown
- * {@link AgentTurnError} when a provider had already engaged, so a failed turn reports real — not zeroed —
- * usage. The inner {@link driveAgentTurn} mutates the shared `usage` accumulator as attempts settle (the
- * turn-core tracker); this wrapper reads it on the failure path.
+ * Capture canonical accounting independently of an exception's type. A trusted callback can throw any
+ * value after a provider engaged; replacing that value would break money/pause/host error contracts.
+ * This package-internal entry point lets the session settle truthfully before rethrowing it.
  */
-export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnResult> {
+export async function captureAgentTurnOutcome(
+  params: AgentTurnParams,
+): Promise<CapturedAgentTurnOutcome> {
   params = Object.freeze({ ...params });
   const acc: TurnUsageAccumulator = { input: 0, output: 0, engaged: false };
   try {
-    return await driveAgentTurn(params, acc);
-  } catch (err) {
-    if (err instanceof AgentTurnError) {
-      // Record whether a provider engaged this turn (a non-skipped attempt ran) so the session's turn-cap can
-      // count ONLY engaged turns — set IN PLACE to keep the real throw-site stack. This is an explicit signal,
-      // not the `usage > 0` proxy: an attempt that connected and then errored at zero usage still "engaged".
-      err.engaged = acc.engaged;
-      // Attach the real accumulated usage too, but ONLY when the driver did not already set it AND a provider
-      // actually ran. `acc` still `{0,0}` ⇒ no egress (a no-plan-entries / pre-egress failure), so leave
-      // `AgentTurnError.usage` undefined and let the caller report a truthful zero rather than a fabricated count.
-      if (err.usage === undefined && (acc.input > 0 || acc.output > 0)) {
-        err.usage = { input: acc.input, output: acc.output };
+    return { kind: 'succeeded', result: await driveAgentTurn(params, acc) };
+  } catch (error) {
+    const knownUsage = {
+      input: acc.input + (acc.observedStopUsage?.input ?? 0),
+      output: acc.output + (acc.observedStopUsage?.output ?? 0),
+    };
+    // Retain the established public AgentTurnError metadata contract and the original instance/stack.
+    if (error instanceof AgentTurnError) {
+      error.engaged = acc.engaged;
+      if (error.usage === undefined && (knownUsage.input > 0 || knownUsage.output > 0)) {
+        error.usage = knownUsage;
       }
-      throw err;
     }
-    // The pre-egress `BudgetPauseError` belongs to the session/runner's separate pause branch. Unexpected
-    // engine/host errors also remain visible to that boundary. Successful-tool observer failures are
-    // classified by `emitToolOutcome`, so their billed usage and engagement take the EA2 branch above.
-    throw err;
+    return { kind: 'failed', error, engaged: acc.engaged, usage: knownUsage };
   }
 }
 
-/** The per-turn accumulator shared with {@link driveAgentTurn}: summed usage plus whether a provider engaged. */
+/** Drive one turn; classified failures and raw host/money failures retain their original identities. */
+export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnResult> {
+  const outcome = await captureAgentTurnOutcome(params);
+  if (outcome.kind === 'failed') throw outcome.error;
+  return outcome.result;
+}
+
+/** The one canonical per-turn accounting accumulator, independent of failure classification. */
 interface TurnUsageAccumulator {
   input: number;
   output: number;
   engaged: boolean;
+  /** A terminal usage chunk observed before readiness/folding, not yet consumed by onAttempt. */
+  observedStopUsage?: { readonly input: number; readonly output: number };
 }
 
 /**
@@ -1332,6 +1364,9 @@ async function driveAgentTurn(
       });
       return;
     }
+    // This AttemptRecord consumes the stop chunk's quantities exactly once. A host failure before
+    // the record retains the observed quantities separately, without inventing an attempt or price.
+    delete usage.observedStopUsage;
     usage.input += record.usage.inputTokens;
     usage.output += record.usage.outputTokens;
     // The chain already folded this attempt's usage into our `costTracker` and put the per-attempt
@@ -1372,47 +1407,52 @@ async function driveAgentTurn(
         throw error;
       }
     }
-    params.emit({
-      type: 'cost:updated',
-      nodeId: params.nodeId,
-      model: record.model,
-      inputTokens: record.usage.inputTokens,
-      outputTokens: record.usage.outputTokens,
-      costMicrocents: record.cost?.costMicrocents ?? 0,
-      // Placeholder — the engine owns the run-wide running total and overwrites this authoritatively.
-      cumulativeCostMicrocents: 0,
-      attemptNumber: nonSkippedAttempts,
-      // ADR-0070 §6. Without this flag, `costMicrocents: 0` with real tokens is ambiguous between "unpriced" and
-      // "genuinely free" — and a free-LOOKING row in the /cost breakdown would be a lie.
+    try {
+      params.emit({
+        type: 'cost:updated',
+        nodeId: params.nodeId,
+        model: record.model,
+        inputTokens: record.usage.inputTokens,
+        outputTokens: record.usage.outputTokens,
+        costMicrocents: record.cost?.costMicrocents ?? 0,
+        // Placeholder — the engine owns the run-wide running total and overwrites this authoritatively.
+        cumulativeCostMicrocents: 0,
+        attemptNumber: nonSkippedAttempts,
+        // ADR-0070 §6. Without this flag, `costMicrocents: 0` with real tokens is ambiguous between "unpriced" and
+        // "genuinely free" — and a free-LOOKING row in the /cost breakdown would be a lie.
+        //
+        // Read from the RECORD, never re-derived from `record.cost !== undefined`
+        // ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4). The two agree
+        // for an unpriced MODEL — the chain swallows `UnknownModelError` and leaves `cost` absent — and they
+        // disagree for the case that ADR exists for: an unpriced MODALITY on a priced model, where `cost` IS
+        // present and its `costMicrocents` is a FLOOR that omits the media charge. Re-deriving here published
+        // `priced: true` for exactly the calls `CR-55` is about, on the path the ADR names as producer #1.
+        priced: record.priced !== false,
+      });
+    } finally {
+      // The host must aggregate the cost before calling its external sink. A sink throw must not
+      // erase the mandatory realized row. A record/snapshot failure remains the primary money fault.
+      // ADR-0076's durable ledger row, STARTED here and joined at the next barrier (ADR-0077) — this callback
+      // cannot await, which is the whole reason the mechanism is a chain plus barriers rather than an inline
+      // await.
       //
-      // Read from the RECORD, never re-derived from `record.cost !== undefined`
-      // ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4). The two agree
-      // for an unpriced MODEL — the chain swallows `UnknownModelError` and leaves `cost` absent — and they
-      // disagree for the case that ADR exists for: an unpriced MODALITY on a priced model, where `cost` IS
-      // present and its `costMicrocents` is a FLOOR that omits the media charge. Re-deriving here published
-      // `priced: true` for exactly the calls `CR-55` is about, on the path the ADR names as producer #1.
-      priced: record.priced !== false,
-    });
-    // ADR-0076's durable ledger row, STARTED here and joined at the next barrier (ADR-0077) — this callback
-    // cannot await, which is the whole reason the mechanism is a chain plus barriers rather than an inline
-    // await.
-    //
-    // **Strictly AFTER `params.emit` above, and the order is load-bearing.** The engine advances its run-wide
-    // `#cumulativeCostMicrocents` inside `#nodeEmit`'s `cost:updated` arm, and stamps that counter onto this
-    // draft. Recording FIRST would stamp a stale total, which `refineCostAttemptSettled` rejects at the
-    // producer gate — and that gate runs in `#bus.next`, OUTSIDE `#emitDurable`'s try, so the wrong order does
-    // not degrade quietly: it makes `#emitDurable` REJECT in the one place the design assumes it cannot.
-    params.money?.record({
-      nodeId: params.nodeId,
-      model: record.model,
-      attemptNumber: nonSkippedAttempts,
-      inputTokens: record.usage.inputTokens,
-      outputTokens: record.usage.outputTokens,
-      costMicrocents: record.cost?.costMicrocents ?? 0,
-      // Same rule as the event above, and the same reason: this feeds the DURABLE `unpriced_calls` counter, so
-      // a re-derivation here would persist "fully priced" for a call whose media charge was never accounted.
-      priced: record.priced !== false,
-    });
+      // **Strictly AFTER the authoritative cost emission attempt; the order is load-bearing.** The engine advances its run-wide
+      // `#cumulativeCostMicrocents` inside `#nodeEmit`'s `cost:updated` arm, and stamps that counter onto this
+      // draft. Recording FIRST would stamp a stale total, which `refineCostAttemptSettled` rejects at the
+      // producer gate — and that gate runs in `#bus.next`, OUTSIDE `#emitDurable`'s try, so the wrong order does
+      // not degrade quietly: it makes `#emitDurable` REJECT in the one place the design assumes it cannot.
+      params.money?.record({
+        nodeId: params.nodeId,
+        model: record.model,
+        attemptNumber: nonSkippedAttempts,
+        inputTokens: record.usage.inputTokens,
+        outputTokens: record.usage.outputTokens,
+        costMicrocents: record.cost?.costMicrocents ?? 0,
+        // Same rule as the event above, and the same reason: this feeds the DURABLE `unpriced_calls` counter, so
+        // a re-derivation here would persist "fully priced" for a call whose media charge was never accounted.
+        priced: record.priced !== false,
+      });
+    }
   };
 
   const chainCapabilities: ChainCapabilities =
@@ -1578,8 +1618,8 @@ async function driveAgentTurn(
       // call may have produced nothing yet (ADR-0082 §4).
       const turnCommitted = toolTurn > 0;
       const turn = await (toolTurn === 0
-        ? streamOneTurn(chain, messages, params, () => activeModel)
-        : streamOneTurn(chain, messages, params, () => activeModel, turnCommitted).catch(
+        ? streamOneTurn(chain, messages, params, () => activeModel, usage)
+        : streamOneTurn(chain, messages, params, () => activeModel, usage, turnCommitted).catch(
             (error: unknown) => {
               if (error instanceof BudgetPauseError) {
                 // NOT `error.message` — it ends "run paused for approval", which is exactly what does not

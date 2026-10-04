@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { prepareOutputCapPlan } from '@relavium/llm';
 import type { CapabilityFlags, LlmProvider, PricingOverlay, StreamChunk } from '@relavium/llm';
 import { unwiredEffectJournal } from '@relavium/shared';
 import { DEFAULT_AGENT_TURN_LIMITS, runAgentTurn, type AgentTurnParams } from './agent-turn.js';
@@ -164,5 +165,137 @@ describe('B1 joins the shared ledger before the next provider admission (ADR-007
         }
       });
     }
+  }
+});
+
+describe('realized recording survives a post-aggregation cost notification fault (ADR-0076/0077)', () => {
+  for (const fault of [
+    'notification',
+    'ledger',
+    'snapshot',
+    'notification_and_ledger',
+    'notification_and_snapshot',
+  ] as const) {
+    it(fault, async () => {
+      const notification = new Error('private notification error');
+      const storage = new Error('private storage error');
+      let cumulative = 0;
+      const rows: { cost: number; cumulative: number; attempt: number }[] = [];
+      const governor = new BudgetGovernor({
+        budget: { max_cost_microcents: 20, on_exceed: 'fail' },
+        resolvePrice: PRICES,
+        defaultMaxTokensEstimate: 10,
+        emit: () => Promise.resolve(),
+      });
+      const money = new MoneyDurability({
+        emit: (draft, total) => {
+          if (fault === 'ledger' || fault === 'notification_and_ledger') throw storage;
+          rows.push({
+            cost: draft.costMicrocents,
+            cumulative: total,
+            attempt: draft.attemptNumber,
+          });
+        },
+        flushConservative: () => governor.flushCommitments(),
+      });
+      const provider: LlmProvider = {
+        id: 'openai',
+        customEndpoint: true,
+        supports: SUPPORTS,
+        generate: () => {
+          throw new Error('unused');
+        },
+        stream: async function* (): AsyncGenerator<StreamChunk> {
+          await Promise.resolve();
+          yield { type: 'stop', stopReason: 'stop', usage: { inputTokens: 7, outputTokens: 10 } };
+        },
+      };
+      const params: AgentTurnParams = {
+        nodeId: 'paid-node',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+        planEntries: [{ provider, model: MODEL, maxAttempts: 1 }],
+        chainCapabilities: {
+          keyFor: () => 'synthetic-offline-key',
+          sleep: () => Promise.resolve(),
+        },
+        signal: new AbortController().signal,
+        maxTokens: 10,
+        maxTokensEstimate: 10,
+        resolvePrice: PRICES,
+        emit: (event) => {
+          if (event.type !== 'cost:updated') return;
+          cumulative += event.costMicrocents;
+          governor.updateCost(cumulative);
+          if (fault.startsWith('notification')) throw notification;
+        },
+        registry: {
+          has: () => false,
+          list: () => [],
+          dispatch: () => {
+            throw new Error('unused');
+          },
+        },
+        dispatchContext: {
+          nodeId: 'paid-node',
+          grantedToolIds: new Set(),
+          config: {},
+          toolPolicy: {},
+          fsScope: 'sandboxed',
+          gateApproved: false,
+          effects: unwiredEffectJournal(),
+          effectSlot: 0,
+        },
+        limits: DEFAULT_AGENT_TURN_LIMITS,
+        preEgress: (info) => governor.checkPreEgress(info),
+        money: money.turnPort(() => {
+          if (fault === 'snapshot' || fault === 'notification_and_snapshot') throw storage;
+          return cumulative;
+        }),
+      };
+      if (fault.includes('snapshot')) await expect(runAgentTurn(params)).rejects.toBe(storage);
+      else if (fault.startsWith('notification'))
+        await expect(runAgentTurn(params)).rejects.toBe(notification);
+      else
+        await expect(runAgentTurn(params)).resolves.toHaveProperty('usage', {
+          input: 7,
+          output: 10,
+        });
+      expect(cumulative).toBe(17);
+      // A fault does not release a settled charge or make room for a second11-unit reservation.
+      const plan = prepareOutputCapPlan({
+        model: MODEL,
+        provider: 'openai',
+        endpoint: 'custom',
+        maxTokens: 10,
+        providerOptions: undefined,
+      });
+      await expect(
+        governor.checkPreEgress({
+          route: 'text',
+          model: MODEL,
+          maxTokens: 10,
+          maxTokensEstimate: 10,
+          provider: 'openai',
+          endpoint: 'custom',
+          providerOptions: undefined,
+          outputCapPlan: plan,
+          inputTokensEstimate: 1,
+        }),
+      ).rejects.toMatchObject({ code: 'budget_exceeded', spentMicrocents: 17 });
+      if (fault.includes('ledger')) {
+        try {
+          await money.join();
+          throw new Error('ledger fault was not surfaced');
+        } catch (error) {
+          expect(error).toBeInstanceOf(LedgerDurabilityError);
+          expect(error).toHaveProperty('nodeId', 'paid-node');
+          expect(error).toHaveProperty('cause', storage);
+        }
+        expect(money.durabilityBroken).toBe(true);
+      } else await money.join();
+      expect(rows).toEqual(
+        fault === 'notification' ? [{ cost: 17, cumulative: 17, attempt: 1 }] : [],
+      );
+    });
   }
 });

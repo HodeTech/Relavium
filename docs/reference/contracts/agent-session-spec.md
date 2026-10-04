@@ -129,6 +129,14 @@ knob** (`SessionDeps.maxTurns`); a surface maps the `[chat].max_turns` config fi
 time — that surface field was added in build-phase 2 (workstream **2.M**); see the `[chat]` block in
 [config-spec.md](config-spec.md).
 
+Only provider-engaged turns consume a slot, including failed or aborted turns whose trusted host
+callback throws. Engagement is recorded on actual non-error provider chunks and non-skipped attempt
+records independently of the exception type or a positive token count. Terminal usage retains known
+prior attempts and an observed valid terminal usage chunk; an unreported current attempt adds no
+invented usage. Ordinary raw callback/money errors remain visible to the API caller after the fixed,
+secret-free session terminal. A successful turn counted before its later durability flush is counted
+once even if that flush fails. Terminal `cancel()` retains its sole cancellation event.
+
 ## Session context
 
 `SessionContext` is the workspace situation a session runs against, auto-detected from the launching

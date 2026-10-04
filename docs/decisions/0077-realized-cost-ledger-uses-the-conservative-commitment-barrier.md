@@ -267,3 +267,24 @@ write and fencing faults; an earlier effect failure or cancellation retains prec
 [Native regressions](../../packages/core/src/engine/budget-authorization-live.test.ts) cover
 known/unpriced/throwing/unsafe pricing, held/rejected commitment ACKs, takeover and synchronous
 pricing cancellation. A fenced writer claims no terminal and cannot release the successor.
+
+## Implementation correction — 2026-10-04, W7 systematic group 2a third review
+
+Independent review reproduced a settled actual charge whose transient cost observer threw after the
+host advanced its authoritative counter but before the mandatory realized write started. The
+counter/admission remained safe in memory, while the ledger row was absent. This violated the
+existing start-at-settlement obligation; neither the event contract nor the barrier decision changes.
+
+The turn starts recording in the cost emission's `finally`, strictly after the authoritative cumulative
+fold. Hosts must advance that counter before governor/external callbacks; both built-in hosts do so.
+An ordinary notification error preserves its exact identity. A synchronous record/snapshot failure
+takes precedence if both synchronous operations fail; a later durable write failure is still captured
+and surfaced at the shared join as `LedgerDurabilityError` with its original owner/cause. Recording
+does not invent a cumulative total or move admission settlement after notification. B1/B2/B3 and
+unknown-egress retention keep their existing order and responsibilities.
+
+[Real governor/ledger controls](../../packages/core/src/engine/agent-turn-money-admission.test.ts)
+cover notification, durable sink, snapshot and combined failures. An
+[actual WorkflowEngine control](../../packages/core/src/engine/budget-approved-failover.test.ts)
+throws its transient cost timestamp after the counter fold and verifies one durable realized row
+with the correct total. Historical text is preserved; fresh systematic acceptance remains required.
