@@ -207,3 +207,14 @@ external origin. Error classes grant no provider, budget or money-writer authori
 The canonical [session contract](../reference/contracts/agent-session-spec.md) describes the
 mechanism. This repairs the existing callback boundary, without a new host capability or whole-request
 ownership policy. Historical text is preserved.
+
+## 2026-10-05 implementation correction — lifecycle setup and completion boundaries
+
+The tenth independent W7 review reproduces controller/start-notification failures leaving a session
+running and post-success completion/flush callbacks acquiring public diagnostics from their classes.
+Controller initialization now releases operation state and rethrows the original value; start-event
+failure does likewise before egress. Exact local observer provenance extends through completion and
+flush, with successful canonical usage and hard-cap consumption unchanged. The same controller
+cleanup covers user-command initialization. No new host capability or financial policy is introduced.
+The canonical [session contract](../reference/contracts/agent-session-spec.md) states delivery and
+throwing-sink limits; historical text is preserved.

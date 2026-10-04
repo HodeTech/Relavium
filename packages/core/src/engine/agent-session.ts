@@ -762,6 +762,25 @@ export class AgentSession {
     return this.#reasoningEffort ?? this.#agent.reasoning_effort;
   }
 
+  /** A host controller factory cannot leave an operation running when initialization fails. */
+  #armTurnController(): AbortControllerLike {
+    this.#status = 'running';
+    try {
+      const abort = this.#deps.newAbortController();
+      this.#abort = abort;
+      return abort;
+    } catch (error) {
+      this.#releaseTurnController();
+      throw error;
+    }
+  }
+
+  #releaseTurnController(): void {
+    this.#abort = undefined;
+    this.#abortingTurn = false;
+    if (this.#statusIs('running')) this.#status = 'idle';
+  }
+
   /** Guard the send preconditions: the session must be started and idle (not running/cancelled/ended). */
   #assertSendable(): void {
     if (this.#status === 'created') {
@@ -789,14 +808,17 @@ export class AgentSession {
     // turn_started-emit sink set (which then took a pre-`try` early return, bypassing the `finally` reset)
     // can never leak into this turn's catch path and misclassify a real failure as an abort.
     this.#abortingTurn = false;
-    this.#status = 'running';
     // Arm the abort controller BEFORE the turn_started emit. A host whose sink calls abort() synchronously
     // inside that emit must abort THIS turn's real signal — if #abort were still undefined, abort()'s
     // `#abort?.abort()` would be a no-op while still setting #abortingTurn, and a later GENUINE failure would
     // then be misclassified as `aborted`. The cancel-bail + cap block release it on their early returns.
-    const abort = this.#deps.newAbortController();
-    this.#abort = abort;
-    this.#deps.emit({ type: 'session:turn_started' });
+    const abort = this.#armTurnController();
+    try {
+      this.#deps.emit({ type: 'session:turn_started' });
+    } catch (error) {
+      this.#releaseTurnController();
+      throw error;
+    }
     // A cancel can fire SYNCHRONOUSLY inside the turn_started emit (a host whose sink calls cancel()). If it
     // did, session:cancelled is the terminal — bail before the cap block and before any egress, else we would
     // overwrite the 'cancelled' status back to 'idle' and emit a second terminal, or silently egress an
@@ -815,6 +837,7 @@ export class AgentSession {
     const turnPolicy = this.#turnPolicy;
     this.#failedTurnAccounting = undefined;
     this.#lastEngagedUsage = undefined;
+    let lifecycleObserverFailure: { readonly error: unknown } | undefined;
     try {
       this.#reserveEffectTurnKey();
       const result = await this.#runTurn(abort.signal, turnPolicy);
@@ -860,20 +883,30 @@ export class AgentSession {
       // completion sink throws after the assistant was appended.
       // Captured BEFORE the flush, so a rejection below still knows what the provider billed (`CR-02`).
       this.#lastEngagedUsage = { input: result.usage.input, output: result.usage.output };
-      await this.#deps.flushBudgetCommitments?.();
+      try {
+        await this.#deps.flushBudgetCommitments?.();
+      } catch (error) {
+        lifecycleObserverFailure = { error };
+        throw error;
+      }
       if (result.text.length > 0) {
         this.#messages.push({ role: 'assistant', content: [{ type: 'text', text: result.text }] });
       }
-      this.#emitTurnCompleted(
-        result.stopReason,
-        {
-          input: result.usage.input,
-          output: result.usage.output,
-          model: result.model,
-        },
-        undefined,
-        result.toolHistory,
-      );
+      try {
+        this.#emitTurnCompleted(
+          result.stopReason,
+          {
+            input: result.usage.input,
+            output: result.usage.output,
+            model: result.model,
+          },
+          undefined,
+          result.toolHistory,
+        );
+      } catch (error) {
+        lifecycleObserverFailure = { error };
+        throw error;
+      }
       this.#completedTurnSpans.push({ start: startLength, end: this.#messages.length });
       // ADR-0062: arm the after-turn auto-compaction check for AFTER this turn fully settles (status back to
       // idle in the `finally`). Set ONLY on this clean-success path — never on an error/abort/cancel/cap exit
@@ -902,7 +935,7 @@ export class AgentSession {
         );
         return;
       }
-      this.#settleTurnError(err); // emits the terminal by error class; RE-THROWS an unclassified error
+      this.#settleTurnError(err, lifecycleObserverFailure);
     } finally {
       this.#failedTurnAccounting = undefined;
       this.#pendingUser = undefined;
@@ -951,14 +984,14 @@ export class AgentSession {
    * - A {@link BudgetPauseError} completes as `budget_exceeded`; earlier engagement/usage is retained.
    * - Any other (unclassified) error completes as `internal` and is **re-thrown** so the caller still sees the bug.
    */
-  #settleTurnError(err: unknown): void {
+  #settleTurnError(err: unknown, lifecycleObserverFailure?: { readonly error: unknown }): void {
     // Failed canonical outcomes count once regardless of exception class. A successful turn was
     // already counted before flushing; its known usage outranks any unrelated host-error metadata.
     if (this.#failedTurnAccounting?.engaged === true) this.#turnCount += 1;
     const usage = this.#failedTurnAccounting?.usage ??
       this.#lastEngagedUsage ?? { input: 0, output: 0 };
     let presentation: { code: ErrorCode; message: string; retryable: boolean } | undefined;
-    const observerFailure = this.#failedTurnAccounting?.observerFailure;
+    const observerFailure = lifecycleObserverFailure ?? this.#failedTurnAccounting?.observerFailure;
     let rethrowObserver = false;
     if (observerFailure !== undefined && Object.is(observerFailure.error, err)) {
       // Preserve the session's classified-error delivery contract, with fixed internal presentation.
@@ -1139,13 +1172,12 @@ export class AgentSession {
    * `gateApproved: false`), so the `!`-shell can never diverge from the audited command sandbox. The caller
    * pre-tokenizes the line into `command` + `args` (no shell metachar expansion). The classified result is a
    * discriminated union — the host renders the output (untrusted context), the actionable allowlist-deny hint, or
-   * a failure — so no raw error escapes. Callable only when the session is started + idle (a `!` never races a turn).
+   * a failure. Dispatch failures use that result; host controller initialization preserves its original
+   * throwable after releasing operation state. Callable only when started + idle (a `!` never races a turn).
    */
   async runUserCommand(command: string, args: readonly string[]): Promise<UserCommandOutcome> {
     this.#assertSendable(); // started + idle — a `!` never runs concurrently with a model turn
-    this.#status = 'running';
-    const abort = this.#deps.newAbortController();
-    this.#abort = abort; // so cancel()/abort() can interrupt a long-running command
+    const abort = this.#armTurnController(); // so cancel()/abort() can interrupt a long-running command
     this.#userCommandSeq += 1; // disjoint negative slots under the next model turn key
     const toolCall: ToolCallPart = {
       type: 'tool_call',
@@ -1271,9 +1303,7 @@ export class AgentSession {
     const plan = this.#resolvePlan();
     if (!plan.ok) return { kind: 'failed', message: plan.message };
 
-    this.#status = 'running';
-    const abort = this.#deps.newAbortController();
-    this.#abort = abort;
+    const abort = this.#armTurnController();
     let observerFailure: { readonly error: unknown } | undefined;
     const observeCompactionEvent = (emit: () => void): void => {
       try {

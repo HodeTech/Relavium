@@ -158,11 +158,19 @@ and failure-writer authority from that origin. Admission/money causes are unwrap
 current pre-attempt provenance, never solely by error class.
 Session preserves classified-error delivery and raw rejection while using fixed internal,
 non-retryable observer presentation; the callback diagnostic cannot become public authority.
-The session still publishes its fixed terminal and canonical accounting. Compaction uses the same
+Post-success completion and commitment-flush callbacks carry the same exact observer provenance;
+readable classified errors use fixed internal, non-retryable presentation, while raw/opaque failures
+retain their original rejection. Already engaged turns keep their real usage and consume one slot.
+The session attempts its fixed terminal with canonical accounting; a throwing sink cannot guarantee
+publication, and a sink recording before throwing may see multiple notification drafts. Compaction uses the same
 captured outcome and preserves observer origin through its start/finish lifecycle notifications.
 Readable classified observer failures return a fixed private-safe `failed` result; ordinary raw or
 opaque observer failures reject with the original value. Actual cancellation and genuine pre-egress
-budget refusal retain their existing handling. Compaction always clears its running/abort state.
+budget refusal retain their existing handling. Controller-factory failures in send, compaction and
+user commands release running/abort state and reject the original value without classified delivery.
+A throwing turn-start notification receives the same cleanup before any provider call. Terminal
+cancellation keeps precedence; a refused initialization consumes no provider-engaged slot.
+Compaction clears its running/abort state on every exit.
 
 ## Session context
 
