@@ -4,6 +4,7 @@ import { useCallback, useLayoutEffect, useRef } from 'react';
 
 import type { NoticeFlush } from '../../engine/effect-retention.js';
 import type { SuspendPort } from '../suspend.js';
+import type { TranscriptAcknowledgement } from './transcript-acknowledgement.js';
 
 const OUTPUT_FAILED = 'The terminal output closed before display could be acknowledged.';
 
@@ -21,6 +22,7 @@ function canWrite(output: NodeJS.WriteStream): boolean {
 export function useVisibleRenderFlush(
   onError: ((error: Error) => void) | undefined,
   suspendPort?: SuspendPort,
+  transcript?: TranscriptAcknowledgement,
 ): NoticeFlush {
   const app = useApp();
   const { stdout } = useStdout();
@@ -62,14 +64,23 @@ export function useVisibleRenderFlush(
     async (publish?: () => void | Promise<void>) => {
       const acknowledge = async (): Promise<void> => {
         if (!mounted.current || !canWrite(stdout)) throw new Error(OUTPUT_FAILED);
+        const publication = transcript?.capture();
         await publish?.();
+        publication?.published();
         await app.waitUntilRenderFlush();
+        // A newly mounted viewport seeds a blank window, then measures its allocated height.
+        // Flush that follow-up layout once; an actually clipped notice still refuses immediately.
+        if (publication !== undefined && !publication.visible()) await app.waitUntilRenderFlush();
         // Ink can resolve its flush promise through a fallback yield when stdout cannot write.
         if (!mounted.current || !canWrite(stdout)) throw new Error(OUTPUT_FAILED);
+        if (publication !== undefined && !publication.visible())
+          throw new Error(
+            'The published terminal notice was not visible; audit evidence was retained.',
+          );
       };
       if (suspendPort === undefined) await acknowledge();
       else await suspendPort.withActiveTerminal(acknowledge);
     },
-    [app, stdout, suspendPort],
+    [app, stdout, suspendPort, transcript],
   );
 }

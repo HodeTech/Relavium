@@ -2277,10 +2277,22 @@ describe('makePlainPrinter', () => {
 
 describe('chatIsInteractive (the High-9 deadlock derivation — mirrors selectChatDriver`s ink-mount)', () => {
   it('is true ONLY for a TTY without --json; false when piped OR --json (a dropped `!` would break this)', () => {
-    expect(chatIsInteractive({ stdoutIsTty: true }, { json: false })).toBe(true); // ink mounts → can prompt
-    expect(chatIsInteractive({ stdoutIsTty: false }, { json: false })).toBe(false); // piped → reject-immediately
-    expect(chatIsInteractive({ stdoutIsTty: true }, { json: true })).toBe(false); // --json → reject-immediately
-    expect(chatIsInteractive({ stdoutIsTty: false }, { json: true })).toBe(false);
+    expect(chatIsInteractive({ stdoutIsTty: true, env: {} }, { json: false })).toBe(true); // ink mounts → can prompt
+    expect(chatIsInteractive({ stdoutIsTty: false, env: {} }, { json: false })).toBe(false); // piped → reject-immediately
+    expect(chatIsInteractive({ stdoutIsTty: true, env: {} }, { json: true })).toBe(false); // --json → reject-immediately
+    expect(chatIsInteractive({ stdoutIsTty: false, env: {} }, { json: true })).toBe(false);
+  });
+
+  it.each([
+    [{ CI: 'true' }, false],
+    [{ CI: '1' }, false],
+    [{ CI: '' }, true],
+    [{ CI: 'false' }, true],
+    [{ CI: '0' }, true],
+    [{ CONTINUOUS_INTEGRATION: 'true' }, true],
+  ])('uses the shared output policy for a TTY with env=%j', (env, expected) => {
+    expect(chatIsInteractive({ stdoutIsTty: true, env }, { json: false })).toBe(expected);
+    expect(chatIsInteractive({ stdoutIsTty: true, env }, { json: true })).toBe(false);
   });
 });
 

@@ -3,6 +3,7 @@ import {
   createElement,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -14,8 +15,13 @@ import type { SuspendPort } from '../suspend.js';
 import type { NoticeFlush } from '../../engine/effect-retention.js';
 import { useVisibleRenderFlush } from './render-acknowledgement.js';
 import {
+  createTranscriptAcknowledgement,
+  type TranscriptAcknowledgement,
+} from './transcript-acknowledgement.js';
+import {
   driveJson,
   drivePlain,
+  chatIsInteractive,
   type ChatDriveContext,
   type ChatDriveOutcome,
   type ChatDriver,
@@ -157,8 +163,17 @@ import type { SessionViewState, TranscriptEntry } from './session-view-model.js'
  * ChatApp handles Ctrl-C itself (→ `/cancel`). (Re-verify cancel on a real TTY when changing the input.)
  */
 
-function TranscriptLine(props: Readonly<{ entry: TranscriptEntry; color: boolean }>): ReactElement {
+function TranscriptLine(
+  props: Readonly<{
+    entry: TranscriptEntry;
+    color: boolean;
+    acknowledgement?: TranscriptAcknowledgement | undefined;
+  }>,
+): ReactElement {
   const { entry, color } = props;
+  useLayoutEffect(() => {
+    if (entry.role === 'notice') props.acknowledgement?.inlineNotice(entry);
+  }, [entry, props.acknowledgement]);
   if (entry.role === 'user') {
     return (
       <Text {...colorProps(color, 'cyan')}>
@@ -247,6 +262,7 @@ interface ChatAppProps {
 }
 
 interface ChatViewProps {
+  readonly acknowledgement?: TranscriptAcknowledgement | undefined;
   readonly state: SessionViewState;
   readonly tick: number;
   /** Wall-clock ms at render, for the live in-flight turn timer ("thinking…/working… {elapsed} · Esc to stop",
@@ -432,7 +448,14 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           following at Step 4b-1), since the alt buffer has no scrollback for `<Static>`. */}
       {viewport === undefined || wrappedTranscript === undefined ? (
         <Static items={[...state.transcript]}>
-          {(entry, index) => <TranscriptLine key={index} entry={entry} color={color} />}
+          {(entry, index) => (
+            <TranscriptLine
+              key={index}
+              entry={entry}
+              color={color}
+              acknowledgement={props.acknowledgement}
+            />
+          )}
         </Static>
       ) : (
         <TranscriptViewport
@@ -441,6 +464,16 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           scroll={viewport.scroll}
           selection={viewport.selection}
           onMeasure={viewport.onMeasure}
+          terminalRows={viewport.rows}
+          onDisplay={(firstRow, endRow, measuredWidth) =>
+            props.acknowledgement?.viewport(
+              state.transcript,
+              viewport.cols,
+              firstRow,
+              endRow,
+              measuredWidth,
+            )
+          }
         />
       )}
 
@@ -555,6 +588,9 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
 }
 
 export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
+  const storeRef = useRef(props.store);
+  storeRef.current = props.store;
+  const [acknowledgement] = useState(() => createTranscriptAcknowledgement(() => storeRef.current));
   const { state, tick, color, mode, reasoningEffort, reasoningVisible, approval } =
     useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
   const activationReady = useRef(props.onActivated === undefined);
@@ -1501,7 +1537,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // back to 80×24 off a TTY (a harness), moot on a real TTY (the only place alt mounts, via the driveInk gate).
   const windowSize = useWindowSize();
 
-  const flushVisible = useVisibleRenderFlush(props.onError, props.suspendPort);
+  const flushVisible = useVisibleRenderFlush(props.onError, props.suspendPort, acknowledgement);
   useEffect(() => {
     if (props.onActivated === undefined) return;
     let mounted = true;
@@ -1547,6 +1583,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   return (
     <Box flexDirection="column" {...(viewport === undefined ? {} : { height: viewport.rows })}>
       <ChatView
+        acknowledgement={acknowledgement}
         state={state}
         tick={tick}
         nowMs={Date.now()}
@@ -1857,9 +1894,9 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
 
 /**
  * Select the chat driver by surface (2.Q): `--json` ⇒ the headless NDJSON `SessionEvent` stream (machine
- * output wins over the TTY); else a real TTY ⇒ the ink REPL; else the plain non-TTY line loop.
+ * output wins over the TTY); else a real TTY outside CI ⇒ the ink REPL; else the plain line loop.
  */
 export const selectChatDriver: ChatDriver = (ctx) => {
   if (ctx.global.json) return driveJson(ctx); // machine output wins over the TTY
-  return ctx.io.stdoutIsTty ? driveInk(ctx) : drivePlain(ctx);
+  return chatIsInteractive(ctx.io, ctx.global) ? driveInk(ctx) : drivePlain(ctx);
 };

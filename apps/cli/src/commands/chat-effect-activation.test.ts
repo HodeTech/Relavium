@@ -17,7 +17,8 @@ import type { Instance } from 'ink';
 import { scriptedResolver, textTurn } from '../chat/test-support.js';
 import type { GlobalOptions } from '../process/options.js';
 import { processIo } from '../process/io.js';
-import { driveInk } from '../render/tui/chat-ink.js';
+import { EXIT_CODES } from '../process/exit-codes.js';
+import { driveInk, selectChatDriver } from '../render/tui/chat-ink.js';
 import { captureIo, OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import {
   chatCommand,
@@ -442,6 +443,39 @@ describe('actual Ink driver activation owns session effect disclosure (ADR-0098)
     },
   );
 
+  it.each([{ CI: 'true' }, { CI: '1' }])(
+    'a CI TTY uses plain output and acknowledges stderr before retention (env=%j)',
+    async (env) => {
+      const captured = captureIo();
+      const atDisclosure: number[] = [];
+      renderer.render.mockImplementation(() => {
+        throw new Error('unexpected Ink mount');
+      });
+      const result = await chatResumeCommand(
+        { sessionId: 'activation-0' },
+        {
+          ...deps,
+          io: {
+            ...captured.io,
+            stdoutIsTty: true,
+            stdinIsTty: true,
+            env,
+            writeErrAcknowledged: async (text) => {
+              await captured.io.writeErrAcknowledged(text);
+              if (text.includes('external effect')) atDisclosure.push(rows().length);
+            },
+          },
+          drive: selectChatDriver,
+        },
+      );
+      expect(renderer.render).not.toHaveBeenCalled();
+      expect(result).toBe(EXIT_CODES.chatEnded);
+      expect(captured.err()).toContain('external effect');
+      expect(atDisclosure).toEqual([1]);
+      expect(rows()).toEqual([]);
+    },
+  );
+
   it.each([
     { json: false, failLate: false },
     { json: true, failLate: false },
@@ -550,8 +584,8 @@ describe('actual Ink driver activation owns session effect disclosure (ADR-0098)
     [true, { CI: '' }, true],
     [false, { CONTINUOUS_INTEGRATION: 'true' }, true],
     [true, { CONTINUOUS_INTEGRATION: 'true' }, true],
-    [false, { CI: 'true' }, false],
-    [true, { CI: 'true' }, false],
+    [false, { CI: 'false' }, true],
+    [true, { CI: '0' }, true],
   ] as const)(
     'raw Ctrl-Z cannot consume an undisplayed notice (alt=%s, env=%j, interactive=%s)',
     async (alt, env, interactive) => {

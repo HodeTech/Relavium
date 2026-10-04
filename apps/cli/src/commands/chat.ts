@@ -971,15 +971,18 @@ export interface ChatModeControl {
  */
 /**
  * Whether the chat surface can answer an interactive approval prompt — the ink UI is mounted (stdout is a TTY
- * AND not `--json`), the SAME condition `selectChatDriver` (render/tui/chat-ink.tsx) picks `driveInk` on. A
+ * AND neither `--json` nor CI), the SAME condition `selectChatDriver` picks `driveInk` on. A
  * non-interactive driver (plain non-TTY / `--json`) has nothing to answer `requestApproval`, so the mode control
  * uses a reject-immediately prompt (no deadlock, High 9). Named + exported so the derivation is unit-locked.
  */
 export function chatIsInteractive(
-  io: Pick<CliIo, 'stdoutIsTty'>,
+  io: Pick<CliIo, 'stdoutIsTty' | 'env'>,
   global: Pick<GlobalOptions, 'json'>,
 ): boolean {
-  return io.stdoutIsTty && !global.json;
+  return (
+    detectOutputMode({ stdoutIsTty: io.stdoutIsTty, json: global.json, ci: isCiEnv(io.env) }) ===
+    'tui'
+  );
 }
 
 export function createChatModeControl(

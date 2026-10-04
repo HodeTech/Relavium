@@ -62,6 +62,11 @@ export interface TranscriptViewportProps {
    *  viewport windows with (the height lives here, behind `measureElement`), and its MOUSE handler can turn a terminal
    *  row into a transcript line (Step 6). Omitted ⇒ not lifted (a caller with no scroll keymap). */
   readonly onMeasure?: ((geom: ViewportGeometry) => void) | undefined;
+  /** The rows actually included in this committed window, after layout and terminal clipping. */
+  readonly onDisplay?:
+    | ((firstRow: number, endRow: number, measuredWidth: number) => void)
+    | undefined;
+  readonly terminalRows?: number | undefined;
 }
 
 /**
@@ -101,6 +106,13 @@ export function TranscriptViewport(props: Readonly<TranscriptViewportProps>): Re
     if (node === null) return;
     const measured = measureElement(node);
     const { top, left } = frameOffset(node);
+    const terminalHeight =
+      props.terminalRows === undefined ? measured.height : Math.max(0, props.terminalRows - top);
+    props.onDisplay?.(
+      offset,
+      offset + Math.max(0, Math.min(visible.length, measured.height, terminalHeight)),
+      measured.width,
+    );
     props.onMeasure?.({
       totalLines: props.lines.length,
       height: measured.height,

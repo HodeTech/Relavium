@@ -605,12 +605,16 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     ['error-during', { CI: '' }, true, false],
     [true, { CONTINUOUS_INTEGRATION: 'true' }, true, false],
     [true, { CONTINUOUS_INTEGRATION: 'true' }, true, true],
+    [true, { CI: '' }, true, false, 1],
+    [true, { CI: '' }, true, false, 24],
   ] as const)(
     'the REAL Home reseat displays disclosure before sweeping (actual Ink: %s, env=%j, default mount=%s, no-alt=%s)',
-    async (mode, env, defaultMount, noAltScreen) => {
+    async (mode, env, defaultMount, noAltScreen, resizeRows?: number) => {
       const actualInk = mode !== false;
       let captured: RootAppProps | undefined;
       let buildChecks = 0;
+      let size = { cols: 100, rows: 30 };
+      let fireResize: (() => void) | undefined;
       const input = new OwnedTtyInput();
       const stdout = new OwnedTtyOutput();
       const stderr = new OwnedTtyOutput();
@@ -640,6 +644,13 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         },
         {
           io: { ...io, env },
+          getSize: () => size,
+          subscribeResize: (callback) => {
+            fireResize = callback;
+            return () => {
+              fireResize = undefined;
+            };
+          },
           global: { ...global, noAltScreen },
           render: (props, options) => {
             captured = props;
@@ -668,9 +679,14 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           providers: scriptedResolver([textTurn('first reply')]),
           buildResumedSession: async (options) => {
             const built = await buildResumedChatSession(options);
+            if (resizeRows !== undefined && buildChecks === 0) {
+              size = { cols: 100, rows: resizeRows };
+              stdout.rows = resizeRows;
+              fireResize?.();
+            }
             if (mode === 'closed-before' && buildChecks === 0) stdout.destroy();
             expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toHaveLength(
-              buildChecks === 0 ? 2 : 1,
+              buildChecks === 0 || resizeRows === 1 ? 2 : 1,
             );
             buildChecks++;
             return built;
@@ -699,6 +715,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         type(props, 'first');
         props.controller.handleKey('', ENTER);
         await flush();
+        if (resizeRows !== undefined)
+          await vi.waitFor(() =>
+            expect(stdout.frames.some((frame) => frame.includes('first reply'))).toBe(true),
+          );
         const sessionId = props.controller.getSnapshot().session?.sessionId;
         if (sessionId === undefined) throw new Error('missing active session');
         const turn = createSessionStore(client.db).reserveEffectTurnKey(sessionId);
@@ -750,9 +770,31 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           expect(closeSpy).toHaveBeenCalledTimes(1);
           return;
         }
-        expect(client.sqlite.prepare('SELECT state FROM run_effects').all()).toEqual([
-          { state: 'ambiguous' },
-        ]);
+        if (resizeRows === 1) {
+          // A flushed footer is not a displayed disclosure. Retain the committed evidence and keep exit usable.
+          expect(firstNoticeRows).toBeUndefined();
+          expect(client.sqlite.prepare('SELECT state FROM run_effects').all()).toEqual([
+            { state: 'committed' },
+            { state: 'ambiguous' },
+          ]);
+          expect(
+            props.controller
+              .getSnapshot()
+              .session?.store.getSnapshot()
+              .state.transcript.some(
+                (entry) =>
+                  entry.role === 'notice' && entry.text.includes('audit evidence was retained'),
+              ),
+          ).toBe(true);
+          size = { cols: 100, rows: 30 };
+          stdout.rows = 30;
+          fireResize?.();
+          await instance?.waitUntilRenderFlush();
+          expect(client.sqlite.prepare('SELECT * FROM run_effects').all()).toHaveLength(2);
+        } else
+          expect(client.sqlite.prepare('SELECT state FROM run_effects').all()).toEqual([
+            { state: 'ambiguous' },
+          ]);
         const notices = () =>
           props.controller
             .getSnapshot()
@@ -761,7 +803,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
               (entry) => entry.role === 'notice' && entry.text.includes('external effect'),
             ) ?? [];
         if (actualInk) {
-          expect(firstNoticeRows).toBe(2);
+          if (resizeRows !== 1) expect(firstNoticeRows).toBe(2);
           expect(inkRenderer.render.mock.calls[0]?.[1]).toMatchObject({
             interactive: true,
             ...(defaultMount ? { alternateScreen: !noAltScreen } : {}),
@@ -778,11 +820,16 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           expect(displayedReplies()).toBe(1);
         }
         await pick('claude-sonnet-4-6');
+        expect(client.sqlite.prepare('SELECT state FROM run_effects').all()).toEqual([
+          { state: 'ambiguous' },
+        ]);
         expect(buildChecks).toBe(2);
         // Inline scrollback already owns the previous notice; only the new store's notice is retained.
         expect(notices()).toHaveLength(noAltScreen ? 1 : 2);
         expect(notices().at(-1)?.text).toContain('ambiguous');
-        expect(notices().at(-1)?.text).not.toContain('landed in a turn that did not complete');
+        if (resizeRows === 1)
+          expect(notices().at(-1)?.text).toContain('landed in a turn that did not complete');
+        else expect(notices().at(-1)?.text).not.toContain('landed in a turn that did not complete');
         if (actualInk && noAltScreen) {
           expect(displayedNotices()).toBe(2);
           expect(displayedReplies()).toBe(1); // reseat never reprints the earlier exchange
