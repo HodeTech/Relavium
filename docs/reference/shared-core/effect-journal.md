@@ -275,7 +275,11 @@ render acknowledgement, and callbacks after cancellation, teardown, exit or a se
 render acknowledgement share terminal ownership with suspension: publication waits for terminal reclaim,
 and a stop during publication waits for acknowledgement. An inline Static notice must not be consumed by a
 suspended renderer. A flush adapter that omits publication or discards an asynchronous delivery failure cannot
-permit deletion. Plain/JSON await the native stderr write callback on the exact output sink, checking its state
+permit deletion. Chat and Home explicitly configure Ink's interactivity from the CLI's resolved output mode:
+Ink's ambient CI predicate must not buffer a selected interactive transcript until unmount. Home also resets
+the inline Static cursor when a reseat replaces the view store, while retaining the root input owner and
+already-printed terminal scrollback. A new store's notice cannot inherit the previous store's printed-item count.
+Plain/JSON await the native stderr write callback on the exact output sink, checking its state
 and handling error/close. Returning from `write()` alone only acknowledges enqueueing. Failed stderr delivery
 retains evidence; stdout remains the event stream. Ctrl-C disarms ownership before releasing the
 headless activation wait, so a blocked native write cannot delay command teardown. Its late success or failure

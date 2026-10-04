@@ -3282,3 +3282,23 @@ green on unchanged production/test source; only scoped review/status/index metad
 **The maintenance subset is closed; whole Step 12, Steps 7–8 and all six W7 items remain open.**
 The real provider captures are the remaining Step 7 prerequisite. No verified finding is deferred,
 no live fixture is invented and no PR/push or wave closure is claimed.
+
+**Post-PR rendering correction and live capture checkpoint — 2026-10-04.**
+[Draft PR #90](https://github.com/HodeTech/Relavium/pull/90) is open from `development` to `main`.
+Required Linux CI at `95137c34` exposes four actual-Ink tests with inconsistent injected/ambient
+interactivity. A separate production-path reproduction verifies undisplayed disclosure consumed
+under `CI=''` and `CONTINUOUS_INTEGRATION=true`; wider parent controls also verify Home's inline
+reseat retaining the old Static cursor. Composition roots now explicitly forward the existing CLI
+output decision to Ink. A new view-store owner resets its transcript cursor, keeping the root input
+owner and already-printed scrollback. All prior disclosure/input/close/error assertions remain.
+The parent passes 104 selected controls separately under all three environments; removing the
+interactivity or transcript-owner key breaks the matching regressions. Required full checks and
+fresh independent post-commit rounds govern acceptance of this correction.
+
+Actual official-provider Anthropic, OpenAI and DeepSeek overflow artifacts are copied byte-for-byte
+after complete parent privacy/semantic review and indexed in the
+[live fixture directory](../../../packages/llm/src/conformance/fixtures/overflow/README.md).
+Gemini returns an input-quota 429 before its context boundary. The first Anthropic stop probe ends
+normally and its second is an input overflow; neither proves `model_context_window_exceeded`.
+No diagnostic response substitutes for the missing evidence, and no classifier is changed here.
+**Steps 7–8, whole Step 12 and all six W7 register items remain open.**

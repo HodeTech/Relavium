@@ -183,6 +183,10 @@ added.
   both complete fresh reviews clean; all sealed entries/source pins verified; maintenance subset closed,
   live Steps 7–8 and whole-wave acceptance remain open.
 
+- [2026-10-04 — W7 post-PR rendering diagnosis](2026-10-04T09-26-10-w7-rendering-diagnosis-review.md):
+  required CI harness mismatch and production disclosure loss verified; parent inline reseat correction;
+  fresh post-commit acceptance rounds remain required.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

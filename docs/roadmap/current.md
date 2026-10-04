@@ -207,7 +207,14 @@ merged too (PR #85, 2026-08-28).
 > across all 26 paths/37 hunks in both fresh reviews. Both complete reports and all 2,574 sealed
 > entries/source pins are verified; fresh 81-test DB/strict checks and real-writer causal controls pass.
 > **The independent maintenance subset is closed; whole Step 12 and all six W7 items remain open.**
-> Live Step 7 captures, and therefore Step 8, remain pending.
+> [Draft PR #90](https://github.com/HodeTech/Relavium/pull/90) is open on `development`.
+> Required Linux CI revealed an actual-Ink test-context mismatch. Further controlled checks found
+> undisplayed disclosure under the existing CI opt-outs and Home's inline reseat Static cursor;
+> corrections and fresh post-commit review are in progress. Prior scoped acceptance does not waive these findings.
+> Three actual overflow captures (Anthropic, OpenAI and DeepSeek) are now preserved in the
+> [fixture index](../../packages/llm/src/conformance/fixtures/overflow/README.md).
+> Gemini overflow and the separate Anthropic context-stop response are still missing;
+> Step 7 classification, Step 8 and whole-wave acceptance remain open.
 > Step 1 repaired collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.

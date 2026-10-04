@@ -271,3 +271,17 @@ The September amendment's **disclose then sweep** rule governs the older accepta
 committed incomplete row “survives that resume's sweep”: it survives until disclosure succeeds, then the same
 successful activation may sweep it. A crash before that sweep can repeat the notice. Unresolved rows remain.
 The canonical behaviour and physical residuals are in [effect-journal.md](../reference/shared-core/effect-journal.md).
+
+### Rendering ownership correction — 2026-10-04
+
+Required Linux CI exposed a test-context mismatch with Ink's ambient CI detection. A separate controlled
+production reproduction then found undisplayed disclosure consumed under `CI=''` and
+`CONTINUOUS_INTEGRATION=true`, both interactive under the existing ADR-0054 policy. The composition roots
+now give Ink the interactivity selected by that policy; the policy itself is unchanged. A wider regression
+also found Home's inline reseat retaining the previous store's Static cursor. The new transcript owner resets
+that cursor without remounting the root input owner or reprinting the earlier exchange.
+
+These are corrections to the existing **disclose then sweep** implementation, not new disclosure rules.
+Actual-Ink first-write/row-order controls cover default production Home mounts, inline/full-screen modes,
+raw Ctrl-Z, output close/error and CI opt-outs. The canonical contract remains in
+[effect-journal.md](../reference/shared-core/effect-journal.md#8-needs_attention).
