@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -189,6 +189,14 @@ merged too (PR #85, 2026-08-28).
 > reports and every inventory entry are parent-verified. Full CI and sequential coverage pass
 > (327 files, 7,526 tests, 11 existing skips; 95.88%/92.63%/96.73%). Fresh full-Step-11 round 3 follows
 > the correction commits; the step remains open.
+> [Fresh Step 11 round 3](../reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) is clean in both
+> complete independent reviews: 452 permanent tests each plus separately reported fresh native,
+> passive and compiled-process controls. Both reports and every sealed inventory entry are verified.
+> Interrupted earlier round-3 runs contribute no acceptance. **Step 11 is closed.**
+> [Independent Step 12 document preflight](../reviews/2026-10-04T01-04-15-w7-step-12-document-preflight-review.md)
+> verifies and corrects usage/pricing and fixture-coverage prose; connected at-rest/event claims,
+> guides and moved follow-up status are reconciled. This independent maintenance proceeds through
+> repository checks and fresh post-commit review; Step 12's whole-wave acceptance remains open.
 > Live Step 7 captures, and therefore Step 8, remain pending.
 > Step 1 repaired collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).

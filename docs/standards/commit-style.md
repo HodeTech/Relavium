@@ -89,9 +89,9 @@ Refs: ADR-0011
 ```
 fix(core): classify provider 429 as retryable in fallback runner
 
-A rate-limited attempt now advances to the next provider in the chain
-instead of failing the run, and the failed attempt's usage is still
-recorded so cost stays accurate across failover.
+A rate limit before content commits now advances to the next provider
+instead of failing the run. Each attempt is reported; usage is recorded
+only when supplied, without turning an estimate into actual spend.
 
 Refs: ADR-0011
 ```

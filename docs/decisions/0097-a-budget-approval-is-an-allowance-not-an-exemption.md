@@ -459,3 +459,13 @@ and [the preparation contract](../reference/shared-core/agent-runner.md#preparin
 [The second review record](../reviews/2026-10-03T21-01-16-w7-step-11-round-2-review.md) qualifies native
 signal evidence, exact restoration, seven permanent controls and green full CI/coverage.
 Fresh full-Step-11 round 3 precedes closure; live Steps 7–8 remain pending.
+
+### 2026-10-04 — Step 11 full independent acceptance
+
+Two fresh reviewers accept the complete CLI surface and both corrective rounds in
+`28ba80db..53cce9e3`, with no new verified finding. All changed permanent suites and separate
+native/passive/process controls pass. The parent verifies both full reports and every sealed
+inventory entry before accepting the step. Interrupted earlier runs are excluded; signal,
+platform and inherited secret-stdin bounds remain as stated in the canonical CLI contract.
+See [Step 11 round 3](../reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md). This is a dated
+implementation acceptance, not a policy change or closure of whole W7/Steps 7–8.

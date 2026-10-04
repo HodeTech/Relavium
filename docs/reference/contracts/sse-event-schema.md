@@ -73,7 +73,7 @@ export type RunEvent =
 
 | `type` | Meaning | Key payload fields |
 | --- | --- | --- |
-| `run:started` | A run began. | `workflowId` (the `workflows.id` **UUID** FK, not the authored slug — [ADR-0022](../../decisions/0022-run-references-workflow-by-uuid.md)), `inputs` (secret-typed inputs **masked** — see [Security](#security-event-payloads-never-carry-secrets)), `executionMode: 'local' \| 'cloud' \| 'managed'` |
+| `run:started` | A run began. | `workflowId` (the `workflows.id` **UUID** FK, not the authored slug — [ADR-0022](../../decisions/0022-run-references-workflow-by-uuid.md)), `inputs` (secret-typed inputs **masked** — see [Security](#security-credential-boundaries-and-sensitive-content)), `executionMode: 'local' \| 'cloud' \| 'managed'` |
 | `node:started` | A node began executing. | `nodeId`, `nodeType`, `attemptNumber?` (1-based; absent ⇒ attempt 1, present + >1 ⇒ a node-retry re-dispatch — 1.S) |
 | `agent:token` | A streaming LLM token from an agent node. | `nodeId`, `token`, `model` |
 | `agent:reasoning` | A streaming reasoning ("thinking") delta from an agent node (EA6, 2.5.H — a pure host-emit: the `@relavium/llm` seam already carries the reasoning chunks; the turn core emits one per `reasoning_delta`). A **dual-envelope** event like `agent:token` (carried on the session stream too), so a surface renders a live, collapsible "thinking" panel. Never carries the ephemeral same-provider `signature` (ADR-0030). Amends [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md). | `nodeId`, `text`, `model` |
@@ -246,11 +246,26 @@ export interface CostAttemptSettledEvent extends BaseEvent {
 }
 ```
 
-### Security: event payloads never carry secrets
+### Security: credential boundaries and sensitive content
 
-`agent:tool_call.toolInput` is sanitized (no secrets) and `agent:tool_result.outputSummary` is truncated. `run:started.inputs` carries workflow inputs, but any **secret-typed** input is **masked** — the value is replaced with `{ secret: true, ref }`, never the raw value. **The `ref` is a SELF-reference — `inputs.<name>`, naming the slot the value came from — not a keychain or env reference.** It identifies which input was masked; it does not say where the credential lives, and nothing can resolve it back to one. That distinction is load-bearing on resume: [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §6 verifies the SLOT — that the same named `secret` input is re-supplied — and explicitly cannot prove the value is the same credential or that nothing was rotated. API keys and other secrets never appear in any event payload — this holds across the in-process bus, HTTP SSE, and any persisted run log. (On the desktop the raw provider key never even reaches the WebView: egress is Rust-delegated, [ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md).)
+Provider credentials are host-resolved and are not part of the event contract. The desktop's
+raw provider key does not reach the WebView: egress is Rust-delegated
+([ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)). Tool-call event copies
+use the registry's shape-based input sanitization; tool-result summaries are bounded. These are
+specific credential/field protections, not universal redaction of arbitrary content. User, model
+and tool text can contain sensitive material, including in persisted run outputs. The bus is not
+a content redactor; see [ADR-0050's at-rest correction](../../decisions/0050-cli-history-db-at-rest-posture.md).
 
-The same `{ secret: true, ref }` **`MaskedSecret`** marker can also appear in **`node:completed.output`** (for an `input` node, which emits the masked inputs) and therefore in **`run:completed.outputs`** / **`run:failed.partialOutputs`** wherever a `secret`-typed input would otherwise surface — the engine masks `secret` inputs at the ingress so a raw secret never reaches an output payload (see [run-plan.md §output capture](../shared-core/run-plan.md)). **Any surface rendering of node/run outputs must treat a `MaskedSecret` object as a redacted placeholder, not displayable data.**
+`run:started.inputs` replaces every **secret-typed** input slot with `{ secret: true, ref }`,
+never its supplied raw value. **The `ref` is a SELF-reference — `inputs.<name>`, naming the slot
+that was masked — not a keychain or env reference.** It cannot resolve a credential. On resume,
+[ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §6
+verifies that the same named secret slot is re-supplied, not that its value or credential is unchanged.
+
+The input node likewise returns these **`MaskedSecret`** placeholders, which may flow into
+`node:completed.output`, `run:completed.outputs` and `run:failed.partialOutputs`. This input-slot
+masking is not a global scrub of every other node's text or output. **A surface rendering a
+`MaskedSecret` object must show a redacted placeholder, never treat it as displayable data.**
 
 ## Consuming the stream
 

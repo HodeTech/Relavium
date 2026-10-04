@@ -1500,20 +1500,17 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   abort + approval; the ADR-0028 session budget `pause_for_approval` can now ride the same machine (today a chat
   cost-cap trip settles the turn loudly as `budget_exceeded` — the REPL is the approval gate). See also the 1.V
   session-budget follow-up above. **Scheduled → 2.6.K.** *(medium · apps/cli/src/chat + agent-session.ts)*
-- [ ] **`relavium budget resume` CLI command (2.5-close Step 15 / Batch E — DEFERRED to a focused follow-up).** The
-  engine ALREADY supports resuming a budget-paused run (`engine.resume(runId, budgetGateId, decision)`,
-  budget-governor.ts / checkpoint.ts `isBudgetGate`), and `relavium gate` deliberately EXCLUDES budget gates
-  (`selectGate` filters `!isBudgetGate`), naming this the "`budget resume` surface." The remaining work is the
-  documented CLI command — a new manifest entry + dispatch handler + a command core that ~90% overlaps `gate.ts`'s
-  resume machinery (so the clean form extracts a shared resume core rather than duplicating). Low, dependency-free.
-  **Why deferred (maintainer call, 2026-07-08):** it modifies the security-sensitive `gate.ts` cross-process resume
-  path and is coupled to the secret-re-provide follow-up below (both refactor that path), so both are best landed
-  together with fresh context rather than at the tail of the 2.5-close session. ~~**Scheduled → 2.6.K**~~ →
-  **Phase 2.6.5 `W7` (moved 2026-09-18)**: [ADR-0097](../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md)
-  makes an approval a shown, frozen allowance, and the inline `run` prompter is the only approval surface, so
-  without this command a `--json` or non-TTY run cannot be approved at all. It lands as
-  `relavium budget resume <runId> --approve-amount <microcents> | --abort`.
-  *(low · apps/cli/src/commands/gate.ts + a NEW commands/budget.ts, which does not exist yet, + manifest.ts + dispatch.ts; ADR-0028, ADR-0097)*
+- [x] **`relavium budget resume` CLI command — accepted in W7 Step 11, 2026-10-04.**
+  The maintainer deferred this security-sensitive cross-process surface on 2026-07-08 and moved it to
+  W7 on 2026-09-18. It now shares the resume core in `commands/gate.ts`; the manifest and dispatch expose
+  `relavium budget resume <runId> [--gate <gateId>] --approve-amount <microcents> | --abort` without a
+  second command core. The amount must exactly match the recorded frozen allowance, and engine admission
+  remains authoritative. See the [canonical command](../reference/cli/commands.md#relavium-budget-resume),
+  [ADR-0097](../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) and the
+  [W7 execution plan](phases/phase-2.6.5-core-reliability-remediation.md#w7-pre-implementation-review-and-proposed-execution-plan--2026-10-02).
+  [Step 11 round 3](../reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) accepts the complete
+  path after the two corrective rounds; this closes the moved command follow-up, not the W7 register.
+  *(low · apps/cli/src/commands/gate.ts + manifest.ts + dispatch.ts; ADR-0028, ADR-0097)*
 - [ ] **`project`-tier `extraRoots` allowlist (carried from 2.5.A).** The `project` fs tier behaves as
   workspace-only until the path-allowlist lands (it can only NARROW the jail, never open a hole).
   **Scheduled → 2.6.M** (the `[chat].extra_roots` config key is the missing source). *(low · apps/cli/src/engine/tool-host/assemble.ts)*
@@ -1595,30 +1592,22 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   media-egress work, ~2.S), a media-only park would be reported as "gate-paused" with no gate; at that point
   decide whether exit 3 (and the rendered message) should distinguish a gate park from a media park.
   **Scheduled → 2.6.K.** *(low · apps/cli/src/commands/run.ts; media host-wiring / 2.S)*
-- [ ] **`relavium budget resume <runId> --approve-amount <microcents> | --abort` is documented but has no numbered
-  workstream.** *(Flags corrected and the work moved to Phase 2.6.5 `W7` on 2026-09-18 — see the Batch-E entry
-  above; ADR-0097 §2 requires the approved amount to be named, so a bare `--approve` is not enough.)* [commands.md](../reference/cli/commands.md) (canonical) specifies it as the non-interactive
-  operator path for a run suspended at a budget cap (`budget:paused`, `on_exceed: pause_for_approval` —
-  [ADR-0028](../decisions/0028-workflow-resource-governance.md)), but no Phase-2 workstream implements it. It
-  reuses **2.G's** cross-process resume substrate (a budget pause resolves through the same checkpoint reload
-  + resume path as a human gate, behind a budget-specific command + flags), so it is a small follow-up once
-  2.G lands — candidate home: alongside 2.I, or its own short workstream. **Deliberately out of 2.G** (a
-  distinct ADR-0028 surface, not in 2.G's acceptance). ~~**Scheduled → 2.6.K**~~ → **Phase 2.6.5 `W7`**
-  (moved 2026-09-18; single tracking point: the Batch-E entry above). *(low · apps/cli/src/commands/; ADR-0028,
-  ADR-0097)*
-- [ ] **Re-provide `secret`-typed inputs on cross-process resume.** The durable `run:started.inputs` are
-  **masked** (a `secret` input is persisted as `{ secret: true, ref }`, never plaintext — ADR-0006/0036), so a
-  fresh-process `relavium gate` resume cannot restore the real value. 2.G **fails closed (exit 2)** when a
-  restored input is a `MaskedSecret` (`assertNoMaskedSecretInputs`, gate.ts) rather than resume with a broken
-  value. The proper fix lets the operator re-supply the secret on resume (e.g. `relavium gate <runId> --secret
-  token=…` read from stdin like `provider set-key`, or a keychain/env re-resolution keyed by the input
-  `ref`) so a secret-bearing run becomes resumable. Until then the fail-closed + the
-  [commands.md](../reference/cli/commands.md) note stand. **2.5-close Step 15 / Batch E status (maintainer call,
-  2026-07-08):** selected IN by D8 but DEFERRED to a focused follow-up — this RELAXES a fail-closed security
-  guarantee (allow-with-re-provisioning), demands the stdin-not-argv secret discipline (`provider set-key` pattern)
-  + a mandatory security-review pass, and is coupled to the `budget resume` command above (both refactor the
-  `gate.ts` resume path). Best landed together with fresh context, not at the tail of the 2.5-close session.
-  **Scheduled → 2.6.K** (that focused follow-up). *(medium · apps/cli/src/commands/gate.ts; ADR-0006)*
+- **`relavium budget resume` workstream — single tracking point.** The former unnumbered Phase-2
+  follow-up was moved to W7 on 2026-09-18 and is implemented under Step 11. Its acceptance state is tracked
+  only in the Batch-E entry above; the [canonical command](../reference/cli/commands.md#relavium-budget-resume)
+  describes the actual flags and frozen-allowance boundary. *(ADR-0028, ADR-0097)*
+- [x] **Re-provide `secret`-typed inputs on cross-process resume — shared path accepted, 2026-10-04.**
+  The 2026-07-08 deferral required stdin rather than argv and an independent security review. The ordinary
+  human-gate path already implements ADR-0083 §6: `--secret-stdin` reads `name=value` lines, requires every
+  masked slot and refuses unknown, missing or empty values without echoing secret values. Without the flag,
+  a secret-bearing resume still fails closed with exit `2`. W7 Step 11 reuses that implementation for budget
+  resume and verifies secret admission alongside frozen amount, ownership and MCP consent. Drained stdin
+  disables a later interactive gate prompt. See the [canonical stdin contract](../reference/cli/commands.md#relavium-gate)
+  and [ADR-0083](../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md).
+  [Step 11 round 3](../reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) accepts the complete shared
+  path. The inherited secret-stdin interval before the connect/build signal guard remains qualified
+  in the canonical command; this does not introduce a whole-stdin signal-handling promise.
+  *(medium · apps/cli/src/commands/gate.ts; ADR-0006, ADR-0083)*
 
 ### 2.I read-command follow-ups (PR #48 multi-agent review, 2026-06-24)
 

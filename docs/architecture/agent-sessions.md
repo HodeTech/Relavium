@@ -238,8 +238,8 @@ reserved:
   finished work.
 - **Length, not content, on the wire.** The `agent:directive_injected` event carries
   **`directiveLength`, never the directive text** (and a `mode: 'non_blocking' | 'blocking'`
-  flag), so no user content, secret, or PII enters the event stream — the same secret-free
-  discipline every other event payload follows.
+  flag), so this event does not retain the directive text. Other event payloads can
+  retain sensitive content; see [the event security boundary](../reference/contracts/sse-event-schema.md#security-credential-boundaries-and-sensitive-content).
 
 Phase 1 reserves the events and pins the envelope so that when steering is implemented it
 cannot widen the trust boundary by accident. The desktop steering affordance over a

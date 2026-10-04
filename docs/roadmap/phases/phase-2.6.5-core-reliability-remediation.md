@@ -1989,7 +1989,7 @@ correction inside its own ADR rather than a rewrite, so the wrong reasoning stay
 
 ### W7 pre-implementation review and proposed execution plan — 2026-10-02
 
-**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–6, 9 and 10 are closed after their independent review rounds. Step 6's configured-output-estimate precedence follows ADR-0101, approved by the maintainer on 2026-10-02. Live captures for Step 7 remain pending; independently approved Step 11 proceeds from the accepted Step 10 foundation.**
+**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–6 and 9–11 are closed after their independent review rounds. Step 6's configured-output-estimate precedence follows ADR-0101, approved by the maintainer on 2026-10-02. Live captures for Step 7 remain pending; Step 11 is accepted after three complete independent review rounds. Independent Step 12 document maintenance proceeds while whole-wave acceptance remains open.**
 The four Accepted ADRs retain their decisions. Three verified gaps were explicitly resolved before code:
 manual compaction with an unknown window and the budget outcome of idle compaction
 ([ADR-0099](../../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md)),
@@ -3234,3 +3234,25 @@ Full CI and sequential coverage exit 0: 327 files, 7,526 passing tests, 11 exist
 global line/branch/function coverage 95.88%/92.63%/96.73%.
 **Fresh complete-Step-11 round 3 precedes closure.** Live Steps 7–8, Step 12 and all six register
 items remain open; no verified implementation finding is deferred.
+
+**Step 11, fresh review round 3 — 2026-10-04.** Both restarted independent reviewers examine every
+hunk in all 46 files of `28ba80db..53cce9e3` and report no new verified finding. Each passes 452
+permanent tests in 14 files without skips; their separate fresh native, passive, class-private
+and compiled-process controls are nonadditive. The parent fully reads both reports, verifies all
+2,028 contracts and 2,755 runtime inventory entries, and checks every original tracked byte/hash/mode
+after both full releases. Earlier interrupted round-3 runs are excluded. The previous green full
+CI/coverage describes unchanged source; this review does not claim a new whole-toolchain run.
+[The complete record](../../reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) preserves timing,
+platform, guard and read-depth limits. **Step 11 is closed; no verified code finding is deferred.**
+
+**Independent Step 12 document maintenance — 2026-10-04.** The frozen 15-overlay static preflight
+finds two Medium prose defects: supplied usage was incorrectly conditional on pricing, and a
+pass-through DB fixture was credited with upstream masking coverage. Both are parent-verified
+and corrected. An existing universal event-secret claim and a connected failed-usage commit
+example are narrowed; the fixture names its actual scope, uses the current SELF ref and checks
+ref preservation. Guides, canonical security/usage contracts and the two implemented CLI
+follow-ups are reconciled. The parent verifies every static review entry, and its separate
+fixture passes 81 DB tests and strict types. [The preflight record](../../reviews/2026-10-04T01-04-15-w7-step-12-document-preflight-review.md)
+does not replace required repository checks or fresh committed-maintenance reviews.
+**Steps 7–8, whole Step 12 and all six W7 register items remain open.** Their live provider
+evidence cannot be replaced by offline fixtures; no PR, push or wave-closure claim is made.

@@ -389,9 +389,12 @@ echo "review it" | relavium agent run code-reviewer --fixture ./fixtures/review.
 ### `relavium provider`
 
 Registers LLM providers and manages their API keys in the **OS keychain** (workstream 2.C; `@napi-rs/keyring`,
-[ADR-0019](../../decisions/0019-cli-node-keychain-library.md)). The **key value never leaves the keychain**:
-the `llm_providers` row stores only the keychain `account` ref, display shows only a hint (last 4 chars), and a
-key is read solely at LLM-call time. Known providers: `anthropic`, `openai`, `gemini`, `deepseek`.
+[ADR-0019](../../decisions/0019-cli-node-keychain-library.md)). The `llm_providers` row stores
+only the keychain `account` ref; provider displays expose a hint, not the key value. The host resolves
+the credential into process memory for provider requests, including verification/model discovery;
+key custody does not mean the adapter can call a provider without reading its credential. See
+[the keychain/secret contract](../desktop/keychain-and-secrets.md).
+Known providers: `anthropic`, `openai`, `gemini`, `deepseek`.
 
 ```bash
 relavium provider list                                  # registered providers + whether a key is set

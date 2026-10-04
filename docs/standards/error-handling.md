@@ -39,8 +39,13 @@ knowing which provider produced it:
 - **Retryable** — transient, worth moving to the next provider in the chain (or retrying
   with backoff): rate limits (HTTP 429), server/overloaded errors (5xx), timeouts, and
   transport/connection resets. The fallback runner advances to the next provider on a
-  retryable `LlmError` and records the failed attempt's usage so cost stays accurate
-  across failover.
+  retryable `LlmError` when the attempt's commitment state permits it. Every attempt
+  is reported; actual usage is recorded only when the provider supplies it. An engaged
+  attempt without trustworthy usage retains its bounded reservation as an estimate,
+  unless a proven pre-content refusal permits release
+  ([ADR-0074](../decisions/0074-durable-conservative-budget-commitments.md),
+  [ADR-0076](../decisions/0076-durable-per-attempt-realized-cost-ledger.md)).
+  An estimate is never reported as actual usage or realized spend.
 - **Fatal** — not worth retrying anywhere; surface it and stop: authentication/permission
   failures (401/403, a bad or missing key; **402** an account billing / insufficient-balance
   problem — classified `auth` so it surfaces as `provider_auth`, never `internal`), malformed

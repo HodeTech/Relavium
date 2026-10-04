@@ -490,12 +490,18 @@ differently.
 > `b64_json` / `inlineData`), and vendor shapes inside it are invisible to the canonical-shape
 > backstop scans — stripping at the sink is the only guarantee.
 
-The `kind`/`retryable` split is the contract the fallback runner depends on: a
-`retryable` `LlmError` advances `withFallback` to the next provider (recording the
-failed attempt's usage so cost stays accurate across the failover); a fatal one is
-surfaced and stops the chain. The per-provider mapping (native status/code →
-`kind`) lives **inside each adapter** and is exercised by the per-provider
-conformance suite — the runner never inspects a provider code directly.
+The fallback runner reads both classification and commitment state: a retryable failure
+can advance to another provider only before content commits; a pre-content `protocol` failure
+can also fail over despite being fatal to node retry. Every attempt is reported. Available attempt usage is
+recorded independently of whether it can be fully priced. Unpriced records are marked
+`priced: false`: their amount may be an unknown-price placeholder or a token-only cost floor,
+rather than a complete charge. Where an admission exists, missing usage or incomplete pricing
+retains its bounded reservation unless proven pre-content refusal permits release. A reservation
+is never invented actual usage or realised spend. See
+[the financial settlement contract](agent-runner.md) and
+[error handling](../../standards/error-handling.md#llmerror-classification--the-contract-the-fallback-chains-depend-on).
+Per-provider status/code → `kind` mapping stays **inside each adapter**, exercised by the
+conformance suite; the runner never inspects a provider code directly.
 
 ### Adding a provider id is an additive, backwards-compatible amendment
 

@@ -167,6 +167,14 @@ added.
   queued native OS signals now precede approval egress; terminal uncertainty retains exit 5;
   seven permanent controls and verified sealed evidence; fresh full-step round 3 required.
 
+- [2026-10-04 — W7 step 12 document-maintenance preflight](2026-10-04T01-04-15-w7-step-12-document-preflight-review.md):
+  two verified draft inaccuracies corrected; connected credential/content and fixture scope reconciled;
+  fresh committed-maintenance reviews required, whole-wave acceptance remains open.
+
+- [2026-10-04 — W7 step 11, fresh round 3](2026-10-04T01-17-23-w7-step-11-round-3-review.md):
+  both complete fresh reviews clean; every sealed entry and unchanged source verified;
+  interrupted evidence excluded; safe CLI surface accepted and Step 11 closed.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

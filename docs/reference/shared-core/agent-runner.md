@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-10-03
+> Last updated: 2026-10-04
 
 - **Related**: [llm-provider-seam.md](llm-provider-seam.md), [tool-registry.md](tool-registry.md), [run-plan.md](run-plan.md), [built-in-tools.md](built-in-tools.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../../decisions/0038-agentrunner-llm-call-boundary.md](../../decisions/0038-agentrunner-llm-call-boundary.md), [../../decisions/0039-same-provider-reasoning-replay.md](../../decisions/0039-same-provider-reasoning-replay.md), [../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md), [../../decisions/0037-engine-tool-execution-boundary.md](../../decisions/0037-engine-tool-execution-boundary.md), [../../standards/error-handling.md](../../standards/error-handling.md)
 
@@ -230,7 +230,7 @@ token or pretend the agent completed: an eligible kick re-runs under the current
 Legacy approval likewise grants no allowance. The durable protocol and join rules have one home in
 [sse-event-schema.md](../contracts/sse-event-schema.md#durable-budget-authorization).
 
-**W7 status, 2026-10-03:** Step 10's workflow approval protocol is accepted after eight independent
-review rounds. Step 11's safe CLI surface is implemented and under corrective independent review;
+**W7 status, 2026-10-04:** Step 10's workflow approval protocol is accepted after eight independent
+review rounds. Step 11's safe CLI surface is accepted after three independent review rounds;
 automatic session pre-send/summary handoff remains Step 8. See the
 [W7 execution plan](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md).
