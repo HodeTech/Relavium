@@ -215,6 +215,9 @@ added.
 - [2026-10-04 — W7 systematic group 2a, round 4](2026-10-04T16-34-57-w7-systematic-group-2a-round-4-review.md):
   immutable classified errors, proven pre-provider refusals and typed flush accounting corrected; fresh round 5 required.
 
+- [2026-10-04 — W7 systematic group 2a, round 5](2026-10-04T20-43-04-w7-systematic-group-2a-round-5-review.md):
+  hostile throwable presentation, provider-method lookup and valid generated usage gaps corrected; fresh complete round 6 required.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

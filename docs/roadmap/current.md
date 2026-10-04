@@ -1466,3 +1466,13 @@ actual chain-owned provider invocation; untyped chain diagnostics are fixed. Ori
 332 files, 7,665 tests/12 skips, six builds and test isolation. Both full reports and every one of
 3,524 sealed entries/pins are independently verified before Original resumes. **Fresh complete
 round 5 is required; group 2a, ownership, remaining groups, Steps 7–8/12, Sonar and PR remain open.**
+
+**Systematic group 2a, round 5 — 2026-10-04.** [Both fresh complete reviews](../reviews/2026-10-04T20-43-04-w7-systematic-group-2a-round-5-review.md)
+reproduce hostile error presentation replacing the original throwable/suppressing its terminal,
+method lookup counted as invocation, and valid generated usage lost on pricing failure.
+`902737eb` guards presentation, resolves receiver-bound methods before invocation and retains
+safe-integer validated usage without inventing a cost. Original baseline: 19 failing/287 passing;
+corrected focused run: 417 passing. Final forced root checks pass 23 tasks, 332 files,
+7,694 tests/12 skips, six builds and test isolation. Both complete reports and every one of
+3,589 sealed entries/pins are independently verified before Original resumes. **Fresh complete
+round 6 is required; group 2a, ownership, remaining groups, Steps 7–8/12, Sonar and PR remain open.**
