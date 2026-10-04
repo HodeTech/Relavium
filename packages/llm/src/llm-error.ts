@@ -10,8 +10,8 @@ import type { LlmError, LlmErrorKind, ProviderId } from './types.js';
 /**
  * The four retryable kinds. Failover also checks whether content was committed; a pre-content
  * protocol violation may advance even though its kind is not retryable. Attempt records carry
- * actual usage only when available. The consumer retains a bounded conservative reservation for
- * an engaged attempt without trustworthy usage unless a proven refusal permits release.
+ * actual usage only when available. For an engaged attempt with a bounded reservation, the consumer
+ * retains that reservation when trustworthy usage is missing, unless a proven refusal permits release.
  */
 export const RETRYABLE_KINDS: ReadonlySet<LlmErrorKind> = new Set<LlmErrorKind>([
   'rate_limit',
