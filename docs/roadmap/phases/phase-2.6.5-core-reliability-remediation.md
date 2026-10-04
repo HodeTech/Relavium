@@ -3379,3 +3379,13 @@ and 13 controls; corrected root passes 7,625 tests/12 skips across 331 files, al
 six forced builds and test isolation. Complete reports and every sealed entry/pin are independently
 verified before Original resumes. **Fresh complete round 4 is required; group 2a, ownership,
 remaining groups, Steps 7–8/12, Sonar and PR acceptance remain open.**
+
+**Systematic group 2a, round 4 — 2026-10-04.** [Both fresh complete reviews](../../reviews/2026-10-04T16-34-57-w7-systematic-group-2a-round-4-review.md)
+reproduce frozen classified errors defeating the carrier, proven pre-provider refusals consuming
+slots without a governor, and classified success-flush errors losing usage or counting twice.
+`ecf0b209` separates canonical accounting from throwable mutation/classification and records
+actual chain-owned provider invocation; untyped chain diagnostics are fixed. Original baseline:
+34 failing/243 passing; corrected focused run: 451 passing. Forced root checks pass all 23 tasks,
+332 files, 7,665 tests/12 skips, six builds and test isolation. Both full reports and every one of
+3,524 sealed entries/pins are independently verified before Original resumes. **Fresh complete
+round 5 is required; group 2a, ownership, remaining groups, Steps 7–8/12, Sonar and PR remain open.**

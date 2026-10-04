@@ -209,6 +209,12 @@ added.
 - [2026-10-04 — W7 systematic group 2a, round 2](2026-10-04T14-41-03-w7-systematic-group-2a-round-2-review.md):
   inherited failed-tool observer accounting defect corrected; fresh complete round 3 required.
 
+- [2026-10-04 — W7 systematic group 2a, round 3](2026-10-04T15-44-35-w7-systematic-group-2a-round-3-review.md):
+  inherited raw-callback accounting and skipped realized recording corrected; fresh complete round 4 required.
+
+- [2026-10-04 — W7 systematic group 2a, round 4](2026-10-04T16-34-57-w7-systematic-group-2a-round-4-review.md):
+  immutable classified errors, proven pre-provider refusals and typed flush accounting corrected; fresh round 5 required.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and
@@ -257,9 +263,6 @@ touches rather than restating it.
 
 An automated reviewer uses its stable task identity rather than an invented account handle.
 Record its model, effort and review scope in the coverage section where available.
-
-- [2026-10-04 — W7 systematic group 2a, round 3](2026-10-04T15-44-35-w7-systematic-group-2a-round-3-review.md):
-  inherited raw-callback accounting and skipped realized recording corrected; fresh complete round 4 required.
 
 ## Conventions
 
