@@ -3418,3 +3418,14 @@ Both entire reports and all 4,140 sealed entries/source/link/bootstrap pins are 
 before Original resumes. Runtime's platform-interrupted review is explicitly incomplete, with no
 restored runtime certification. **Fresh complete round 8 is required; group 2a, ADR-0102 approval,
 remaining groups, Steps 7–8/12, Sonar and PR remain open.**
+
+**Systematic group 2a, round 8 — 2026-10-05.** [Both complete independent reviews](../../reviews/2026-10-05T00-56-00-w7-systematic-group-2a-round-8-review.md)
+verify held terminal mutation before confirming EOF, mutable attempt diagnostics and typed paid
+observer failures granting unintended workflow retry/budget authority. Corrections own the held
+terminal, freeze diagnostic copies and carry exact external observer origin separately from internal
+admission faults. Session classified delivery and actual money failure ownership remain intact.
+The 51 new terminal controls reproduce 31 failures before repair; final forced Original checks pass
+23 tasks, 336 files, 7,831 tests / 12 existing skips, six builds and test isolation. Both complete
+reports and all 4,175 physical entries/pins/links are verified before Original resumes, with prior
+outer-launcher gaps qualified. **Fresh complete round 9 is required; group 2a, ADR-0102 approval,
+remaining systematic groups, Steps 7–8/12, current Sonar and PR remain open.**

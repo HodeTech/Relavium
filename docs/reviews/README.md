@@ -281,3 +281,7 @@ Record its model, effort and review scope in the coverage section where availabl
 - **One review per file**, named with the ISO timestamp it was conducted.
 - Records are in English and follow
   [documentation-style.md](../standards/documentation-style.md) like every other file.
+
+- [2026-10-05 — W7 systematic group 2a, round 8](2026-10-05T00-56-00-w7-systematic-group-2a-round-8-review.md):
+  both complete reviews verify held-terminal, diagnostic and typed observer authority defects;
+  corrected with unchanged money controls and green full toolchain, fresh complete round 9 required.
