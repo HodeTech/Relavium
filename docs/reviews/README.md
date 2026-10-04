@@ -290,3 +290,8 @@ Record its model, effort and review scope in the coverage section where availabl
   two complete reviews verify cause authority, generated projection, compaction/later-round origin and
   false money-writer attribution; fixes and 119 additional permanent controls pass full checks; fresh
   complete round 10 required, with unpriced versus actual-charge and startup qualifications retained.
+
+- [2026-10-05 — W7 systematic group 2a, round 10](2026-10-05T02-56-00-w7-systematic-group-2a-round-10-review.md):
+  lifecycle setup/provenance and nested generated-content authority corrected; 94 permanent controls
+  and full checks pass. Both full reports/actual-entry audits complete; Contracts seal cache mismatch
+  explicitly qualified. Fresh complete round 11 required.

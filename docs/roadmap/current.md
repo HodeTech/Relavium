@@ -1515,3 +1515,12 @@ callback origin and false money-writer attribution. Verified corrections `1b23ff
 physical entries/source/link/bootstrap pins verify before Original resumes; actual-price/unpriced
 and early startup limits remain explicit. **Fresh complete round 10 is required; group 2a,
 ADR-0102 approval, remaining groups, Steps 7–8/12, Sonar, W7 and PR #90 remain open.**
+
+**Systematic group 2a, round 10 — 2026-10-05.** [Both complete independent reviews](../reviews/2026-10-05T02-56-00-w7-systematic-group-2a-round-10-review.md)
+verify lifecycle setup/provenance and nested generated-content authority gaps. Corrections
+`639d1ace` / `c6749597` add 94 controls and pass forced full lint/typecheck/test (23 tasks,
+343 files, 8,044 tests / 12 existing skips), six builds and isolation. Both complete reports and
+all 3,741 actual physical entries/source/link/bootstrap pins are audited; Contracts' three post-audit
+cache files and one directory discrepancy explicitly qualify its seal claim. **Fresh complete
+round 11 is required; group 2a, ADR-0102 approval, remaining groups, Steps 7–8/12, Sonar, W7 and
+PR #90 remain open.**
