@@ -3351,3 +3351,12 @@ decision. The parent reads the complete reports and verifies every sealed entry 
 pin before ending Original source freeze. **ADR-0102 remains Proposed; maintainer approval precedes
 dependent implementation.** Actual SDK generate/stream acceptance and the ownership HIGH remain open;
 independent corrective groups continue.
+
+**Systematic group 2a, round 1 — 2026-10-04.** [Two fresh complete reviews](../../reviews/2026-10-04T13-47-56-w7-systematic-group-2a-round-1-review.md)
+verify typed cap refusals, structural result failures, native-JSON portability and approved
+default failover, but independently reproduce a new High: successful-tool observer errors
+lose real session usage/engagement and bypass its hard turn cap. `13d3c0fe` preserves the narrow
+dispatch boundary and carries those errors through EA2; `7839647f` corrects the normalizer comment.
+Six actual-session controls and forced root checks/build pass. Both complete final reports and
+every sealed entry/pin are verified before Original resumes. **Fresh complete round 2 is required;
+this group, ownership, remaining systematic corrections and whole W7 remain open.**

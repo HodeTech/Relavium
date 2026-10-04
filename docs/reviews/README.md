@@ -203,6 +203,9 @@ added.
 - [2026-10-04 — W7 ADR-0102 proposal, round 2](2026-10-04T13-02-54-w7-adr-0102-round-2-review.md):
   complete revised proposal receives no new material findings; maintainer decision and implementation acceptance pending.
 
+- [2026-10-04 — W7 systematic group 2a, round 1](2026-10-04T13-47-56-w7-systematic-group-2a-round-1-review.md):
+  real-session observer usage/turn-cap regression and normalizer comment corrected; fresh complete round 2 required.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

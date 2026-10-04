@@ -238,6 +238,12 @@ merged too (PR #85, 2026-08-28).
 > receives no new material proposal findings; maintainer approval remains required before dependent
 > implementation. Independent corrective work continues. The ownership HIGH remains open.
 
+> **Systematic group 2a, round 1 — 2026-10-04.** [Two complete independent reviews](../reviews/2026-10-04T13-47-56-w7-systematic-group-2a-round-1-review.md)
+> verify the cap/structural repairs but reproduce a new successful-tool observer regression:
+> real session usage is lost and the hard turn cap can be bypassed. Corrections retain classified
+> engagement/usage and fix the normalizer comment. Forced root checks and build pass; **fresh
+> complete round 2 precedes group closure**. Ownership, remaining groups and W7 acceptance stay open.
+
 ## Execution order — Phase 2.5.5 + Phase 2.6 (temporary)
 
 > **Temporary section — delete it when both phases close.** It owns **ordering only**. Every item's
