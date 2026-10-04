@@ -1989,7 +1989,7 @@ correction inside its own ADR rather than a rewrite, so the wrong reasoning stay
 
 ### W7 pre-implementation review and proposed execution plan — 2026-10-02
 
-**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–6 and 9–11 are closed after their independent review rounds. Step 6's configured-output-estimate precedence follows ADR-0101, approved by the maintainer on 2026-10-02. Live captures for Step 7 remain pending; Step 11 is accepted after three complete independent review rounds. Independent Step 12 document maintenance proceeds while whole-wave acceptance remains open.**
+**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–6 and 9–11 obtained scoped independent acceptance, but the 2026-10-04 systematic PR review reopens Step 6 request ownership and adjacent session/CLI, replay-tool and document obligations. Previous acceptance records remain historical. Step 6's configured-output-estimate precedence follows ADR-0101, approved on 2026-10-02. Three of five live captures exist; Steps 7–8 and whole Step 12 remain open. All systematic corrections require fresh independent acceptance.**
 The four Accepted ADRs retain their decisions. Three verified gaps were explicitly resolved before code:
 manual compaction with an unknown window and the budget outcome of idle compaction
 ([ADR-0099](../../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md)),
@@ -3302,3 +3302,20 @@ Gemini returns an input-quota 429 before its context boundary. The first Anthrop
 normally and its second is an input overflow; neither proves `model_context_window_exceeded`.
 No diagnostic response substitutes for the missing evidence, and no classifier is changed here.
 **Steps 7–8, whole Step 12 and all six W7 register items remain open.**
+
+**PR 90 systematic review follow-up — 2026-10-04.** Two maintainer reports against `95137c34`
+are reconciled into 35 findings. [Targeted independent triage](../../reviews/2026-10-04T10-35-00-w7-systematic-review-intake-review.md)
+reproduces actual SDK payload mutation after budget admission and two narrower failure-path defects,
+confirms the combined approved-failover test gap, and records a separate brittle JSON recursion test.
+Normal/fenced budget-map cleanup already exists; that submitted claim is refuted rather than patched.
+All ten required/advisory GitHub CI checks pass at `578c14a5`; SonarCloud annotations remain individually
+under examination. Neither newer CI nor targeted passing controls accepts the whole PR.
+
+[Rendering round 1](../../reviews/2026-10-04T10-32-37-w7-rendering-round-1-review.md) independently
+reproduces cleanup after a supported chat resizes to an invisible viewport and CI route/ownership drift.
+The parent correction confirms the exact displayed notice, retains evidence when clipped, and aligns
+chat selection/ownership with the existing output predicate. Fresh complete round 2 follows commitment.
+The remaining correction groups cover measured-request ownership, budget-gate lifecycle, corrupt-history
+isolation, replay/toolchain guarantees and canonical docs. No finding is deferred at intake; no fail-closed
+or wire-compatibility decision is silently weakened. **Step 6 and adjacent affected obligations require
+fresh acceptance; Steps 7–8, whole Step 12 and all six W7 register items remain open.**

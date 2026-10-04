@@ -187,6 +187,13 @@ added.
   required CI harness mismatch and production disclosure loss verified; parent inline reseat correction;
   fresh post-commit acceptance rounds remain required.
 
+- [2026-10-04 — W7 post-PR rendering, round 1](2026-10-04T10-32-37-w7-rendering-round-1-review.md):
+  actual resized-window disclosure loss and CI route/ownership drift reproduced; corrections require fresh round 2;
+  one invalid cross-Own attempt excluded and replaced by a complete clean review.
+- [2026-10-04 — W7 PR 90 systematic review intake](2026-10-04T10-35-00-w7-systematic-review-intake-review.md):
+  35 submitted findings registered; targeted real-SDK mutation and failure-path evidence qualified;
+  six correction groups, with no whole-PR acceptance or finding deferred at intake.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

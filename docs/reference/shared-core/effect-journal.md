@@ -279,6 +279,13 @@ permit deletion. Chat and Home explicitly configure Ink's interactivity from the
 Ink's ambient CI predicate must not buffer a selected interactive transcript until unmount. Home also resets
 the inline Static cursor when a reseat replaces the view store, while retaining the root input owner and
 already-printed terminal scrollback. A new store's notice cannot inherit the previous store's printed-item count.
+Acknowledgement also requires the exact newly published notice to be included in the rendered transcript.
+Inline mode confirms its actual Static child; full-screen mode confirms every wrapped notice row in the
+committed viewport, bounded by measured layout and terminal clipping. A newly mounted viewport may need
+its measured follow-up frame. A flushed footer, an older identical notice, a clipped window or a replaced
+store cannot acknowledge disclosure. If a resize leaves insufficient space, retention is refused and the
+evidence remains for a later activation; activation still completes so input and exit remain usable.
+Chat driver selection and its transcript/approval ownership use the same existing CI/output predicate.
 Plain/JSON await the native stderr write callback on the exact output sink, checking its state
 and handling error/close. Returning from `write()` alone only acknowledges enqueueing. Failed stderr delivery
 retains evidence; stdout remains the event stream. Ctrl-C disarms ownership before releasing the

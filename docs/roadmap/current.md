@@ -219,6 +219,16 @@ merged too (PR #85, 2026-08-28).
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
 > Live fixtures are still required before step 7's classification commit. The six W7 items stay open.
 
+> **PR 90 systematic follow-up — 2026-10-04.** Two maintainer reports against `95137c34` register 35
+> deduplicated findings, with [qualified independent triage](../reviews/2026-10-04T10-35-00-w7-systematic-review-intake-review.md).
+> Step 6's request-ownership guarantee is reopened; adjacent session/CLI, replay-tool and documentation
+> obligations require correction and fresh acceptance. The [first committed rendering review](../reviews/2026-10-04T10-32-37-w7-rendering-round-1-review.md)
+> reproduces notice loss after a supported chat resizes and CI route/ownership drift. Its corrections
+> require fresh round 2. Previous step closure records remain historical evidence, not current whole-wave
+> acceptance. All ten GitHub CI checks pass at `578c14a5`; SonarCloud and the submitted findings remain
+> separately under examination. No finding is deferred at intake. Steps 7–8, whole Step 12 and all six
+> W7 register items remain open.
+
 ## Execution order — Phase 2.5.5 + Phase 2.6 (temporary)
 
 > **Temporary section — delete it when both phases close.** It owns **ordering only**. Every item's

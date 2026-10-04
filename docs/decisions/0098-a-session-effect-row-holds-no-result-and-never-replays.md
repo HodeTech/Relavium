@@ -285,3 +285,17 @@ These are corrections to the existing **disclose then sweep** implementation, no
 Actual-Ink first-write/row-order controls cover default production Home mounts, inline/full-screen modes,
 raw Ctrl-Z, output close/error and CI opt-outs. The canonical contract remains in
 [effect-journal.md](../reference/shared-core/effect-journal.md#8-needs_attention).
+
+### Published-notice visibility correction — 2026-10-04
+
+A fresh committed-change review reproduces a remaining disclosure defect: resizing a previously usable
+Home chat to one row during reseat flushes only its footer, yet the old acknowledgement permits cleanup.
+Acknowledgement now confirms the exact notice's actual Static child or complete committed viewport rows,
+including layout and terminal clipping, before retention. Insufficient space retains the evidence for a
+later activation and leaves input/exit usable. An older identical notice or another store is not evidence.
+The viewport's initial blank/measurement frame is followed by one bounded render flush; no unbounded
+resize wait or new disclosure policy is introduced.
+
+The same review finds chat selection and transcript ownership ignoring the existing CI policy. Both now
+share that policy; a CI TTY uses plain output and acknowledged stderr. CI opt-outs and JSON precedence are
+unchanged. The canonical contract remains in [effect-journal.md](../reference/shared-core/effect-journal.md#8-needs_attention).
