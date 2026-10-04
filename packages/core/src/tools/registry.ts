@@ -1046,8 +1046,9 @@ function readPath(value: unknown, path: string): unknown {
 }
 
 /* ------------------------------------------------------------------------------------------------ *
- * Step 8 — event-input sanitization (config-only + secret-tainted keys removed). The bus does final
- * generic masking (ADR-0036); this strips the tool-aware sensitive fields only the registry knows.
+ * Step 8 — event-input sanitization (config-only + secret-tainted keys removed, then a shape scrub).
+ * This protects event copies here; the bus does not perform generic content-secret masking.
+ * Arbitrary user/model/tool content can still be sensitive (ADR-0050's at-rest correction).
  * ------------------------------------------------------------------------------------------------ */
 
 function sanitizeInput(
