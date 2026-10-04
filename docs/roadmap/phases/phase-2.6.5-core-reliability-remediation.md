@@ -3319,3 +3319,12 @@ The remaining correction groups cover measured-request ownership, budget-gate li
 isolation, replay/toolchain guarantees and canonical docs. No finding is deferred at intake; no fail-closed
 or wire-compatibility decision is silently weakened. **Step 6 and adjacent affected obligations require
 fresh acceptance; Steps 7–8, whole Step 12 and all six W7 register items remain open.**
+
+**Post-PR rendering corrective round 2 — 2026-10-04.** Two fresh independent reviewers accept
+all 24 follow-up paths through `d4e4fa9c`, including the published-notice viewport proof and shared
+CI route/publication predicate. [The round 2 record](../../reviews/2026-10-04T12-00-00-w7-rendering-round-2-review.md)
+documents actual-Ink/native-SQLite controls, causal removals, exact restoration, complete sealed-tree
+verification and limits. All ten GitHub workflow checks are green at that head; SonarCloud is assessed
+separately. **The rendering corrective group is closed. Measured-request ownership and remaining
+systematic findings still require correction and fresh acceptance; Steps 7–8, whole Step 12 and
+all six W7 register items remain open.**

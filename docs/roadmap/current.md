@@ -210,7 +210,7 @@ merged too (PR #85, 2026-08-28).
 > [Draft PR #90](https://github.com/HodeTech/Relavium/pull/90) is open on `development`.
 > Required Linux CI revealed an actual-Ink test-context mismatch. Further controlled checks found
 > undisplayed disclosure under the existing CI opt-outs and Home's inline reseat Static cursor;
-> corrections and fresh post-commit review are in progress. Prior scoped acceptance does not waive these findings.
+> corrections pass two fresh independent review rounds. Prior scoped acceptance does not waive other findings.
 > Three actual overflow captures (Anthropic, OpenAI and DeepSeek) are now preserved in the
 > [fixture index](../../packages/llm/src/conformance/fixtures/overflow/README.md).
 > Gemini overflow and the separate Anthropic context-stop response are still missing;
@@ -224,8 +224,9 @@ merged too (PR #85, 2026-08-28).
 > Step 6's request-ownership guarantee is reopened; adjacent session/CLI, replay-tool and documentation
 > obligations require correction and fresh acceptance. The [first committed rendering review](../reviews/2026-10-04T10-32-37-w7-rendering-round-1-review.md)
 > reproduces notice loss after a supported chat resizes and CI route/ownership drift. Its corrections
-> require fresh round 2. Previous step closure records remain historical evidence, not current whole-wave
-> acceptance. All ten GitHub CI checks pass at `578c14a5`; SonarCloud and the submitted findings remain
+> are accepted by [fresh round 2](../reviews/2026-10-04T12-00-00-w7-rendering-round-2-review.md).
+> The rendering corrective group is closed. Previous step closure records remain historical evidence,
+> not current whole-wave acceptance. All ten GitHub workflow checks pass at `d4e4fa9c`; SonarCloud and remaining findings stay
 > separately under examination. No finding is deferred at intake. Steps 7–8, whole Step 12 and all six
 > W7 register items remain open.
 

@@ -194,6 +194,9 @@ added.
   35 submitted findings registered; targeted real-SDK mutation and failure-path evidence qualified;
   six correction groups, with no whole-PR acceptance or finding deferred at intake.
 
+- [2026-10-04 — W7 post-PR rendering correction, round 2](2026-10-04T12-00-00-w7-rendering-round-2-review.md):
+  fresh independent reviews accept the complete scoped correction; other systematic findings and W7 remain open.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and
