@@ -115,3 +115,23 @@ cover billed/zero-use engagement, original raw identity, EA7 abort, first-conten
 terminal cancellation and successful once-only accounting. This repairs EA2 and the existing hard-cap
 contract without changing capability/approval policy. Historical text is preserved; the full systematic
 review gate remains open until a fresh complete round accepts the correction.
+
+
+### Immutable exceptions and proven pre-provider refusal — 2026-10-04
+
+A fresh review found canonical accounting still depending on mutation of a thrown
+`AgentTurnError`. A frozen instance replaced the original failure with a `TypeError` and lost
+usage and the hard-cap slot. The internal outcome carrier now never inspects or mutates the
+exception. The public turn API retains best-effort metadata on mutable data properties and
+always rethrows the original value. Sessions settle from canonical failed/successful accounting
+before exception classification; typed flush failures cannot substitute stale quantities or count
+a successful turn twice, and a later pause retains earlier engagement and usage.
+
+A non-skipped fallback record also counted pre-provider key/local preparation failures only when
+no governor was present. The chain now records actual provider-method invocation explicitly;
+core uses the same evidence with and without a governor. Untyped chain exceptions have a fixed
+public diagnostic rather than forwarding a host exception's arbitrary message. These are
+corrections to EA2's existing truthful-usage and provider-engagement rules, not new counting or
+financial policy. The canonical contracts are
+[agent-session-spec.md](../reference/contracts/agent-session-spec.md) and
+[llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md).

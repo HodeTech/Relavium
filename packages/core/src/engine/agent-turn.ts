@@ -311,12 +311,13 @@ export class AgentTurnError extends Error {
   // the real throw-site stack is preserved) when a provider had engaged. The nested counts stay immutable.
   usage?: { readonly input: number; readonly output: number };
   /**
-   * Whether a provider actually **engaged** this turn — i.e. at least one non-skipped fallback attempt ran
-   * (set the instant {@link runAgentTurn}'s attempt tracker fires, even for an attempt that then errored at
+   * Whether a provider actually **engaged** this turn — at least one provider method was invoked or a
+   * non-error chunk was observed (including an invoked attempt that then errored at
    * zero usage, which the `usage > 0` proxy would miss). `AgentSession` counts ONLY engaged turns against
    * `max_turns`, so a failure BEFORE any egress (no plan entries, a pre-egress budget refusal, a pre-flight
-   * cancel) does not burn a turn the model never got to take. Set IN PLACE by {@link runAgentTurn}; left
-   * `undefined` only for an error that never passed through that wrapper.
+   * cancel) does not burn a turn the model never got to take. The public wrapper attaches metadata only
+   * to mutable data properties; immutable host exceptions retain their exact identity. Sessions use the
+   * internal canonical outcome independently of these compatibility fields.
    */
   engaged?: boolean;
   constructor(
@@ -1228,13 +1229,6 @@ export async function captureAgentTurnOutcome(
       input: acc.input + (acc.observedStopUsage?.input ?? 0),
       output: acc.output + (acc.observedStopUsage?.output ?? 0),
     };
-    // Retain the established public AgentTurnError metadata contract and the original instance/stack.
-    if (error instanceof AgentTurnError) {
-      error.engaged = acc.engaged;
-      if (error.usage === undefined && (knownUsage.input > 0 || knownUsage.output > 0)) {
-        error.usage = knownUsage;
-      }
-    }
     return { kind: 'failed', error, engaged: acc.engaged, usage: knownUsage };
   }
 }
@@ -1242,8 +1236,45 @@ export async function captureAgentTurnOutcome(
 /** Drive one turn; classified failures and raw host/money failures retain their original identities. */
 export async function runAgentTurn(params: AgentTurnParams): Promise<AgentTurnResult> {
   const outcome = await captureAgentTurnOutcome(params);
-  if (outcome.kind === 'failed') throw outcome.error;
+  if (outcome.kind === 'failed') {
+    attachPublicTurnAccounting(outcome);
+    throw outcome.error;
+  }
   return outcome.result;
+}
+
+/** Best-effort compatibility metadata; reflection or immutable host errors cannot replace the failure. */
+function attachPublicTurnAccounting(
+  outcome: Extract<CapturedAgentTurnOutcome, { kind: 'failed' }>,
+): void {
+  try {
+    const error = outcome.error;
+    if (!(error instanceof AgentTurnError)) return;
+    const engaged = Object.getOwnPropertyDescriptor(error, 'engaged');
+    if (engaged === undefined || ('value' in engaged && engaged.writable === true))
+      Object.defineProperty(
+        error,
+        'engaged',
+        engaged === undefined
+          ? { value: outcome.engaged, writable: true, enumerable: true, configurable: true }
+          : { value: outcome.engaged },
+      );
+    const usage = Object.getOwnPropertyDescriptor(error, 'usage');
+    if (
+      (usage === undefined ||
+        ('value' in usage && usage.value === undefined && usage.writable === true)) &&
+      (outcome.usage.input > 0 || outcome.usage.output > 0)
+    )
+      Object.defineProperty(
+        error,
+        'usage',
+        usage === undefined
+          ? { value: outcome.usage, writable: true, enumerable: true, configurable: true }
+          : { value: outcome.usage },
+      );
+  } catch {
+    // The outcome already owns canonical accounting. Public callers retain the exact original error.
+  }
 }
 
 /** The one canonical per-turn accounting accumulator, independent of failure classification. */
@@ -1281,18 +1312,7 @@ async function driveAgentTurn(
   // from which a global queue could infer which reservation to release.
   let attemptAdmission: BudgetAdmission | undefined;
   let admissionPending = false;
-  // A chain record can be emitted for a materialization failure or a rejected pre-attempt hook, both of which are
-  // before provider egress. Only a hook that returned successfully arms this flag, so a budget refusal/cancel does
-  // not falsely count as an engaged provider turn or settle a nonexistent bill.
-  let attemptReady = preEgress === undefined;
-  // `FallbackChain` resolves credentials after its pre-attempt hook. The hook can therefore reserve capacity before
-  // a host key lookup rejects, but a failed lookup is PROVEN pre-provider and must release that reservation rather
-  // than becoming a permanent conservative debit. The wrapped `keyFor` below flips this only after it resolved and
-  // a post-resolution cancellation check still permits the seam call.
-  let credentialResolvedForAttempt = preEgress === undefined;
   const settleUnreportedAttemptAdmission = (): void => {
-    attemptReady = preEgress === undefined;
-    credentialResolvedForAttempt = preEgress === undefined;
     if (!admissionPending) return;
     admissionPending = false;
     const active = attemptAdmission;
@@ -1325,14 +1345,8 @@ async function driveAgentTurn(
     // A SKIPPED entry (cooldown / capability) was not invoked — it must not become `activeModel`, or
     // the next entry's streamed tokens would be mis-attributed to a provider that never ran.
     if (record.outcome === 'skipped') return;
-    const providerMayHaveEngaged = attemptReady && credentialResolvedForAttempt;
-    // With no governor hook, preserve the established FallbackChain contract: every non-skipped record represents
-    // the chain's best available attempt trace. With a governor hook, only its successful true-boundary callback
-    // proves the provider could have been reached.
-    if (preEgress !== undefined) {
-      attemptReady = false;
-      credentialResolvedForAttempt = false;
-    }
+    // The chain owns the actual seam-invocation boundary, independent of governor presence.
+    const providerMayHaveEngaged = record.providerInvoked;
     const admission = takeAttemptAdmission();
     if (!providerMayHaveEngaged) {
       // A successful pre-attempt check followed by a credential failure/cancellation never reached a provider.
@@ -1342,7 +1356,7 @@ async function driveAgentTurn(
     }
     activeModel = record.model;
     nonSkippedAttempts += 1;
-    usage.engaged = true; // a non-skipped attempt RAN — mark engaged even if it then errored at zero usage
+    usage.engaged = true; // the provider method was invoked, even if it errored at zero usage
     if (record.usage === undefined) {
       const status = record.error?.status;
       if (
@@ -1455,26 +1469,8 @@ async function driveAgentTurn(
     }
   };
 
-  const chainCapabilities: ChainCapabilities =
-    preEgress === undefined
-      ? params.chainCapabilities
-      : {
-          ...params.chainCapabilities,
-          keyFor: async (provider) => {
-            const key = await params.chainCapabilities.keyFor(provider);
-            // FallbackChain performs no abort poll between resolving a key and entering the adapter. Keep the
-            // admission in the known-pre-egress state when cancellation lands in that narrow await window; its
-            // ensuing attempt record releases the lease in `onAttempt` above.
-            if (params.signal.aborted) {
-              throw new Error('request aborted before provider egress');
-            }
-            credentialResolvedForAttempt = true;
-            return key;
-          },
-        };
-
   const chain = new FallbackChain([...params.planEntries], {
-    ...chainCapabilities,
+    ...params.chainCapabilities,
     costTracker,
     onAttempt,
     // The pre-egress budget hook runs before EVERY provider attempt, not just the first turn, so a failover
@@ -1542,7 +1538,6 @@ async function driveAgentTurn(
               attemptAdmission = nextAdmission;
               admissionPending = true;
             }
-            attemptReady = true;
           },
         }),
   });

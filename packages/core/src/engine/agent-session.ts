@@ -894,14 +894,11 @@ export class AgentSession {
         // failure) — and keep the session alive; the `finally` returns #status to idle. Count the turn
         // against the hard cap only when a provider engaged + report its real EA2 usage (consistent with
         // #settleTurnError). It is NOT `cancel()`/`session:cancelled` (which is terminal).
-        const aborted = err instanceof AgentTurnError ? err : undefined;
         const failedAccounting = this.#readFailedTurnAccounting();
-        if ((failedAccounting?.engaged ?? aborted?.engaged) === true) this.#turnCount += 1;
+        if (failedAccounting?.engaged === true) this.#turnCount += 1;
         this.#emitTurnCompleted(
           'aborted',
-          failedAccounting?.usage ??
-            aborted?.usage ??
-            this.#lastEngagedUsage ?? { input: 0, output: 0 },
+          failedAccounting?.usage ?? this.#lastEngagedUsage ?? { input: 0, output: 0 },
         );
         return;
       }
@@ -950,40 +947,34 @@ export class AgentSession {
    * Settle a turn that ended in a throw onto a terminal `session:turn_completed`, by error class. The caller has
    * already rolled the user message back and ruled out a cancel-during-turn.
    * - A classified {@link AgentTurnError} completes with its mapped code, counting the turn against the cap ONLY
-   *   when a provider engaged (see {@link AgentTurnError.engaged}) and reporting its real EA2 usage.
-   * - A pre-egress {@link BudgetPauseError} completes as `budget_exceeded` (it engaged no provider → uncounted).
+   *   when canonical accounting proves provider engagement and reporting its real EA2 usage.
+   * - A {@link BudgetPauseError} completes as `budget_exceeded`; earlier engagement/usage is retained.
    * - Any other (unclassified) error completes as `internal` and is **re-thrown** so the caller still sees the bug.
    */
   #settleTurnError(err: unknown): void {
+    // Failed canonical outcomes count once regardless of exception class. A successful turn was
+    // already counted before flushing; its known usage outranks any unrelated host-error metadata.
+    if (this.#failedTurnAccounting?.engaged === true) this.#turnCount += 1;
+    const usage = this.#failedTurnAccounting?.usage ??
+      this.#lastEngagedUsage ?? { input: 0, output: 0 };
     if (err instanceof AgentTurnError) {
-      // Count the turn against the cap ONLY when a provider actually engaged (a non-skipped attempt ran — an
-      // explicit signal the turn core attaches). A failure BEFORE any egress (no plan entries, a pre-egress
-      // budget refusal, a pre-flight cancel) must not burn a turn the model never got to take; `engaged !== true`
-      // (covering an undefined from an error that bypassed the wrapper) leaves the counter untouched.
-      if ((this.#failedTurnAccounting?.engaged ?? err.engaged) === true) this.#turnCount += 1;
-      // EA2 (ADR-0055): report the turn's REAL accumulated usage when a provider engaged (the turn core attaches
-      // it), not a hardcoded zero — `?? {0,0}` covers a failure that never engaged a provider.
-      this.#emitTurnCompleted(
-        'error',
-        this.#failedTurnAccounting?.usage ?? err.usage ?? { input: 0, output: 0 },
-        {
-          code: err.code,
-          message: err.message,
-          retryable: err.retryable,
-        },
-      );
+      this.#emitTurnCompleted('error', usage, {
+        code: err.code,
+        message: err.message,
+        retryable: err.retryable,
+      });
       return;
     }
     if (err instanceof BudgetPauseError) {
       // A session has no pause/resume gate machinery in 1.V (full session pause/resume is a deferred 1.V×1.AC
       // item), so a pre-egress `pause_for_approval` settles the turn LOUDLY as `budget_exceeded` rather than
-      // escaping `sendMessage` as a raw throw — which would leave the turn with no terminal, breaking the M1
-      // event contract. It engaged NO provider (the pause is pre-egress), so it does NOT count.
-      this.#emitTurnCompleted(
-        'error',
-        { input: 0, output: 0 },
-        { code: 'budget_exceeded', message: err.message, retryable: false },
-      );
+      // escaping `sendMessage` as a raw throw. A later-round refusal or a pause-shaped host exception
+      // still retains earlier provider engagement and usage through the canonical outcome.
+      this.#emitTurnCompleted('error', usage, {
+        code: 'budget_exceeded',
+        message: err.message,
+        retryable: false,
+      });
       return;
     }
     // An unexpected (non-classified) error — settle the turn LOUDLY first so the stream stays balanced (every
@@ -992,16 +983,11 @@ export class AgentSession {
     // A failed canonical outcome consumes its engaged slot here. A successful turn whose later
     // durability/completion callback failed was already counted before that callback; no outcome is
     // stored for it, so do not count twice. Both paths retain known usage and preserve the raw error.
-    if (this.#failedTurnAccounting?.engaged === true) this.#turnCount += 1;
-    this.#emitTurnCompleted(
-      'error',
-      this.#failedTurnAccounting?.usage ?? this.#lastEngagedUsage ?? { input: 0, output: 0 },
-      {
-        code: 'internal',
-        message: 'the session turn failed with an unexpected error',
-        retryable: false,
-      },
-    );
+    this.#emitTurnCompleted('error', usage, {
+      code: 'internal',
+      message: 'the session turn failed with an unexpected error',
+      retryable: false,
+    });
     throw err;
   }
 

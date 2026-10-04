@@ -2455,3 +2455,28 @@ describe('local preparation and structural tool failures (PR 90)', () => {
     },
   );
 });
+
+describe('public turn error identity survives immutable and accessor metadata', () => {
+  it.each(['frozen', 'accessor'] as const)(
+    '%s classified callback preserves the exact error and no retries',
+    async (kind) => {
+      const marker = new AgentTurnError('internal', 'fixed classified failure', false);
+      if (kind === 'frozen') Object.freeze(marker);
+      else
+        Object.defineProperty(marker, 'engaged', {
+          get: () => {
+            throw new Error('metadata must not be read');
+          },
+        });
+      const provider = scriptedProvider('anthropic', [
+        [{ type: 'text_delta', text: 'observed' }, STOP()],
+      ]);
+      const params = baseParams(provider, {
+        emit: () => {
+          throw marker;
+        },
+      });
+      await expect(runAgentTurn(params)).rejects.toBe(marker);
+    },
+  );
+});

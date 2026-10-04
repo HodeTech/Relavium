@@ -130,12 +130,17 @@ time — that surface field was added in build-phase 2 (workstream **2.M**); see
 [config-spec.md](config-spec.md).
 
 Only provider-engaged turns consume a slot, including failed or aborted turns whose trusted host
-callback throws. Engagement is recorded on actual non-error provider chunks and non-skipped attempt
-records independently of the exception type or a positive token count. Terminal usage retains known
-prior attempts and an observed valid terminal usage chunk; an unreported current attempt adds no
+callback throws. Engagement is recorded on actual non-error provider chunks and chain-owned provider
+invocation evidence, independently of a budget hook, the exception type or a positive token count.
+Local preparation, credential and deadline setup refusals before invocation consume no slot.
+Accounting uses an internal outcome carrier without mutating the thrown value, including frozen
+classified exceptions. Terminal usage retains known prior attempts and an observed valid terminal
+usage chunk; an unreported current attempt adds no
 invented usage. Ordinary raw callback/money errors remain visible to the API caller after the fixed,
 secret-free session terminal. A successful turn counted before its later durability flush is counted
-once even if that flush fails. Terminal `cancel()` retains its sole cancellation event.
+once even if that flush fails; its known quantities outrank unrelated exception metadata for every
+error class. A later-round budget pause retains earlier engagement and usage. Terminal `cancel()`
+retains its sole cancellation event.
 
 ## Session context
 

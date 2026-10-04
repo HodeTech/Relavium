@@ -3244,3 +3244,123 @@ describe('chain-owned failure evidence and staged caps (ADR-0096/0101)', () => {
     expect(trace[0]).toMatchObject({ customEndpoint: true, contentReceived: false });
   });
 });
+
+describe('chain-owned provider invocation evidence', () => {
+  for (const path of ['generate', 'stream'] as const)
+    it.each(['key', 'hook', 'timer', 'cap'] as const)(
+      `%s failure is proven pre-provider (${path})`,
+      async (site) => {
+        const marker = new Error('private preparation failure');
+        const provider = makeProvider({
+          id: 'anthropic',
+          generate: resolves('ok'),
+          stream: () =>
+            streamFrom([
+              { type: 'stop', stopReason: 'stop', usage: { inputTokens: 0, outputTokens: 0 } },
+            ]),
+        });
+        const { options, trace } = makeOptions({
+          ...(site === 'key'
+            ? {
+                keyFor: () => {
+                  throw marker;
+                },
+              }
+            : {}),
+          ...(site === 'hook'
+            ? {
+                preAttempt: () => {
+                  throw marker;
+                },
+              }
+            : {}),
+          ...(site === 'timer'
+            ? {
+                newAbortController: () => new AbortController(),
+                setTimer: () => {
+                  throw marker;
+                },
+              }
+            : {}),
+        });
+        const request =
+          site === 'cap'
+            ? {
+                ...userReq,
+                maxTokens: 10,
+                preparedOutputCaps: [
+                  prepareOutputCapPlan({
+                    model: 'claude-opus-4-8',
+                    provider: 'anthropic',
+                    endpoint: 'custom',
+                    maxTokens: 10,
+                    providerOptions: undefined,
+                  }),
+                ],
+              }
+            : userReq;
+        const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
+        if (path === 'generate')
+          await expect(chain.generate(request)).rejects.toBeInstanceOf(LlmProviderError);
+        else {
+          const chunks = await collect(chain.stream(request));
+          expect(chunks.at(-1)).toMatchObject({ type: 'error' });
+          expect(JSON.stringify(chunks)).not.toContain(marker.message);
+        }
+        expect(provider.calls).toHaveLength(0);
+        expect(trace).toHaveLength(1);
+        expect(trace[0]).toMatchObject({
+          outcome: 'failed',
+          providerInvoked: false,
+          contentReceived: false,
+        });
+        expect(trace[0]?.error?.message).not.toContain(marker.message);
+      },
+    );
+
+  for (const path of ['generate', 'stream'] as const)
+    it.each(['success', 'failure'] as const)(
+      `${path} %s records an actual provider invocation even at zero usage`,
+      async (outcome) => {
+        const provider = makeProvider({
+          id: 'anthropic',
+          generate:
+            outcome === 'failure'
+              ? rejects('anthropic', 'bad_request')
+              : () =>
+                  Promise.resolve({
+                    content: [],
+                    stopReason: 'stop',
+                    usage: { inputTokens: 0, outputTokens: 0 },
+                  }),
+          stream: () =>
+            streamFrom(
+              outcome === 'failure'
+                ? [errChunk('anthropic', 'bad_request')]
+                : [
+                    {
+                      type: 'stop',
+                      stopReason: 'stop',
+                      usage: { inputTokens: 0, outputTokens: 0 },
+                    },
+                  ],
+            ),
+        });
+        const { options, trace } = makeOptions();
+        const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
+        if (path === 'generate') {
+          if (outcome === 'failure')
+            await expect(chain.generate(userReq)).rejects.toBeInstanceOf(LlmProviderError);
+          else await chain.generate(userReq);
+        } else await collect(chain.stream(userReq));
+        expect(provider.calls).toHaveLength(1);
+        expect(trace).toHaveLength(1);
+        expect(trace[0]).toMatchObject({
+          providerInvoked: true,
+          outcome: outcome === 'success' ? 'succeeded' : 'failed',
+        });
+        if (outcome === 'success')
+          expect(trace[0]?.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
+      },
+    );
+});

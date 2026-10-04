@@ -98,14 +98,16 @@ export type AttemptOutcome = 'succeeded' | 'failed' | 'skipped';
 export interface AttemptRecord {
   /** Chain-observed content/processed response, never an adapter-supplied error flag. */
   readonly contentReceived: boolean;
+  /** True only after the chain invokes generate/stream; preparation, hooks and key failures stay false. */
+  readonly providerInvoked: boolean;
   /** The actual entry's endpoint classification, captured by the chain. */
   readonly customEndpoint: boolean;
   /**
    * 1-based **positional** index of this record in the current `generate`/`stream` call's trace —
    * it counts skipped entries too, so it is NOT the run-event spec's per-real-call "retry attempt"
    * number ([sse-event-schema.md](../../../docs/reference/contracts/sse-event-schema.md)). The
-   * engine (1.O) derives the `cost:updated.attemptNumber` it emits (e.g. by counting only the
-   * non-skipped records), rather than forwarding this field verbatim.
+   * engine (1.O) derives the `cost:updated.attemptNumber` it emits by counting provider-invoked
+   * records, rather than forwarding this field verbatim. Pre-provider failures remain trace records.
    */
   readonly attemptNumber: number;
   /** The provider this attempt targeted. */
@@ -644,7 +646,7 @@ export class FallbackChain {
     entryReq: LlmRequest,
     run: ChainRun,
   ): Promise<GenerateAttempt> {
-    const record = run.next(entry);
+    let record = run.next(entry);
     // The deadline covers THIS arm too, and a review caught it not doing so. ADR-0082's §5 opens with
     // `generate(): Promise<LlmResult> { return new Promise(() => {}) }` as its motivating hang, and §12.10
     // makes it the first acceptance criterion — yet the wiring landed on `stream()` only. The gap was live:
@@ -670,6 +672,7 @@ export class FallbackChain {
         throw new LlmProviderError(this.#cancelledError(entry.provider.id));
       }
       deadline = this.#openDeadline(entryReq);
+      record = { ...record, providerInvoked: true };
       const call = entry.provider.generate(
         deadline === undefined ? entryReq : withSignal(entryReq, deadline.signal),
         key,
@@ -796,6 +799,7 @@ export class FallbackChain {
       // was reading SSE — but the chain accepts ANY `LLMProvider`: a cassette, a test double, and in Phase 2
       // a managed gateway. A rule enforced only inside implementations we happen to own is a coincidence.
       deadline = this.#openDeadline(entryReq);
+      record = { ...record, providerInvoked: true };
       const verified = verifyStreamGrammar(
         entry.provider.stream(
           deadline === undefined ? entryReq : withSignal(entryReq, deadline.signal),
@@ -1167,7 +1171,7 @@ export class FallbackChain {
     });
   }
 
-  /** Preserve provider errors, classify local cap refusals as `bad_request`, and map other throws to `unknown`. */
+  /** Preserve provider errors, classify local cap refusals as `bad_request`, and keep other diagnostics fixed. */
   #errorOf(caught: unknown, provider: ProviderId): LlmError {
     if (caught instanceof LlmProviderError) {
       return caught.llmError;
@@ -1183,7 +1187,7 @@ export class FallbackChain {
     return makeLlmError({
       provider,
       kind: 'unknown',
-      message: caught instanceof Error ? caught.message : 'unknown provider failure',
+      message: 'unknown provider failure',
       cause: caught,
     });
   }
@@ -1422,6 +1426,7 @@ class ChainRun {
     return {
       attemptNumber: this.#attemptNumber,
       contentReceived: false,
+      providerInvoked: false,
       customEndpoint: entry.provider.customEndpoint === true,
       provider: entry.provider.id,
       model: entry.model,

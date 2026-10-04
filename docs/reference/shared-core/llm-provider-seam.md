@@ -945,9 +945,15 @@ followed by each authored `fallback_chain` entry:
   MODEL's, and a `tool_call` part is unconditionally replayed where a `reasoning`
   part is optional — but the **call itself survives**: it is the conversation the
   next model still needs, so only the token goes.
-- `AttemptRecord` carries chain-owned `contentReceived` and `customEndpoint` independently of
-  `LlmError`. Any streamed content chunk, including an empty delta or reasoning/tool start, counts;
-  a resolved non-streaming response counts even when empty. After a provider is engaged, core releases
+- `AttemptRecord` carries chain-owned `providerInvoked`, `contentReceived` and `customEndpoint`
+  independently of `LlmError`. `providerInvoked` becomes true immediately before calling the
+  provider's `generate` or `stream` method. Local cap preparation, pre-attempt hooks, credential
+  resolution, cancellation before invocation and deadline setup failures keep it false. Core uses
+  this boundary with or without a budget governor; a failed record alone does not prove invocation.
+  Untyped preparation/provider exceptions use a fixed `unknown provider failure` diagnostic and
+  retain the original only as a non-public cause. Typed provider errors and engine control-flow
+  identities keep their existing handling. Any streamed content chunk, including an empty delta or
+  reasoning/tool start, counts; a resolved non-streaming response counts even when empty. After a provider is engaged, core releases
   a failed usage-less reservation only with explicit no-content evidence on an official route and
   status **429, 400, 401, 402, 403, 404, 413 or 422**. Custom, missing or uncertain evidence, other
   statuses, transport failures and timeouts retain conservative commitment. Existing proven
