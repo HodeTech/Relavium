@@ -244,6 +244,13 @@ merged too (PR #85, 2026-08-28).
 > engagement/usage and fix the normalizer comment. Forced root checks and build pass; **fresh
 > complete round 2 precedes group closure**. Ownership, remaining groups and W7 acceptance stay open.
 
+> **Systematic group 2a, round 2 — 2026-10-04.** [Both complete reviews](../reviews/2026-10-04T14-41-03-w7-systematic-group-2a-round-2-review.md)
+> verify the successful observer correction but reproduce an inherited failed-tool observer High.
+> `41a3ef9a` retains real usage/engagement for invalid-argument and read-failure notifications,
+> including EA7 abort, without broadening registry recovery. Eight new regressions fail before
+> repair; forced root checks/build pass afterward. **Fresh complete round 3 precedes closure.**
+> Ownership, other groups and whole W7 acceptance remain open.
+
 ## Execution order — Phase 2.5.5 + Phase 2.6 (temporary)
 
 > **Temporary section — delete it when both phases close.** It owns **ordering only**. Every item's

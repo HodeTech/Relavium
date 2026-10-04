@@ -3360,3 +3360,12 @@ dispatch boundary and carries those errors through EA2; `7839647f` corrects the 
 Six actual-session controls and forced root checks/build pass. Both complete final reports and
 every sealed entry/pin are verified before Original resumes. **Fresh complete round 2 is required;
 this group, ownership, remaining systematic corrections and whole W7 remain open.**
+
+**Systematic group 2a, round 2 — 2026-10-04.** [Two complete independent reviews](../../reviews/2026-10-04T14-41-03-w7-systematic-group-2a-round-2-review.md)
+verify the prior correction but reproduce inherited failed-tool observer errors losing engaged
+usage and bypassing the hard turn cap. `41a3ef9a` applies the same classified observer boundary
+to both failure notifications, retaining EA2/EA7 and genuine model correction. Eight new actual-session
+regressions fail before repair; root lint/typecheck/test passes 23 tasks, 330 files and 7,579 tests
+with 12 skips; forced build passes six tasks. Both full reports and every sealed entry/pin are
+verified before Original resumes. **Fresh complete round 3 is required; group 2a, ownership,
+remaining corrections and whole W7 remain open.**

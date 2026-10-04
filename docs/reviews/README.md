@@ -206,6 +206,9 @@ added.
 - [2026-10-04 — W7 systematic group 2a, round 1](2026-10-04T13-47-56-w7-systematic-group-2a-round-1-review.md):
   real-session observer usage/turn-cap regression and normalizer comment corrected; fresh complete round 2 required.
 
+- [2026-10-04 — W7 systematic group 2a, round 2](2026-10-04T14-41-03-w7-systematic-group-2a-round-2-review.md):
+  inherited failed-tool observer accounting defect corrected; fresh complete round 3 required.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and
