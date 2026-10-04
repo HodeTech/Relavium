@@ -543,9 +543,19 @@ describe('actual Ink driver activation owns session effect disclosure (ADR-0098)
     }
   });
 
-  it.each([false, true])(
-    'raw Ctrl-Z cannot consume an undisplayed notice (alt=%s)',
-    async (alt) => {
+  it.each([
+    [false, {}, true],
+    [true, {}, true],
+    [false, { CI: '' }, true],
+    [true, { CI: '' }, true],
+    [false, { CONTINUOUS_INTEGRATION: 'true' }, true],
+    [true, { CONTINUOUS_INTEGRATION: 'true' }, true],
+    [false, { CI: 'true' }, false],
+    [true, { CI: 'true' }, false],
+  ] as const)(
+    'raw Ctrl-Z cannot consume an undisplayed notice (alt=%s, env=%j, interactive=%s)',
+    async (alt, env, interactive) => {
+      deps = { ...deps, io: { ...deps.io, env } };
       const ink = await vi.importActual<typeof import('ink')>('ink');
       const input = new OwnedTtyInput();
       const stdout = new OwnedTtyOutput();
@@ -600,6 +610,7 @@ describe('actual Ink driver activation owns session effect disclosure (ADR-0098)
         continueJob?.();
         await vi.waitFor(() => expect(firstNoticeRows).toBe(1));
         await vi.waitFor(() => expect(rows()).toEqual([]));
+        expect(renderer.render.mock.calls[0]?.[1]).toMatchObject({ interactive });
         expect(failures).toEqual([]);
       } finally {
         continueJob?.();

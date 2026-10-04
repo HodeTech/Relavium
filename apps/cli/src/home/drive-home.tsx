@@ -118,11 +118,11 @@ export interface HomeDeps {
   readonly now?: () => number;
   readonly uuid?: () => string;
   /** Injectable ink mount + the terminal-size seam (tests drive `RootApp` props without a real TTY). `opts` carries
-   *  the resolved alt-screen decision (2.6.F, ADR-0068 §e) so a test can observe the mode driveHome resolved; the
-   *  production default passes it through as ink's `alternateScreen` render option. */
+   *  the resolved rendering decisions (2.6.F, ADR-0068 §e) so an injected mount shares the production
+   *  ownership of Ink's `alternateScreen` and `interactive` options. */
   readonly render?: (
     props: RootAppProps,
-    opts: { readonly alternateScreen: boolean },
+    opts: { readonly alternateScreen: boolean; readonly interactive: boolean },
   ) => Pick<ReturnType<typeof render>, 'unmount' | 'waitUntilRenderFlush' | 'waitUntilExit'>;
   readonly getSize?: () => { cols: number; rows: number };
   readonly subscribeResize?: (onResize: () => void) => () => void;
@@ -931,13 +931,14 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     // inline defensively, then applies `--no-alt-screen` → `[preferences].alt_screen` → phase default (opt-in until
     // the viewport lands at Step 4b). `alt` mounts ink 7's native alternate screen (DECSET 1049 enter on mount /
     // exit on unmount — the finally's `instance.unmount()` restores the primary buffer before the terminal-state
-    // cleanup below). An injected `deps.render` (tests) ignores the option — no real TTY to switch buffers on.
+    // cleanup below). An injected `deps.render` receives both decisions and owns its supplied terminal streams.
+    const outputMode = detectOutputMode({
+      stdoutIsTty: deps.io.stdoutIsTty,
+      json: deps.global.json,
+      ci: isCiEnv(deps.io.env),
+    });
     const renderMode = resolveRenderMode({
-      outputMode: detectOutputMode({
-        stdoutIsTty: deps.io.stdoutIsTty,
-        json: deps.global.json,
-        ci: isCiEnv(deps.io.env),
-      }),
+      outputMode,
       noAltScreenFlag: deps.global.noAltScreen === true,
       configAltScreen: config.altScreen,
     });
@@ -959,6 +960,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         },
       });
       const alternateScreen = renderMode === 'alt';
+      const interactive = outputMode === 'tui';
       altScreenActive = alternateScreen; // the hatch ports read this lazily (see `terminal()` above)
       // Mouse reporting (Step 5e, ADR-0068 §e) — resolved from the SAME render mode, so the two cannot disagree.
       mouseActive = resolveMouseMode({
@@ -1016,11 +1018,14 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
               exitOnCtrlC: false, // the controller drives Ctrl-C, not ink's process.exit
               patchConsole: false,
               maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
+              // Share Relavium's output policy rather than Ink's different ambient CI predicate.
+              // Noninteractive Ink buffers dynamic notices until unmount, too late for disclosure.
+              interactive,
               // ADR-0068 §e: mount the alternate screen only when resolved to 'alt' (TTY + opt-in). ink 7 handles the
               // DECSET-1049 enter/exit; `false` is a no-op (the inline default), so machine/opt-out paths are untouched.
               alternateScreen,
             })
-          : deps.render(props, { alternateScreen });
+          : deps.render(props, { alternateScreen, interactive });
       void instance.waitUntilExit().then(
         () => {
           rendererActive = false;

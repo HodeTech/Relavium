@@ -133,6 +133,13 @@ function ChatRegion(
     copied: boolean;
   }>,
 ): ReactElement {
+  // A reseat replaces the view store while preserving sessionId and RootApp. Reset Static's
+  // printed-item cursor for that new transcript owner; inline stores contain only new entries.
+  // Keep the root input/terminal owner mounted and the terminal's existing scrollback intact.
+  const [transcriptOwner, setTranscriptOwner] = useState({ store: props.store, generation: 0 });
+  if (transcriptOwner.store !== props.store) {
+    setTranscriptOwner({ store: props.store, generation: transcriptOwner.generation + 1 });
+  }
   const { state, tick, color, mode, reasoningEffort, reasoningVisible, approval } =
     useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
   // Read the clock in THIS per-frame component (see the `now` prop doc) so the elapsed advances live.
@@ -143,6 +150,7 @@ function ChatRegion(
     // height to fill below any keyboard-owning overlay (palette / search / model-picker / …); inline ⇒ unbounded.
     <Box flexDirection="column" {...(viewport === undefined ? {} : { height: viewport.rows })}>
       <ChatView
+        key={transcriptOwner.generation}
         state={state}
         tick={tick}
         nowMs={nowMs}

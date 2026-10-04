@@ -1647,13 +1647,14 @@ export function emitIntro(
 
 export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   // Resolved here, BEFORE the intro: where the intro goes depends on the renderer (see `emitIntro`).
+  const outputMode = detectOutputMode({
+    stdoutIsTty: ctx.io.stdoutIsTty,
+    json: ctx.global.json,
+    ci: isCiEnv(ctx.io.env),
+  });
   const alternateScreen =
     resolveRenderMode({
-      outputMode: detectOutputMode({
-        stdoutIsTty: ctx.io.stdoutIsTty,
-        json: ctx.global.json,
-        ci: isCiEnv(ctx.io.env),
-      }),
+      outputMode,
       noAltScreenFlag: ctx.global.noAltScreen === true,
       configAltScreen: ctx.altScreen,
     }) === 'alt';
@@ -1808,6 +1809,9 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
         exitOnCtrlC: false,
         patchConsole: false,
         maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
+        // Ink's ambient CI predicate differs from ADR-0054. Own the selected mode so a flushed
+        // dynamic disclosure is written before its evidence is swept, including CI='' opt-out.
+        interactive: outputMode === 'tui',
         // ink render OPTION is HARD `false` (2.6.F Step 4b-3, ADR-0068 §c): ink must NOT toggle DECSET-1049 per
         // session — the hoisted `runReplLoop` enters the alt buffer ONCE above the loop and exits ONCE, so a `/clear`
         // / reseat re-drive no longer flips the terminal (the flicker). ink still full-screen-renders via log-update.

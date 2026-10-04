@@ -13,7 +13,7 @@ import {
 import { REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render as renderInk, type Instance } from 'ink';
-import { createElement } from 'react';
+import { createElement, isValidElement } from 'react';
 
 import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
 import { scriptedResolver, textTurn } from '../chat/test-support.js';
@@ -35,6 +35,15 @@ import {
   type HomeDeps,
   type OnboardingTerminalLifecycle,
 } from './drive-home.js';
+import { shouldOpenHome } from './should-open-home.js';
+
+// Default production mounts are intercepted only to supply owned, handle-free TTY streams.
+// Preserve every production render option and observe real Ink writes before the journal sweep.
+const inkRenderer = vi.hoisted(() => ({ render: vi.fn<(typeof import('ink'))['render']>() }));
+vi.mock('ink', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('ink')>()),
+  render: inkRenderer.render,
+}));
 
 // Regression for the `provider_auth` bug: the Home built an ENV-ONLY key resolver, so a key stored in the OS
 // keychain (the normal `relavium provider add` path) was invisible while `relavium chat` (keychain-wired) worked.
@@ -113,6 +122,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   };
 
   beforeEach(() => {
+    inkRenderer.render.mockReset();
     client = createClient(':memory:');
     runMigrations(client.db);
     closeSpy = vi.fn();
@@ -582,9 +592,22 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
-  it.each([false, true, 'closed-before', 'closed-during', 'error-during'] as const)(
-    'the REAL Home reseat displays disclosure before sweeping (actual Ink: %s)',
-    async (mode) => {
+  it.each([
+    [false, {}, false, false],
+    [true, {}, false, false],
+    ['closed-before', {}, false, false],
+    ['closed-during', {}, false, false],
+    ['error-during', {}, false, false],
+    [true, { CI: '' }, true, false],
+    [true, { CI: '' }, true, true],
+    ['closed-before', { CI: '' }, true, false],
+    ['closed-during', { CI: '' }, true, false],
+    ['error-during', { CI: '' }, true, false],
+    [true, { CONTINUOUS_INTEGRATION: 'true' }, true, false],
+    [true, { CONTINUOUS_INTEGRATION: 'true' }, true, true],
+  ] as const)(
+    'the REAL Home reseat displays disclosure before sweeping (actual Ink: %s, env=%j, default mount=%s, no-alt=%s)',
+    async (mode, env, defaultMount, noAltScreen) => {
       const actualInk = mode !== false;
       let captured: RootAppProps | undefined;
       let buildChecks = 0;
@@ -604,12 +627,21 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           if (mode === 'error-during') stdout.destroy(new Error('SECRET_OUTPUT_FAILURE'));
         }
       };
+      const realInk = await vi.importActual<typeof import('ink')>('ink');
+      inkRenderer.render.mockImplementation((node, options) => {
+        if (!isValidElement<RootAppProps>(node)) throw new Error('expected RootApp');
+        captured = node.props;
+        instance = realInk.render(node, { ...options, stdin: input, stdout, stderr, debug: false });
+        return instance;
+      });
       const { deps } = makeDeps(
         (props) => {
           captured = props;
         },
         {
-          render: (props: RootAppProps) => {
+          io: { ...io, env },
+          global: { ...global, noAltScreen },
+          render: (props, options) => {
             captured = props;
             if (!actualInk) {
               props.onRendererReady?.(async (publish) => {
@@ -622,6 +654,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
               };
             }
             instance = renderInk(createElement(RootApp, props), {
+              ...options,
               stdin: input,
               stdout,
               stderr,
@@ -645,7 +678,17 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         },
       );
       let rendererError: unknown;
-      const running = driveHome(deps);
+      const { render: injectedMount, ...productionDeps } = deps;
+      expect(injectedMount).toBeDefined();
+      expect(
+        shouldOpenHome({
+          stdoutIsTty: deps.io.stdoutIsTty,
+          stdinIsTty: deps.io.stdinIsTty,
+          json: deps.global.json,
+          env: deps.io.env,
+        }),
+      ).toBe(true);
+      const running = driveHome(defaultMount ? productionDeps : deps);
       const settled = running.catch((error: unknown) => {
         rendererError = error;
       });
@@ -717,14 +760,33 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
             .state.transcript.filter(
               (entry) => entry.role === 'notice' && entry.text.includes('external effect'),
             ) ?? [];
-        if (actualInk) expect(firstNoticeRows).toBe(2);
+        if (actualInk) {
+          expect(firstNoticeRows).toBe(2);
+          expect(inkRenderer.render.mock.calls[0]?.[1]).toMatchObject({
+            interactive: true,
+            ...(defaultMount ? { alternateScreen: !noAltScreen } : {}),
+          });
+        }
         expect(notices()).toHaveLength(1);
         expect(notices()[0]?.text).toContain('landed in a turn that did not complete');
+        const displayedNotices = () =>
+          stdout.frames.filter((frame) => frame.includes('external effect')).length;
+        const displayedReplies = () =>
+          stdout.frames.filter((frame) => frame.includes('first reply')).length;
+        if (actualInk && noAltScreen) {
+          expect(displayedNotices()).toBe(1);
+          expect(displayedReplies()).toBe(1);
+        }
         await pick('claude-sonnet-4-6');
         expect(buildChecks).toBe(2);
-        expect(notices()).toHaveLength(2);
+        // Inline scrollback already owns the previous notice; only the new store's notice is retained.
+        expect(notices()).toHaveLength(noAltScreen ? 1 : 2);
         expect(notices().at(-1)?.text).toContain('ambiguous');
         expect(notices().at(-1)?.text).not.toContain('landed in a turn that did not complete');
+        if (actualInk && noAltScreen) {
+          expect(displayedNotices()).toBe(2);
+          expect(displayedReplies()).toBe(1); // reseat never reprints the earlier exchange
+        }
         props.controller.handleKey('c', CTRL_C);
         await flush();
         props.controller.handleKey('c', CTRL_C);
