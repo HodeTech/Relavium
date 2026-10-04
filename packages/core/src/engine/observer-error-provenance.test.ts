@@ -11,6 +11,7 @@ import {
 import type { AgentTurnParams } from './agent-turn.js';
 import { createToolRegistry } from '../tools/registry.js';
 import { MoneyDurability } from './money-durability.js';
+import { BudgetPauseError } from './budget-governor.js';
 import type { SettledAttemptDraft } from './money-durability.js';
 import { createAgentNodeExecutor } from './agent-runner.js';
 import { WorkflowEngine } from './engine.js';
@@ -191,76 +192,106 @@ describe('observer error provenance', () => {
     expect(outcome.usage).toEqual({ input: 7, output: 11 });
     expect(outcome.error === marker).toBe(true);
   });
-  it('actual WorkflowEngine never redispatches a paid generation for a typed clock observer failure', async () => {
-    const store = new InMemoryRunStore();
-    const host = createInMemoryHost({ store });
-    const marker = diagnostic();
-    const calls = { count: 0 };
-    let pending = false;
-    const provider = providerFor(calls);
-    const originalGenerate = provider.generate.bind(provider);
-    const wrappedProvider: LlmProvider = {
-      ...provider,
-      generate: (request, key) => {
-        pending = true;
-        return originalGenerate(request, key);
-      },
-    };
-    const wrappedHost = {
-      ...host,
-      setTimer: (...args: Parameters<typeof host.setTimer>) => {
-        const disarm = host.setTimer(...args);
-        if (args[2] === undefined || args[2] === 'work') queueMicrotask(() => host.fireTimers());
-        return disarm;
-      },
-      clock: {
-        now: () => {
-          if (pending) {
-            pending = false;
-            throw marker;
-          }
-          return host.clock.now();
-        },
-      },
-    };
-    const prices = new Map([[MODEL, PRICE]]);
-    const registry = createToolRegistry({ tools: [], host: {} });
-    const runner = createAgentNodeExecutor({
-      resolveProvider: () => wrappedProvider,
-      keyFor: () => 'synthetic-no-key',
-      sleep: () => Promise.resolve(),
-      tools: [],
-      registry,
-      resolvePrice: prices,
-      resolveMediaSurface: () => 'chat',
-    });
-    const engine = new WorkflowEngine({
-      host: wrappedHost,
-      executor: createDispatchingNodeExecutor({ agent: runner }),
-      resolvePrice: prices,
-    });
-    const workflow = parseWorkflow(`schema_version: '1.0'
+  for (const path of ['generate', 'stream'] as const)
+    for (const kind of ['provider', 'turn', 'budget'] as const)
+      it(`actual WorkflowEngine does not retry or pause for a paid ${path}/${kind} clock observer failure`, async () => {
+        const store = new InMemoryRunStore();
+        const host = createInMemoryHost({ store });
+        const marker =
+          kind === 'provider'
+            ? diagnostic()
+            : kind === 'turn'
+              ? new AgentTurnError(
+                  'provider_unavailable',
+                  'observer private token eyReviewSecret',
+                  true,
+                )
+              : new BudgetPauseError(0, 10, 100);
+        const calls = { count: 0 };
+        let pending = false;
+        const provider = providerFor(calls);
+        const originalGenerate = provider.generate.bind(provider);
+        const wrappedProvider: LlmProvider = {
+          ...provider,
+          generate: (request, key) => {
+            pending = true;
+            return originalGenerate(request, key);
+          },
+          stream: async function* (request, key): AsyncGenerator<StreamChunk> {
+            for await (const chunk of provider.stream(request, key)) {
+              if (chunk.type === 'stop') pending = true;
+              yield chunk;
+            }
+          },
+        };
+        const wrappedHost = {
+          ...host,
+          setTimer: (...args: Parameters<typeof host.setTimer>) => {
+            const disarm = host.setTimer(...args);
+            if (args[2] === undefined || args[2] === 'work')
+              queueMicrotask(() => host.fireTimers());
+            return disarm;
+          },
+          clock: {
+            now: () => {
+              if (pending) {
+                pending = false;
+                throw marker;
+              }
+              return host.clock.now();
+            },
+          },
+        };
+        const prices = new Map([[MODEL, PRICE]]);
+        const registry = createToolRegistry({ tools: [], host: {} });
+        const runner = createAgentNodeExecutor({
+          resolveProvider: () => wrappedProvider,
+          keyFor: () => 'synthetic-no-key',
+          sleep: () => Promise.resolve(),
+          tools: [],
+          registry,
+          resolvePrice: prices,
+          resolveMediaSurface: () => 'chat',
+        });
+        const engine = new WorkflowEngine({
+          host: wrappedHost,
+          executor: createDispatchingNodeExecutor({ agent: runner }),
+          resolvePrice: prices,
+        });
+        const workflow = parseWorkflow(`schema_version: '1.0'
 workflow:
   id: reviewer-typed-clock
   agents:
     - { id: a, model: offline-observer-provenance, provider: openai, system_prompt: hi }
   nodes:
-    - { id: n, type: agent, agent_ref: a, prompt_template: go, max_tokens: 10, output_modalities: [image], retry: { max: 2, backoff: linear, retry_on: [provider_unavailable] } }
+    - { id: n, type: agent, agent_ref: a, prompt_template: go, max_tokens: 10${path === 'generate' ? ', output_modalities: [image]' : ''}, retry: { max: 2, backoff: linear, retry_on: [provider_unavailable] } }
   edges: []
 `);
-    const handle = engine.start({ workflow, inputs: {} });
-    const events: RunEvent[] = [];
-    for await (const event of handle.events) events.push(event);
-    expect(events.at(-1)).toMatchObject({
-      type: 'run:failed',
-      error: { code: 'internal', retryable: false },
-      cumulativeCostMicrocents: 18,
-    });
-    expect
-      .soft(store.eventsFor(handle.runId).filter((e) => e.type === 'cost:attempt_settled'))
-      .toHaveLength(1);
-    expect.soft(calls.count).toBe(1);
-    expect.soft(events.some((e) => e.type === 'node:retrying')).toBe(false);
-    expect.soft(JSON.stringify(events)).not.toContain('eyReviewSecret');
-  });
+        const handle = engine.start({ workflow, inputs: {} });
+        const events: RunEvent[] = [];
+        for await (const event of handle.events) {
+          events.push(event);
+          // A counterfeit pause must be observable as a test failure without leaving the fixture parked.
+          if (event.type === 'run:paused') engine.cancel(handle.runId);
+        }
+        expect.soft(events.at(-1)).toMatchObject({
+          type: 'run:failed',
+          error: { code: 'internal', retryable: false },
+          cumulativeCostMicrocents: 18,
+        });
+        const settled = store
+          .eventsFor(handle.runId)
+          .filter((e) => e.type === 'cost:attempt_settled');
+        expect.soft(settled).toHaveLength(1);
+        expect
+          .soft(settled)
+          .toMatchObject([{ model: MODEL, inputTokens: 7, outputTokens: 11, costMicrocents: 18 }]);
+        expect.soft(calls.count).toBe(1);
+        expect.soft(events.some((e) => e.type === 'node:retrying')).toBe(false);
+        expect
+          .soft(events.some((e) => e.type === 'run:paused' || e.type === 'human_gate:paused'))
+          .toBe(false);
+        expect.soft(JSON.stringify(events)).not.toContain(marker.message);
+        expect.soft(JSON.stringify(events)).not.toContain('eyReviewSecret');
+      });
 });

@@ -68,14 +68,20 @@ import {
   AgentTurnError,
   DEFAULT_AGENT_TURN_LIMITS,
   codeForLlmError,
-  runAgentTurn,
+  captureAgentTurnOutcome,
   prepareAgentTurnRequest,
   type AgentTurnLimits,
   type AgentTurnResult,
   type ChainCapabilities,
   type PreEgressHook,
 } from './agent-turn.js';
-import { BudgetExceededError, BudgetPauseError, type BudgetAdmission } from './budget-governor.js';
+import {
+  BudgetExceededError,
+  BudgetPauseError,
+  CommitmentDurabilityError,
+  type BudgetAdmission,
+} from './budget-governor.js';
+import { LedgerDurabilityError } from './money-durability.js';
 import { quoteBudgetAllowance } from './budget-allowance.js';
 import { effortToSend, gateReasoningEffort } from './reasoning-effort.js';
 import type {
@@ -495,28 +501,46 @@ async function prepareAgentDispatch(
         }),
       execute: async (execution) => {
         const preEgress = execution.preEgress ?? deps.preEgress;
-        let result: AgentTurnResult;
-        try {
-          generation.notify();
-          result = await runAgentTurn({
-            ...fields,
-            preparedOutputCaps: first.preparedOutputCaps,
-            chainCapabilities: chainCapabilities(deps),
-            nodeId: node.id,
-            emit: execution.emit,
-            signal: execution.signal,
-            registry: deps.registry,
-            dispatchContext: makeAgentDispatchContext(execution, node.id, grantedToolIds, deps),
-            limits,
-            ...(execution.whenReady === undefined ? {} : { whenReady: execution.whenReady }),
-            ...(preEgress === undefined ? {} : { preEgress }),
-            ...(execution.money === undefined ? {} : { money: execution.money }),
-            ...(deps.resolvePrice === undefined ? {} : { resolvePrice: deps.resolvePrice }),
-          });
-        } catch (err) {
-          return turnOutcomeForError(err);
+        generation.notify();
+        const outcome = await captureAgentTurnOutcome({
+          ...fields,
+          preparedOutputCaps: first.preparedOutputCaps,
+          chainCapabilities: chainCapabilities(deps),
+          nodeId: node.id,
+          emit: execution.emit,
+          signal: execution.signal,
+          registry: deps.registry,
+          dispatchContext: makeAgentDispatchContext(execution, node.id, grantedToolIds, deps),
+          limits,
+          ...(execution.whenReady === undefined ? {} : { whenReady: execution.whenReady }),
+          ...(preEgress === undefined ? {} : { preEgress }),
+          ...(execution.money === undefined ? {} : { money: execution.money }),
+          ...(deps.resolvePrice === undefined ? {} : { resolvePrice: deps.resolvePrice }),
+        });
+        if (outcome.kind === 'failed') {
+          // A consumer may throw a genuine core error class after a paid attempt. Its origin,
+          // rather than its prototype, keeps it outside retry and budget-gate authority.
+          if (outcome.failureOrigin === 'observer') {
+            let moneyFailure = false;
+            try {
+              moneyFailure =
+                outcome.error instanceof CommitmentDurabilityError ||
+                outcome.error instanceof LedgerDurabilityError;
+            } catch {
+              // A callback's opaque prototype cannot replace its failure with a private trap.
+            }
+            // Shared money barriers retain their original failure-writer owner. Other observer
+            // failures already have canonical accounting and settle with fixed internal presentation.
+            if (moneyFailure) throw outcome.error;
+            return failed(
+              'internal',
+              'the agent turn failed with an unexpected observer error',
+              false,
+            );
+          }
+          return turnOutcomeForError(outcome.error);
         }
-        return buildChatTurnOutcome(node, result, outputSchema);
+        return buildChatTurnOutcome(node, outcome.result, outputSchema);
       },
     },
   };

@@ -152,7 +152,11 @@ The shared turn driver records the exact throwable escaping its attempt observer
 responses preserve that observer failure without entering provider classification, even when the
 observer throws an `LlmProviderError`; genuine provider failures retain their normal mapping. A later
 tool round guards budget-error inspection so a throwing prototype or diagnostic cannot replace the
-original callback failure. The session still publishes its fixed terminal and canonical accounting.
+original callback failure. External emit/readiness/record failures have call-local origin distinct
+from internal admission settlement. Workflow callers refuse retry/gate authority from that origin.
+Session preserves classified-error delivery and raw rejection while using fixed internal,
+non-retryable observer presentation; the callback diagnostic cannot become public authority.
+The session still publishes its fixed terminal and canonical accounting.
 
 ## Session context
 

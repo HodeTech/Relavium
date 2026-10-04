@@ -1212,6 +1212,7 @@ export type CapturedAgentTurnOutcome =
   | {
       readonly kind: 'failed';
       readonly error: unknown;
+      readonly failureOrigin: 'observer' | 'turn';
       readonly engaged: boolean;
       readonly usage: { readonly input: number; readonly output: number };
     };
@@ -1224,8 +1225,48 @@ export type CapturedAgentTurnOutcome =
 export async function captureAgentTurnOutcome(
   params: AgentTurnParams,
 ): Promise<CapturedAgentTurnOutcome> {
-  params = Object.freeze({ ...params });
   const acc: TurnUsageAccumulator = { input: 0, output: 0, engaged: false };
+  const supplied = Object.freeze({ ...params });
+  const noteObserverFailure = (error: unknown): never => {
+    acc.observerFailure = { error };
+    throw error;
+  };
+  const observed: AgentTurnParams = {
+    ...supplied,
+    ...(supplied.money === undefined
+      ? {}
+      : {
+          money: {
+            join: () => supplied.money?.join() ?? Promise.resolve(),
+            record: (draft) => {
+              try {
+                supplied.money?.record(draft);
+              } catch (error) {
+                noteObserverFailure(error);
+              }
+            },
+          },
+        }),
+    emit: (event) => {
+      try {
+        supplied.emit(event);
+      } catch (error) {
+        noteObserverFailure(error);
+      }
+    },
+    ...(supplied.whenReady === undefined
+      ? {}
+      : {
+          whenReady: async () => {
+            try {
+              await supplied.whenReady?.();
+            } catch (error) {
+              noteObserverFailure(error);
+            }
+          },
+        }),
+  };
+  params = Object.freeze(observed);
   try {
     return { kind: 'succeeded', result: await driveAgentTurn(params, acc) };
   } catch (error) {
@@ -1233,7 +1274,16 @@ export async function captureAgentTurnOutcome(
       input: acc.input + (acc.observedStopUsage?.input ?? 0),
       output: acc.output + (acc.observedStopUsage?.output ?? 0),
     };
-    return { kind: 'failed', error, engaged: acc.engaged, usage: knownUsage };
+    return {
+      kind: 'failed',
+      error,
+      failureOrigin:
+        acc.observerFailure !== undefined && Object.is(acc.observerFailure.error, error)
+          ? 'observer'
+          : 'turn',
+      engaged: acc.engaged,
+      usage: knownUsage,
+    };
   }
 }
 
@@ -1286,6 +1336,10 @@ interface TurnUsageAccumulator {
   input: number;
   output: number;
   engaged: boolean;
+  /** Exact, call-local consumer provenance; an error class alone cannot authorise retries or a gate. */
+  observerFailure?: { readonly error: unknown };
+  /** A core attempt callback may also fail during internal admission settlement. */
+  attemptFailure?: { readonly error: unknown };
   /** A terminal usage chunk observed before readiness/folding, not yet consumed by onAttempt. */
   observedStopUsage?: { readonly input: number; readonly output: number };
 }
@@ -1482,7 +1536,6 @@ async function driveAgentTurn(
     }
   };
 
-  let observerFailure: { readonly error: unknown } | undefined;
   const chain = new FallbackChain([...params.planEntries], {
     ...params.chainCapabilities,
     costTracker,
@@ -1490,7 +1543,7 @@ async function driveAgentTurn(
       try {
         onAttempt(record);
       } catch (error) {
-        observerFailure = { error };
+        usage.attemptFailure = { error };
         throw error;
       }
     },
@@ -1579,7 +1632,8 @@ async function driveAgentTurn(
         chain,
         messages,
         params,
-        (error) => observerFailure !== undefined && Object.is(observerFailure.error, error),
+        (error) =>
+          usage.attemptFailure !== undefined && Object.is(usage.attemptFailure.error, error),
       );
       throwIfAborted(params.signal); // cancel-wins independent of adapter cooperation (mirrors the stream path)
       if (turn.stopReason === 'tool_use') {
@@ -1642,6 +1696,11 @@ async function driveAgentTurn(
         ? streamOneTurn(chain, messages, params, () => activeModel, usage)
         : streamOneTurn(chain, messages, params, () => activeModel, usage, turnCommitted).catch(
             (error: unknown) => {
+              if (
+                usage.attemptFailure !== undefined &&
+                Object.is(usage.attemptFailure.error, error)
+              )
+                throw error;
               let budgetFailure: AgentTurnError | undefined;
               try {
                 if (error instanceof BudgetPauseError) {

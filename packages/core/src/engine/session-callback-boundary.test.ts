@@ -285,3 +285,31 @@ describe('throwable presentation cannot replace the original failure', () => {
       expect(h.events.at(-1)).toMatchObject({ error: { code: 'turn_limit' } });
     });
 });
+
+describe('typed observer presentation has no provider or budget authority', () => {
+  for (const site of ['token', 'cost', 'ready-stop'] as const)
+    for (const kind of ['turn', 'budget'] as const)
+      it(`${site}/${kind} retains classified delivery with fixed private-safe presentation`, async () => {
+        const marker =
+          kind === 'turn'
+            ? new AgentTurnError('provider_unavailable', 'private typed observer', true)
+            : new BudgetPauseError(1, 1, 100);
+        const h = fixture(site, marker);
+        await expect(h.session.sendMessage('first')).resolves.toBeUndefined();
+        expect(terminal(h)).toEqual([
+          expect.objectContaining({
+            stopReason: 'error',
+            tokensUsed: site === 'token' ? { input: 0, output: 0 } : { input: 2, output: 3 },
+            error: {
+              code: 'internal',
+              message: 'the session turn failed with an unexpected error',
+              retryable: false,
+            },
+          }),
+        ]);
+        expect(JSON.stringify(h.events)).not.toContain(marker.message);
+        await h.session.sendMessage('blocked');
+        expect(h.counts.provider).toBe(1);
+        expect(h.events.at(-1)).toMatchObject({ error: { code: 'turn_limit' } });
+      });
+});

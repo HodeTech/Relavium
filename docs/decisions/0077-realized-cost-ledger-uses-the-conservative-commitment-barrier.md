@@ -311,3 +311,18 @@ cumulative total is suppressed or invented. Real provider failure classification
 unchanged. An [actual workflow regression](../../packages/core/src/engine/observer-error-provenance.test.ts)
 verifies one paid call, one realised row and a fixed non-retryable internal terminal without the private
 observer diagnostic. This corrects existing provenance and privacy, without a new financial policy.
+
+## 2026-10-05 implementation correction — observer origin through the runner
+
+The previous generated observer bypass did not carry its origin through AgentRunner. A paid host
+clock failure shaped as a genuine retryable AgentTurnError caused two paid calls and doubled
+realised rows; a genuine BudgetPauseError from the same notification fabricated a budget gate.
+The internal turn outcome now distinguishes exact external observer origin from ordinary turn
+failures and internal admission settlement faults. AgentRunner gives such observer failures fixed
+non-retryable internal presentation. Actual commitment/ledger durability failures keep their
+original failure-writer ownership, while invalid actual-cost settlement keeps its existing raw
+refusal, conservative charge and released in-flight slot. Mandatory realised recording and
+B1/B2/B3 are unchanged. The [actual workflow tests](../../packages/core/src/engine/observer-error-provenance.test.ts)
+cover stream/generate and provider/turn/budget-shaped host failures; the existing
+[unsafe settlement controls](../../packages/core/src/engine/agent-runner-allowance-settlement.test.ts)
+remain unchanged. This repairs provenance without changing financial or approval policy.

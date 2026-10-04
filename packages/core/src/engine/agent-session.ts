@@ -541,6 +541,7 @@ export class AgentSession {
     | {
         readonly engaged: boolean;
         readonly usage: { readonly input: number; readonly output: number };
+        readonly observerFailure?: { readonly error: unknown };
       }
     | undefined;
   /** Session-wide running cost total, authoritatively stamped onto every `cost:updated`. */
@@ -958,19 +959,33 @@ export class AgentSession {
     const usage = this.#failedTurnAccounting?.usage ??
       this.#lastEngagedUsage ?? { input: 0, output: 0 };
     let presentation: { code: ErrorCode; message: string; retryable: boolean } | undefined;
-    try {
-      if (err instanceof AgentTurnError) {
-        presentation = { code: err.code, message: err.message, retryable: err.retryable };
-      } else if (err instanceof BudgetPauseError) {
-        // Sessions have no resumable budget gate. A later pause still retains canonical engagement/usage.
-        presentation = { code: 'budget_exceeded', message: err.message, retryable: false };
+    const observerFailure = this.#failedTurnAccounting?.observerFailure;
+    let rethrowObserver = false;
+    if (observerFailure !== undefined && Object.is(observerFailure.error, err)) {
+      // Preserve the session's classified-error delivery contract, with fixed internal presentation.
+      // The callback's prototype grants neither its message/code nor a budget or retry decision.
+      presentation = {
+        code: 'internal',
+        message: 'the session turn failed with an unexpected error',
+        retryable: false,
+      };
+      rethrowObserver = !this.#hasReadableObserverDiagnostic(err);
+    } else {
+      try {
+        if (err instanceof AgentTurnError) {
+          presentation = { code: err.code, message: err.message, retryable: err.retryable };
+        } else if (err instanceof BudgetPauseError) {
+          // Sessions have no resumable budget gate. A later pause still retains canonical engagement/usage.
+          presentation = { code: 'budget_exceeded', message: err.message, retryable: false };
+        }
+      } catch {
+        // The original throwable can have hostile prototype/diagnostic accessors. Presentation must not
+        // replace it or suppress the raw terminal; canonical accounting was already settled above.
       }
-    } catch {
-      // The original throwable can have hostile prototype/diagnostic accessors. Presentation must not
-      // replace it or suppress the raw terminal; canonical accounting was already settled above.
     }
     if (presentation !== undefined) {
       this.#emitTurnCompleted('error', usage, presentation);
+      if (rethrowObserver) throw err;
       return;
     }
     // An unexpected (non-classified) error — settle the turn LOUDLY first so the stream stays balanced (every
@@ -985,6 +1000,23 @@ export class AgentSession {
       retryable: false,
     });
     throw err;
+  }
+
+  /** Preserve legacy classified delivery; hostile reflection rethrows the original, never its trap. */
+  #hasReadableObserverDiagnostic(error: unknown): boolean {
+    try {
+      if (error instanceof AgentTurnError) {
+        return (
+          typeof error.code === 'string' &&
+          typeof error.message === 'string' &&
+          typeof error.retryable === 'boolean'
+        );
+      }
+      if (error instanceof BudgetPauseError) return typeof error.message === 'string';
+    } catch {
+      // The diagnostic is not used for presentation or authority; preserve its original raw escape.
+    }
+    return false;
   }
 
   /** Read through a method: a called/awaited turn mutates this private field outside TS narrowing. */
@@ -1521,7 +1553,13 @@ export class AgentSession {
       ...(this.#deps.resolvePrice === undefined ? {} : { resolvePrice: this.#deps.resolvePrice }),
     });
     if (outcome.kind === 'failed') {
-      this.#failedTurnAccounting = { engaged: outcome.engaged, usage: outcome.usage };
+      this.#failedTurnAccounting = {
+        engaged: outcome.engaged,
+        usage: outcome.usage,
+        ...(outcome.failureOrigin === 'observer'
+          ? { observerFailure: { error: outcome.error } }
+          : {}),
+      };
       throw outcome.error;
     }
     return outcome.result;

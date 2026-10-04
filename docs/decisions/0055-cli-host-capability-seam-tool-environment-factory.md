@@ -183,3 +183,15 @@ guarantees; canonical behaviour remains in [the session contract](../reference/c
 and [LLM seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter).
 The [round-7 record](../reviews/2026-10-04T23-06-22-w7-systematic-group-2a-round-7-review.md)
 qualifies the incomplete runtime review and requires a fresh complete corrective round.
+
+## 2026-10-05 implementation correction — typed observer delivery
+
+W7 review verifies that the class of a paid host observer exception can incorrectly acquire
+provider retry or budget-gate authority after the shared turn returns. Exact call-local observer
+origin now travels in the internal outcome, independent of the original throwable's prototype.
+Workflow presentation is fixed, internal and non-retryable; genuine turn and money control flow
+remains distinct. Session keeps its established classified-error delivery and raw-error rejection
+contract, with canonical usage/engagement and fixed private-safe observer presentation. Hostile
+reflection still rethrows the original value after the fixed terminal. No host dependency or
+whole measured-request ownership decision changes. The canonical producer contract remains
+[the session spec](../reference/contracts/agent-session-spec.md). Historical text is preserved.
