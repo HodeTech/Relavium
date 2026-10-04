@@ -1,0 +1,14 @@
+{
+  "captureTool": "w7-overflow-capture-v1",
+  "capturedAt": "2026-10-04T08:49:51.048Z",
+  "provider": "anthropic",
+  "model": "claude-haiku-4-5-20251001",
+  "purpose": "overflow",
+  "syntheticInputCharacters": 2097152,
+  "maxOutputTokens": 64,
+  "response": {
+    "status": 400,
+    "contentType": "application/json",
+    "body": "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"prompt is too long: 1103792 tokens > 200000 maximum\"},\"request_id\":\"req_011CfguiFPfEbLiGMqsaas4R\"}"
+  }
+}
