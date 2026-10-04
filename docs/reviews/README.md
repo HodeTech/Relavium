@@ -175,6 +175,10 @@ added.
   both complete fresh reviews clean; every sealed entry and unchanged source verified;
   interrupted evidence excluded; safe CLI surface accepted and Step 11 closed.
 
+- [2026-10-04 — W7 step 12 independent maintenance, round 1](2026-10-04T07-00-17-w7-step-12-maintenance-round-1-review.md):
+  existing-reservation and inherited event-table guarantees corrected after two full committed reviews;
+  fresh complete maintenance round 2 required, whole-wave acceptance remains open.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

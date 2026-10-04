@@ -197,6 +197,12 @@ merged too (PR #85, 2026-08-28).
 > verifies and corrects usage/pricing and fixture-coverage prose; connected at-rest/event claims,
 > guides and moved follow-up status are reconciled. This independent maintenance proceeds through
 > repository checks and fresh post-commit review; Step 12's whole-wave acceptance remains open.
+> [Committed maintenance round 1](../reviews/2026-10-04T07-00-17-w7-step-12-maintenance-round-1-review.md)
+> independently verifies one Medium reservation-existence qualification and one Low inherited
+> event-table guarantee. Both are parent-verified and corrected in four text/comment locations.
+> Complete reports and all 2,687 sealed entries are verified; 81 fresh reviewer DB tests and
+> a real-writer reference-corruption/restoration control pass. Fresh complete maintenance
+> round 2 follows the correction commits; whole Step 12 remains open.
 > Live Step 7 captures, and therefore Step 8, remain pending.
 > Step 1 repaired collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).

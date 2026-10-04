@@ -495,8 +495,8 @@ can advance to another provider only before content commits; a pre-content `prot
 can also fail over despite being fatal to node retry. Every attempt is reported. Available attempt usage is
 recorded independently of whether it can be fully priced. Unpriced records are marked
 `priced: false`: their amount may be an unknown-price placeholder or a token-only cost floor,
-rather than a complete charge. Where an admission exists, missing usage or incomplete pricing
-retains its bounded reservation unless proven pre-content refusal permits release. A reservation
+rather than a complete charge. If an attempt holds a bounded reservation, missing usage or
+incomplete pricing retains it unless proven pre-content refusal permits release. A reservation
 is never invented actual usage or realised spend. See
 [the financial settlement contract](agent-runner.md) and
 [error handling](../../standards/error-handling.md#llmerror-classification--the-contract-the-fallback-chains-depend-on).

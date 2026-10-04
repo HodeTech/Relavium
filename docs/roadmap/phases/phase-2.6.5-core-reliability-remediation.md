@@ -3256,3 +3256,16 @@ fixture passes 81 DB tests and strict types. [The preflight record](../../review
 does not replace required repository checks or fresh committed-maintenance reviews.
 **Steps 7–8, whole Step 12 and all six W7 register items remain open.** Their live provider
 evidence cannot be replaced by offline fixtures; no PR, push or wave-closure claim is made.
+
+**Independent Step 12 maintenance, round 1 — 2026-10-04.** Two fresh reviewers cover every
+committed maintenance path and agree on one Medium financial-contract qualification and one
+Low inherited event-table claim. An admission may own an unknown-price lifecycle without a
+numeric reservation; three retention statements now require an existing bounded reservation.
+The tool-input table links its qualified credential/content protection instead of claiming
+arbitrary content is secret-free. The parent independently traces the source, reads both
+complete reports and verifies all 1,200 static and 1,487 runtime sealed entries plus the
+unchanged original pins. The runtime reviewer passes 81 DB tests, strict types and a genuine
+writer-reference corruption/restoration control; these do not replace the parent checks.
+[The complete record](../../reviews/2026-10-04T07-00-17-w7-step-12-maintenance-round-1-review.md)
+preserves the scope, setup/read failures and guard/process limits. Fresh complete committed
+maintenance round 2 follows. **Whole Step 12, Steps 7–8 and all six W7 items remain open.**

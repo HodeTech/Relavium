@@ -41,8 +41,8 @@ knowing which provider produced it:
   transport/connection resets. The fallback runner advances to the next provider on a
   retryable `LlmError` when the attempt's commitment state permits it. Every attempt
   is reported; actual usage is recorded only when the provider supplies it. An engaged
-  attempt without trustworthy usage retains its bounded reservation as an estimate,
-  unless a proven pre-content refusal permits release
+  attempt that holds a bounded reservation retains it as an estimate when trustworthy
+  usage is missing, unless a proven pre-content refusal permits release
   ([ADR-0074](../decisions/0074-durable-conservative-budget-commitments.md),
   [ADR-0076](../decisions/0076-durable-per-attempt-realized-cost-ledger.md)).
   An estimate is never reported as actual usage or realized spend.
