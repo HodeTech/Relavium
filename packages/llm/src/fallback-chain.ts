@@ -1,3 +1,4 @@
+import { ContentPartSchema, StopReasonSchema } from '@relavium/shared';
 import type { AbortSignalLike, BackoffStrategy, ContentPart, MediaSource } from '@relavium/shared';
 
 import { snapshotAccountableUsage, type CostTracker, type CostUpdate } from './cost-tracker.js';
@@ -724,8 +725,8 @@ export class FallbackChain {
       // Own the result surface before any observer runs. A getter on a paid provider result is
       // not another provider failure, and must never grant node retry or budget-gate authority.
       captured = {
-        content: result.content,
-        stopReason: result.stopReason,
+        content: ContentPartSchema.array().parse(result.content),
+        stopReason: StopReasonSchema.parse(result.stopReason),
         usage: knownUsage ?? resultUsage,
         raw: result.raw,
       };

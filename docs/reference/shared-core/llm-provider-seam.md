@@ -986,7 +986,11 @@ followed by each authored `fallback_chain` entry:
   stop reason and raw response properties are each read once into a plain result before observer
   delivery, inside the protected post-response projection. A projection fault preserves already
   folded usage/price on its single failed record and has a fixed non-retryable diagnostic. This
-  owns the result surface, not a deep snapshot of all content or whole-request ownership. An admission
+  detaches the schema-defined content fields, including nested typed media shapes, and validates stop
+  reason before observer delivery. A later mutation of provider-owned content cannot alter that typed
+  projection or install a downstream accessor with retry, budget or failure-writer authority. Opaque
+  tool arguments/results and raw response payloads retain their existing contract; generic deep
+  payload or whole-request ownership is not claimed. An admission
   stays owned until its release or settlement succeeds, so a diagnostic failure reaches conservative
   cleanup rather than losing the lease.
 - Surface **per-attempt usage** to the injected `CostTracker` (against that

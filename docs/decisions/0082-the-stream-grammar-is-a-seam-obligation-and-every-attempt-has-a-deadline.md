@@ -407,3 +407,15 @@ and [held terminal controls](../../packages/llm/src/held-terminal-controls.test.
 The canonical [LLM seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter)
 qualifies the result-surface ownership scope; deep whole-request ownership remains Proposed ADR-0102.
 Historical text is preserved.
+
+## 2026-10-05 implementation correction — typed generated content ownership
+
+The tenth independent W7 review reproduces nested generated-part getters and later provider-owned
+part mutation escaping the root result projection, causing duplicate paid workflow attempts, false
+budget diagnostics or false failure-writer attribution. The guarded projection now parses content
+through the existing shared schema and validates stop reason before observer delivery, detaching
+schema-defined fields while retaining the one accountable usage snapshot. A projection fault keeps
+already folded known price on its single failed record. Opaque tool payloads/raw response data and
+whole-request ownership remain outside this repair; Proposed ADR-0102 is not implemented.
+The canonical [LLM seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter)
+records that bounded scope. Historical text is preserved.
