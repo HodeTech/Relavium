@@ -145,6 +145,7 @@ flowchart TD
 | 0099 | [Compaction has an idle budget outcome and an unknown-window policy](0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md) | Accepted | 2026-10-02 |
 | 0100 | [Budget authorization is durable state with a replay barrier](0100-budget-authorization-is-durable-state-with-a-replay-barrier.md) | Accepted | 2026-10-02 |
 | 0101 | [Configured output estimates apply only when the wire is uncapped](0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md) | Accepted | 2026-10-02 |
+| 0102 | [A measured request owns its inert data through egress](0102-a-measured-request-owns-its-inert-data-through-egress.md) | Proposed | 2026-10-04 |
 
 ## Creating a new ADR
 

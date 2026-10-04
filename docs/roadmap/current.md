@@ -230,6 +230,12 @@ merged too (PR #85, 2026-08-28).
 > separately under examination. No finding is deferred at intake. Steps 7–8, whole Step 12 and all six
 > W7 register items remain open.
 
+> **Request-ownership decision preflight — 2026-10-04.** [Proposed ADR-0102](../decisions/0102-a-measured-request-owns-its-inert-data-through-egress.md)
+> closes the measured-to-sent alias gap through one owned inert construction and existing candidate
+> cap authority. It deliberately narrows non-cap opaque inputs and requires maintainer approval before
+> dependent implementation. Fresh draft reviews precede that decision; independent corrective work
+> continues. The ownership HIGH remains open.
+
 ## Execution order — Phase 2.5.5 + Phase 2.6 (temporary)
 
 > **Temporary section — delete it when both phases close.** It owns **ordering only**. Every item's

@@ -3328,3 +3328,11 @@ verification and limits. All ten GitHub workflow checks are green at that head; 
 separately. **The rendering corrective group is closed. Measured-request ownership and remaining
 systematic findings still require correction and fresh acceptance; Steps 7–8, whole Step 12 and
 all six W7 register items remain open.**
+
+**Request-ownership decision preflight — 2026-10-04.** The systematic SDK mutation HIGH requires
+one owned construction through context measurement, quotation, admission and dispatch. Static SDK
+mechanism review identifies the explicit compatibility fork: arbitrary opaque values require a larger
+SDK integration decision; [Proposed ADR-0102](../../decisions/0102-a-measured-request-owns-its-inert-data-through-egress.md)
+instead selects inert non-cap data with the existing native-cap exception, unchanged provider methods
+and an explicit candidate binding/stream/media handoff. It requires maintainer approval after fresh
+draft reviews. **No dependent ownership implementation is authorized; other correction groups proceed.**
