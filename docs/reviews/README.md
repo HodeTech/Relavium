@@ -218,6 +218,9 @@ added.
 - [2026-10-04 — W7 systematic group 2a, round 5](2026-10-04T20-43-04-w7-systematic-group-2a-round-5-review.md):
   hostile throwable presentation, provider-method lookup and valid generated usage gaps corrected; fresh complete round 6 required.
 
+- [2026-10-04 — W7 systematic group 2a, round 6](2026-10-04T21-48-21-w7-systematic-group-2a-round-6-review.md):
+  six verified accounting/invocation/diagnostic families corrected; fresh complete round 7 required.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

@@ -1476,3 +1476,12 @@ corrected focused run: 417 passing. Final forced root checks pass 23 tasks, 332 
 7,694 tests/12 skips, six builds and test isolation. Both complete reports and every one of
 3,589 sealed entries/pins are independently verified before Original resumes. **Fresh complete
 round 6 is required; group 2a, ownership, remaining groups, Steps 7–8/12, Sonar and PR remain open.**
+
+**Systematic group 2a, round 6 — 2026-10-04.** [Both fresh complete reviews](../reviews/2026-10-04T21-48-21-w7-systematic-group-2a-round-6-review.md)
+verify existing protections and reproduce six overlapping price/quantity/invocation/diagnostic families.
+`b4134e99` owns validated returned usage, marks unknown prices unpriced, guards nested/cause inspection,
+keeps admission ownership through discharge and rechecks lookup cancellation. Exact-head baseline:
+25 failing/19 passing; corrected focus: 461 passing. Final forced root passes 23 tasks, 333 files,
+7,738 tests/12 skips, six builds, formatting and test isolation. Both complete reports and all
+3,922 sealed entries/source/link/bootstrap pins are independently verified before Original resumes.
+**Fresh complete round 7 is required; group 2a, ownership, remaining groups, Steps 7–8/12, Sonar and PR remain open.**
