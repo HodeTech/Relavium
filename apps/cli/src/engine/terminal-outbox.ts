@@ -14,10 +14,10 @@
  * file is small by construction (one line per run whose terminal could not be written, which is meant to be
  * approximately never) and is compacted on `remove`, when the process is by definition healthy again.
  *
- * **`0600`, like `history.db`.** A terminal payload carries `run:completed.outputs` — model output, not
- * secrets (the engine masks those at the bus, ADR-0036), but run data all the same, so it inherits
- * [ADR-0050](../../../../docs/decisions/0050-cli-history-db-at-rest-posture.md)'s posture rather than
- * defaulting to whatever the umask says.
+ * **`0600`, like `history.db`.** A terminal payload carries `run:completed.outputs`, which may contain
+ * sensitive user/tool content. Masking structured secret inputs is not universal output redaction.
+ * The file inherits [ADR-0050](../../../../docs/decisions/0050-cli-history-db-at-rest-posture.md)'s
+ * posture rather than defaulting to whatever the umask says.
  *
  * **Nothing here throws for a caller that cannot recover.** The engine calls `put` from inside its terminal
  * path, having already failed one write; a throw would break exactly-one-terminal on the way out of the code
