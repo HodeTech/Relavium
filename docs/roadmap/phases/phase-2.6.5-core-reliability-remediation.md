@@ -3269,3 +3269,16 @@ writer-reference corruption/restoration control; these do not replace the parent
 [The complete record](../../reviews/2026-10-04T07-00-17-w7-step-12-maintenance-round-1-review.md)
 preserves the scope, setup/read failures and guard/process limits. Fresh complete committed
 maintenance round 2 follows. **Whole Step 12, Steps 7–8 and all six W7 items remain open.**
+
+**Independent Step 12 maintenance, round 2 — 2026-10-04.** Both fresh whole-maintenance reviews
+are clean across all 26 paths and 37 hunks, including the first-round corrections and dated record.
+The parent fully reads both reports, verifies all 1,202 static and 1,372 runtime sealed entries,
+and checks all 1,079 unchanged original pins after both releases. Fresh runtime evidence includes
+81 DB tests, strict types and a real writer-reference corruption/exact-restoration control;
+static proof remains source/document consistency, with explicit read/guard/link limits.
+[The complete record](../../reviews/2026-10-04T07-25-20-w7-step-12-maintenance-round-2-review.md)
+accepts the independent maintenance subset. The latest parent full CI/sequential coverage remains
+green on unchanged production/test source; only scoped review/status/index metadata follows.
+**The maintenance subset is closed; whole Step 12, Steps 7–8 and all six W7 items remain open.**
+The real provider captures are the remaining Step 7 prerequisite. No verified finding is deferred,
+no live fixture is invented and no PR/push or wave closure is claimed.

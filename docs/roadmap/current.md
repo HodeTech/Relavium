@@ -203,6 +203,10 @@ merged too (PR #85, 2026-08-28).
 > Complete reports and all 2,687 sealed entries are verified; 81 fresh reviewer DB tests and
 > a real-writer reference-corruption/restoration control pass. Fresh complete maintenance
 > round 2 follows the correction commits; whole Step 12 remains open.
+> [Committed maintenance round 2](../reviews/2026-10-04T07-25-20-w7-step-12-maintenance-round-2-review.md) is clean
+> across all 26 paths/37 hunks in both fresh reviews. Both complete reports and all 2,574 sealed
+> entries/source pins are verified; fresh 81-test DB/strict checks and real-writer causal controls pass.
+> **The independent maintenance subset is closed; whole Step 12 and all six W7 items remain open.**
 > Live Step 7 captures, and therefore Step 8, remain pending.
 > Step 1 repaired collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).

@@ -179,6 +179,10 @@ added.
   existing-reservation and inherited event-table guarantees corrected after two full committed reviews;
   fresh complete maintenance round 2 required, whole-wave acceptance remains open.
 
+- [2026-10-04 — W7 step 12 independent maintenance, round 2](2026-10-04T07-25-20-w7-step-12-maintenance-round-2-review.md):
+  both complete fresh reviews clean; all sealed entries/source pins verified; maintenance subset closed,
+  live Steps 7–8 and whole-wave acceptance remain open.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and
