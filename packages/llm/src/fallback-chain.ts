@@ -1167,7 +1167,7 @@ export class FallbackChain {
     });
   }
 
-  /** Normalize a thrown value into an `LlmError` — `LlmProviderError` carries one; anything else is `unknown`. */
+  /** Preserve provider errors, classify local cap refusals as `bad_request`, and map other throws to `unknown`. */
   #errorOf(caught: unknown, provider: ProviderId): LlmError {
     if (caught instanceof LlmProviderError) {
       return caught.llmError;
