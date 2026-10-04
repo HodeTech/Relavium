@@ -285,3 +285,8 @@ Record its model, effort and review scope in the coverage section where availabl
 - [2026-10-05 — W7 systematic group 2a, round 8](2026-10-05T00-56-00-w7-systematic-group-2a-round-8-review.md):
   both complete reviews verify held-terminal, diagnostic and typed observer authority defects;
   corrected with unchanged money controls and green full toolchain, fresh complete round 9 required.
+
+- [2026-10-05 — W7 systematic group 2a, round 9](2026-10-05T01-57-06-w7-systematic-group-2a-round-9-review.md):
+  two complete reviews verify cause authority, generated projection, compaction/later-round origin and
+  false money-writer attribution; fixes and 119 additional permanent controls pass full checks; fresh
+  complete round 10 required, with unpriced versus actual-charge and startup qualifications retained.

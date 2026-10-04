@@ -3429,3 +3429,12 @@ The 51 new terminal controls reproduce 31 failures before repair; final forced O
 reports and all 4,175 physical entries/pins/links are verified before Original resumes, with prior
 outer-launcher gaps qualified. **Fresh complete round 9 is required; group 2a, ADR-0102 approval,
 remaining systematic groups, Steps 7–8/12, current Sonar and PR remain open.**
+
+**Systematic group 2a, round 9 — 2026-10-05.** [Both complete independent reviews](../../reviews/2026-10-05T01-57-06-w7-systematic-group-2a-round-9-review.md)
+verify unsafe cause authority, generated result access after paid observation, compaction/later-tool
+callback origin and false money-writer attribution. Verified corrections `1b23ff82` / `22d9df14` and
+119 additional permanent controls pass forced full lint/typecheck/test (23 tasks, 339 files,
+7,950 tests / 12 existing skips), forced build and isolation. Both complete reports and all 3,784
+physical entries/source/link/bootstrap pins verify before Original resumes; actual-price/unpriced
+and early startup limits remain explicit. **Fresh complete round 10 is required; group 2a,
+ADR-0102 approval, remaining groups, Steps 7–8/12, Sonar, W7 and PR #90 remain open.**
