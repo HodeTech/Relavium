@@ -1,6 +1,6 @@
 import type { AbortSignalLike, BackoffStrategy, ContentPart, MediaSource } from '@relavium/shared';
 
-import type { CostTracker, CostUpdate } from './cost-tracker.js';
+import { assertAccountableUsage, type CostTracker, type CostUpdate } from './cost-tracker.js';
 import { UnknownModelError } from './errors.js';
 import {
   DEFAULT_ATTEMPT_TIMEOUT_MS,
@@ -11,7 +11,7 @@ import {
 } from './attempt-deadline.js';
 import { isRetryable, LlmProviderError, makeLlmError } from './llm-error.js';
 import { verifyStreamGrammar } from './stream-grammar.js';
-import { ProviderIdSchema } from './types.js';
+import { ProviderIdSchema, UsageSchema } from './types.js';
 import type {
   LlmError,
   LlmMessage,
@@ -672,11 +672,10 @@ export class FallbackChain {
         throw new LlmProviderError(this.#cancelledError(entry.provider.id));
       }
       deadline = this.#openDeadline(entryReq);
+      const generate = entry.provider.generate.bind(entry.provider);
+      const request = deadline === undefined ? entryReq : withSignal(entryReq, deadline.signal);
       record = { ...record, providerInvoked: true };
-      const call = entry.provider.generate(
-        deadline === undefined ? entryReq : withSignal(entryReq, deadline.signal),
-        key,
-      );
+      const call = generate(request, key);
       // A `generate()` has no chunks, so there is nothing to commit: a deadline here is always pre-content
       // and may fail over, which is rule 7's other half rather than an exception to it.
       const raced = deadline === undefined ? undefined : await deadline.race(call);
@@ -703,13 +702,23 @@ export class FallbackChain {
     // A returned generation, even empty, was processed. Guard accounting separately from the
     // provider attempt so a tracker/observer cannot forge a refundable HTTP refusal or cause retries.
     const receivedRecord = { ...record, contentReceived: true };
-    if (result.usage === undefined) {
-      this.#emitSuccess(receivedRecord, entry.model, undefined);
-      return { status: 'success', result };
-    }
+    let usage: Usage | undefined;
+    let knownUsage: Usage | undefined;
     let folded: FoldedUsage;
     try {
-      folded = this.#foldUsage(entry.model, result.usage);
+      // Read the custom result once. Capture valid quantities before a host pricing callback can
+      // fail or mutate its own response; never copy invalid counts into failed-attempt accounting.
+      usage = result.usage;
+      if (usage !== undefined) {
+        const parsed = UsageSchema.safeParse(usage);
+        if (parsed.success) {
+          assertAccountableUsage(entry.model, parsed.data);
+          knownUsage = parsed.data;
+        }
+        folded = this.#foldUsage(entry.model, usage);
+      } else {
+        folded = { unpriced: false };
+      }
     } catch (cause) {
       const error = makeLlmError({
         provider: entry.provider.id,
@@ -717,11 +726,17 @@ export class FallbackChain {
         message: 'cost accounting failed after a successful generated attempt',
         cause,
       });
-      this.#emit({ ...receivedRecord, outcome: 'failed', error });
+      this.#emit({
+        ...receivedRecord,
+        ...(knownUsage === undefined ? {} : { usage: knownUsage }),
+        outcome: 'failed',
+        error,
+      });
       return { status: 'error', error };
     }
     // The observer is consumer code: its exception propagates once, outside the provider catch.
-    this.#emitFolded(receivedRecord, result.usage, folded);
+    if (usage === undefined) this.#emitSuccess(receivedRecord, entry.model, undefined);
+    else this.#emitFolded(receivedRecord, usage, folded);
     return { status: 'success', result };
   }
 
@@ -799,14 +814,10 @@ export class FallbackChain {
       // was reading SSE — but the chain accepts ANY `LLMProvider`: a cassette, a test double, and in Phase 2
       // a managed gateway. A rule enforced only inside implementations we happen to own is a coincidence.
       deadline = this.#openDeadline(entryReq);
+      const stream = entry.provider.stream.bind(entry.provider);
+      const request = deadline === undefined ? entryReq : withSignal(entryReq, deadline.signal);
       record = { ...record, providerInvoked: true };
-      const verified = verifyStreamGrammar(
-        entry.provider.stream(
-          deadline === undefined ? entryReq : withSignal(entryReq, deadline.signal),
-          key,
-        ),
-        entry.provider.id,
-      );
+      const verified = verifyStreamGrammar(stream(request, key), entry.provider.id);
       // Manual iteration, not `for await`: every `next()` is raced against the ABSOLUTE deadline. A
       // `for await` can only be bounded by a signal, and a signal is a request the provider may ignore.
       iterator = verified[Symbol.asyncIterator]();
@@ -1173,16 +1184,18 @@ export class FallbackChain {
 
   /** Preserve provider errors, classify local cap refusals as `bad_request`, and keep other diagnostics fixed. */
   #errorOf(caught: unknown, provider: ProviderId): LlmError {
-    if (caught instanceof LlmProviderError) {
-      return caught.llmError;
-    }
-    if (caught instanceof InvalidOutputCapPlanError) {
-      return makeLlmError({
-        provider,
-        kind: 'bad_request',
-        message: caught.message,
-        cause: caught,
-      });
+    try {
+      if (caught instanceof LlmProviderError) return caught.llmError;
+      if (caught instanceof InvalidOutputCapPlanError) {
+        return makeLlmError({
+          provider,
+          kind: 'bad_request',
+          message: caught.message,
+          cause: caught,
+        });
+      }
+    } catch {
+      // Hostile reflection belongs to the original untyped failure, never a replacement exception.
     }
     return makeLlmError({
       provider,

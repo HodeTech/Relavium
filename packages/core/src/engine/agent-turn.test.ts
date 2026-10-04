@@ -41,6 +41,7 @@ import {
   AgentTurnError,
   DEFAULT_AGENT_TURN_LIMITS,
   runAgentTurn,
+  captureAgentTurnOutcome,
   type AgentTurnParams,
   type PreEgressInfo,
   type ChainCapabilities,
@@ -2479,4 +2480,28 @@ describe('public turn error identity survives immutable and accessor metadata', 
       await expect(runAgentTurn(params)).rejects.toBe(marker);
     },
   );
+});
+
+describe('generated accounting retains validated quantities independently of prices', () => {
+  for (const zero of [false, true])
+    it(`known generated usage survives pricing failure (zero=${zero})`, async () => {
+      const usage = { inputTokens: zero ? 0 : 5, outputTokens: zero ? 0 : 6 };
+      const provider = mediaGenerateProvider('anthropic', {
+        content: [{ type: 'text', text: 'paid response' }],
+        stopReason: 'stop',
+        usage,
+      });
+      const prices = new Map<string, import('@relavium/llm').ModelPricing>();
+      prices.get = () => {
+        throw new Error('private pricing fault');
+      };
+      const outcome = await captureAgentTurnOutcome(
+        baseParams(provider, { outputModalities: ['image'], resolvePrice: prices }),
+      );
+      expect(outcome.kind).toBe('failed');
+      if (outcome.kind === 'failed') {
+        expect(outcome.engaged).toBe(true);
+        expect(outcome.usage).toEqual({ input: usage.inputTokens, output: usage.outputTokens });
+      }
+    });
 });

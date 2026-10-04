@@ -957,24 +957,20 @@ export class AgentSession {
     if (this.#failedTurnAccounting?.engaged === true) this.#turnCount += 1;
     const usage = this.#failedTurnAccounting?.usage ??
       this.#lastEngagedUsage ?? { input: 0, output: 0 };
-    if (err instanceof AgentTurnError) {
-      this.#emitTurnCompleted('error', usage, {
-        code: err.code,
-        message: err.message,
-        retryable: err.retryable,
-      });
-      return;
+    let presentation: { code: ErrorCode; message: string; retryable: boolean } | undefined;
+    try {
+      if (err instanceof AgentTurnError) {
+        presentation = { code: err.code, message: err.message, retryable: err.retryable };
+      } else if (err instanceof BudgetPauseError) {
+        // Sessions have no resumable budget gate. A later pause still retains canonical engagement/usage.
+        presentation = { code: 'budget_exceeded', message: err.message, retryable: false };
+      }
+    } catch {
+      // The original throwable can have hostile prototype/diagnostic accessors. Presentation must not
+      // replace it or suppress the raw terminal; canonical accounting was already settled above.
     }
-    if (err instanceof BudgetPauseError) {
-      // A session has no pause/resume gate machinery in 1.V (full session pause/resume is a deferred 1.V×1.AC
-      // item), so a pre-egress `pause_for_approval` settles the turn LOUDLY as `budget_exceeded` rather than
-      // escaping `sendMessage` as a raw throw. A later-round refusal or a pause-shaped host exception
-      // still retains earlier provider engagement and usage through the canonical outcome.
-      this.#emitTurnCompleted('error', usage, {
-        code: 'budget_exceeded',
-        message: err.message,
-        retryable: false,
-      });
+    if (presentation !== undefined) {
+      this.#emitTurnCompleted('error', usage, presentation);
       return;
     }
     // An unexpected (non-classified) error — settle the turn LOUDLY first so the stream stays balanced (every

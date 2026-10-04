@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { AbortControllerLike } from './attempt-deadline.js';
 import { CostTracker } from './cost-tracker.js';
+import type { ModelPricing } from './pricing.js';
 import {
   FallbackChain,
   stripReasoningParts,
@@ -3363,4 +3364,209 @@ describe('chain-owned provider invocation evidence', () => {
           expect(trace[0]?.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
       },
     );
+});
+
+describe('lookup and throwable reflection stay on the actual invocation boundary', () => {
+  for (const path of ['generate', 'stream'] as const)
+    it(`${path} method getter refuses before invocation and repaired method keeps its receiver`, async () => {
+      const marker = new Error('private method getter failure');
+      let fail = true;
+      const fake = makeProvider({
+        id: 'anthropic',
+        generate: resolves('ok'),
+        stream: () => streamFrom([STOP_CHUNK]),
+      });
+      const generate = fake.provider.generate.bind(fake.provider);
+      const stream = fake.provider.stream.bind(fake.provider);
+      Object.defineProperty(fake.provider, 'generate', {
+        value: function (this: LlmProvider, request: LlmRequest, key: string) {
+          expect(this).toBe(fake.provider);
+          return generate(request, key);
+        },
+        configurable: true,
+      });
+      Object.defineProperty(fake.provider, 'stream', {
+        value: function (this: LlmProvider, request: LlmRequest, key: string) {
+          expect(this).toBe(fake.provider);
+          return stream(request, key);
+        },
+        configurable: true,
+      });
+      const method = fake.provider[path];
+      Object.defineProperty(fake.provider, path, {
+        get: () => {
+          if (fail) throw marker;
+          return method;
+        },
+      });
+      const { options, trace } = makeOptions();
+      const chain = new FallbackChain([entry(fake, 'claude-opus-4-8')], options);
+      if (path === 'generate')
+        await expect(chain.generate(userReq)).rejects.toBeInstanceOf(LlmProviderError);
+      else expect((await collect(chain.stream(userReq))).at(-1)).toMatchObject({ type: 'error' });
+      expect(fake.calls).toHaveLength(0);
+      expect(trace).toHaveLength(1);
+      expect(trace[0]).toMatchObject({ providerInvoked: false });
+      fail = false;
+      if (path === 'generate') await chain.generate(userReq);
+      else await collect(chain.stream(userReq));
+      expect(fake.calls).toHaveLength(1);
+      expect(trace.at(-1)).toMatchObject({ providerInvoked: true, outcome: 'succeeded' });
+    });
+  for (const path of ['generate', 'stream'] as const)
+    it(`${path} hostile thrown prototype still records invocation with the original cause`, async () => {
+      const marker = new Proxy(new Error('private provider marker'), {
+        getPrototypeOf: () => {
+          throw new Error('private reflection');
+        },
+      });
+      const fake = makeProvider({
+        id: 'anthropic',
+        generate: () => {
+          throw marker;
+        },
+        stream: () => {
+          throw marker;
+        },
+      });
+      const { options, trace } = makeOptions();
+      const chain = new FallbackChain([entry(fake, 'claude-opus-4-8')], options);
+      if (path === 'generate')
+        await expect(chain.generate(userReq)).rejects.toBeInstanceOf(LlmProviderError);
+      else expect((await collect(chain.stream(userReq))).at(-1)).toMatchObject({ type: 'error' });
+      expect(fake.calls).toHaveLength(1);
+      expect(trace).toHaveLength(1);
+      expect(trace[0]).toMatchObject({ providerInvoked: true, outcome: 'failed' });
+      expect(trace[0]?.error?.cause === marker).toBe(true);
+      expect(trace[0]?.error?.message).toBe('unknown provider failure');
+    });
+});
+
+describe('generated known usage survives cost calculation failure without accepting invalid quantities', () => {
+  const valid: readonly Usage[] = [
+    { inputTokens: 5, outputTokens: 6 },
+    { inputTokens: 0, outputTokens: 0 },
+    { inputTokens: 5, outputTokens: 6, cacheReadTokens: 2, cacheWriteTokens: 3 },
+  ];
+  for (const usage of valid)
+    it(`keeps validated generated usage ${JSON.stringify(usage)} independently of pricing`, async () => {
+      const overlay = new Map<string, ModelPricing>();
+      overlay.get = () => {
+        throw new Error('private pricing callback');
+      };
+      const fake = makeProvider({ id: 'anthropic', generate: resolves('paid', usage) });
+      const { options, trace } = makeOptions({ costTracker: new CostTracker(overlay) });
+      const chain = new FallbackChain([entry(fake, 'claude-opus-4-8')], options);
+      await expect(chain.generate(userReq)).rejects.toBeInstanceOf(LlmProviderError);
+      expect(trace).toHaveLength(1);
+      expect(trace[0]).toMatchObject({
+        providerInvoked: true,
+        contentReceived: true,
+        outcome: 'failed',
+        usage,
+      });
+      expect(trace[0]?.cost).toBeUndefined();
+      expect(trace[0]?.error?.message).not.toContain('private');
+    });
+  const invalid: readonly Usage[] = [
+    { inputTokens: Number.NaN, outputTokens: 6 },
+    { inputTokens: -1, outputTokens: 6 },
+    { inputTokens: Number.MAX_SAFE_INTEGER + 1, outputTokens: 6 },
+    { inputTokens: 5, outputTokens: 0.5 },
+    { inputTokens: 5, outputTokens: 6, cacheReadTokens: Number.POSITIVE_INFINITY },
+    {
+      inputTokens: 5,
+      outputTokens: 6,
+      mediaUnits: [{ modality: 'image', direction: 'output', unit: 'count', units: -1 }],
+    },
+  ];
+  for (const [index, usage] of invalid.entries())
+    it(`does not manufacture known usage from validation failure ${index}`, async () => {
+      const fake = makeProvider({ id: 'anthropic', generate: resolves('paid', usage) });
+      const { options, trace } = makeOptions({ costTracker: new CostTracker() });
+      const chain = new FallbackChain([entry(fake, 'claude-opus-4-8')], options);
+      await expect(chain.generate(userReq)).rejects.toBeInstanceOf(LlmProviderError);
+      expect(trace).toHaveLength(1);
+      expect(trace[0]?.usage).toBeUndefined();
+      expect(trace[0]).toMatchObject({ providerInvoked: true, contentReceived: true });
+    });
+});
+
+describe('generated usage inspection is recorded without losing validated quantities', () => {
+  it('a throwing usage accessor produces one non-retryable failed attempt after invocation', async () => {
+    const marker = new Error('private usage getter');
+    const fake = makeProvider({
+      id: 'anthropic',
+      generate: () =>
+        Promise.resolve({
+          content: [],
+          stopReason: 'stop',
+          get usage(): Usage {
+            throw marker;
+          },
+        }),
+    });
+    const { options, trace } = makeOptions({ costTracker: new CostTracker() });
+    const chain = new FallbackChain([entry(fake, 'claude-opus-4-8')], options);
+    await expect(chain.generate(userReq)).rejects.toBeInstanceOf(LlmProviderError);
+    expect(fake.calls).toHaveLength(1);
+    expect(trace).toHaveLength(1);
+    expect(trace[0]).toMatchObject({
+      providerInvoked: true,
+      contentReceived: true,
+      outcome: 'failed',
+    });
+    expect(trace[0]?.usage).toBeUndefined();
+    expect(trace[0]?.error?.retryable).toBe(false);
+    expect(trace[0]?.error?.cause === marker).toBe(true);
+    expect(trace[0]?.error?.message).not.toContain('private');
+  });
+  it('reads generated usage once and prices that same read', async () => {
+    let reads = 0;
+    const usage: Usage = { inputTokens: 5, outputTokens: 6 };
+    const fake = makeProvider({
+      id: 'anthropic',
+      generate: () =>
+        Promise.resolve({
+          content: [],
+          stopReason: 'stop',
+          get usage(): Usage {
+            reads += 1;
+            if (reads > 1) throw new Error('usage must only be read once');
+            return usage;
+          },
+        }),
+    });
+    const { options, trace } = makeOptions({ costTracker: new CostTracker() });
+    const chain = new FallbackChain([entry(fake, 'claude-opus-4-8')], options);
+    await chain.generate(userReq);
+    expect(reads).toBe(1);
+    expect(trace).toHaveLength(1);
+    expect(trace[0]).toMatchObject({ outcome: 'succeeded', usage });
+    expect(trace[0]?.cost?.inputTokens).toBe(5);
+    expect(trace[0]?.cost?.outputTokens).toBe(6);
+  });
+  it('retains validated generated quantities even if a pricing callback mutates its response then throws', async () => {
+    const usage = { inputTokens: 5, outputTokens: 6 };
+    const overlay = new Map<string, ModelPricing>();
+    overlay.get = () => {
+      usage.inputTokens = 999;
+      usage.outputTokens = Number.NaN;
+      throw new Error('private mutation');
+    };
+    const fake = makeProvider({ id: 'anthropic', generate: resolves('paid', usage) });
+    const { options, trace } = makeOptions({ costTracker: new CostTracker(overlay) });
+    const chain = new FallbackChain([entry(fake, 'claude-opus-4-8')], options);
+    await expect(chain.generate(userReq)).rejects.toBeInstanceOf(LlmProviderError);
+    expect(trace).toHaveLength(1);
+    expect(trace[0]).toMatchObject({
+      providerInvoked: true,
+      contentReceived: true,
+      outcome: 'failed',
+      usage: { inputTokens: 5, outputTokens: 6 },
+    });
+    expect(trace[0]?.cost).toBeUndefined();
+    expect(usage.inputTokens).toBe(999);
+    expect(Number.isNaN(usage.outputTokens)).toBe(true);
+  });
 });

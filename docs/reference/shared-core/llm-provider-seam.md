@@ -947,8 +947,9 @@ followed by each authored `fallback_chain` entry:
   next model still needs, so only the token goes.
 - `AttemptRecord` carries chain-owned `providerInvoked`, `contentReceived` and `customEndpoint`
   independently of `LlmError`. `providerInvoked` becomes true immediately before calling the
-  provider's `generate` or `stream` method. Local cap preparation, pre-attempt hooks, credential
-  resolution, cancellation before invocation and deadline setup failures keep it false. Core uses
+  already-resolved and receiver-bound `generate` or `stream` method. Local cap preparation, pre-attempt
+  hooks, credential resolution, cancellation before invocation, deadline setup and method lookup
+  failures keep it false. Core uses
   this boundary with or without a budget governor; a failed record alone does not prove invocation.
   Untyped preparation/provider exceptions use a fixed `unknown provider failure` diagnostic and
   retain the original only as a non-public cause. Typed provider errors and engine control-flow
@@ -958,7 +959,11 @@ followed by each authored `fallback_chain` entry:
   status **429, 400, 401, 402, 403, 404, 413 or 422**. Custom, missing or uncertain evidence, other
   statuses, transport failures and timeouts retain conservative commitment. Existing proven
   pre-provider failures still release. Accounting failures after a resolved generation use a fixed
-  non-retryable `unknown` error; a consumer observer exception propagates once.
+  non-retryable `unknown` error and preserve a detached schema-valid usage copy that also passes the
+  cost tracker's safe-integer checks, even if pricing fails. A throwing usage accessor is recorded
+  without invented quantities; the response usage property is read once. No priced amount is invented.
+  A consumer observer exception propagates once outside accounting guards. Hostile exception
+  reflection cannot replace an untyped failure's original cause or omit its attempt record.
 - Surface **per-attempt usage** to the injected `CostTracker` (against that
   attempt's model) so cost stays accurate across a failover, and report each
   attempt (succeeded / failed / skipped) via an `onAttempt` observer so the

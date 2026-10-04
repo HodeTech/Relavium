@@ -135,3 +135,26 @@ corrections to EA2's existing truthful-usage and provider-engagement rules, not 
 financial policy. The canonical contracts are
 [agent-session-spec.md](../reference/contracts/agent-session-spec.md) and
 [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md).
+
+
+### Throwable presentation, method lookup and generated usage — 2026-10-04
+
+Fresh complete review reproduces three remaining EA2 implementation gaps. Hostile prototype
+reflection during session error presentation suppresses the terminal and replaces the original
+throwable; provider-method getters fail before invocation but are counted as invoked; a valid
+non-streaming usage record disappears when host pricing fails. The engaged slot in the reflection
+case already remains consumed; this correction does not claim it was refunded.
+
+Session presentation now guards prototype and diagnostic inspection after canonical accounting,
+then emits a fixed raw terminal and rethrows the original value if classification cannot complete.
+The chain resolves and binds the provider method before stamping invocation, preserving its receiver.
+Generated usage is read once and a detached schema-valid copy passes the existing safe-integer
+arithmetic guard before being retained on pricing failure; no cost or invalid quantities are invented.
+Exception reflection in chain normalization cannot replace the original non-public cause or suppress
+its attempt record. Consumer observers remain outside provider/accounting guards.
+
+These repair existing usage, engagement and diagnostic guarantees without changing capability,
+approval or financial policy. The canonical contracts remain
+[agent-session-spec.md](../reference/contracts/agent-session-spec.md) and
+[llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md). Complete fresh corrective
+review is required before the group is accepted.

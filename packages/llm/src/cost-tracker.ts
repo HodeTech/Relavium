@@ -155,12 +155,12 @@ export function worstCaseRates(p: ModelPricing): Rates {
  */
 /**
  * Reject a `Usage` that cannot be accounted (#198). Every token/unit count must be a finite, non-negative,
- * safe integer — the same shape `UsageSchema` pins at the seam, re-asserted at the arithmetic.
+ * safe integer — the seam integer shape is strengthened to exact arithmetic here.
  *
  * `Number.isSafeInteger` rather than `>= 0`: beyond 2^53 integer arithmetic stops being exact, so a cumulative
  * total built from such a value is already wrong before any cap compares against it.
  */
-function assertAccountableUsage(modelId: string, usage: Usage): void {
+export function assertAccountableUsage(modelId: string, usage: Usage): void {
   const counts: readonly (readonly [string, number | undefined])[] = [
     ['inputTokens', usage.inputTokens],
     ['outputTokens', usage.outputTokens],
