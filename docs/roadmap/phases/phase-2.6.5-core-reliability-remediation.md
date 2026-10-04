@@ -3336,3 +3336,11 @@ SDK integration decision; [Proposed ADR-0102](../../decisions/0102-a-measured-re
 instead selects inert non-cap data with the existing native-cap exception, unchanged provider methods
 and an explicit candidate binding/stream/media handoff. It requires maintainer approval after fresh
 draft reviews. **No dependent ownership implementation is authorized; other correction groups proceed.**
+
+**ADR-0102 proposal round 1 — 2026-10-04.** Both fresh static reviewers find that independent copies
+of shared inert references can change Gemini's actual converter body. The revision requires iterative
+memoized capture and graph-preserving mutable working copies. It also makes incoming measured-plan
+validation precede projection replacement, retaining captured serializer/ceiling authority.
+[The complete round 1 record](../../reviews/2026-10-04T12-21-41-w7-adr-0102-round-1-review.md)
+qualifies parent-only offline SDK evidence and verifies every released sealed entry. **Fresh complete
+draft round 2 and maintainer approval remain required; the actual ownership HIGH stays open.**

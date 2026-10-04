@@ -197,6 +197,9 @@ added.
 - [2026-10-04 — W7 post-PR rendering correction, round 2](2026-10-04T12-00-00-w7-rendering-round-2-review.md):
   fresh independent reviews accept the complete scoped correction; other systematic findings and W7 remain open.
 
+- [2026-10-04 — W7 ADR-0102 proposal, round 1](2026-10-04T12-21-41-w7-adr-0102-round-1-review.md):
+  SDK alias parity and incoming cap-plan ordering corrected in the proposal; fresh round 2 and maintainer approval required.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

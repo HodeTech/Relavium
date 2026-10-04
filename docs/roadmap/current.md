@@ -231,10 +231,11 @@ merged too (PR #85, 2026-08-28).
 > W7 register items remain open.
 
 > **Request-ownership decision preflight — 2026-10-04.** [Proposed ADR-0102](../decisions/0102-a-measured-request-owns-its-inert-data-through-egress.md)
-> closes the measured-to-sent alias gap through one owned inert construction and existing candidate
+> would close the measured-to-sent alias gap through one owned inert construction and existing candidate
 > cap authority. It deliberately narrows non-cap opaque inputs and requires maintainer approval before
-> dependent implementation. Fresh draft reviews precede that decision; independent corrective work
-> continues. The ownership HIGH remains open.
+> dependent implementation. [Draft round 1](../reviews/2026-10-04T12-21-41-w7-adr-0102-round-1-review.md)
+> corrects SDK shared-reference parity and incoming measured-plan ordering. Fresh complete round 2
+> precedes that decision; independent corrective work continues. The ownership HIGH remains open.
 
 ## Execution order — Phase 2.5.5 + Phase 2.6 (temporary)
 
