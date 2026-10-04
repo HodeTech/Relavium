@@ -118,18 +118,30 @@ and the `W3` live blocker with it, while its §3 turned out to have shipped in `
 number.
 
 **`W7` is unblocked (2026-09-14).** The maintainer settled its open decisions, and four ADRs record them, all
-**Accepted** with their implementation staged in `W7`:
+**Accepted**. Implementation is in progress on `development`; the complete step/review status is
+[recorded in the roadmap](docs/roadmap/current.md):
 
 - [ADR-0095](docs/decisions/0095-what-an-agent-session-remembers-across-turns.md) decides that a session
   persists the *structure* of its tool history and never its content, defers carrying tool history into the
-  model's context, and implements the authored `memory` policy — which stays inert until `W7` lands.
+  model's context, and implements the authored `memory` policy. Structural transcript/export, policy
+  projection and session effect privacy are implemented in accepted Steps 2–5; carrying stays deferred.
 - [ADR-0096](docs/decisions/0096-a-request-is-measured-before-it-is-sent.md) decides that a request is measured
   before it is sent, that a context overflow is classified and recovered only before any tool runs, and that input
-  is priced. Until `W7` lands, the estimate still prices output only.
+  is priced. Step 6 implements per-request input/output admission under the accepted shared reservation
+  rules; live-captured overflow classification and measured/recovery compaction remain Steps 7–8.
 - [ADR-0097](docs/decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) decides that a budget
-  approval grants a dispatch-owned, shown, durable allowance. Until `W7` lands, an approved step still runs uncapped.
+  approval grants a dispatch-owned, shown, durable allowance. Steps 9–10 implement and accept the
+  governor/debit and strict replay barrier; Step 11's CLI surface is accepted after three independent review rounds.
 - [ADR-0098](docs/decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md) decides that a session's
-  effect row holds no tool result and never replays.
+  effect row holds no tool result and never replays. Accepted Steps 2–4 implement durable identities,
+  disclosure/retention and qualified physical clearing; the canonical at-rest security sitting states
+  the busy-WAL and pre-upgrade freed-page limits.
+
+Supplemental [ADR-0099](docs/decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md),
+[ADR-0100](docs/decisions/0100-budget-authorization-is-durable-state-with-a-replay-barrier.md) and
+[ADR-0101](docs/decisions/0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md)
+were accepted on 2026-10-02 after maintainer review. Acceptance of completed steps does not close the
+six W7 register items or replace the live provider evidence required for Steps 7–8.
 
 The first six review rounds shaped these ADRs, and they surfaced two shipping defects, opened as `CR-96` and
 `CR-97`, both open, non-deferrable and scheduled into `W7`.

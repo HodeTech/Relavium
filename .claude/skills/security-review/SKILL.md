@@ -1,13 +1,17 @@
 ---
 name: security-review
-description: Run the binding Relavium security pass over a diff/branch — keys never leave the keychain or reach the frontend/logs, SSRF on custom provider base URLs, the run_command sandbox, prompt-injection posture, dependency provenance, and never hand-roll crypto. USE FOR: any change touching keys, the keychain bridge, IPC, network/base-URL handling, the command sandbox, prompt/tool-call construction, the DB encryption path, or a new dependency. DO NOT USE FOR: a general correctness review (use code-review) or implementing the change (use implement-task).
+description: Run the binding Relavium security pass over a diff/branch — local provider-key custody and host-side resolution, no raw provider key in the frontend/logs, SSRF on custom provider base URLs, the run_command sandbox, prompt-injection posture, dependency provenance, and never hand-roll crypto. USE FOR: any change touching keys, the keychain bridge, IPC, network/base-URL handling, the command sandbox, prompt/tool-call construction, the DB encryption path, or a new dependency. DO NOT USE FOR: a general correctness review (use code-review) or implementing the change (use implement-task).
 ---
 
 ## Purpose
 
 Apply [security-review.md](../../../docs/standards/security-review.md) as an explicit gate.
-Relavium is local-first and secure-by-default: secrets live in the OS keychain and never
-touch disk, logs, or the frontend ([ADR-0006](../../../docs/decisions/0006-os-keychain-for-api-keys.md)).
+Relavium is local-first and secure-by-default: locally stored provider keys belong in the OS
+keychain and must not be persisted in history/config, logs or the frontend
+([ADR-0006](../../../docs/decisions/0006-os-keychain-for-api-keys.md)). This key-custody rule is
+not a claim that retained user/tool content contains no sensitive data: the CLI history database
+is unencrypted, protected by OS permissions, with its sitting recorded in
+[security-review.md](../../../docs/standards/security-review.md#sitting-historydb-at-rest--cr-71-cr-97-2026-10-02).
 This pass uses a STRIDE-lite lens plus a concrete checklist to confirm those guarantees hold
 in the diff. It cites the canonical secret-handling flow in
 [keychain-and-secrets.md](../../../docs/reference/desktop/keychain-and-secrets.md) — it does
@@ -46,7 +50,8 @@ encryption (SQLCipher) path, or a new third-party dependency. When in doubt, run
      instruction, or can sandboxed code reach ambient authority?
    - **Denial of service** — can a hung provider or runaway sandbox pin a worker open?
 
-3. **Keys and secrets.** Confirm keys live only in the OS keychain and are resolved at call
+3. **Keys and secrets.** Confirm locally persisted provider keys live only in the OS keychain
+   and raw keys are resolved at call
    time, **host-aware** per [ADR-0018](../../../docs/decisions/0018-desktop-execution-and-rust-egress.md):
    on the **desktop**, the WebView adapter passes only a key *reference* to the Rust
    `llm_stream` command, which reads the actual key from the keychain and attaches the
@@ -56,9 +61,11 @@ encryption (SQLCipher) path, or a new third-party dependency. When in doubt, run
    - No key in a Tauri IPC payload to the WebView, a Zustand store, a React prop,
      localStorage, or an IPC return value — the frontend learns only *that* a provider is
      configured, and the WebView adapter holds only a key *reference*, never the raw key.
-   - No plaintext at rest: no key in a config file, a committed `.env`, a `.relavium.yaml`,
-     a log, or an unencrypted DB column (the DB is SQLCipher; secrets still belong in the
-     keychain).
+   - No locally managed provider key in a config file, a committed `.env`, a `.relavium.yaml`,
+     a log or a DB column. The desktop SQLCipher posture is distinct from the CLI's unencrypted
+     `history.db` with `0600`/`0700` OS permissions
+     ([ADR-0050](../../../docs/decisions/0050-cli-history-db-at-rest-posture.md)). Audit retained
+     user content, event copies and run tool results separately; key custody does not erase them.
    - No key interpolated into an error message or a `node:failed`/`run:failed` event.
    - **Desktop Rust egress (ADR-0018).** If the diff touches the `llm_stream` Tauri command
      or the WebView adapter's transport, confirm: the WebView passes a `{ providerId, keyId }`
