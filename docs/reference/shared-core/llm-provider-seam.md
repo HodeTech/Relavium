@@ -963,7 +963,8 @@ followed by each authored `fallback_chain` entry:
   non-retryable `unknown` error and preserve a detached schema-valid usage copy that also passes the
   cost tracker's safe-integer checks, even if pricing fails. Required counts cannot be absent. One
   owned, validated, frozen quantity snapshot feeds pricing, attempt records and the generated result;
-  streamed stop usage is captured before yielding to consumer readiness or notification callbacks.
+  the held streamed terminal owns stop reason and usage, or its detached error diagnostic, before
+  the grammar verifier resumes provider code to confirm EOF and before consumer callbacks.
   Cache and media quantities are included. The direct `CostTracker` entry point owns its input before
   consulting host pricing too. A pricing failure with trustworthy quantities explicitly marks its
   record `priced: false`; its realized zero placeholder never claims a complete price, and the
@@ -972,10 +973,13 @@ followed by each authored `fallback_chain` entry:
   Typed provider diagnostics are detached and validated inside guarded normalization, including
   nested fields. The original cause remains private. Hostile prototype inspection during pricing or
   core cause classification cannot replace that cause; opaque causes follow normal turn mapping.
-  A consumer observer exception propagates once outside provider and accounting guards. Core retains
-  its exact attempt-observer provenance through generated-result handling; throwing a provider error
-  class from that observer does not make a successful paid call retryable. Genuine provider failures
-  still enter provider classification. An admission
+  Every attempt diagnostic remains frozen before observer delivery and retry decisions, including
+  locally synthesized failures, cancellation and commitment decoration/removal; causes remain private
+  opaque identities. A consumer observer exception propagates once outside provider and accounting
+  guards. Core carries its exact external observer origin through generated-result handling and the
+  runner. Throwing a genuine provider, turn or budget error class from that observer authorises neither
+  a paid retry nor a budget gate. Genuine provider and internal admission/money failures retain their
+  existing handling. An admission
   stays owned until its release or settlement succeeds, so a diagnostic failure reaches conservative
   cleanup rather than losing the lease.
 - Surface **per-attempt usage** to the injected `CostTracker` (against that

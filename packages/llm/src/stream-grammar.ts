@@ -9,18 +9,20 @@
  * gateway. A rule enforced only inside implementations we happen to own is a coincidence, not an obligation.
  * This is the trust boundary; the adapters are defence in depth.
  *
- * **Scope: ORDER, not shape.** Every chunk is assumed to satisfy `StreamChunkSchema` — that is a separate
+ * **Scope: ordering and terminal ownership.** Every chunk is assumed to satisfy `StreamChunkSchema` — that is a separate
  * seam obligation the conformance suite enforces. Parsing every chunk of every token stream through Zod is a
  * real per-chunk cost, and unlike the ordering check it is not a branch. A malformed chunk SHAPE is a bug
  * the conformance suite finds; well-shaped chunks in an impossible order are what silently become a wrong
- * answer, and that is what this is for.
+ * answer, and that is what this is for. The one held terminal additionally captures accountable usage or
+ * classified diagnostic fields before the confirming read resumes provider code; no per-token parse is added.
  */
 
-import { makeLlmError } from './llm-error.js';
+import { snapshotAccountableUsage } from './cost-tracker.js';
+import { makeLlmError, snapshotLlmError } from './llm-error.js';
 import type { LlmError, ProviderId, StreamChunk } from './types.js';
 
 /** `stop` and `error` are the two terminal arms; everything else commits the stream (ADR-0082 §1). */
-function isTerminal(chunk: StreamChunk): boolean {
+function isTerminal(chunk: StreamChunk): chunk is Extract<StreamChunk, { type: 'stop' | 'error' }> {
   return chunk.type === 'stop' || chunk.type === 'error';
 }
 
@@ -35,7 +37,7 @@ function truncated(provider: ProviderId, message: string): LlmError {
 /**
  * Wrap a provider's stream so the caller sees a grammar-checked one.
  *
- * Yields the source's chunks unchanged while they are well-formed. On a violation it yields a classified
+ * Yields non-terminal chunks unchanged and owns the held terminal's semantic fields. On a violation it yields a classified
  * `error` chunk **instead of** whatever the source was doing, and stops — so a downstream consumer that
  * already knows how to handle an `error` terminal needs no new branch.
  *
@@ -72,6 +74,7 @@ function truncated(provider: ProviderId, message: string): LlmError {
 export async function* verifyStreamGrammar(
   source: AsyncIterable<StreamChunk>,
   provider: ProviderId,
+  model: string = provider,
 ): AsyncGenerator<StreamChunk, void> {
   let held: StreamChunk | undefined;
   let sawAnyChunk = false;
@@ -110,7 +113,16 @@ export async function* verifyStreamGrammar(
       }
       sawAnyChunk = true;
       if (isTerminal(chunk)) {
-        held = chunk; // …not yielded yet: one more read has to confirm it was last
+        // The confirming read resumes provider code, which can still mutate its original quantities.
+        // Own the stop before that handoff; later pricing and consumers receive this same observation.
+        held =
+          chunk.type === 'stop'
+            ? Object.freeze({
+                type: 'stop',
+                stopReason: chunk.stopReason,
+                usage: snapshotAccountableUsage(model, chunk.usage),
+              })
+            : Object.freeze({ type: 'error', error: snapshotLlmError(chunk.error) });
         continue;
       }
       yield chunk;

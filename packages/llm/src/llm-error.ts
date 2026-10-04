@@ -1,4 +1,10 @@
-import type { LlmError, LlmErrorKind, ProviderId } from './types.js';
+import { LlmErrorSchema, type LlmError, type LlmErrorKind, type ProviderId } from './types.js';
+
+/** Own validated diagnostic fields before returning control to a provider or attempt observer. */
+export function snapshotLlmError(error: unknown): LlmError {
+  // Cause remains an opaque private identity; copying or freezing it would invoke host code.
+  return Object.freeze(LlmErrorSchema.parse(error));
+}
 
 /**
  * `LlmError` classification — the contract the `FallbackChain` (1.K) narrows on (1.I). Every adapter

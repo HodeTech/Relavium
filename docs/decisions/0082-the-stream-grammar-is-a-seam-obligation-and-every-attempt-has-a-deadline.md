@@ -377,3 +377,16 @@ Part of the change, not follow-ups:
   messages are better attributed.
 - **`generateMedia()` submission stays unbounded** until its own item lands. Named in §10 rather than papered
   over by a title that would imply otherwise.
+
+## 2026-10-05 implementation correction — held terminal ownership
+
+The confirming provider read can mutate the raw terminal already held by the grammar verifier.
+Independent W7 review reproduces revised token/cache/media quantities, stop reason and fatal
+diagnostic, including an unintended retry after a held auth error. The verifier now captures the
+stop root and validated usage or the error root and detached classified diagnostic before this
+read resumes provider code. Grammar ordering, duplicate-terminal refusal, cancellation and
+confirming-teardown handling keep their existing semantics; non-terminal chunks remain unchanged.
+Attempt diagnostics also stay frozen through commitment decoration/removal and observer delivery.
+This repairs the existing observed-terminal/retry obligation, with no request ownership policy.
+[Permanent controls](../../packages/core/src/engine/terminal-observer-boundary.test.ts) exercise
+actual Session, Governor, MoneyDurability and direct fallback consequences. Historical text is preserved.

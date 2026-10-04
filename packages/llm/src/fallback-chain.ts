@@ -9,9 +9,9 @@ import {
   type DeadlineScope,
   type SetDeadlineTimer,
 } from './attempt-deadline.js';
-import { isRetryable, LlmProviderError, makeLlmError } from './llm-error.js';
+import { isRetryable, LlmProviderError, makeLlmError, snapshotLlmError } from './llm-error.js';
 import { verifyStreamGrammar } from './stream-grammar.js';
-import { LlmErrorSchema, ProviderIdSchema } from './types.js';
+import { ProviderIdSchema } from './types.js';
 import type {
   LlmError,
   LlmMessage,
@@ -367,10 +367,10 @@ function backoffDelayMs(
  * which turns a convention into an invariant.
  */
 function disown(error: LlmError): LlmError {
-  if (error.contentCommitted === undefined) return error;
+  if (error.contentCommitted === undefined) return Object.freeze(error);
   const rest = { ...error };
   delete rest.contentCommitted;
-  return rest;
+  return Object.freeze(rest);
 }
 
 /**
@@ -382,7 +382,7 @@ function disown(error: LlmError): LlmError {
  * deliberate suppression from a bug; `contentCommitted: true` says which and why.
  */
 function committed(error: LlmError): LlmError {
-  return { ...error, contentCommitted: true };
+  return Object.freeze({ ...error, contentCommitted: true });
 }
 
 /**
@@ -720,12 +720,14 @@ export class FallbackChain {
         folded = { unpriced: false };
       }
     } catch (cause) {
-      const error = makeLlmError({
-        provider: entry.provider.id,
-        kind: 'unknown',
-        message: 'cost accounting failed after a successful generated attempt',
-        cause,
-      });
+      const error = Object.freeze(
+        makeLlmError({
+          provider: entry.provider.id,
+          kind: 'unknown',
+          message: 'cost accounting failed after a successful generated attempt',
+          cause,
+        }),
+      );
       this.#emit({
         ...receivedRecord,
         ...(knownUsage === undefined ? {} : { usage: knownUsage, priced: false }),
@@ -826,7 +828,7 @@ export class FallbackChain {
         throw new LlmProviderError(this.#cancelledError(entry.provider.id));
       }
       record = { ...record, providerInvoked: true };
-      const verified = verifyStreamGrammar(stream(request, key), entry.provider.id);
+      const verified = verifyStreamGrammar(stream(request, key), entry.provider.id, entry.model);
       // Manual iteration, not `for await`: every `next()` is raced against the ABSOLUTE deadline. A
       // `for await` can only be bounded by a signal, and a signal is a request the provider may ignore.
       iterator = verified[Symbol.asyncIterator]();
@@ -1091,7 +1093,7 @@ export class FallbackChain {
   }
 
   #cancelledError(provider: ProviderId): LlmError {
-    return makeLlmError({ provider, kind: 'cancelled', message: 'request aborted' });
+    return Object.freeze(makeLlmError({ provider, kind: 'cancelled', message: 'request aborted' }));
   }
 
   /**
@@ -1199,7 +1201,7 @@ export class FallbackChain {
     try {
       if (caught instanceof LlmProviderError) {
         // Detach and validate nested diagnostics while reflection is still guarded. Cause stays private.
-        return Object.freeze(LlmErrorSchema.parse(caught.llmError));
+        return snapshotLlmError(caught.llmError);
       }
       if (caught instanceof InvalidOutputCapPlanError) {
         return makeLlmError({
@@ -1342,6 +1344,9 @@ export class FallbackChain {
   }
 
   #emit(record: AttemptRecord): void {
+    // Provider snapshots, locally synthesized failures and cancellation diagnostics all pass this
+    // observer boundary. Preserve their classification before an observer can change retry policy.
+    if (record.error !== undefined) Object.freeze(record.error);
     this.#options.onAttempt?.(record);
   }
 }
