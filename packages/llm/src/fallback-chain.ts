@@ -707,11 +707,13 @@ export class FallbackChain {
     const receivedRecord = { ...record, contentReceived: true };
     let usage: Usage | undefined;
     let knownUsage: Usage | undefined;
-    let folded: FoldedUsage;
+    let folded: FoldedUsage | undefined;
+    let captured: LlmResult;
     try {
       // Read the custom result once. Capture valid quantities before a host pricing callback can
       // fail or mutate its own response; never copy invalid counts into failed-attempt accounting.
-      usage = result.usage;
+      const resultUsage = result.usage;
+      usage = resultUsage;
       if (usage !== undefined) {
         knownUsage = snapshotAccountableUsage(entry.model, usage);
         usage = knownUsage;
@@ -719,18 +721,35 @@ export class FallbackChain {
       } else {
         folded = { unpriced: false };
       }
+      // Own the result surface before any observer runs. A getter on a paid provider result is
+      // not another provider failure, and must never grant node retry or budget-gate authority.
+      captured = {
+        content: result.content,
+        stopReason: result.stopReason,
+        usage: knownUsage ?? resultUsage,
+        raw: result.raw,
+      };
     } catch (cause) {
       const error = Object.freeze(
         makeLlmError({
           provider: entry.provider.id,
           kind: 'unknown',
-          message: 'cost accounting failed after a successful generated attempt',
+          message:
+            folded === undefined
+              ? 'cost accounting failed after a successful generated attempt'
+              : 'generated result access failed after provider completion',
           cause,
         }),
       );
       this.#emit({
         ...receivedRecord,
-        ...(knownUsage === undefined ? {} : { usage: knownUsage, priced: false }),
+        ...(knownUsage === undefined
+          ? {}
+          : {
+              usage: knownUsage,
+              ...(folded === undefined || folded.unpriced ? { priced: false } : {}),
+              ...(folded?.cost === undefined ? {} : { cost: folded.cost }),
+            }),
         outcome: 'failed',
         error,
       });
@@ -741,10 +760,7 @@ export class FallbackChain {
     else this.#emitFolded(receivedRecord, usage, folded);
     return {
       status: 'success',
-      result:
-        usage === undefined
-          ? result
-          : { content: result.content, stopReason: result.stopReason, usage, raw: result.raw },
+      result: captured,
     };
   }
 

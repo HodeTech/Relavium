@@ -390,3 +390,20 @@ Attempt diagnostics also stay frozen through commitment decoration/removal and o
 This repairs the existing observed-terminal/retry obligation, with no request ownership policy.
 [Permanent controls](../../packages/core/src/engine/terminal-observer-boundary.test.ts) exercise
 actual Session, Governor, MoneyDurability and direct fallback consequences. Historical text is preserved.
+
+## 2026-10-05 implementation correction — generated projection before notification
+
+The ninth independent W7 review verifies that generated content/raw/stop-reason getters can fail
+after successful paid notification and enter node retry classification. The chain now reads those
+properties once into a plain result inside guarded post-response projection, before attempt observer
+delivery. A failure preserves already folded usage/price on one failed record and carries a fixed
+non-retryable diagnostic with private cause. Core admits budget/money cause authority only from the
+exact current pre-attempt boundary; provider, pricing and observer error classes cannot fabricate
+that origin. Stable provider failures and true pre-egress refusals retain their semantics.
+
+[Generated and later-round controls](../../packages/core/src/engine/agent-turn-origin-boundary.test.ts),
+[actual accounting-cause controls](../../packages/core/src/engine/accounting-cause-provenance.test.ts)
+and [held terminal controls](../../packages/llm/src/held-terminal-controls.test.ts) exercise this repair.
+The canonical [LLM seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter)
+qualifies the result-surface ownership scope; deep whole-request ownership remains Proposed ADR-0102.
+Historical text is preserved.

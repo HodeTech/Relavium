@@ -977,9 +977,16 @@ followed by each authored `fallback_chain` entry:
   locally synthesized failures, cancellation and commitment decoration/removal; causes remain private
   opaque identities. A consumer observer exception propagates once outside provider and accounting
   guards. Core carries its exact external observer origin through generated-result handling and the
-  runner. Throwing a genuine provider, turn or budget error class from that observer authorises neither
-  a paid retry nor a budget gate. Genuine provider and internal admission/money failures retain their
-  existing handling. An admission
+  runner, including later tool rounds and host clock/backoff callbacks. Throwing a genuine provider,
+  turn, budget or money error class from that observer authorises neither a paid retry, a budget gate
+  nor a different ledger failure-writer owner. Core unwraps a private cause as admission/money control
+  flow only when it is the exact throwable retained at the current pre-attempt boundary; matching a
+  public error class alone is insufficient. Provider and pricing causes follow their guarded chain
+  diagnostic. Genuine pre-attempt failures retain their existing handling. Generated content,
+  stop reason and raw response properties are each read once into a plain result before observer
+  delivery, inside the protected post-response projection. A projection fault preserves already
+  folded usage/price on its single failed record and has a fixed non-retryable diagnostic. This
+  owns the result surface, not a deep snapshot of all content or whole-request ownership. An admission
   stays owned until its release or settlement succeeds, so a diagnostic failure reaches conservative
   cleanup rather than losing the lease.
 - Surface **per-attempt usage** to the injected `CostTracker` (against that
