@@ -170,7 +170,15 @@ budget refusal retain their existing handling. Controller-factory failures in se
 user commands release running/abort state and reject the original value without classified delivery.
 A throwing turn-start notification receives the same cleanup before any provider call. Terminal
 cancellation keeps precedence; a refused initialization consumes no provider-engaged slot.
-Compaction clears its running/abort state on every exit.
+Compaction clears its running/abort state on every exit. If a trusted controller factory raises
+abort or cancel before returning its controller, the returned signal carries that recorded intent
+before work begins; terminal cancellation permits no later start/compaction notification or command.
+A successful commitment flush rechecks terminal cancellation before installing the reply or
+publishing completion. Known usage, cost and provider-engaged turn consumption remain accounted.
+Compaction estimates the prospective summary/history projection before installing it and rechecks
+terminal cancellation after the provider-supplied estimator. A cancellation during that estimator
+retains the previous history and summary. Ordinary estimator failure remains best-effort; the existing
+EA7 late-abort no-op after successful summarisation remains unchanged.
 
 ## Session context
 

@@ -218,3 +218,15 @@ flush, with successful canonical usage and hard-cap consumption unchanged. The s
 cleanup covers user-command initialization. No new host capability or financial policy is introduced.
 The canonical [session contract](../reference/contracts/agent-session-spec.md) states delivery and
 throwing-sink limits; historical text is preserved.
+
+## 2026-10-05 implementation correction — session cancellation at fallible host handoffs
+
+The eleventh independent W7 review reproduces completion after terminal cancellation during an
+acknowledged commitment flush and lost interrupt intent raised inside a custom controller factory.
+The shared initializer carries recorded intent onto the returned signal; send, compact and command
+refuse further work after terminal cancellation. Successful flush rechecks terminal ownership.
+Compaction measures prospective state before installing it and rechecks estimator cancellation.
+Known paid quantities and turn consumption remain intact, as does EA7's post-success late-abort
+no-op. First-party controller factories are pure; factory reentrancy is a supported custom-host
+boundary. These are implementation repairs to the existing cancellation contract, with no new
+capability or policy. See the [session contract](../reference/contracts/agent-session-spec.md).

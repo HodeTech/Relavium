@@ -768,6 +768,9 @@ export class AgentSession {
     try {
       const abort = this.#deps.newAbortController();
       this.#abort = abort;
+      // A trusted host can cancel/abort synchronously while constructing the controller. Carry
+      // that already-recorded intent onto the returned signal before any operation can consume it.
+      if (this.#statusIs('cancelled') || this.#abortingTurn) abort.abort();
       return abort;
     } catch (error) {
       this.#releaseTurnController();
@@ -813,6 +816,10 @@ export class AgentSession {
     // `#abort?.abort()` would be a no-op while still setting #abortingTurn, and a later GENUINE failure would
     // then be misclassified as `aborted`. The cancel-bail + cap block release it on their early returns.
     const abort = this.#armTurnController();
+    if (this.#statusIs('cancelled')) {
+      this.#releaseTurnController();
+      return;
+    }
     try {
       this.#deps.emit({ type: 'session:turn_started' });
     } catch (error) {
@@ -888,6 +895,12 @@ export class AgentSession {
       } catch (error) {
         lifecycleObserverFailure = { error };
         throw error;
+      }
+      // Durability acknowledgement is another asynchronous handoff. Terminal cancellation owns
+      // the session even when the paid result and its accounting are already known.
+      if (this.#statusIs('cancelled')) {
+        this.#messages.length = startLength;
+        return;
       }
       if (result.text.length > 0) {
         this.#messages.push({ role: 'assistant', content: [{ type: 'text', text: result.text }] });
@@ -1178,6 +1191,10 @@ export class AgentSession {
   async runUserCommand(command: string, args: readonly string[]): Promise<UserCommandOutcome> {
     this.#assertSendable(); // started + idle — a `!` never runs concurrently with a model turn
     const abort = this.#armTurnController(); // so cancel()/abort() can interrupt a long-running command
+    if (this.#statusIs('cancelled')) {
+      this.#releaseTurnController();
+      return { kind: 'cancelled' };
+    }
     this.#userCommandSeq += 1; // disjoint negative slots under the next model turn key
     const toolCall: ToolCallPart = {
       type: 'tool_call',
@@ -1274,11 +1291,15 @@ export class AgentSession {
   }
 
   /** Compact/trim keep a suffix; rebase only whole proven turns, preserving legacy gaps as gaps. */
-  #replaceHistory(kept: readonly LlmMessage[]): void {
-    const dropped = this.#messages.length - kept.length;
-    const spans = this.#completedTurnSpans
+  #rebasedHistorySpans(keptMessageCount: number): CompletedTurnSpan[] {
+    const dropped = this.#messages.length - keptMessageCount;
+    return this.#completedTurnSpans
       .filter((span) => span.start >= dropped)
       .map((span) => ({ start: span.start - dropped, end: span.end - dropped }));
+  }
+
+  #replaceHistory(kept: readonly LlmMessage[]): void {
+    const spans = this.#rebasedHistorySpans(kept.length);
     this.#messages.length = 0;
     this.#messages.push(...kept);
     this.#completedTurnSpans.length = 0;
@@ -1304,6 +1325,10 @@ export class AgentSession {
     if (!plan.ok) return { kind: 'failed', message: plan.message };
 
     const abort = this.#armTurnController();
+    if (this.#statusIs('cancelled')) {
+      this.#releaseTurnController();
+      return { kind: 'cancelled' };
+    }
     let observerFailure: { readonly error: unknown } | undefined;
     const observeCompactionEvent = (emit: () => void): void => {
       try {
@@ -1364,9 +1389,19 @@ export class AgentSession {
       // **Marked here, at the moment it leaves the model.** Everything downstream — persistence, resume,
       // reseat, the request projection — carries the brand, so a future call site cannot put it somewhere
       // it does not belong without unwrapping it and saying so.
-      this.#compactionSummary = markUntrusted(summary);
+      const ownedSummary = markUntrusted(summary);
+      // Measure the prospective projection before installing it. The provider-supplied estimator
+      // may cancel synchronously; that terminal must leave the old history and summary intact.
+      const tokensAfter = this.#estimateTokens(
+        this.#systemPrompt(),
+        buildTurnMessages(ownedSummary, split.kept, {
+          ...(this.#memory === undefined ? {} : { memory: this.#memory }),
+          completedTurnSpans: this.#rebasedHistorySpans(split.kept.length),
+        }),
+      );
+      if (this.#statusIs('cancelled')) return { kind: 'cancelled' };
+      this.#compactionSummary = ownedSummary;
       this.#replaceHistory(split.kept);
-      const tokensAfter = this.#estimateContextTokens();
       observeCompactionEvent(() =>
         this.#deps.emit({
           type: 'session:compacted',
