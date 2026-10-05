@@ -295,3 +295,6 @@ Record its model, effort and review scope in the coverage section where availabl
   lifecycle setup/provenance and nested generated-content authority corrected; 94 permanent controls
   and full checks pass. Both full reports/actual-entry audits complete; Contracts seal cache mismatch
   explicitly qualified. Fresh complete round 11 required.
+
+- [2026-10-05 — W7 systematic group 2a, round 11](2026-10-05T07-03-00-w7-systematic-group-2a-round-11-review.md):
+  cancellation handoffs, controller reentrancy and truthful deadline-cleanup accounting corrected; fresh round 12 pending.

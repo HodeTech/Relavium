@@ -3447,3 +3447,12 @@ all 3,741 actual physical entries/source/link/bootstrap pins are audited; Contra
 cache files and one directory discrepancy explicitly qualify its seal claim. **Fresh complete
 round 11 is required; group 2a, ADR-0102 approval, remaining groups, Steps 7–8/12, Sonar, W7 and
 PR #90 remain open.**
+
+**Systematic group 2a, round 11 — 2026-10-05.** [Both complete independent reviews](../../reviews/2026-10-05T07-03-00-w7-systematic-group-2a-round-11-review.md)
+verify terminal cancellation after successful durability, custom controller reentrancy and deadline
+cleanup losing known price or acquiring control authority. Scoped repairs preserve canonical usage,
+EA7 late abort and genuine money controls; 101 new core controls plus three shared disposal controls
+pass. Forced Original checks pass 23 tasks, 351 files, 8,148 tests / 12 existing skips, build six and
+isolation. Both exact final seals are independently audited; early evidence gaps remain qualified.
+**Fresh complete round 12 is required; group 2a, ADR-0102 approval, remaining groups, Steps 7–8/12,
+Sonar, W7 and draft PR #90 remain open. No additional paid generation is authorised.**
