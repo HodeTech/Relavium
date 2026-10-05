@@ -575,3 +575,14 @@ actual SQLite media-reference/CAS controls cover all four cutoffs; the reference
 logs and leases in the latter, rather than a new SQLite lease proof. The uncancellable CAS write can
 still finish with an unreferenced object. No new deadline, clock, lease policy or store-port contract
 is introduced. The canonical details remain in the [event contract](../reference/contracts/sse-event-schema.md#human-gate-suspendresume-across-the-stream).
+
+## 2026-10-05 implementation correction — shared deadline cleanup releases pending waiters
+
+The eleventh independent W7 review shows a throwing custom disarm or listener-removal callback
+skipping remaining cleanup and leaving an already racing promise pending after disposal became
+idempotent. The shared primitive now attempts both callbacks, releases and clears every waiter,
+then rethrows the first original failure; repeated disposal remains inert. The per-attempt chain
+contains that cleanup fault through truthful accounting as recorded in the dated correction to
+[ADR-0082](0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md).
+This restores the existing liveness contract without changing deadlines, grace windows or the
+resource-termination guarantee.

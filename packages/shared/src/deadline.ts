@@ -244,11 +244,21 @@ export function openDeadline(
     dispose: () => {
       if (disposed) return;
       disposed = true;
-      disarm();
-      callerSignal?.removeEventListener('abort', onCallerAbort);
+      let failure: { readonly error: unknown } | undefined;
+      try {
+        disarm();
+      } catch (error) {
+        failure = { error };
+      }
+      try {
+        callerSignal?.removeEventListener('abort', onCallerAbort);
+      } catch (error) {
+        failure ??= { error };
+      }
       // Wake anything still racing so no promise is left pending on a disposed scope.
       for (const wake of waiters) wake();
       waiters.clear();
+      if (failure !== undefined) throw failure.error;
     },
   };
 }

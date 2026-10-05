@@ -71,6 +71,47 @@ function manualTimer(): {
 
 /** A promise that never settles — an uncooperative provider, which is the case that matters. */
 const NEVER = new Promise<string>(() => undefined);
+for (const fault of ['disarm', 'listener', 'both'] as const) {
+  it(`deadline disposal ${fault} fault still releases an already waiting race and attempts all cleanup`, async () => {
+    const primary = new Error('synthetic disarm failure');
+    const secondary = new Error('synthetic listener failure');
+    const calls = { disarm: 0, remove: 0 };
+    const caller: AbortSignalLike = {
+      aborted: false,
+      addEventListener: () => undefined,
+      removeEventListener: () => {
+        calls.remove++;
+        if (fault !== 'disarm') throw secondary;
+      },
+    };
+    const scope = openDeadline(
+      120000,
+      controller,
+      () => () => {
+        calls.disarm++;
+        if (fault !== 'listener') throw primary;
+      },
+      caller,
+    );
+    let released = false;
+    void scope.race(NEVER).then(() => {
+      released = true;
+    });
+    let observed: unknown;
+    try {
+      scope.dispose();
+    } catch (error) {
+      observed = error;
+    }
+    expect(Object.is(observed, fault === 'listener' ? secondary : primary)).toBe(true);
+    expect(calls).toEqual({ disarm: 1, remove: 1 });
+    // Drain the promise-only wake path; no host clock or wall-time threshold is involved.
+    for (let index = 0; index < 4; index++) await Promise.resolve();
+    expect(released).toBe(true);
+    scope.dispose();
+    expect(calls).toEqual({ disarm: 1, remove: 1 });
+  });
+}
 describe('openDeadline (ADR-0082 §5-§7, ADR-0085 §9)', () => {
   it('CHAINS a delay above 2^31-1, because Node inverts it into an immediate fire', async () => {
     // **A governance control turning into its own bypass.** `positiveInt` has no upper bound, so an author
