@@ -654,6 +654,15 @@ export class FallbackChain {
     // `agent-turn.ts` routes an inline media-out turn (ADR-0046) through `chain.generate()`, so a hung
     // provider on that path waited forever on every surface.
     let deadline: DeadlineScope | undefined;
+    let cleanupFailure: { readonly error: unknown } | undefined;
+    const disposeDeadline = (): void => {
+      try {
+        deadline?.dispose();
+      } catch (error) {
+        cleanupFailure = { error };
+      }
+    };
+    let providerSucceeded = false;
     let outcome: GenerateAttempt;
     try {
       const prepared = prepareOutputCapRequest(
@@ -687,6 +696,7 @@ export class FallbackChain {
         throw new LlmProviderError(this.#classifyDeadline(deadline, entry.provider.id));
       }
       outcome = { status: 'success', result: raced === undefined ? await call : raced.value };
+      providerSucceeded = true;
     } catch (err) {
       const error = this.#abortAware(
         this.#errorOf(err, entry.provider.id),
@@ -695,10 +705,14 @@ export class FallbackChain {
       );
       outcome = { status: 'error', error };
     } finally {
-      deadline?.dispose();
+      // A successful response must be owned before another custom host callback can mutate it.
+      // Failed provider/admission paths still dispose even if diagnostic normalization throws.
+      if (!providerSucceeded) disposeDeadline();
     }
     // All observers run outside the provider catch, including abort/deadline/failure observations.
     if (outcome.status === 'error') {
+      // A cleanup fault is secondary to an existing provider/admission failure. Preserve its
+      // original diagnosis, refusal proof and attempt observation instead of replacing them.
       this.#emit({ ...record, outcome: 'failed', error: outcome.error });
       return outcome;
     }
@@ -731,6 +745,7 @@ export class FallbackChain {
         raw: result.raw,
       };
     } catch (cause) {
+      disposeDeadline();
       const error = Object.freeze(
         makeLlmError({
           provider: entry.provider.id,
@@ -756,7 +771,24 @@ export class FallbackChain {
       });
       return { status: 'error', error };
     }
+    disposeDeadline();
     // The observer is consumer code: its exception propagates once, outside the provider catch.
+    if (cleanupFailure !== undefined) {
+      const error = this.#deadlineCleanupError(entry.provider.id, cleanupFailure.error);
+      this.#emit({
+        ...receivedRecord,
+        ...(knownUsage === undefined
+          ? {}
+          : {
+              usage: knownUsage,
+              ...(folded.unpriced ? { priced: false } : {}),
+              ...(folded.cost === undefined ? {} : { cost: folded.cost }),
+            }),
+        outcome: 'failed',
+        error,
+      });
+      return { status: 'error', error };
+    }
     if (usage === undefined) this.#emitSuccess(receivedRecord, entry.model, undefined);
     else this.#emitFolded(receivedRecord, usage, folded);
     return {
@@ -810,6 +842,7 @@ export class FallbackChain {
   ): AsyncGenerator<StreamChunk, LlmError | undefined> {
     let usage: Usage | undefined;
     let failure: LlmError | undefined;
+    let cleanupFailure: { readonly error: unknown } | undefined;
     // Declared outside the `try` so the `finally` can dispose it on EVERY exit path — including success,
     // which is the one most likely to forget. A leaked timer holds the process awake, which on a CLI is a
     // hang the user cannot explain.
@@ -878,7 +911,11 @@ export class FallbackChain {
       // Every exit path — success, pre-content failure, surfaced failure, an early consumer `break` that
       // calls this generator's `return()`. Idempotent, so the success path below can be reached having
       // already disposed nothing.
-      deadline?.dispose();
+      try {
+        deadline?.dispose();
+      } catch (error) {
+        cleanupFailure = { error };
+      }
       // **And close the source.** Converting `for await` to manual iteration removed the language's own
       // teardown: `for await` calls `return()` on ANY abrupt completion of the body, while the hand-rolled
       // loop only did so on the deadline branch. A review measured two live leaks — a grammar VIOLATION
@@ -891,8 +928,10 @@ export class FallbackChain {
       // termination (ADR-0082 §5). `return()` on an already-completed iterator is a no-op.
       void Promise.resolve(iterator?.return?.(undefined)).catch(() => undefined);
     }
+    // An existing provider failure keeps its diagnosis and financial evidence; cleanup cannot
+    // replace it with an unrelated host exception or prevent its attempt record.
     if (failure !== undefined) return yield* this.#failAttempt(record, failure, state);
-    return yield* this.#settleUsage(entry, record, usage, state);
+    return yield* this.#settleUsage(entry, record, usage, state, cleanupFailure);
   }
 
   /**
@@ -915,9 +954,16 @@ export class FallbackChain {
     record: AttemptRecord,
     usage: Usage | undefined,
     state: StreamAttemptState,
+    cleanupFailure?: { readonly error: unknown },
   ): Generator<StreamChunk, undefined> {
     record = { ...record, contentReceived: state.committed };
     if (usage === undefined) {
+      if (cleanupFailure !== undefined) {
+        const error = this.#deadlineCleanupError(entry.provider.id, cleanupFailure.error);
+        this.#emit({ ...record, outcome: 'failed', error });
+        yield { type: 'error', error: state.committed ? committed(error) : error };
+        return undefined;
+      }
       this.#emitSuccess(record, entry.model, undefined); // nothing to fold
       return undefined;
     }
@@ -949,8 +995,31 @@ export class FallbackChain {
       yield { type: 'error', error: state.committed ? committed(error) : error };
       return undefined;
     }
+    if (cleanupFailure !== undefined) {
+      const error = this.#deadlineCleanupError(entry.provider.id, cleanupFailure.error);
+      this.#emit({
+        ...record,
+        usage,
+        ...(folded.unpriced ? { priced: false } : {}),
+        ...(folded.cost === undefined ? {} : { cost: folded.cost }),
+        outcome: 'failed',
+        error,
+      });
+      yield { type: 'error', error: state.committed ? committed(error) : error };
+      return undefined;
+    }
     this.#emitFolded(record, usage, folded);
     return undefined;
+  }
+
+  /** Cleanup is a host fault, with no authority to retry, pause or attribute a money writer. */
+  #deadlineCleanupError(provider: ProviderId, cause: unknown): LlmError {
+    return makeLlmError({
+      provider,
+      kind: 'unknown',
+      message: 'the provider attempt deadline could not be disposed',
+      cause,
+    });
   }
 
   /**

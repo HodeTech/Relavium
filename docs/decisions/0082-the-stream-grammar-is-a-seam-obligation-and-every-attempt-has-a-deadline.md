@@ -419,3 +419,16 @@ already folded known price on its single failed record. Opaque tool payloads/raw
 whole-request ownership remain outside this repair; Proposed ADR-0102 is not implemented.
 The canonical [LLM seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter)
 records that bounded scope. Historical text is preserved.
+
+## 2026-10-05 implementation correction — deadline cleanup cannot bypass attempt accounting
+
+The eleventh independent W7 review reproduces custom timer/listener cleanup throwing before attempt
+settlement, losing valid known price and fabricating retry, budget or failure-writer authority.
+The chain owns generated quantities and typed content before custom cleanup, then contains the exact
+cleanup failure until truthful settlement: a prior provider or
+admission failure stays primary; a successful invocation retains known quantities and price on one
+failed attempt record with fixed non-retryable unknown presentation and an opaque private cause.
+All shared cleanup stages are attempted before rethrowing the first original failure. Existing
+best-effort iterator closure and genuine admission/money controls remain unchanged. First-party
+native cleanup was not reproduced as faulty; no new financial policy or Request ownership is
+introduced. See the [LLM seam](../reference/shared-core/llm-provider-seam.md#the-per-attempt-deadline).

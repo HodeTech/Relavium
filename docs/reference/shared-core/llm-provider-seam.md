@@ -476,6 +476,18 @@ The window opens immediately before the seam call — after the pre-egress hook,
 re-materialization, after credential resolution. Those are Relavium's own work and must not consume the
 provider's budget.
 
+Disposal attempts timer disarm, caller-listener detach and waiter release even when a trusted host
+cleanup callback throws; the shared primitive rethrows the first original cleanup failure only
+after those stages. The chain owns generated quantities and typed content before custom cleanup, and contains a cleanup
+failure until attempt settlement. A prior provider or
+admission refusal keeps its original diagnosis and attempt record. After a successful invocation,
+valid known quantities and price still reach one failed attempt record; the cleanup fault receives
+fixed non-retryable `unknown` presentation with its original value kept as an opaque private cause.
+It cannot acquire retry, budget-gate or ledger-writer authority from its exception class. Stream
+iterator closure remains best-effort. These controls concern supported custom trusted callbacks;
+first-party native timer/listener cleanup has not been shown to throw, and resource termination
+remains outside the caller-liveness guarantee.
+
 **`protocol` is fatal but still fails over pre-content.** A provider that cannot keep the grammar will not
 keep it on the second call, so the node-retry budget must not re-dispatch — but a DIFFERENT provider may be
 well-behaved, and before any content has been shown there is nothing to lose by trying one. It maps to the
