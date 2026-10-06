@@ -12,7 +12,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { statusCommand } from '../commands/status.js';
 import { createPlainRenderer } from '../render/renderer.js';
 import { initialRunViewState, reduceRunEvent } from '../render/tui/run-view-model.js';
-import { captureIo, seedRun } from '../test-support.js';
+import { captureIo, parseNdjson, seedRun } from '../test-support.js';
 import { budgetPromptContext, budgetPromptDetails, selectBudgetGate } from './budget.js';
 import { createClackGatePrompter } from './clack-prompter.js';
 
@@ -255,4 +255,71 @@ describe('excluded allowance candidates on human surfaces (ADR-0097)', () => {
       client.sqlite.close();
     }
   });
+
+  it.each([0, 20, 'unrepresentable', 'unpriced', 'legacy'] as const)(
+    'status JSON keeps only scalar %s authority and safe recorded exclusion strings',
+    async (kind) => {
+      const client = createClient(':memory:');
+      try {
+        runMigrations(client.db);
+        await seedRun(client.db, { slug: 'display', runId: 'display-run', state: 'running' });
+        const store = createRunHistoryStore(client.db, {
+          uuid: () => 'display-auth-event',
+          now: () => 0,
+          workflow: { slug: 'display', name: 'display', definitionJson: '{}' },
+        });
+        await store.persistEvent(
+          paused(3, kind === 'legacy' ? { kind: 'legacy_no_allowance' } : allowance(kind)),
+        );
+        const { io, out } = captureIo();
+        expect(
+          await statusCommand({
+            io,
+            global: {
+              json: true,
+              color: false,
+              cwd: process.cwd(),
+              configPath: undefined,
+              verbosity: 'normal',
+            },
+            openDb: () => ({ db: client.db, close: () => {} }),
+            readTerminalOutbox: () => Promise.resolve([]),
+          }),
+        ).toBe(0);
+        const records = parseNdjson(out());
+        expect(records).toHaveLength(1);
+        const scalar =
+          typeof kind === 'number'
+            ? { kind: 'amount', microcents: kind }
+            : kind === 'legacy'
+              ? { kind: 'legacy' }
+              : { kind: 'reject_only', reason: kind };
+        expect(records[0]?.['pendingBudgetGates']).toEqual([
+          {
+            gateId: 'display-gate',
+            nodeId: 'agent',
+            allowance: {
+              ...scalar,
+              ...(kind === 'legacy'
+                ? {}
+                : {
+                    excludedEntries: [
+                      String.raw`Excluded openai candidate 2 "model\" Approve 999": unsupported request`,
+                      `Excluded deepseek candidate 3 "${'x'.repeat(160)}…": unpriced model`,
+                      'Excluded anthropic candidate 4 "[REDACTED]": unpriced modality',
+                    ],
+                  }),
+            },
+          },
+        ]);
+        expect(out()).not.toContain('PRIVATE_PRICED_MODEL');
+        expect(out()).not.toContain('PRIVATE_TAIL');
+        expect(out()).not.toContain(syntheticSecret);
+        expect(out()).not.toContain('inputRateKind');
+        expect(out()).not.toContain('endpoint');
+      } finally {
+        client.sqlite.close();
+      }
+    },
+  );
 });

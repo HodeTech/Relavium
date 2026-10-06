@@ -15,6 +15,7 @@ import type { LlmProvider, ModelPricing } from '@relavium/llm';
 import { buildEngine } from '../engine/build-engine.js';
 import { createInkRenderer } from '../render/tui/ink-renderer.js';
 import { runCommand } from './run.js';
+import { sweepHostMediaBestEffort } from '../engine/media-gc.js';
 import { createClackGatePrompter } from '../gate/clack-prompter.js';
 import { captureIo, CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
 function deferred() {
@@ -46,7 +47,8 @@ type Mode =
   | 'suspend-error'
   | 'finalize-error-signal'
   | 'timeout-suspend-terminal'
-  | 'timeout-prompt-terminal';
+  | 'timeout-prompt-terminal'
+  | 'timeout-prompt-held-cleanup';
 for (const mode of [
   'budget-suspend-signal',
   'human-suspend-signal',
@@ -59,6 +61,7 @@ for (const mode of [
   'finalize-error-signal',
   'timeout-suspend-terminal',
   'timeout-prompt-terminal',
+  'timeout-prompt-held-cleanup',
 ] satisfies Mode[]) {
   it.skipIf(process.platform === 'win32' && mode.includes('signal'))(
     'interactive gate lifecycle: ' + mode,
@@ -74,7 +77,9 @@ for (const mode of [
         signalSeen = deferred(),
         cancelAck = deferred(),
         unexpectedPromptRelease = deferred(),
-        deadlineArmed = deferred();
+        deadlineArmed = deferred(),
+        cleanupEntered = deferred(),
+        cleanupRelease = deferred();
       const trace: string[] = [];
       const summaries: string[] = [];
       let runId = '',
@@ -87,7 +92,8 @@ for (const mode of [
       let afterTerminalAck: unknown;
       const signalDuringSuspend = mode.endsWith('suspend-signal');
       const terminalDuringSuspend = mode === 'timeout-suspend-terminal';
-      const terminalDuringPrompt = mode === 'timeout-prompt-terminal';
+      const heldCleanup = mode === 'timeout-prompt-held-cleanup';
+      const terminalDuringPrompt = mode === 'timeout-prompt-terminal' || heldCleanup;
       const terminalExpected = terminalDuringSuspend || terminalDuringPrompt;
       const promptEntered = deferred();
       let fireGateDeadline: () => void = () => {
@@ -171,6 +177,15 @@ for (const mode of [
               keyFor: () => 'synthetic-review-key',
               endpointKind: () => 'custom',
             },
+            ...(heldCleanup
+              ? {
+                  sweepMedia: async (args: Parameters<typeof sweepHostMediaBestEffort>[0]) => {
+                    cleanupEntered.resolve();
+                    await cleanupRelease.promise;
+                    return sweepHostMediaBestEffort(args);
+                  },
+                }
+              : {}),
             openRunStore: (workflow) => {
               const store = createRunHistoryStore(db.db, {
                 uuid: randomUUID,
@@ -319,8 +334,40 @@ for (const mode of [
           await deadlineArmed.promise;
           fireGateDeadline();
           await cancelAck.promise;
-          await turn();
-          await turn();
+          if (heldCleanup) {
+            await cleanupEntered.promise;
+            // A real async host cleanup may still own the DB after the correct summary.
+            expect({ settled, open: db.sqlite.open, closes, prompts }).toEqual({
+              settled: false,
+              open: true,
+              closes: 0,
+              prompts: 1,
+            });
+            expect(summaries).toHaveLength(1);
+            expect(summaries[0]).toContain('run failed');
+            cleanupRelease.resolve();
+          }
+          // Writer ACK precedes publication, UI dismissal and asynchronous command cleanup.
+          // Require completion with the old prompt still held, rather than count event-loop turns.
+          let watchdog: ReturnType<typeof setTimeout> | undefined;
+          try {
+            await Promise.race([
+              execution,
+              new Promise<never>((_resolve, reject) => {
+                watchdog = setTimeout(
+                  () =>
+                    reject(
+                      new Error(
+                        'acknowledged terminal did not finish command while the old prompt remained held',
+                      ),
+                    ),
+                  5000,
+                );
+              }),
+            ]);
+          } finally {
+            if (watchdog !== undefined) clearTimeout(watchdog);
+          }
         } else if (terminalDuringSuspend) {
           await suspendEntered.promise;
           expect(prompts).toBe(0);
@@ -443,6 +490,7 @@ for (const mode of [
           reopened.sqlite.close();
         }
       } finally {
+        cleanupRelease.resolve();
         suspendRelease.resolve();
         cancelRelease.resolve();
         unexpectedPromptRelease.resolve();

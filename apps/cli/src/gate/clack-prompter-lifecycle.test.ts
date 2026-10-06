@@ -123,7 +123,7 @@ for (const route of [
     );
     await Promise.resolve();
     try {
-      expect(seen.length).toBe(route === 'rejection-comment' ? 2 : 1);
+      expect(seen).toHaveLength(route === 'rejection-comment' ? 2 : 1);
       expect(seen.every((signal) => signal === controller.signal)).toBe(true);
       controller.abort();
       release(route === 'input' || route === 'rejection-comment' ? 'late untrusted input' : true);
