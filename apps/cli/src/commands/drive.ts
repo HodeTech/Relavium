@@ -78,6 +78,7 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
   const { engine, handle, makeRenderer, gatePrompter, io } = deps;
   let outcome: RunOutcome | undefined;
   let cancelRequested = false;
+  let inlineRefused = false;
   /** gateIds a prompter handled inline (resolved OR cancelled) — so a stale aggregate `run:paused` is ignored. */
   const handledGates = new Set<string>();
   // A rendering projection of emitted authority, never a second authorization reducer.
@@ -135,7 +136,7 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
             });
         }
       }
-      if (event.type === 'human_gate:paused' && gatePrompter !== undefined) {
+      if (event.type === 'human_gate:paused' && gatePrompter !== undefined && !inlineRefused) {
         const recorded = budgetContexts.get(event.gateId);
         const context =
           event.runId === handle.runId && recorded?.nodeId === event.nodeId
@@ -144,10 +145,9 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
         if (await resolveGateInline(engine, handle, renderer, gatePrompter, event, io, context))
           handledGates.add(event.gateId);
         else {
-          // A refused frozen decision leaves this gate pending. Exit the live driver now rather
-          // than waiting for another event from an execution that is deliberately still parked.
-          outcome = 'paused';
-          break;
+          // Stop prompting, but retain the command's resources until the real aggregate pause
+          // is durably acknowledged (or a terminal wins). A gate companion is not that barrier.
+          inlineRefused = true;
         }
         continue; // a resolve continues the run; a cancel drains it to run:cancelled — keep consuming either way
       }
@@ -155,7 +155,7 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
       // the resumed run continues. Only a real pause (CI/plain/json, or an unresolvable park) stops → exit 3.
       if (
         event.type === 'run:paused' &&
-        shouldBreakOnPause(event, gatePrompter !== undefined, handledGates)
+        shouldBreakOnPause(event, gatePrompter !== undefined && !inlineRefused, handledGates)
       ) {
         break;
       }

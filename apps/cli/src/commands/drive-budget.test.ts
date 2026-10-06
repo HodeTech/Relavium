@@ -95,25 +95,7 @@ for (const mode of ['approve', 'reject', 'stale', 'missing_amount', 'input'] as 
     try {
       const result = await driveRun({
         engine,
-        handle: {
-          ...handle,
-          events: {
-            async *[Symbol.asyncIterator]() {
-              for await (const event of handle.events) {
-                if (
-                  prompts > 0 &&
-                  mode !== 'approve' &&
-                  mode !== 'reject' &&
-                  event.type === 'run:paused'
-                )
-                  throw new Error(
-                    'refused inline decision must exit without awaiting another pause',
-                  );
-                yield event;
-              }
-            },
-          },
-        },
+        handle,
         makeRenderer: () => ({ onEvent: (e) => events.push(e) }),
         gatePrompter: prompter,
         io,
@@ -142,6 +124,7 @@ for (const mode of ['approve', 'reject', 'stale', 'missing_amount', 'input'] as 
         expect(handle.terminalError()).toBe('budget_exceeded');
       } else {
         expect(result).toBe('paused');
+        expect(events.at(-1)).toMatchObject({ type: 'run:paused', runId: handle.runId });
         expect(keyReads).toBe(0);
         expect(calls).toBe(0);
         expect(err()).toContain('remains pending');
