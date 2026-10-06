@@ -3511,3 +3511,15 @@ skips, with six forced builds, isolation and format. Both complete reports, all 
 and 862 external artifact tuples are audited with inherited-read, environment and exercised-guard
 qualifications retained. **Fresh complete round 3 is required; Group 3, Proposed ADR-0102,
 remaining Groups 4–6, Steps 7–8/12, current Sonar, W7 and draft PR #90 remain open.**
+
+**Systematic group 3, round 3 — 2026-10-06.** [Both complete fresh reviews](../../reviews/2026-10-06T20-13-20-w7-systematic-group-3-round-3-review.md)
+verify two Highs: cancellation re-enters queued cards, and cancellation during paused renderer
+finalization loses its subscription, native terminal write and truthful Ink summary. `94948cd4`
+latches cancellation, suppresses later cards and retains the iterator through a summary settlement
+barrier and fallback resource drain. Eleven promoted regressions have seven causal old-code
+failures; the corrected independent combined 61-case focus passes. Original passes 23 forced
+tasks, 366 files, 8,261 tests / 12 existing skips, six builds, isolation and format. All 3,797
+actual sealed entries and 3,349 external artifact tuples are independently audited with complete
+reports, changed-case reads and preparation/guard/platform qualifications retained. **Fresh
+complete round 4 is required; Group 3, Proposed ADR-0102, Groups 4–6, Steps 7–8/12, current Sonar,
+W7 and draft PR #90 remain open.**

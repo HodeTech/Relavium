@@ -351,7 +351,11 @@ relavium budget resume <runId> [--gate <gateId>] --abort
   handler through that barrier. It then returns exit `3` with the gate pending. Once cooperative
   cancellation is requested, an already queued pause cannot trigger that exit: the command retains
   its resources through the acknowledged `run:cancelled` terminal and returns exit `1`. Other
-  competing terminals retain their own outcomes. The operator can inspect or reject the pending gate through
+  competing terminals retain their own outcomes. Cancellation from a dismissed card also stops all
+  queued inline prompts. The primary subscription stays open through renderer teardown: cancellation
+  accepted during Ink unmount is durably acknowledged before SQLite closes and before the single
+  persistent summary is printed. A custom renderer that omits the summary barrier still cannot
+  release the command resources before the actual terminal. The operator can inspect or reject the pending gate through
   `budget resume`. Ordinary human-gate prompts retain
   their existing decisions.
 - Authority and matching companions produce one budget notice per `(runId, nodeId, gateId)` in plain

@@ -241,6 +241,10 @@ added.
   one verified cancellation High corrected; 8,250 passing tests and exhaustive sealed evidence
   audit; fresh complete round 3 required, W7 and PR gates open.
 
+- [2026-10-06 — W7 systematic group 3, round 3](2026-10-06T20-13-20-w7-systematic-group-3-round-3-review.md):
+  two verified queued-prompt/renderer-teardown Highs corrected; 8,261 passing tests and exhaustive
+  sealed evidence audit; fresh complete round 4 required, W7 and PR gates open.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

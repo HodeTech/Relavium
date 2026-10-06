@@ -524,3 +524,17 @@ lease cleanup, alongside genuine approval, rejection and ordinary gates. This en
 cancellation and durability authority; no new decision, financial policy or schema is introduced.
 See the [second review record](../reviews/2026-10-06T19-25-33-w7-systematic-group-3-round-2-review.md) and
 [canonical command contract](../reference/cli/commands.md#relavium-budget-resume).
+
+## Implementation correction — 2026-10-06, cancellation owns queued gates and teardown
+
+The third independent operator review verifies that prompt dismissal must latch the same
+cancellation state as SIGINT, suppressing every later queued inline card. It also verifies that
+an acknowledged pause does not end cancellation ownership during asynchronous renderer unmount:
+the command retains its primary subscription and native database until the actual terminal is
+durably acknowledged. Ink settles that terminal before publishing its single persistent summary;
+renderers without this summary barrier still retain command resources. Actual SIGINT counting is
+separate from prompt cancellation, and signal ownership ends before closing the subscription.
+Native held-writer and actual Ink regressions enforce these existing cancellation, outcome and
+durability guarantees, with genuine approval and stable paused controls. No new financial policy,
+wire schema or decision is introduced. See the [third review record](../reviews/2026-10-06T20-13-20-w7-systematic-group-3-round-3-review.md) and
+[canonical command contract](../reference/cli/commands.md#relavium-budget-resume).
