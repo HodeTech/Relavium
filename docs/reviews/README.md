@@ -237,6 +237,10 @@ added.
   two verified decision/pause acknowledgement races corrected; 8,239 passing tests, all sealed
   evidence independently audited; fresh complete round 2 required, W7 and PR gates open.
 
+- [2026-10-06 — W7 systematic group 3, round 2](2026-10-06T19-25-33-w7-systematic-group-3-round-2-review.md):
+  one verified cancellation High corrected; 8,250 passing tests and exhaustive sealed evidence
+  audit; fresh complete round 3 required, W7 and PR gates open.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

@@ -348,8 +348,10 @@ relavium budget resume <runId> [--gate <gateId>] --abort
   The card also shows the safely projected excluded candidates. An engine-refused stale or invalid
   inline budget approval stops further prompts and drains the actual ordered event stream until
   the aggregate `run:paused` is durably acknowledged, retaining the command's database and cancel
-  handler through that barrier. It then returns exit `3` with the gate pending; a competing
-  terminal retains its own outcome. The operator can inspect or reject the pending gate through
+  handler through that barrier. It then returns exit `3` with the gate pending. Once cooperative
+  cancellation is requested, an already queued pause cannot trigger that exit: the command retains
+  its resources through the acknowledged `run:cancelled` terminal and returns exit `1`. Other
+  competing terminals retain their own outcomes. The operator can inspect or reject the pending gate through
   `budget resume`. Ordinary human-gate prompts retain
   their existing decisions.
 - Authority and matching companions produce one budget notice per `(runId, nodeId, gateId)` in plain

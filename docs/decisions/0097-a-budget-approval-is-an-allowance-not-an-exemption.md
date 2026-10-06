@@ -511,3 +511,16 @@ The canonical [command contract](../reference/cli/commands.md#relavium-budget-re
 [execution model](../architecture/execution-model.md#4-human-gate) record these barriers. Independent
 held-acknowledgement and delayed-native-write regressions require the existing claim and ordered
 delivery guarantees; no new decision, timeout policy, error code or durable schema is introduced.
+
+## Implementation correction — 2026-10-06, cancellation outranks a queued pause
+
+The second independent operator review narrows the earlier cancellation promise: consuming a real
+acknowledged aggregate pause is sufficient for a refused inline approval only while cancellation
+has not started. SIGINT during the held pause append must keep the command consuming the ordered
+stream through the acknowledged `run:cancelled` terminal before releasing native SQLite and its
+cooperative-cancel handler. It returns the existing failed/cancelled exit rather than the paused
+exit. Native controls hold both actual writes and verify command lifetime, durable replay and
+lease cleanup, alongside genuine approval, rejection and ordinary gates. This enforces existing
+cancellation and durability authority; no new decision, financial policy or schema is introduced.
+See the [second review record](../reviews/2026-10-06T19-25-33-w7-systematic-group-3-round-2-review.md) and
+[canonical command contract](../reference/cli/commands.md#relavium-budget-resume).

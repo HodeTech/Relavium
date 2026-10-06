@@ -1577,3 +1577,14 @@ isolation. Both complete reports, all 3,802 actual entries and 362 external arti
 independently audited with timestamp, inherited-read and exercised-guard qualifications retained.
 **Fresh complete round 2 is required; Group 3, Proposed ADR-0102, remaining Groups 4–6, Steps 7–8/12,
 current Sonar, W7 and draft PR #90 remain open.**
+
+**Systematic group 3, round 2 — 2026-10-06.** [Both complete fresh reviews](../reviews/2026-10-06T19-25-33-w7-systematic-group-3-round-2-review.md)
+verify one High: after an invalid inline approval, SIGINT during a held native pause append loses
+cancellation to the paused exit. `350f7152` retains cancellation through the acknowledged terminal;
+eleven permanent native controls include held cancellation writes and actual authorization claims.
+The independent 25-case baseline has three expected failures; its one-guard correction and all
+prepared controls pass. Original checks pass 23 forced tasks, 364 files, 8,250 tests and 12 existing
+skips, with six forced builds, isolation and format. Both complete reports, all 3,635 actual entries
+and 862 external artifact tuples are audited with inherited-read, environment and exercised-guard
+qualifications retained. **Fresh complete round 3 is required; Group 3, Proposed ADR-0102,
+remaining Groups 4–6, Steps 7–8/12, current Sonar, W7 and draft PR #90 remain open.**
