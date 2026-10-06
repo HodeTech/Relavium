@@ -173,6 +173,9 @@ cancellation keeps precedence; a refused initialization consumes no provider-eng
 Compaction clears its running/abort state on every exit. If a trusted controller factory raises
 abort or cancel before returning its controller, the returned signal carries that recorded intent
 before work begins; terminal cancellation permits no later start/compaction notification or command.
+Cold compaction planning also rechecks terminal cancellation after provider resolution and before
+arming a controller. Cancellation there permits no credential or provider call and keeps the session
+closed; idle abort remains a no-op and a warm memoized plan does not rerun the resolver.
 A successful commitment flush rechecks terminal cancellation before installing the reply or
 publishing completion. Known usage, cost and provider-engaged turn consumption remain accounted.
 Compaction estimates the prospective summary/history projection before installing it and rechecks

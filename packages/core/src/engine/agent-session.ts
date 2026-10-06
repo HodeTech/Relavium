@@ -1322,6 +1322,9 @@ export class AgentSession {
     const split = splitFoldable(this.#messages);
     if (split === undefined) return { kind: 'nothing_to_compact' }; // ≤1 exchange — nothing to fold
     const plan = this.#resolvePlan();
+    // A cold provider resolver is host code and may cancel while resolving this plan.
+    // Preserve that terminal before arming a controller can set the session running again.
+    if (this.#statusIs('cancelled')) return { kind: 'cancelled' };
     if (!plan.ok) return { kind: 'failed', message: plan.message };
 
     const abort = this.#armTurnController();

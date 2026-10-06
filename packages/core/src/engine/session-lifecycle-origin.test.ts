@@ -367,6 +367,7 @@ describe('R10 generated projection and quantities', () => {
     for (const pricingFails of [false, true])
       it(`${key} projection with pricingFails=${pricingFails}`, async () => {
         const marker = markers.typed();
+        const pricingMarker = markers.typed();
         let calls = 0,
           reads = 0;
         const records: AttemptRecord[] = [];
@@ -398,7 +399,7 @@ describe('R10 generated projection and quantities', () => {
         const tracker = pricingFails
           ? {
               record() {
-                throw marker;
+                throw pricingMarker;
               },
             }
           : new CostTracker(new Map([[model, price]]));
@@ -413,10 +414,13 @@ describe('R10 generated projection and quantities', () => {
         const err = await caught(() => chain.generate({ model, messages: [] }));
         expect(err).toBeInstanceOf(LlmProviderError);
         expect(err).toMatchObject({
-          llmError: { kind: 'unknown', retryable: false, cause: marker },
+          llmError: { kind: 'unknown', retryable: false },
         });
+        if (!(err instanceof LlmProviderError)) throw new Error('missing typed seam refusal');
+        expect(Object.is(err.llmError.cause, pricingFails ? pricingMarker : marker)).toBe(true);
         expect(calls).toBe(1);
-        expect(reads).toBe(pricingFails ? 0 : 1);
+        // Typed output is owned before pricing; a simultaneous pricing fault still stays primary.
+        expect(reads).toBe(1);
         expect(records).toHaveLength(1);
         expect(records[0]).toMatchObject({
           outcome: 'failed',

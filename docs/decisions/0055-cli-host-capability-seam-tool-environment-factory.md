@@ -230,3 +230,13 @@ Known paid quantities and turn consumption remain intact, as does EA7's post-suc
 no-op. First-party controller factories are pure; factory reentrancy is a supported custom-host
 boundary. These are implementation repairs to the existing cancellation contract, with no new
 capability or policy. See the [session contract](../reference/contracts/agent-session-spec.md).
+
+## 2026-10-06 implementation correction — cold compaction planning preserves terminal cancellation
+
+Retained twelfth-round controls reproduce cancellation inside the provider resolver of a reconstructed
+session, before a compaction controller exists. Compaction now rechecks terminal state immediately
+after plan resolution, before controller setup can overwrite it. No key resolution, provider call,
+controller or later compaction notification follows that cancellation; idle abort remains a no-op,
+and a warm memoized plan retains its existing behaviour. This repairs the existing cancellation
+contract without a new host capability or policy. The interrupted review is qualified in the review
+record; a fresh complete independent round is still required. Historical text is preserved.
