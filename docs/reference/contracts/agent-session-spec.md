@@ -176,6 +176,9 @@ before work begins; terminal cancellation permits no later start/compaction noti
 Cold compaction planning also rechecks terminal cancellation after provider resolution and before
 arming a controller. Cancellation there permits no credential or provider call and keeps the session
 closed; idle abort remains a no-op and a warm memoized plan does not rerun the resolver.
+If the resolver starts another real session operation, compaction rechecks its idle precondition
+and throws the existing lifecycle refusal before arming a second controller. The running operation
+retains the controller targeted by abort and cancel.
 A successful commitment flush rechecks terminal cancellation before installing the reply or
 publishing completion. Known usage, cost and provider-engaged turn consumption remain accounted.
 Compaction estimates the prospective summary/history projection before installing it and rechecks

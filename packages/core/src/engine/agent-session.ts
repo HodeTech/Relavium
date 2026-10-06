@@ -1325,6 +1325,8 @@ export class AgentSession {
     // A cold provider resolver is host code and may cancel while resolving this plan.
     // Preserve that terminal before arming a controller can set the session running again.
     if (this.#statusIs('cancelled')) return { kind: 'cancelled' };
+    // The resolver may have started another real operation; retain its controller ownership.
+    this.#assertSendable();
     if (!plan.ok) return { kind: 'failed', message: plan.message };
 
     const abort = this.#armTurnController();

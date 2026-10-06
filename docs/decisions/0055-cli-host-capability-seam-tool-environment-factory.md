@@ -240,3 +240,14 @@ controller or later compaction notification follows that cancellation; idle abor
 and a warm memoized plan retains its existing behaviour. This repairs the existing cancellation
 contract without a new host capability or policy. The interrupted review is qualified in the review
 record; a fresh complete independent round is still required. Historical text is preserved.
+
+## 2026-10-06 implementation correction — cold planning retains operation ownership
+
+The thirteenth independent W7 review reproduces a supported custom provider resolver starting a real
+send while cold compaction resolves its plan. The outer compaction then installs a second controller,
+so abort reaches only compaction and the nested send completes. After preserving terminal
+cancellation, compaction now rechecks its existing idle precondition before controller setup. A
+running nested operation keeps its controller; the outer compaction receives the existing lifecycle
+refusal. This is a repair to the existing operation and cancellation contract, with no new error code,
+host capability or financial policy. The canonical [session contract](../reference/contracts/agent-session-spec.md)
+states the handoff; historical text is preserved. Fresh corrective review remains required.
