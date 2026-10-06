@@ -298,3 +298,8 @@ Record its model, effort and review scope in the coverage section where availabl
 
 - [2026-10-05 — W7 systematic group 2a, round 11](2026-10-05T07-03-00-w7-systematic-group-2a-round-11-review.md):
   cancellation handoffs, controller reentrancy and truthful deadline-cleanup accounting corrected; fresh round 12 pending.
+
+- [2026-10-06 — W7 systematic group 2a, round 12](2026-10-06T16-02-49-w7-systematic-group-2a-round-12-review.md):
+  interrupted reviews recovered with explicit limits; cold-plan cancellation and generated pricing ownership corrected; fresh complete round 13 required.
+- [2026-10-06 — ADR-0102 maintainer clarifications](2026-10-06T16-02-49-w7-adr-0102-maintainer-clarifications-review.md):
+  six clarifications pass two fresh qualified static draft reviews; Proposed status and approval gate remain.

@@ -1533,3 +1533,16 @@ pass. Forced Original checks pass 23 tasks, 351 files, 8,148 tests / 12 existing
 isolation. Both exact final seals are independently audited; early evidence gaps remain qualified.
 **Fresh complete round 12 is required; group 2a, ADR-0102 approval, remaining groups, Steps 7–8/12,
 Sonar, W7 and draft PR #90 remain open. No additional paid generation is authorised.**
+
+**Systematic group 2a, round 12 — 2026-10-06.** [Qualified recovery and corrections](../reviews/2026-10-06T16-02-49-w7-systematic-group-2a-round-12-review.md)
+record two interrupted reviews without full-scope acceptance. Cold reconstructed compaction preserves
+terminal cancellation; generated typed output is owned before host pricing while known quantities
+remain chargeable on projection failure. Thirty-one controls pass; forced Original lint/typecheck/test
+passes 23 tasks, 355 files, 8,179 tests / 12 existing skips, six builds and isolation. Both complete
+recovery reports and all 3,534 physical entries are audited. **Fresh complete round 13 is required;
+group 2a, remaining groups, Steps 7–8/12, Sonar, W7 and draft PR #90 remain open.**
+
+**ADR-0102 maintainer clarifications — 2026-10-06.** [Two fresh qualified static reviews](../reviews/2026-10-06T16-02-49-w7-adr-0102-maintainer-clarifications-review.md)
+verify all six submitted clarifications at `1f7c353e`; no new material draft finding. SDK HTTP acceptance
+is still required during implementation. **ADR-0102 stays Proposed, pending maintainer approval.
+No dependent ownership implementation or additional paid generation is authorized.**
