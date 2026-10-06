@@ -252,7 +252,11 @@ export {
   isBudgetPauseError,
   DEFAULT_MAX_TOKENS_ESTIMATE,
 } from './engine/budget-governor.js';
-export { quoteBudgetAllowance, sameBudgetAllowanceQuote } from './engine/budget-allowance.js';
+export {
+  budgetAllowancePricesMatch,
+  quoteBudgetAllowance,
+  sameBudgetAllowanceQuote,
+} from './engine/budget-allowance.js';
 export type {
   AllowanceQuote,
   AllowanceQuoteResult,

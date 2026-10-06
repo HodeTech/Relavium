@@ -339,9 +339,11 @@ export class RunSuspensionReducer {
         .map(snapshot),
     );
   }
-  resolvedGateIds(runId: string): readonly string[] {
+  resolvedGateIds(runId: string, kind: 'all' | 'budget' = 'all'): readonly string[] {
     return Object.freeze(
-      [...(this.#gates.get(runId)?.values() ?? [])].filter(isResolved).map((g) => g.gateId),
+      [...(this.#gates.get(runId)?.values() ?? [])]
+        .filter((gate) => isResolved(gate) && (kind === 'all' || gate.budget))
+        .map((gate) => gate.gateId),
     );
   }
   pendingMediaJobs(runId: string): readonly MediaJobSubmittedEvent[] {

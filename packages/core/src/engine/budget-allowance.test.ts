@@ -20,6 +20,7 @@ import {
 } from '@relavium/llm';
 import {
   quoteBudgetAllowance,
+  budgetAllowancePricesMatch,
   sameBudgetAllowanceQuote,
   type AllowanceQuote,
   type AllowanceQuoteInput,
@@ -703,4 +704,56 @@ it('selects the highest finite context threshold even beyond the safe integer se
     expect(result.basis.contextTierAboveTokens).toBe(threshold);
     expect(cost('review-model', { inputTokens: 1, outputTokens: 1 }, overlay).microcents).toBe(2);
   }
+});
+
+it('early price refusal detects rate drift even when rounded A is unchanged', () => {
+  const input = textInput();
+  const frozen = quoteBudgetAllowance(input);
+  const currentPrices = new Map([['review-model', price({ inputPerMtokMicrocents: 1000001 })]]);
+  const current = quoteBudgetAllowance({ ...input, overlay: currentPrices });
+  expect(frozen.kind).toBe('quoted');
+  expect(current.kind).toBe('quoted');
+  if (frozen.kind !== 'quoted' || current.kind !== 'quoted') throw new Error('missing quote');
+  expect(frozen.quote.amount).toEqual(current.quote.amount);
+  expect(budgetAllowancePricesMatch(frozen, input.overlay)).toBe(true);
+  expect(budgetAllowancePricesMatch(frozen, currentPrices)).toBe(false);
+});
+
+it('early pricing preserves resolved output quantities and detects a zero-volume media price change', () => {
+  const row = price({ maxOutputTokens: 1 });
+  const input = textInput({
+    request: { model: 'review-model', messages: [], providerOptions: { max_tokens: 250000 } },
+    mediaUnitsEstimate: [{ modality: 'image', units: 0 }],
+    overlay: new Map([['review-model', row]]),
+  });
+  const frozen = quoteBudgetAllowance(input);
+  expect(frozen.kind).toBe('quoted');
+  if (frozen.kind !== 'quoted') throw new Error('missing quote');
+  expect(frozen.quote.provenance.entries[0]?.estimate.basis.outputTokensReservation).toBe(250000);
+  expect(budgetAllowancePricesMatch(frozen, input.overlay)).toBe(true);
+  expect(
+    budgetAllowancePricesMatch(
+      frozen,
+      new Map([['review-model', { ...row, mediaOutputRates: { image: 0 } }]]),
+    ),
+  ).toBe(false);
+  expect(budgetAllowancePricesMatch(frozen, new Map())).toBe(false);
+});
+
+it('an early price match never replaces complete eligibility validation', () => {
+  const input = textInput({
+    entries: [
+      { model: 'review-model', provider: provider(), maxAttempts: 1 },
+      { model: 'newly-priced', provider: provider(), maxAttempts: 1 },
+    ],
+  });
+  const frozen = quoteBudgetAllowance(input);
+  const currentPrices = new Map([
+    ['review-model', price()],
+    ['newly-priced', price()],
+  ]);
+  expect(budgetAllowancePricesMatch(frozen, currentPrices)).toBe(true);
+  expect(
+    sameBudgetAllowanceQuote(frozen, quoteBudgetAllowance({ ...input, overlay: currentPrices })),
+  ).toBe(false);
 });

@@ -3518,17 +3518,19 @@ class RunExecution {
           ...(amount === undefined ? {} : { approvedAmountMicrocents: amount }),
         });
       } catch (error) {
-        // An authored auto-approval cannot approve a stale/reject-only quote. Preserve
-        // human rejection without fabricating a grant or floating a timer rejection.
+        // A deadline cannot authorize a stale/reject-only quote or leave a timerless gate parked.
+        // Preserve the refusal and terminate through the existing timeout failure path.
         if (!(error instanceof EngineStateError && error.code === 'invalid_decision')) throw error;
+        await this.#failGateOnTimeout(gateId, vertexId);
       }
       return;
     }
     await this.#failGateOnTimeout(gateId, vertexId);
   }
 
-  /** Timeout with `timeout_action: reject` — fail the run with `run_timeout` (execution-model.md). */
+  /** Rejection or refused auto-approval at the deadline fails with `run_timeout` (execution-model.md). */
   async #failGateOnTimeout(gateId: string, vertexId: string): Promise<void> {
+    if (this.#settled || !this.#pendingGates.has(gateId)) return;
     this.#pendingGates.delete(gateId);
     // Mark the gate resolved (symmetry with resume / the approve path) so a late re-delivery of this
     // gate's decision is an idempotent no-op rather than a `run_already_terminal` throw.

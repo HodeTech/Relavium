@@ -207,6 +207,34 @@ function sameEstimate(left: ResolvedRequestEstimate, right: ResolvedRequestEstim
   );
 }
 
+/**
+ * Early refusal using recorded priced quantities, before a host prepares credentials or MCP.
+ * A match is NOT approval: current request eligibility and exclusions still require the engine's
+ * complete prepared quote. The same rate-only kernel/comparison serves both paths.
+ */
+export function budgetAllowancePricesMatch(
+  recorded: AllowanceQuoteResult,
+  overlay?: PricingOverlay,
+): boolean {
+  if (recorded.kind !== 'quoted') return false;
+  try {
+    return recorded.quote.provenance.entries.every((entry) => {
+      const basis = entry.estimate.basis;
+      const current = estimateResolvedRequestCost(
+        entry.model,
+        basis.inputTokensEstimate,
+        basis.outputTokensReservation,
+        basis.media.map(({ modality, units }) => ({ modality, units })),
+        overlay,
+      );
+      return sameEstimate(entry.estimate, current);
+    });
+  } catch {
+    // A missing price or failed host inspection leaves approval unavailable without exposing its cause.
+    return false;
+  }
+}
+
 /** Full effective price/eligibility comparison; equal aggregate A alone is never sufficient. */
 export function sameBudgetAllowanceQuote(
   left: AllowanceQuoteResult,

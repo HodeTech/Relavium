@@ -142,6 +142,8 @@ export interface CheckpointState {
   /** Gate ids ALREADY resolved (a `human_gate:resumed` was persisted) — so re-delivering a decision after a
    *  reconnect is an idempotent no-op rather than advancing the run twice (execution-model.md §gate). */
   readonly resolvedGateIds: readonly string[];
+  /** Kind evidence for operator idempotency; absence on an external checkpoint proves no budget kind. */
+  readonly resolvedBudgetGateIds?: readonly string[];
   /** The highest persisted `sequenceNumber` — the resumed run seeds its counter to this + 1 (gap-free). */
   readonly lastSequenceNumber: number;
   /** Running token totals (summed from `node:completed`), restored so a resumed run's `run:completed` totals stay correct. */
@@ -508,6 +510,7 @@ export function reconstructCheckpointState(
         : { acceptedCostMicrocents: job.acceptedCostMicrocents }),
     })),
     resolvedGateIds: acc.suspensions.resolvedGateIds(acc.runId),
+    resolvedBudgetGateIds: acc.suspensions.resolvedGateIds(acc.runId, 'budget'),
     lastSequenceNumber: acc.lastSequenceNumber,
     totalInputTokens: acc.totalInputTokens,
     totalOutputTokens: acc.totalOutputTokens,

@@ -1026,6 +1026,45 @@ describe('durable budget authorization through the actual runner', () => {
     expect(run.host.armedCount()).toBe(0);
     expect(run.host.livenessCount()).toBe(0);
   });
+  it.each(['stale', 'unrepresentable'] as const)(
+    'an auto-approve deadline with a %s quote terminates without a fabricated approval',
+    async (refusal) => {
+      const run = startRun({
+        inputRate: refusal === 'unrepresentable' ? 1e24 : 1_000_000,
+        gateDeadline: { timeoutMs: 1000, timeoutAction: 'approve' },
+      });
+      await Promise.race([run.atPause, run.drained]);
+      expect(run.events.at(-1)?.type).toBe('run:paused');
+      expect(run.host.armedCount()).toBe(1);
+      if (refusal === 'stale') run.price.inputPerMtokMicrocents = 2_000_000;
+      try {
+        run.host.fireTimers();
+        // This host has no external I/O. Drain queued promise continuations without relying on a
+        // wall-clock race; the old catch leaves a parked gate with no timer or terminal forever.
+        for (let index = 0; index < 100; index += 1) await Promise.resolve();
+        expect(run.events.at(-1)).toMatchObject({
+          type: 'run:failed',
+          error: { code: 'run_timeout', retryable: false },
+        });
+        expect(
+          run.events.some(
+            (event) =>
+              event.type === 'budget:authorization' &&
+              event.authorization.state === 'decided' &&
+              event.authorization.decision === 'approved',
+          ),
+        ).toBe(false);
+        expect(run.requests).toEqual([]);
+        expect(run.keyReads()).toBe(0);
+        expect(run.host.armedCount()).toBe(0);
+        expect(run.host.livenessCount()).toBe(0);
+        expect(await run.host.runLeases.read(run.handle.runId)).toBeUndefined();
+      } finally {
+        if (run.events.at(-1)?.type === 'run:paused') run.handle.cancel();
+        await run.drained;
+      }
+    },
+  );
   it('an actually free followup grants only explicit zero and retains ordinary budget governance', async () => {
     const again = deferred<void>();
     let pauses = 0;
