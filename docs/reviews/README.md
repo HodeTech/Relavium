@@ -249,6 +249,10 @@ added.
   two verified rejected-budget/stale-card Highs corrected; 8,286 passing tests and exhaustive
   sealed evidence audit; fresh complete round 5 required, W7 and PR gates open.
 
+- [2026-10-06 — W7 systematic group 3, round 5](2026-10-06T21-43-24-w7-systematic-group-3-round-5-review.md):
+  verified pause-finalization High remains open; two Medium/test corrections pass local checks;
+  exhaustive sealed evidence audit completed, narrow reviews and approved lifecycle decision pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

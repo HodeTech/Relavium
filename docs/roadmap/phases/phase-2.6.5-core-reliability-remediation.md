@@ -3536,3 +3536,17 @@ Both complete reports and all 3,745 actual sealed entries / 3,260 external regul
 independently audited, with helper-guard, timer-seam, SDK/platform and preparation qualifications
 retained. **Fresh complete round 5 is required; Group 3, Proposed ADR-0102, Groups 4–6,
 Steps 7–8/12, current Sonar, W7 and draft PR #90 remain open.**
+
+**Systematic group 3, round 5 — 2026-10-06.** [Both complete fresh reviews](../../reviews/2026-10-06T21-43-24-w7-systematic-group-3-round-5-review.md)
+retain one verified High: authored gate timeout/autoapproval during voluntary paused finalization
+can misreport the terminal, and an unpublished node/terminal append can outlive SQLite closure.
+Parent independently reproduces four failures among five real native controls; a stable pause
+passes. ADR-0103 is being drafted/reviewed and no dependent lifecycle implementation is approved.
+`fa884a92` separately corrects the CI completion-phase oracle and the safe status JSON contract;
+26 lifecycle/Clack and 22 JSON/status cases pass in independent parent preparation. Original passes
+23 forced tasks, 369 files, 8,292 tests / 12 existing skips, isolation, format and diff checks.
+Both complete reports/child supplements and all 3,565 sealed entries / 3,077 regular tuples are
+independently audited before Original resumes. **Group 3 remains changes requested. Fresh narrow
+correction reviews and the High's approved implementation are required; ADR-0102, Groups 4–6,
+Steps 7–8/12, current Sonar, W7 and draft PR #90 remain open.** Independent Groups 4–6 may advance
+through their own checks and review while the new lifecycle decision is pending.

@@ -552,3 +552,15 @@ Native command and actual Clack synthetic-input regressions enforce these existi
 no new financial policy, timeout, durable schema or decision is introduced. See the
 [fourth review record](../reviews/2026-10-06T20-57-47-w7-systematic-group-3-round-4-review.md) and
 [canonical command contract](../reference/cli/commands.md#relavium-budget-resume).
+
+## Implementation qualification — 2026-10-06, voluntary paused departure remains open
+
+The fifth independent operator review narrows the preceding teardown notes to their verified
+cancellation/card phases. An authored gate rejection or autoapproval during voluntary paused Ink
+finalization can advance the durable run while the command still reports paused. A held earlier
+node/terminal append can also outlive native SQLite closure; consuming emitted events alone cannot
+join that unpublished producer. This High remains open and requires an explicitly reviewed and
+maintainer-approved engine departure decision. No safe general pause handoff, lifecycle change or
+dependent implementation is accepted by this note. The cancellation regressions retain their
+tested scope. The [fifth review record](../reviews/2026-10-06T21-43-24-w7-systematic-group-3-round-5-review.md) and
+[canonical command contract](../reference/cli/commands.md#relavium-budget-resume) record the limits.
