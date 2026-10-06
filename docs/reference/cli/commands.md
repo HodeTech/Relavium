@@ -358,6 +358,11 @@ relavium budget resume <runId> [--gate <gateId>] --abort
   release the command resources before the actual terminal. The operator can inspect or reject the pending gate through
   `budget resume`. Ordinary human-gate prompts retain
   their existing decisions.
+- An emitted budget rejection stops later queued cards and drains its real failed terminal. A
+  cancellation or terminal arriving during live-view suspension suppresses the stale card; one
+  arriving while a card is open dismisses it without requiring another answer. Late answers cannot
+  replace the winning decision or terminal. A losing idempotent rejection does not stop subsequent
+  genuine gates, and ordinary human-gate rejection retains its existing continue behaviour.
 - Authority and matching companions produce one budget notice per `(runId, nodeId, gateId)` in plain
   and TUI views. They never fall through to an ordinary human approval prompt. The durable protocol is
   [defined once in the event contract](../contracts/sse-event-schema.md#durable-budget-authorization).

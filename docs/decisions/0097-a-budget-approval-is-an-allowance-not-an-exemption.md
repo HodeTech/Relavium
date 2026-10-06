@@ -538,3 +538,17 @@ Native held-writer and actual Ink regressions enforce these existing cancellatio
 durability guarantees, with genuine approval and stable paused controls. No new financial policy,
 wire schema or decision is introduced. See the [third review record](../reviews/2026-10-06T20-13-20-w7-systematic-group-3-round-3-review.md) and
 [canonical command contract](../reference/cli/commands.md#relavium-budget-resume).
+
+## Implementation correction — 2026-10-06, terminal authority ends stale cards
+
+The fourth independent operator review verifies that a genuine emitted budget rejection must
+suppress later queued cards while the primary iterator drains the actual failed terminal. It
+also verifies cancellation and authored terminal arrival across live-view suspension and an
+already pending card. The private prompter forwards scoped cancellation to Clack, while the
+driver dismisses stale UI and retains primary outcome, acknowledgement and cleanup authority.
+Rejection follows the emitted authorization rather than successful `resume` return, which can
+be an idempotent no-op after a competing approval. Ordinary human-gate rejection still continues.
+Native command and actual Clack synthetic-input regressions enforce these existing guarantees;
+no new financial policy, timeout, durable schema or decision is introduced. See the
+[fourth review record](../reviews/2026-10-06T20-57-47-w7-systematic-group-3-round-4-review.md) and
+[canonical command contract](../reference/cli/commands.md#relavium-budget-resume).

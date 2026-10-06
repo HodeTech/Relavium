@@ -3523,3 +3523,16 @@ actual sealed entries and 3,349 external artifact tuples are independently audit
 reports, changed-case reads and preparation/guard/platform qualifications retained. **Fresh
 complete round 4 is required; Group 3, Proposed ADR-0102, Groups 4–6, Steps 7–8/12, current Sonar,
 W7 and draft PR #90 remain open.**
+
+**Systematic group 3, round 4 — 2026-10-06.** [Both complete fresh reviews](../../reviews/2026-10-06T20-57-47-w7-systematic-group-3-round-4-review.md)
+verify two High UI-lifetime defects: genuine budget rejection opens a surplus queued card;
+cancellation or acknowledged terminal during suspension or an open card retains stale input.
+`9a62d665` follows emitted rejection/terminal authority, aborts scoped Clack input and preserves
+the primary terminal/durability stream. A losing idempotent rejection leaves genuine later gates
+usable; ordinary rejection still continues. Twenty-five permanent controls have 16 causal
+old-code failures, then all pass; the corrected combined 135-case focus passes. Original passes
+23 forced tasks, 369 files, 8,286 tests / 12 existing skips, six builds, isolation and format.
+Both complete reports and all 3,745 actual sealed entries / 3,260 external regular tuples are
+independently audited, with helper-guard, timer-seam, SDK/platform and preparation qualifications
+retained. **Fresh complete round 5 is required; Group 3, Proposed ADR-0102, Groups 4–6,
+Steps 7–8/12, current Sonar, W7 and draft PR #90 remain open.**

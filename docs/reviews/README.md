@@ -245,6 +245,10 @@ added.
   two verified queued-prompt/renderer-teardown Highs corrected; 8,261 passing tests and exhaustive
   sealed evidence audit; fresh complete round 4 required, W7 and PR gates open.
 
+- [2026-10-06 — W7 systematic group 3, round 4](2026-10-06T20-57-47-w7-systematic-group-3-round-4-review.md):
+  two verified rejected-budget/stale-card Highs corrected; 8,286 passing tests and exhaustive
+  sealed evidence audit; fresh complete round 5 required, W7 and PR gates open.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and
