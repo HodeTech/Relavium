@@ -3530,7 +3530,8 @@ class RunExecution {
 
   /** Rejection or refused auto-approval at the deadline fails with `run_timeout` (execution-model.md). */
   async #failGateOnTimeout(gateId: string, vertexId: string): Promise<void> {
-    if (this.#settled || !this.#pendingGates.has(gateId)) return;
+    // A resume claim keeps its pending row until durable ACK; the claim already owns this decision.
+    if (this.#settled || this.#resolvedGates.has(gateId) || !this.#pendingGates.has(gateId)) return;
     this.#pendingGates.delete(gateId);
     // Mark the gate resolved (symmetry with resume / the approve path) so a late re-delivery of this
     // gate's decision is an idempotent no-op rather than a `run_already_terminal` throw.
