@@ -781,6 +781,69 @@ describe('createRunHistoryStore', () => {
     expect(byId.get('run-m')?.resumable).toBe(false);
   });
 
+  it.each(['gate_conflict', 'invalid_json'] as const)(
+    'refuses aggregate interruption discovery on %s without hiding or changing stored evidence',
+    async (damage) => {
+      await startRun();
+      await store.persistEvent(
+        ev('human_gate:paused', 1, {
+          nodeId: 'human',
+          gateId: 'gate',
+          gateType: 'approval',
+          message: 'approve',
+        }),
+      );
+      await store.persistEvent(
+        ev('human_gate:paused', 2, {
+          nodeId: damage === 'gate_conflict' ? 'conflicting' : 'human',
+          gateId: damage === 'gate_conflict' ? 'gate' : 'second-gate',
+          gateType: 'approval',
+          message: 'approve',
+        }),
+      );
+      const workflowId = await store.resolveWorkflowId('healthy');
+      for (const event of [
+        {
+          ...ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+          runId: 'healthy',
+        },
+        {
+          ...ev('human_gate:paused', 1, {
+            nodeId: 'human',
+            gateId: 'healthy-gate',
+            gateType: 'approval',
+            message: 'approve',
+          }),
+          runId: 'healthy',
+        },
+      ])
+        await store.persistEvent(event);
+      if (damage === 'invalid_json')
+        client.db
+          .update(runEvents)
+          .set({ payloadJson: '{invalid' })
+          .where(and(eq(runEvents.runId, 'run-1'), eq(runEvents.seq, 2)))
+          .run();
+      const before = client.db.select().from(runEvents).all();
+      let error: unknown;
+      try {
+        await store.listInterruptedRuns();
+      } catch (cause) {
+        error = cause;
+      }
+      expect(isCorruptRunEventError(error)).toBe(true);
+      expect(error).toMatchObject({
+        code: 'corrupt_run_event',
+        runId: 'run-1',
+        sequenceNumber: 2,
+        eventType: 'human_gate:paused',
+      });
+      expect(client.db.select().from(runEvents).all()).toEqual(before);
+      expect(store.loadRunEventLogForReplay('healthy')).toHaveLength(2);
+      expect(store.loadRunEventLogForReplay('healthy').at(-1)?.type).toBe('human_gate:paused');
+    },
+  );
+
   it('historical budget input remains readable and cannot abort aggregate interrupted discovery', async () => {
     await startRun();
     await store.persistEvent(

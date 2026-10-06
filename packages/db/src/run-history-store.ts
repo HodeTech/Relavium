@@ -1,5 +1,6 @@
 import {
   AppendConflictError,
+  CorruptRunEventError,
   LeaseFencedError,
   parseStoredRunEvent,
   RunEventSchema,
@@ -103,6 +104,8 @@ export interface InterruptedRunInfo {
   readonly workflowId: string;
   /** `true` when the run was suspended at a gate (resumable); `false` when it died mid-execution. */
   readonly resumable: boolean;
+  /** A recorded budget rejection survived without its run terminal; derived from ordered gate history. */
+  readonly budgetRejected?: boolean;
   /** The highest `sequenceNumber` already persisted for this run. */
   readonly lastSequenceNumber: number;
 }
@@ -184,50 +187,7 @@ export interface RunEventLog {
   readonly skipped: readonly SkippedRunEvent[];
 }
 
-/**
- * A stored `run_events` row that is damaged — not merely written by a newer binary.
- *
- * Both failure shapes land here: unreadable JSON in `payload_json`, and a `type` this binary DOES know whose body
- * does not parse. ADR-0050's durability-first posture says neither may be swallowed, and
- * [error-handling.md](../../../docs/standards/error-handling.md) says the error that surfaces must be typed and
- * carry structured context. Without this, a single bad row out of thousands reached the user as
- * `An unexpected internal error occurred.` — no run, no row, no next step.
- */
-export class CorruptRunEventError extends Error {
-  override readonly name = 'CorruptRunEventError';
-  readonly code = 'corrupt_run_event' as const;
-
-  constructor(
-    readonly runId: string,
-    readonly sequenceNumber: number,
-    /**
-     * The row's `event_type` column. Our own writes put a union literal here, but the column carries no CHECK
-     * (`schema.ts`), so a hand-edited DB could hold arbitrary text — hence the length bound in the message below.
-     * Terminal/bidi control bytes are stripped one layer up, where every user-facing error passes through
-     * `sanitizeInline` (`apps/cli/src/process/render-error.ts`); this field is not a second sanitization seam.
-     */
-    readonly eventType: string,
-    cause: unknown,
-  ) {
-    const shownType = eventType.length > 64 ? `${eventType.slice(0, 64)}…` : eventType;
-    super(
-      `run ${runId} has a damaged event row at seq ${sequenceNumber} (type ${shownType})`,
-      // Preserved so `--verbose` can still show the underlying ZodError/SyntaxError detail.
-      { cause },
-    );
-  }
-}
-
-/**
- * Narrow an unknown thrown value to {@link CorruptRunEventError} by its `code`, not by `instanceof`.
- *
- * The CLI bundles `@relavium/db` into one file while its tests import the package directly, so two realizations of
- * the class can coexist and `instanceof` would silently answer `false` at exactly the boundary that has to catch it.
- * Cast-free narrowing (the same shape `content.ts` uses).
- */
-export function isCorruptRunEventError(value: unknown): value is CorruptRunEventError {
-  return value instanceof Error && 'code' in value && value.code === 'corrupt_run_event';
-}
+export { CorruptRunEventError, isCorruptRunEventError } from '@relavium/shared';
 
 /**
  * A run whose event log cannot be fully read by THIS binary, refused because the caller is a REPLAY
@@ -559,6 +519,7 @@ function readInterruptedRuns(db: Db): InterruptedRunInfo[] {
   return [...interrupted.values()].map((row) => ({
     ...row,
     resumable: suspension.isResumable(row.runId),
+    ...(suspension.budgetRejections(row.runId).length === 0 ? {} : { budgetRejected: true }),
   }));
 }
 

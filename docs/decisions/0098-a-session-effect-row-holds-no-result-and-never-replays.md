@@ -299,3 +299,14 @@ resize wait or new disclosure policy is introduced.
 The same review finds chat selection and transcript ownership ignoring the existing CI policy. Both now
 share that policy; a CI TTY uses plain output and acknowledged stderr. CI opt-outs and JSON precedence are
 unchanged. The canonical contract remains in [effect-journal.md](../reference/shared-core/effect-journal.md#8-needs_attention).
+
+### Implementation correction — 2026-10-06, bounded legacy initialization
+
+A malformed legacy session scope previously aborted database open while initializing an unrelated
+session. Open-time backfill now leaves the affected session uninitialized and preserves its evidence;
+key reservation for that session still refuses `history_invalid`. Healthy sessions and unrelated
+operations remain available. It does not guess a terminal-count floor, repair history by deletion or
+weaken monotonic allocation. Bounded discovery also avoids individual history reads/writes for empty
+idle sessions. Result clearing, exact disclosure/sweep ordering and physical erasure residuals remain
+unchanged. The canonical allocation contract is
+[database-schema.md](../reference/shared-core/database-schema.md#session-content-parts).

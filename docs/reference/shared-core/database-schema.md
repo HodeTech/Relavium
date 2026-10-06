@@ -779,7 +779,14 @@ with `transaction_active`, because a savepoint release cannot prevent an outer r
 an issued key. Open-time initialization, under the migration lock, seeds legacy rows from all
 historical terminal assistant rows (empty text counts; tool preambles do not), ignoring compaction,
 and from the greatest retained session effect scope key before any cleanup. Subsequent journal
-sweeps cannot lower it. Allocation repeats initialization for a new session whose mark is still zero.
+sweeps cannot lower it. Open-time discovery batches uninitialized sessions and inspects only those
+with historical assistant or matching effect evidence; empty idle sessions remain zero without
+per-session history reads or writes. An invalid legacy scope or historical assistant payload leaves
+only its affected session uninitialized, with the original evidence intact. Opening the database and
+initializing healthy sessions still succeeds; reserving an effect key for the affected session continues
+to refuse with `history_invalid`. No inferred floor, deleted evidence or reused identity repairs that
+corruption. Other initialization faults still fail the operation. Allocation repeats initialization for
+a new session whose mark is still zero.
 The required engine host allocator is late-bound by each interactive persister. The engine caches
 one key for idle `!` commands and the next model turn, consuming it on every model-turn exit.
 Commands use disjoint negative slots and engine ids `session-command:<key>:<ordinal>`; model
@@ -797,7 +804,9 @@ parts joined with two newlines; `tool_calls` equals the canonical structural cal
 matches a single call; `tool_call_id` matches a single result; `finish_reason` belongs to the fixed
 stop-reason vocabulary on an assistant row. Absent projections are NULL. Unknown metadata/part
 fields, raw tool values and malformed JSON are refused, never stripped. Boundary errors carry fixed
-codes rather than raw JSON/parser/unknown-property diagnostics. Money attribution remains solely
+codes rather than raw JSON/parser/unknown-property diagnostics. Consistent legacy scalar metadata
+remains readable without rewriting it; a mismatch refuses the affected session rather than relaxing
+the structural boundary. Money attribution remains solely
 in [`session_costs`](#session_costs).
 
 > A `secret`-typed value is never persisted into `session_messages` — per

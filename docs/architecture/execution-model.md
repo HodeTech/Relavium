@@ -213,8 +213,12 @@ is computed in `packages/llm`; see [multi-llm-providers.md](multi-llm-providers.
   optionally adjusting inputs). A required node is never silently skipped.
 - **Provider failure** — `packages/llm` walks the agent's fallback chain before
   the node is considered failed.
-- **Crash recovery** — on startup the host reconciles in-flight runs from their
-  last checkpoint rather than losing them.
+- **Crash recovery** — the engine exposes reconciliation of interrupted, non-resumable runs;
+  this is an explicit host operation, not an automatic shipping CLI startup guarantee. Recorded
+  budget rejection retains `budget_exceeded`, while an ordinary interruption uses `internal`.
+  Interrupted-run discovery refuses corrupt suspension history as a whole. The derived metadata,
+  corruption and durable terminal rules live in the
+  [event contract](../reference/contracts/sse-event-schema.md#durable-budget-authorization).
 - **Retry and resume with effects** — the durable effect journal brackets an effectful
   dispatch. The guarantee depends on the target
   ([ADR-0080](../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md));

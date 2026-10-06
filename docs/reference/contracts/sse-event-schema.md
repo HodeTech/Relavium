@@ -381,6 +381,21 @@ discovery use the same ordered reducer. A pause authority alone is resumable; an
 agent pending with no invented output and no restored allowance; rejection remains fatal on an
 eligible resume. Individual authority does not emit an aggregate pause or release a live sibling's lease.
 
+Interrupted-run discovery is an aggregate fail-closed operation: damaged known state-bearing rows
+or contradictory suspension history refuse the whole discovery call, including when another run is
+healthy. It does not silently skip a run or return a partially trusted list. SQLite and the reference
+store report the same platform-free `CorruptRunEventError` with run, sequence and event-type context;
+`@relavium/db` preserves its existing public re-export. Read-only unknown-event tolerance and strict
+replay refusal remain unchanged.
+
+The derived interrupted-run projection marks a recorded budget rejection separately from whether
+any gate is still resumable. This is ephemeral store metadata, not a new durable event or status.
+If an eligible crash reconciliation sees that rejection without a run terminal, it appends the existing
+`run:failed` with `budget_exceeded` and no dispatch. An ordinary non-resumable interruption keeps
+`internal`; outstanding gates retain the existing resumable policy. A decided rejection may leave the
+materialized run status `running` until that terminal is durably appended. Neither discovery nor
+reconciliation fabricates a terminal or output during the ordered suspension fold.
+
 The new discriminator enforces [ADR-0100](../../decisions/0100-budget-authorization-is-durable-state-with-a-replay-barrier.md)
 through the existing strict replay read: a pre-W7 binary refuses the unknown authoritative row before
 execution, while read-only display remains tolerant. A current binary still reads legacy logs.

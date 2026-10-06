@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { isAppendConflictError, RunEventSchema, type RunEvent } from '@relavium/shared';
+import {
+  isAppendConflictError,
+  isCorruptRunEventError,
+  RunEventSchema,
+  type RunEvent,
+} from '@relavium/shared';
 
 import {
   createAbortController,
@@ -99,6 +104,66 @@ describe('InMemoryRunStore', () => {
     expect(interrupted.get('ordinary')?.resumable).toBe(true);
     expect(store.eventsFor('legacy')).toEqual(rows);
   });
+  it('refuses aggregate discovery with typed row context and preserves healthy and corrupt evidence', async () => {
+    const store = new InMemoryRunStore();
+    const event = (
+      runId: string,
+      sequenceNumber: number,
+      fields: Record<string, unknown>,
+    ): RunEvent =>
+      RunEventSchema.parse({
+        runId,
+        sequenceNumber,
+        timestamp: '2026-10-04T00:00:00.000Z',
+        ...fields,
+      });
+    for (const runId of ['healthy', 'damaged']) {
+      await store.persistEvent(
+        event(runId, 0, {
+          type: 'run:started',
+          workflowId: '00000000-0000-4000-8000-000000000001',
+          inputs: {},
+          executionMode: 'local',
+        }),
+      );
+      await store.persistEvent(
+        event(runId, 1, {
+          type: 'human_gate:paused',
+          nodeId: 'human',
+          gateId: 'gate',
+          gateType: 'approval',
+          message: 'approve',
+        }),
+      );
+    }
+    await store.persistEvent(
+      event('damaged', 2, {
+        type: 'human_gate:paused',
+        nodeId: 'conflicting',
+        gateId: 'gate',
+        gateType: 'approval',
+        message: 'approve',
+      }),
+    );
+    const healthy = [...store.eventsFor('healthy')];
+    const damaged = [...store.eventsFor('damaged')];
+    let error: unknown;
+    try {
+      await store.listInterruptedRuns();
+    } catch (cause) {
+      error = cause;
+    }
+    expect(isCorruptRunEventError(error)).toBe(true);
+    expect(error).toMatchObject({
+      code: 'corrupt_run_event',
+      runId: 'damaged',
+      sequenceNumber: 2,
+      eventType: 'human_gate:paused',
+    });
+    expect(store.eventsFor('healthy')).toEqual(healthy);
+    expect(store.eventsFor('damaged')).toEqual(damaged);
+  });
+
   it('mints a stable UUID per slug and reuses it', async () => {
     const store = new InMemoryRunStore();
     const first = await store.resolveWorkflowId('my-flow');

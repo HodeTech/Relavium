@@ -129,3 +129,19 @@ publications before aggregate handoff. This completes the existing parallel-gate
 acceptance above; authority/companion order, replay joins and approval policy are unchanged.
 The dated [ADR-0079 correction](0079-cross-process-run-ownership-lease-and-fencing-token.md)
 records the related ordinary-gate preparation and asynchronous host boundary.
+
+## Implementation correction — 2026-10-06, interruption and corruption boundaries
+
+SQLite and reference-store interrupted-run discovery retain aggregate fail-closed behaviour for
+corrupt known state-bearing rows or conflicting suspension history; they do not silently omit a run.
+Both report the existing structured `CorruptRunEventError`, now owned by platform-free shared code
+and re-exported by the database package for compatibility. This makes the existing refusal policy
+explicit and gives hosts consistent diagnostics without adding a durable event or error code.
+
+The interruption projection also retains whether ordered history records a budget rejection.
+Eligible reconciliation after a crash between that decision and its run terminal appends the existing
+`budget_exceeded` failure without dispatch, rather than changing the reason to `internal`. Ordinary
+interruption, outstanding-gate resumability, lease fencing and strict replay remain unchanged; this
+does not promise automatic startup reconciliation on a shipping surface. The materialized `running`
+status between decision and terminal is not a new resumable approval. See the canonical
+[event contract](../reference/contracts/sse-event-schema.md#durable-budget-authorization).

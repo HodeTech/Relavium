@@ -343,3 +343,14 @@ instead).
   - [chat-session.md](../reference/cli/chat-session.md) and
     [agent-sessions.md](../architecture/agent-sessions.md): what a turn appends, and what the export carries.
 - **Records**: the `CR-70` deferral in [deferred-tasks.md](../roadmap/deferred-tasks.md).
+
+## Implementation correction — 2026-10-06, projection producer boundary
+
+The current engine emits both compaction and trimming through an internal typed boundary that
+requires `keptTurnCount`. The public event field remains additive and optional for older producer
+events; the persister retains that legacy compatibility. Current producer calls
+cannot omit the whole-turn boundary and accidentally select message-count persistence. This does
+not change compaction policy or rewrite historical messages/events. Strict session-store metadata
+validation also retains consistent legacy projections while refusing mismatched/raw values.
+The canonical contracts remain [agent-session-spec.md](../reference/contracts/agent-session-spec.md)
+and [database-schema.md](../reference/shared-core/database-schema.md#session-content-parts).

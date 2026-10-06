@@ -19,6 +19,7 @@ import {
   type AbortControllerLike,
   type AbortSignalLike,
   AppendConflictError,
+  CorruptRunEventError,
   blocksResume,
   type DurableWriteContext,
   EffectConflictError,
@@ -118,6 +119,8 @@ export interface InterruptedRun {
   readonly workflowId: string;
   /** `true` when the run was suspended at a gate (resumable); `false` when it died mid-execution. */
   readonly resumable: boolean;
+  /** A recorded budget rejection survived without its run terminal; derived from ordered gate history. */
+  readonly budgetRejected?: boolean;
   /** The highest `sequenceNumber` already persisted for this run — the reconcile event continues from it. */
   readonly lastSequenceNumber: number;
 }
@@ -469,11 +472,18 @@ export class InMemoryRunStore implements RunStore {
         continue; // already settled
       }
       const suspension = new RunSuspensionReducer();
-      for (const event of events) suspension.apply(event);
+      for (const event of events) {
+        try {
+          suspension.apply(event);
+        } catch (cause) {
+          throw new CorruptRunEventError(runId, event.sequenceNumber, event.type, cause);
+        }
+      }
       interrupted.push({
         runId,
         workflowId: started.workflowId,
         resumable: suspension.isResumable(runId),
+        ...(suspension.budgetRejections(runId).length === 0 ? {} : { budgetRejected: true }),
         lastSequenceNumber: events.reduce((max, e) => Math.max(max, e.sequenceNumber), -1),
       });
     }

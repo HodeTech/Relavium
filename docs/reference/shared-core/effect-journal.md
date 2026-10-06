@@ -350,6 +350,11 @@ A **session** row's `result_json` is always SQL NULL; even a supplied result who
 examined. A matching prepare refuses rather than replaying, and readers suppress legacy results before parsing.
 A **run** row retains its bounded result until the terminal sweep, preserving §4's replay contract.
 
+Open-time high-water backfill isolates invalid legacy identity/history evidence to its affected
+session; reservation for that session still refuses, and evidence is not guessed or removed by
+backfill. Healthy sessions remain usable. The exact initialization and allocation contract lives in
+[database-schema.md](database-schema.md#session-content-parts).
+
 The Node client opens with `secure_delete = ON`. After schema migration and **high-water initialization**,
 an owned `BEGIN IMMEDIATE` data update clears every legacy session result, including unresolved, orphan and
 one-shot rows, without changing their other fields. The clear and every session sweep are followed **after

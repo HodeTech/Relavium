@@ -5342,7 +5342,8 @@ export class WorkflowEngine {
 
   /**
    * Crash reconciliation (startup). For every run the store reports as interrupted-and-not-resumable
-   * (started, no terminal event, not parked at a gate), persist a terminal `run:failed{internal}`
+   * (started, no terminal event, not parked at a gate), persist a terminal `run:failed{internal}`,
+   * or `budget_exceeded` when ordered gate history already records a budget rejection,
    * continuing that run's `sequenceNumber` — so a crashed run never lingers as a stuck `run:started`.
    * Returns the reconciled events. Resumable runs (parked at a gate) are left for `resume`.
    */
@@ -5379,8 +5380,11 @@ export class WorkflowEngine {
         timestamp: this.#host.clock.now(),
         sequenceNumber: run.lastSequenceNumber + 1,
         error: {
-          code: 'internal',
-          message: 'the run was interrupted before completion and reconciled on restart',
+          code: run.budgetRejected === true ? 'budget_exceeded' : 'internal',
+          message:
+            run.budgetRejected === true
+              ? 'the recorded budget rejection was reconciled before completion'
+              : 'the run was interrupted before completion and reconciled on restart',
           retryable: false,
           correlationId: this.#host.ids.newId(), // matches the #settle / node:failed live-failure paths
         },

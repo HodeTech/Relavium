@@ -259,7 +259,10 @@ supply the matching host boundary seeds. A tool-call row
 with preamble text is never a terminal, and an unfinished exchange rolls back. An empty-final turn
 restores its user message alone and counts as a completed turn. Compaction/trim boundaries retain
 whole turns; `/trim` still takes message units. Export reads all historical completed turns,
-including those superseded by a working-context boundary.
+including those superseded by a working-context boundary. The engine's internal projection-event
+emit boundary requires `keptTurnCount` for both compaction and trimming, so current producers cannot
+fall back to message count. The public event schema still accepts older events without that additive
+field; the persister's legacy compatibility does not weaken the current producer requirement.
 
 **Legacy empty-final compatibility.** Before explicit empty terminals, the writer could persist a
 successful empty final as a user row alone. A bare user immediately followed by another user retains

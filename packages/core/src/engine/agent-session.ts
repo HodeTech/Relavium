@@ -1408,7 +1408,7 @@ export class AgentSession {
       this.#compactionSummary = ownedSummary;
       this.#replaceHistory(split.kept);
       observeCompactionEvent(() =>
-        this.#deps.emit({
+        this.#emitProjectionEvent({
           type: 'session:compacted',
           reason,
           summary,
@@ -1490,7 +1490,7 @@ export class AgentSession {
     const dropped = this.#messages.length - kept.length;
     if (dropped <= 0) return { kind: 'nothing_to_trim', messageCount: this.#messages.length };
     this.#replaceHistory(kept);
-    this.#deps.emit({
+    this.#emitProjectionEvent({
       type: 'session:trimmed',
       reason, // `auto-fallback` when the auto-compaction summariser failed → the view surfaces it (never silent)
       keptMessageCount: kept.length,
@@ -1686,6 +1686,15 @@ export class AgentSession {
       this.#deps.emit({ ...event, cumulativeCostMicrocents: this.#cumulativeCostMicrocents });
       return;
     }
+    this.#deps.emit(event);
+  }
+
+  /** New producers always carry the whole-turn boundary; the public schema still accepts older events. */
+  #emitProjectionEvent(
+    event: Extract<SessionLifecycleEvent, { type: 'session:compacted' | 'session:trimmed' }> & {
+      readonly keptTurnCount: number;
+    },
+  ): void {
     this.#deps.emit(event);
   }
 

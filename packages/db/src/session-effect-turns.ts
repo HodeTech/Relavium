@@ -1,5 +1,5 @@
 /** ADR-0098: durable session effect identity, separate from the reconstructed max_turns counter. */
-import { and, eq, gte, lt } from 'drizzle-orm';
+import { and, eq, gte, inArray, lt, or } from 'drizzle-orm';
 
 import type { Db } from './client.js';
 import { withBusyRetry } from './retry.js';
@@ -84,12 +84,58 @@ export function initializeSessionEffectTurnKeys(db: Db): void {
   withBusyRetry(() =>
     db.transaction(
       (tx) => {
-        const sessions = tx
+        // Empty idle sessions keep zero until their first reservation. Identify legacy evidence in
+        // bounded batches, avoiding a separate history read/write for every unused session on open.
+        const uninitialized = tx
           .select({ id: agentSessions.id })
           .from(agentSessions)
           .where(eq(agentSessions.effectTurnHighWater, 0))
           .all();
-        for (const session of sessions) seedLegacyKey(tx, session.id);
+        const sessions = new Set<string>();
+        const batchSize = 128; // 256 scope parameters remain below SQLite's portable variable ceiling.
+        for (let offset = 0; offset < uninitialized.length; offset += batchSize) {
+          const ids = uninitialized.slice(offset, offset + batchSize).map((row) => row.id);
+          for (const row of tx
+            .selectDistinct({ id: sessionMessages.sessionId })
+            .from(sessionMessages)
+            .where(
+              and(inArray(sessionMessages.sessionId, ids), eq(sessionMessages.role, 'assistant')),
+            )
+            .all())
+            sessions.add(row.id);
+          const prefixes = ids.map((id) => ({ id, prefix: `session:${encodeURIComponent(id)}:` }));
+          const byEncoded = new Map(ids.map((id) => [encodeURIComponent(id), id]));
+          const effects = tx
+            .selectDistinct({ scope: runEffects.scope })
+            .from(runEffects)
+            .where(
+              or(
+                ...prefixes.map(({ prefix }) =>
+                  and(
+                    gte(runEffects.scope, prefix),
+                    lt(runEffects.scope, `${prefix.slice(0, -1)};`),
+                  ),
+                ),
+              ),
+            )
+            .all();
+          for (const effect of effects) {
+            const separator = effect.scope.indexOf(':', 'session:'.length);
+            const id = byEncoded.get(effect.scope.slice('session:'.length, separator));
+            if (id !== undefined) sessions.add(id);
+          }
+        }
+        for (const id of sessions) {
+          try {
+            seedLegacyKey(tx, id);
+          } catch (error) {
+            if (!(error instanceof SessionEffectTurnError) || error.code !== 'history_invalid')
+              throw error;
+            // Keep this session uninitialized, with its original evidence intact. Its reservation
+            // path still refuses corrupt history; unrelated sessions and database operations remain
+            // usable. Never guess a terminal-count floor that could reissue an old effect identity.
+          }
+        }
       },
       { behavior: 'immediate' },
     ),

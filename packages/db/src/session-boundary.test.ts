@@ -207,3 +207,46 @@ describe('the complete session store boundary (ADR-0095)', () => {
     expect(store.loadSession('s1')?.status).toBe('active');
   });
 });
+
+describe('legacy text rows keep the canonical read boundary (systematic SR-23)', () => {
+  it.each([false, true])('loads native legacy text with matching metadata=%s', (metadata) => {
+    const content = [{ type: 'text', text: 'pre-W7 assistant text' }];
+    client.db
+      .insert(sessionMessages)
+      .values({
+        id: 'legacy-text',
+        sessionId: 's1',
+        sequenceNumber: 0,
+        role: 'assistant',
+        contentParts: JSON.stringify(content),
+        content: metadata ? 'pre-W7 assistant text' : null,
+        finishReason: metadata ? 'stop' : null,
+        createdAt: Date.parse(timestamp),
+      })
+      .run();
+    const before = client.db.select().from(sessionMessages).all();
+    expect(store.loadFull('s1')?.messages[0]?.content).toEqual(content);
+    expect(client.db.select().from(sessionMessages).all()).toEqual(before);
+  });
+  it('refuses a mismatched legacy projection without changing bytes or blocking another session', () => {
+    store.createSession({ ...session, id: 'healthy' });
+    client.db
+      .insert(sessionMessages)
+      .values({
+        id: 'legacy-mismatch',
+        sessionId: 's1',
+        sequenceNumber: 0,
+        role: 'user',
+        contentParts: JSON.stringify([{ type: 'text', text: 'canonical old text' }]),
+        content: secret,
+        createdAt: Date.parse(timestamp),
+      })
+      .run();
+    const before = client.db.select().from(sessionMessages).all();
+    refused(() => {
+      store.loadFull('s1');
+    });
+    expect(store.loadFull('healthy')?.session.id).toBe('healthy');
+    expect(client.db.select().from(sessionMessages).all()).toEqual(before);
+  });
+});
