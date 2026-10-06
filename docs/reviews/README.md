@@ -253,6 +253,10 @@ added.
   verified pause-finalization High remains open; two Medium/test corrections pass local checks;
   exhaustive sealed evidence audit completed, narrow reviews and approved lifecycle decision pending.
 
+- [2026-10-06 — W7 group 3 round-5 correction, two narrow rounds](2026-10-06T22-16-35-w7-systematic-group-3-round-5-correction-review.md):
+  nine-path correction accepted after two fresh static/runtime rounds and complete evidence audits;
+  voluntary paused-departure High and lifecycle/ownership approvals remain open.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

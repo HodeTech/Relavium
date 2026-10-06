@@ -3550,3 +3550,13 @@ independently audited before Original resumes. **Group 3 remains changes request
 correction reviews and the High's approved implementation are required; ADR-0102, Groups 4–6,
 Steps 7–8/12, current Sonar, W7 and draft PR #90 remain open.** Independent Groups 4–6 may advance
 through their own checks and review while the new lifecycle decision is pending.
+
+### W7 group 3 round-5 correction accepted in narrow scope — 2026-10-06
+
+Two fresh independent static/runtime rounds accept the nine-path test/documentation correction
+through `8e241377`. Runtime focuses pass 98 and 96 cases, with fresh ordered builds, strict inclusion
+and causal cleanup/JSON controls. Parent independently audits every recorded actual artifact field
+and all 1,154 source/Original receipts before releasing both freezes. The [qualified review record](../../reviews/2026-10-06T22-16-35-w7-systematic-group-3-round-5-correction-review.md)
+retains all preparation/read/guard/platform bounds. Full Group 3 remains changes requested: the
+voluntary paused-departure High is open, ADR-0103 remains an unapproved draft and ADR-0102 remains
+Proposed. Independent Groups 4–6 may proceed under the existing plan; no W7/merge acceptance is granted.
