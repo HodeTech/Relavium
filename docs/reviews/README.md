@@ -229,6 +229,10 @@ added.
   cold nested-operation ownership independently reproduced and corrected; complete qualified reviews,
   8,195 passing tests, fresh complete round 14 required.
 
+- [2026-10-06 — W7 systematic group 2a, round 14](2026-10-06T17-49-28-w7-systematic-group-2a-round-14-review.md):
+  two complete independent qualified reviews; 955 and 934 passing tests, all released evidence
+  independently audited; Group 2a accepted within scope, remaining W7 and PR gates open.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

@@ -1556,3 +1556,12 @@ six build tasks and isolation. Both reports, the complete Runtime static supplem
 3,526 physical entries are audited, with early launch/read/preparation gaps retained.
 **Fresh complete round 14 is required; group 2a, Proposed ADR-0102 approval/implementation,
 remaining groups, live-fixture-gated Steps 7–8, final Step 12, Sonar, W7 and draft PR #90 remain open.**
+
+**Systematic group 2a, round 14 — 2026-10-06.** [Both complete independent qualified reviews](../reviews/2026-10-06T17-49-28-w7-systematic-group-2a-round-14-review.md)
+accept the 66-path scope at `207b2716`: cold operation ownership, generated projection/pricing
+precedence and actual money durability joins retain their guarantees. Contracts passes 955 tests;
+Runtime passes 934, with fresh builds and strict fixtures. Both reports, the stopped static supplement,
+all 3,553 actual physical entries and 153 external artifact tuples are independently audited before
+Original resumes; initial launch/read/preparation gaps stay qualified. **Group 2a is accepted within
+this scope. Proposed ADR-0102 approval/implementation, remaining Groups 3–6, live-fixture-gated
+Steps 7–8, final Step 12, current Sonar, whole W7 and draft PR #90 remain open.**
