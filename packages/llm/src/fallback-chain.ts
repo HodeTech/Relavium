@@ -35,6 +35,27 @@ import {
 
 export type { BackoffStrategy };
 
+type GeneratedResultProjection =
+  | { readonly ok: true; readonly result: LlmResult }
+  | { readonly ok: false; readonly error: unknown };
+
+/** Own typed output before host pricing runs, while allowing known usage to be charged on failure. */
+function captureGeneratedResult(result: LlmResult, usage: Usage): GeneratedResultProjection {
+  try {
+    return {
+      ok: true,
+      result: {
+        content: ContentPartSchema.array().parse(result.content),
+        stopReason: StopReasonSchema.parse(result.stopReason),
+        usage,
+        raw: result.raw,
+      },
+    };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
 /**
  * The `FallbackChain` runner (1.K) — the seam's last Phase-1 policy layer. It walks an ordered plan
  * of provider attempts: within an entry it retries the **same** provider up to that entry's budget on
@@ -732,18 +753,15 @@ export class FallbackChain {
       if (usage !== undefined) {
         knownUsage = snapshotAccountableUsage(entry.model, usage);
         usage = knownUsage;
-        folded = this.#foldUsage(entry.model, knownUsage);
-      } else {
-        folded = { unpriced: false };
       }
-      // Own the result surface before any observer runs. A getter on a paid provider result is
-      // not another provider failure, and must never grant node retry or budget-gate authority.
-      captured = {
-        content: ContentPartSchema.array().parse(result.content),
-        stopReason: StopReasonSchema.parse(result.stopReason),
-        usage: knownUsage ?? resultUsage,
-        raw: result.raw,
-      };
+      // The host's pricing lookup can mutate the original response too. Capture output first,
+      // but defer a projection fault until pricing has charged its already known quantities.
+      // If both fail, accounting remains primary and cannot grant retry or refund authority.
+      const projection = captureGeneratedResult(result, knownUsage ?? resultUsage);
+      folded =
+        knownUsage === undefined ? { unpriced: false } : this.#foldUsage(entry.model, knownUsage);
+      if (!projection.ok) throw projection.error;
+      captured = projection.result;
     } catch (cause) {
       disposeDeadline();
       const error = Object.freeze(

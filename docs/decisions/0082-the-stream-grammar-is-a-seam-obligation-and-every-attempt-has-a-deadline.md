@@ -432,3 +432,15 @@ All shared cleanup stages are attempted before rethrowing the first original fai
 best-effort iterator closure and genuine admission/money controls remain unchanged. First-party
 native cleanup was not reproduced as faulty; no new financial policy or Request ownership is
 introduced. See the [LLM seam](../reference/shared-core/llm-provider-seam.md#the-per-attempt-deadline).
+
+## 2026-10-06 implementation correction — generated projection precedes host pricing
+
+Retained twelfth-round controls reproduce host pricing rewriting generated text before the chain
+owns its typed output. Generated content, stop reason and raw response are now captured before host
+pricing, while accountable usage is already detached. A failed projection still permits known valid
+quantities to be priced and recorded exactly once; if pricing also fails, accounting remains primary.
+Fixed non-retryable presentation and opaque private causes preserve existing retry and settlement
+rules. This is bounded result ownership, not Proposed ADR-0102's whole-request compatibility policy.
+The canonical [LLM seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter)
+states the order. The interrupted review remains qualified and requires a fresh complete round.
+Historical text is preserved.

@@ -995,11 +995,13 @@ followed by each authored `fallback_chain` entry:
   flow only when it is the exact throwable retained at the current pre-attempt boundary; matching a
   public error class alone is insufficient. Provider and pricing causes follow their guarded chain
   diagnostic. Genuine pre-attempt failures retain their existing handling. Generated content,
-  stop reason and raw response properties are each read once into a plain result before observer
-  delivery, inside the protected post-response projection. A projection fault preserves already
-  folded usage/price on its single failed record and has a fixed non-retryable diagnostic. This
+  stop reason and raw response properties are each read once into a plain result before host pricing
+  and observer delivery, inside the protected post-response projection. A projection fault still
+  prices already owned valid quantities before its single failed record; if pricing also fails,
+  that accounting failure stays primary. Known usage/price remain on the record with a fixed
+  non-retryable diagnostic. This
   detaches the schema-defined content fields, including nested typed media shapes, and validates stop
-  reason before observer delivery. A later mutation of provider-owned content cannot alter that typed
+  reason before host pricing or observer delivery. A later mutation of provider-owned content cannot alter that typed
   projection or install a downstream accessor with retry, budget or failure-writer authority. Opaque
   tool arguments/results and raw response payloads retain their existing contract; generic deep
   payload or whole-request ownership is not claimed. An admission
