@@ -83,6 +83,11 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
   let failed = false;
   let iterator: AsyncIterator<RunEvent> | undefined;
   let inlineRefused = false;
+  let inlineTerminating = false;
+  let activePrompt: AbortController | undefined;
+  let unsubscribeTerminal: (() => void) | undefined;
+  const mayPrompt = (): boolean =>
+    !cancelRequested && !inlineRefused && !inlineTerminating && !isTerminalOutcome(outcome);
   /** gateIds a prompter handled inline (resolved OR cancelled) — so a stale aggregate `run:paused` is ignored. */
   const handledGates = new Set<string>();
   // A rendering projection of emitted authority, never a second authorization reducer.
@@ -97,6 +102,7 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
   const requestCancellation = (): void => {
     if (cancelRequested) return;
     cancelRequested = true;
+    activePrompt?.abort();
     handle.cancel();
   };
   const onSigint = (): void => {
@@ -141,6 +147,21 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
   try {
     // Keep the primary subscription through teardown: for-await break would close it before a late cancel.
     iterator = handle.events[Symbol.asyncIterator]();
+    // Emitted rejection/terminal authority only stops stale UI; primary events retain outcome and durability.
+    unsubscribeTerminal = handle.subscribe((event) => {
+      if (
+        event.runId === handle.runId &&
+        (event.type === 'run:completed' ||
+          event.type === 'run:failed' ||
+          event.type === 'run:cancelled' ||
+          (event.type === 'budget:authorization' &&
+            event.authorization.state === 'decided' &&
+            event.authorization.decision === 'rejected'))
+      ) {
+        inlineTerminating = true;
+        activePrompt?.abort();
+      }
+    });
     renderer = makeRenderer();
     while (!streamEnded) {
       const next = await iterator.next();
@@ -171,33 +192,40 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
             });
         }
       }
-      if (
-        event.type === 'human_gate:paused' &&
-        gatePrompter !== undefined &&
-        !inlineRefused &&
-        !cancelRequested
-      ) {
+      if (event.type === 'human_gate:paused' && gatePrompter !== undefined && mayPrompt()) {
         const recorded = budgetContexts.get(event.gateId);
         const context =
           event.runId === handle.runId && recorded?.nodeId === event.nodeId
             ? recorded.context
             : undefined;
-        if (
-          await resolveGateInline(
-            engine,
-            requestCancellation,
-            renderer,
-            gatePrompter,
-            event,
-            io,
-            context,
+        const controller = new AbortController();
+        activePrompt = controller;
+        try {
+          if (
+            await resolveGateInline(
+              engine,
+              {
+                requestCancellation,
+                mayPrompt,
+                expectTerminal: () => {
+                  inlineTerminating = true;
+                },
+                signal: controller.signal,
+              },
+              renderer,
+              gatePrompter,
+              event,
+              io,
+              context,
+            )
           )
-        )
-          handledGates.add(event.gateId);
-        else {
-          // Stop prompting, but retain the command's resources until the real aggregate pause
-          // is durably acknowledged (or a terminal wins). A gate companion is not that barrier.
-          inlineRefused = true;
+            handledGates.add(event.gateId);
+          else {
+            // A real aggregate pause ACK, rather than a companion, remains the refusal barrier.
+            inlineRefused = true;
+          }
+        } finally {
+          if (activePrompt === controller) activePrompt = undefined;
         }
         continue; // a resolve continues the run; a cancel drains it to run:cancelled — keep consuming either way
       }
@@ -206,6 +234,7 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
       // Once cancellation starts, drain through an already queued pause to the durable cancellation terminal.
       if (
         !cancelRequested &&
+        !inlineTerminating &&
         event.type === 'run:paused' &&
         shouldBreakOnPause(event, gatePrompter !== undefined && !inlineRefused, handledGates)
       ) {
@@ -248,6 +277,13 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
       // no asynchronous cleanup may accept another cancellation after that stream is closed.
       process.removeListener('SIGINT', onSigint);
       try {
+        unsubscribeTerminal?.();
+      } catch (unsubscribeErr) {
+        io.writeErr(
+          `terminal observer cleanup failed: ${unsubscribeErr instanceof Error ? unsubscribeErr.message : String(unsubscribeErr)}\n`,
+        );
+      }
+      try {
         await iterator?.return?.();
       } catch (closeErr) {
         io.writeErr(
@@ -259,6 +295,30 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
   return outcome;
 }
 
+interface InlineGateLifecycle {
+  readonly requestCancellation: () => void;
+  readonly mayPrompt: () => boolean;
+  readonly expectTerminal: () => void;
+  readonly signal: AbortSignal;
+}
+
+async function promptUntilStopped(
+  invoke: () => ReturnType<GatePrompter['prompt']>,
+  signal: AbortSignal,
+): Promise<Awaited<ReturnType<GatePrompter['prompt']>>> {
+  if (signal.aborted) return null;
+  let stop = (): void => {};
+  const stopped = new Promise<null>((resolve) => {
+    stop = () => resolve(null);
+    signal.addEventListener('abort', stop, { once: true });
+  });
+  try {
+    return await Promise.race([invoke(), stopped]);
+  } finally {
+    signal.removeEventListener('abort', stop);
+  }
+}
+
 /**
  * Resolve an interactive human gate without leaving the live run: hand the terminal to the `@clack/prompts`
  * card (suspend the TUI), collect a decision, then re-mount. A `null` decision (the user aborted the prompt
@@ -267,7 +327,7 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
  */
 async function resolveGateInline(
   engine: WorkflowEngine,
-  requestCancellation: () => void,
+  lifecycle: InlineGateLifecycle,
   renderer: RunRenderer,
   prompter: GatePrompter,
   event: HumanGatePausedEvent,
@@ -277,22 +337,26 @@ async function resolveGateInline(
   let decision: Awaited<ReturnType<GatePrompter['prompt']>>;
   await renderer.suspend?.();
   try {
-    decision =
-      budget === undefined ? await prompter.prompt(event) : await prompter.prompt(event, budget);
+    if (!lifecycle.mayPrompt()) return true;
+    decision = await promptUntilStopped(
+      () => prompter.prompt(event, budget, lifecycle.signal),
+      lifecycle.signal,
+    );
   } finally {
     // Re-mount best-effort: a re-mount failure (ink's render() throwing) must NOT mask the prompt's decision
     // or its error — a throwing `finally` would replace the try's outcome. Surface it to stderr and move on,
     // exactly like driveRun's teardown (finalize) guard above.
     try {
-      await renderer.resume?.();
+      if (lifecycle.mayPrompt()) await renderer.resume?.();
     } catch (resumeErr) {
       io.writeErr(
         `failed to restore the live view after the gate prompt: ${resumeErr instanceof Error ? resumeErr.message : String(resumeErr)}\n`,
       );
     }
   }
+  if (lifecycle.signal.aborted) return true;
   if (decision === null) {
-    requestCancellation();
+    lifecycle.requestCancellation();
     return true;
   }
   try {
@@ -305,6 +369,7 @@ async function resolveGateInline(
     // and let the loop drain the buffered run:cancelled (→ outcome 'cancelled'), never a generic "internal
     // error". Any other engine refusal is a real bug and re-throws.
     if (err instanceof EngineStateError && err.code === 'run_already_terminal') {
+      lifecycle.expectTerminal();
       return true;
     }
     if (

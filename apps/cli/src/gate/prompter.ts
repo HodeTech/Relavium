@@ -12,10 +12,13 @@ import type { BudgetPromptContext } from './budget.js';
  *
  * `prompt` returns the built {@link GateDecision}, or `null` when the user cancels the prompt itself
  * (Ctrl-C / ESC) — the run core then cooperatively cancels the whole run.
+ * The optional signal invalidates an open card when the run cancels or terminates. Implementations
+ * should release their input resources on abort and return null; the driver discards any late answer.
  */
 export interface GatePrompter {
   prompt: (
     event: HumanGatePausedEvent,
     budget?: BudgetPromptContext,
+    signal?: AbortSignal,
   ) => Promise<GateDecision | null>;
 }

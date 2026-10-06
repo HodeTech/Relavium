@@ -21,8 +21,13 @@ export interface ClackPromptDeps {
     message: string;
     active: string;
     inactive: string;
+    signal?: AbortSignal;
   }) => Promise<boolean | symbol>;
-  readonly text: (opts: { message: string; placeholder?: string }) => Promise<string | symbol>;
+  readonly text: (opts: {
+    message: string;
+    placeholder?: string;
+    signal?: AbortSignal;
+  }) => Promise<string | symbol>;
   /** Clack's cancel sentinel guard (Ctrl-C / ESC) — a real type guard so a non-cancel value narrows. */
   readonly isCancel: (value: unknown) => value is symbol;
 }
@@ -57,8 +62,9 @@ function cardBody(event: HumanGatePausedEvent): string {
 
 export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): GatePrompter {
   return {
-    prompt: async (event, budget) => {
-      if (budget !== undefined) return promptBudget(deps, event, budget);
+    prompt: async (event, budget, signal) => {
+      if (signal?.aborted) return null;
+      if (budget !== undefined) return promptBudget(deps, event, budget, signal);
       deps.note(
         cardBody(event),
         `⏸ ${GATE_TITLE[event.gateType]} · ${sanitizeInline(event.nodeId)}`,
@@ -69,16 +75,21 @@ export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): Ga
         // scripted `relavium gate --input <json>` flag (see decision.ts `parseGateInput`). The prompt label is
         // a generic 'Enter value' — the gate's message is already shown in the card above, so repeating it on
         // the prompt line would just echo the same text twice.
-        const value = await deps.text({ message: 'Enter value', placeholder: '' });
-        return deps.isCancel(value) ? null : inputDecision(value);
+        const value = await deps.text({
+          message: 'Enter value',
+          placeholder: '',
+          ...(signal === undefined ? {} : { signal }),
+        });
+        return signal?.aborted || deps.isCancel(value) ? null : inputDecision(value);
       }
 
       const approved = await deps.confirm({
         message: 'Approve?',
         active: 'Approve',
         inactive: 'Reject',
+        ...(signal === undefined ? {} : { signal }),
       });
-      if (deps.isCancel(approved)) {
+      if (signal?.aborted || deps.isCancel(approved)) {
         return null;
       }
       if (approved) {
@@ -87,8 +98,9 @@ export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): Ga
       const comment = await deps.text({
         message: 'Reason for rejection (optional)',
         placeholder: '',
+        ...(signal === undefined ? {} : { signal }),
       });
-      return deps.isCancel(comment) ? null : rejectionDecision(comment);
+      return signal?.aborted || deps.isCancel(comment) ? null : rejectionDecision(comment);
     },
   };
 }
@@ -108,6 +120,7 @@ async function promptBudget(
   deps: ClackPromptDeps,
   event: HumanGatePausedEvent,
   budget: BudgetPromptContext,
+  signal?: AbortSignal,
 ): Promise<Awaited<ReturnType<GatePrompter['prompt']>>> {
   const body = budgetPromptBody(budget);
   const lines = [body, ...budgetPromptDetails(budget)];
@@ -121,8 +134,9 @@ async function promptBudget(
       message: 'Reject this budget gate?',
       active: 'Reject',
       inactive: 'Cancel run',
+      ...(signal === undefined ? {} : { signal }),
     });
-    return deps.isCancel(rejected) || !rejected ? null : rejectionDecision();
+    return signal?.aborted || deps.isCancel(rejected) || !rejected ? null : rejectionDecision();
   }
   const approved = await deps.confirm({
     message:
@@ -131,8 +145,9 @@ async function promptBudget(
         : 'Continue without a budget allowance?',
     active: budget.kind === 'amount' ? 'Approve exact amount' : 'Continue',
     inactive: 'Reject',
+    ...(signal === undefined ? {} : { signal }),
   });
-  if (deps.isCancel(approved)) return null;
+  if (signal?.aborted || deps.isCancel(approved)) return null;
   if (!approved) return rejectionDecision();
   return budget.kind === 'amount'
     ? {
