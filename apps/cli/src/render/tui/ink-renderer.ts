@@ -116,7 +116,7 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
         start();
       }
     },
-    finalize: async () => {
+    finalize: async (settleBeforeSummary) => {
       if (finalized) {
         return;
       }
@@ -128,13 +128,17 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
       try {
         await stop();
       } finally {
-        // The live frames are ephemeral; write the persistent plain-text summary into the scrollback.
-        const write =
-          options.writeSummary ??
-          ((text: string): void => {
-            stdout.write(text);
-          });
-        write(store.summaryText());
+        try {
+          await settleBeforeSummary?.();
+        } finally {
+          // The live frames are ephemeral; write the persistent plain-text summary into the scrollback.
+          const write =
+            options.writeSummary ??
+            ((text: string): void => {
+              stdout.write(text);
+            });
+          write(store.summaryText());
+        }
       }
     },
   };

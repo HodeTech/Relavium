@@ -78,6 +78,10 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
   const { engine, handle, makeRenderer, gatePrompter, io } = deps;
   let outcome: RunOutcome | undefined;
   let cancelRequested = false;
+  let interrupted = false;
+  let streamEnded = false;
+  let failed = false;
+  let iterator: AsyncIterator<RunEvent> | undefined;
   let inlineRefused = false;
   /** gateIds a prompter handled inline (resolved OR cancelled) — so a stale aggregate `run:paused` is ignored. */
   const handledGates = new Set<string>();
@@ -90,14 +94,19 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
   // Register the cancel handler the instant the run is live — BEFORE constructing the renderer — so a failure
   // building the renderer (ink's `render()` throwing) can never leave a running engine with no cooperative-cancel
   // handler; a Ctrl-C in that window still routes to handle.cancel(). The finally removes it, so it can't leak.
+  const requestCancellation = (): void => {
+    if (cancelRequested) return;
+    cancelRequested = true;
+    handle.cancel();
+  };
   const onSigint = (): void => {
-    if (cancelRequested) {
-      // A second Ctrl-C while the cooperative cancel is still draining — force a clean, deterministic exit
+    if (interrupted) {
+      // A second actual SIGINT while cooperative cancel is still draining — force a clean, deterministic exit
       // rather than hang (e.g. a provider ignoring the abort), and never the bare-signal 130.
       process.exit(EXIT_CODES.workflowFailed);
     }
-    cancelRequested = true;
-    handle.cancel(); // cooperative cancel → run:cancelled (idempotent, safe post-terminal)
+    interrupted = true;
+    requestCancellation(); // cooperative cancel → run:cancelled (idempotent, safe post-terminal)
   };
   // `process.on`, NOT `process.once`: an interactive run mounts ink, which registers a `signal-exit` SIGINT
   // listener that RE-RAISES SIGINT (→ 128+2 = exit 130) BUT ONLY when it is the sole remaining SIGINT listener.
@@ -111,9 +120,35 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
   // release. Removed in the finally alongside the SIGINT handler.
   const jobControl = wireRunJobControl({ write: (text) => io.writeOut(text) });
   let renderer: RunRenderer | undefined;
+  const settleCancellation = async (): Promise<void> => {
+    if (iterator === undefined) return;
+    while (cancelRequested && !streamEnded && !isTerminalOutcome(outcome)) {
+      const next = await iterator.next();
+      if (next.done) {
+        streamEnded = true;
+        break;
+      }
+      outcome = nextOutcome(outcome, next.value);
+      try {
+        renderer?.onEvent(next.value);
+      } catch (renderErr) {
+        io.writeErr(
+          `renderer failed while draining cancellation: ${renderErr instanceof Error ? renderErr.message : String(renderErr)}\n`,
+        );
+      }
+    }
+  };
   try {
+    // Keep the primary subscription through teardown: for-await break would close it before a late cancel.
+    iterator = handle.events[Symbol.asyncIterator]();
     renderer = makeRenderer();
-    for await (const event of handle.events) {
+    while (!streamEnded) {
+      const next = await iterator.next();
+      if (next.done) {
+        streamEnded = true;
+        break;
+      }
+      const event = next.value;
       renderer.onEvent(event);
       outcome = nextOutcome(outcome, event);
 
@@ -136,13 +171,28 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
             });
         }
       }
-      if (event.type === 'human_gate:paused' && gatePrompter !== undefined && !inlineRefused) {
+      if (
+        event.type === 'human_gate:paused' &&
+        gatePrompter !== undefined &&
+        !inlineRefused &&
+        !cancelRequested
+      ) {
         const recorded = budgetContexts.get(event.gateId);
         const context =
           event.runId === handle.runId && recorded?.nodeId === event.nodeId
             ? recorded.context
             : undefined;
-        if (await resolveGateInline(engine, handle, renderer, gatePrompter, event, io, context))
+        if (
+          await resolveGateInline(
+            engine,
+            requestCancellation,
+            renderer,
+            gatePrompter,
+            event,
+            io,
+            context,
+          )
+        )
           handledGates.add(event.gateId);
         else {
           // Stop prompting, but retain the command's resources until the real aggregate pause
@@ -162,29 +212,49 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
         break;
       }
     }
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
-    // No terminal/paused outcome means we're unwinding abnormally (renderer construction threw, or the event
-    // stream rejected) — cancel the still-live run so it doesn't keep executing unsupervised while the error
-    // propagates (cancel is idempotent + safe post-terminal).
-    if (outcome === undefined) {
-      handle.cancel();
-    }
-    jobControl.dispose();
-    // Tear the renderer down even on a throw: the ink TUI must unmount to restore the terminal and write its
-    // persistent final summary. The `?.` is a no-op for the line/NDJSON renderers and when `renderer` is still
-    // undefined (construction threw). A teardown error must NOT mask the run's real outcome/error — surface it
-    // to stderr and move on.
     try {
-      await renderer?.finalize?.();
-    } catch (teardownErr) {
-      io.writeErr(
-        `renderer teardown failed: ${teardownErr instanceof Error ? teardownErr.message : String(teardownErr)}\n`,
-      );
+      // No terminal/paused outcome means we're unwinding abnormally (renderer construction threw, or the event
+      // stream rejected) — cancel the still-live run so it doesn't keep executing unsupervised while the error
+      // propagates (cancel is idempotent + safe post-terminal).
+      if (outcome === undefined || (failed && !isTerminalOutcome(outcome))) {
+        requestCancellation();
+      }
+      jobControl.dispose();
+      // Tear the renderer down even on a throw: the ink TUI must unmount to restore the terminal and write its
+      // persistent final summary. The `?.` is a no-op for the line/NDJSON renderers and when `renderer` is still
+      // undefined (construction threw). A teardown error must NOT mask the run's real outcome/error — surface it
+      // to stderr and move on.
+      try {
+        await renderer?.finalize?.(settleCancellation);
+      } catch (teardownErr) {
+        io.writeErr(
+          `renderer teardown failed: ${teardownErr instanceof Error ? teardownErr.message : String(teardownErr)}\n`,
+        );
+      }
+      // Renderers without a summary barrier still retain command resources through the real terminal.
+      try {
+        await settleCancellation();
+      } catch (drainErr) {
+        io.writeErr(
+          `cancellation drain failed: ${drainErr instanceof Error ? drainErr.message : String(drainErr)}\n`,
+        );
+      }
+    } finally {
+      // Ink has released its listener. End signal ownership before abandoning the primary stream;
+      // no asynchronous cleanup may accept another cancellation after that stream is closed.
+      process.removeListener('SIGINT', onSigint);
+      try {
+        await iterator?.return?.();
+      } catch (closeErr) {
+        io.writeErr(
+          `event stream cleanup failed: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}\n`,
+        );
+      }
     }
-    // Remove our SIGINT handler LAST — keep it registered across ink's unmount (renderer.finalize) so a Ctrl-C
-    // during unmount still hits us (forcing a clean exit 1) and ink's `signal-exit` never becomes the sole SIGINT
-    // listener (which would re-raise → 130). After finalize, ink has unsubscribed its own listener.
-    process.removeListener('SIGINT', onSigint);
   }
   return outcome;
 }
@@ -197,7 +267,7 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
  */
 async function resolveGateInline(
   engine: WorkflowEngine,
-  handle: RunHandle,
+  requestCancellation: () => void,
   renderer: RunRenderer,
   prompter: GatePrompter,
   event: HumanGatePausedEvent,
@@ -222,7 +292,7 @@ async function resolveGateInline(
     }
   }
   if (decision === null) {
-    handle.cancel();
+    requestCancellation();
     return true;
   }
   try {
