@@ -95,6 +95,73 @@ function paused(seq: number, gateId = 'budget-gate', nodeId = 'agent', a = allow
   });
 }
 describe('budget operator transport and recorded authority', () => {
+  it('refuses a resolved ordinary human gate while another budget gate remains resumable', () => {
+    const cp = checkpoint([
+      row(1, {
+        type: 'human_gate:paused',
+        nodeId: 'human',
+        gateId: 'ordinary',
+        gateType: 'approval',
+        message: 'review',
+      }),
+      row(2, {
+        type: 'human_gate:resumed',
+        nodeId: 'human',
+        gateId: 'ordinary',
+        decision: 'approved',
+        decidedBy: 'cli',
+      }),
+      paused(3),
+    ]);
+    expect(cp.resolvedGateIds).toContain('ordinary');
+    expect(cp.resolvedBudgetGateIds).not.toContain('ordinary');
+    expect(selectBudgetGate(cp, 'ordinary')).toMatchObject({ kind: 'invalid' });
+    expect(selectBudgetGate(cp, 'budget-gate')).toEqual({ kind: 'resume', gateId: 'budget-gate' });
+  });
+
+  it.each(['native', 'legacy'] as const)(
+    'preserves resolved %s budget idempotency from recorded kind evidence',
+    (kind) => {
+      const pause =
+        kind === 'native'
+          ? paused(1)
+          : row(1, {
+              type: 'budget:paused',
+              nodeId: 'agent',
+              gateId: 'budget-gate',
+              spentMicrocents: 2,
+              limitMicrocents: 1,
+            });
+      const decision =
+        kind === 'native'
+          ? row(2, {
+              type: 'budget:authorization',
+              nodeId: 'agent',
+              gateId: 'budget-gate',
+              authorization: {
+                state: 'decided',
+                allowance: allowance(),
+                decision: 'approved',
+                decidedBy: 'cli',
+                approvedAmountMicrocents: 20,
+              },
+            })
+          : row(2, {
+              type: 'human_gate:resumed',
+              nodeId: 'agent',
+              decision: 'approved',
+              decidedBy: 'cli',
+            });
+      const cp = checkpoint([pause, decision, paused(3, 'next-budget', 'next-agent')]);
+      const { resolvedBudgetGateIds, ...legacyCheckpoint } = cp;
+      expect(resolvedBudgetGateIds).toContain('budget-gate');
+      expect(selectBudgetGate(cp, 'budget-gate')).toMatchObject({ kind: 'idempotent' });
+      expect(selectBudgetGate(legacyCheckpoint, 'budget-gate')).toMatchObject({
+        kind: 'invalid',
+      });
+    },
+  );
+
   it.each([
     '',
     '-1',

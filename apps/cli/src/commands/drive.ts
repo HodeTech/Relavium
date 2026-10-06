@@ -143,6 +143,12 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
             : undefined;
         if (await resolveGateInline(engine, handle, renderer, gatePrompter, event, io, context))
           handledGates.add(event.gateId);
+        else {
+          // A refused frozen decision leaves this gate pending. Exit the live driver now rather
+          // than waiting for another event from an execution that is deliberately still parked.
+          outcome = 'paused';
+          break;
+        }
         continue; // a resolve continues the run; a cancel drains it to run:cancelled — keep consuming either way
       }
       // A non-breaking run:paused (a prompter handled every gate inline, no media park) is informational —

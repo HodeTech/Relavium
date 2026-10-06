@@ -469,3 +469,27 @@ inventory entry before accepting the step. Interrupted earlier runs are excluded
 platform and inherited secret-stdin bounds remain as stated in the canonical CLI contract.
 See [Step 11 round 3](../reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md). This is a dated
 implementation acceptance, not a policy change or closure of whole W7/Steps 7–8.
+
+## Implementation correction — 2026-10-06, W7 systematic operator review
+
+The CLI now projects the structured excluded candidates into budget prompts, plain/TUI notices,
+human status and ambiguous resume discovery. Only the excluded model identifier is disclosed,
+after secret redaction, inline sanitization, truncation and quoting. Priced model/rate provenance
+does not enter the approval card; the confirmation still binds exclusively to the frozen scalar
+amount, including zero. Matching pause companions do not repeat an exclusion notice.
+
+Cross-process approval checks recorded priced quantities against a read-only current price view
+before secret input, credential-resolver construction or MCP connection. A matching early price
+check grants nothing: the engine still prepares the actual request and validates the complete
+current quote before claiming the gate. Human and budget resume construct their resolvers from
+the command's existing database connection. A resolved ordinary human gate is not evidence for
+a budget-command no-op; derived checkpoints retain the resolved budget identities separately.
+
+An inline stale/invalid budget approval returns the existing paused outcome while preserving the
+pending gate, instead of waiting indefinitely for an event the parked run cannot emit. If a gate
+deadline's automatic approval is refused, the engine uses the existing `run_timeout` failure path;
+it does not leave a timerless gate pending or override the refusal. A competing completed decision
+or terminal outcome is retained. These enforce the existing allowance and deadline contracts and
+add no approval unit, expiry policy, error code or request-ownership decision. The canonical
+[command contract](../reference/cli/commands.md#relavium-budget-resume) and
+[execution model](../architecture/execution-model.md#4-human-gate) describe the operator behaviour.

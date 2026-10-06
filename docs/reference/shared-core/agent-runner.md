@@ -175,6 +175,13 @@ context, secret names, tool policy, signal and configured output estimate. The s
 node dispatcher provide it through the same prompt/tool/plan construction used by ordinary execution.
 An executor without this capability can reject a frozen gate; it cannot approve its allowance.
 
+A cross-process host may first compare the frozen quote's recorded priced quantities with current
+rates before secret input, credential-resolver construction or MCP connection. This price-only
+refusal uses the same rate comparison as full validation; a match grants no dispatch authority.
+The CLI reads existing catalog/overlay rows without seeding them for this check and reuses the
+resume command's database connection when constructing its resolvers. The engine still performs
+the complete current request, eligibility, exclusion and price comparison described below.
+
 A successful preparation retains ephemeral `quote(...)` and `execute(ctx)` capabilities. Text retains
 the actual request and candidate-specific cap plans; generative media retains its primary request and
 authored volume. The current price overlay is read at validation. The full quote must match the frozen

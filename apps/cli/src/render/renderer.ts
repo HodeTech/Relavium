@@ -1,4 +1,8 @@
-import { collectDurableMediaHandles, type RunEvent } from '@relavium/shared';
+import {
+  collectDurableMediaHandles,
+  type BudgetAllowanceState,
+  type RunEvent,
+} from '@relavium/shared';
 
 import type { CliIo } from '../process/io.js';
 import {
@@ -6,6 +10,7 @@ import {
   budgetGateIdentity,
   budgetIdentifier,
   budgetPromptContext,
+  budgetPromptDetails,
   budgetResumeHints,
 } from '../gate/budget.js';
 import { formatProducedMedia } from './tui/format.js';
@@ -72,25 +77,42 @@ export function createJsonRenderer(io: CliIo): RunRenderer {
  * would forge extra rows in a CI log just as it would on a terminal.
  */
 export function createPlainRenderer(io: CliIo): RunRenderer {
-  const shownBudgetGates = new Set<string>();
+  const shownBudgetGates = new Map<string, { readonly runId: string; readonly nodeId: string }>();
   return {
     onEvent: (event) => {
+      if (event.type === 'budget:authorization' && event.authorization.state === 'decided')
+        shownBudgetGates.delete(budgetGateIdentity(event));
+      if (event.type === 'human_gate:resumed') {
+        if (event.gateId !== undefined)
+          shownBudgetGates.delete(budgetGateIdentity({ ...event, gateId: event.gateId }));
+        else
+          for (const [identity, gate] of shownBudgetGates)
+            if (gate.runId === event.runId && gate.nodeId === event.nodeId)
+              shownBudgetGates.delete(identity);
+      }
+      if (
+        event.type === 'run:completed' ||
+        event.type === 'run:failed' ||
+        event.type === 'run:cancelled'
+      )
+        for (const [identity, gate] of shownBudgetGates)
+          if (gate.runId === event.runId) shownBudgetGates.delete(identity);
       if (
         event.type === 'budget:paused' ||
         (event.type === 'budget:authorization' && event.authorization.state === 'paused')
       ) {
         const identity = budgetGateIdentity(event);
         if (shownBudgetGates.has(identity)) return;
-        shownBudgetGates.add(identity);
-        const allowance =
-          event.type === 'budget:authorization'
-            ? event.authorization.allowance
-            : event.allowanceQuote === undefined
-              ? undefined
-              : { kind: 'frozen' as const, quote: event.allowanceQuote };
+        shownBudgetGates.set(identity, { runId: event.runId, nodeId: event.nodeId });
+        let allowance: BudgetAllowanceState | undefined;
+        if (event.type === 'budget:authorization') allowance = event.authorization.allowance;
+        else if (event.allowanceQuote !== undefined)
+          allowance = { kind: 'frozen', quote: event.allowanceQuote };
         io.writeOut(
           `  pending budget gate ${budgetIdentifier(event.gateId)} at ${budgetIdentifier(event.nodeId)} — ${budgetAllowanceLabel(allowance)}\n`,
         );
+        for (const detail of budgetPromptDetails(budgetPromptContext(allowance)))
+          io.writeOut(`    ${detail}\n`);
         for (const hint of budgetResumeHints(
           event.runId,
           event.gateId,

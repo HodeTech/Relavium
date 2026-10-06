@@ -4,7 +4,12 @@ import type { Db, RunHistoryReader, RunRecord, StepRecord } from '@relavium/db';
 
 import { loadResolvedConfig } from '../config/load.js';
 import { pendingGateDisplays, type PendingGate, type PendingBudgetGate } from '../gate/pending.js';
-import { budgetIdentifier, budgetPromptLabel, budgetResumeHints } from '../gate/budget.js';
+import {
+  budgetIdentifier,
+  budgetPromptDetails,
+  budgetPromptLabel,
+  budgetResumeHints,
+} from '../gate/budget.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -197,6 +202,7 @@ function renderRun(io: CliIo, status: ActiveRunStatus): void {
     io.writeOut(
       `  ⏸ pending budget gate ${gateId} at ${budgetIdentifier(gate.nodeId)} — ${budgetPromptLabel(gate.allowance)}\n`,
     );
+    for (const detail of budgetPromptDetails(gate.allowance)) io.writeOut(`    ${detail}\n`);
     for (const hint of budgetResumeHints(status.run.id, gate.gateId, gate.allowance))
       io.writeOut(`    ${hint}\n`);
   }

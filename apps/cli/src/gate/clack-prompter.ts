@@ -1,10 +1,9 @@
 import { confirm, isCancel, note, text } from '@clack/prompts';
 import type { HumanGatePausedEvent } from '@relavium/shared';
 
-import { approvalDecision, inputDecision, rejectionDecision } from './decision.js';
+import { approvalDecision, inputDecision, rejectionDecision, DECIDED_BY_CLI } from './decision.js';
 import type { GatePrompter } from './prompter.js';
-import { budgetIdentifier, type BudgetPromptContext } from './budget.js';
-import { DECIDED_BY_CLI } from './decision.js';
+import { budgetIdentifier, budgetPromptDetails, type BudgetPromptContext } from './budget.js';
 import { sanitizeInline, stripTerminalControls } from '../render/sanitize.js';
 
 /**
@@ -94,21 +93,24 @@ export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): Ga
   };
 }
 
+/** Render each recorded budget state without deriving or recalculating its authority. */
+function budgetPromptBody(budget: BudgetPromptContext): string {
+  if (budget.kind === 'amount')
+    return `Frozen allowance: ${budget.microcents} microcents. Approval funds this agent execution only.`;
+  if (budget.kind === 'legacy')
+    return 'Legacy budget gate: no frozen allowance. Continuing grants no allowance; current budget checks still apply.';
+  if (budget.reason === 'unpriced') return 'Reject only: this execution has no priced allowance.';
+  return 'Reject only: this execution allowance cannot be represented safely.';
+}
+
 /** Budget confirmation is binary and bound to the recorded scalar A, including explicit zero. */
 async function promptBudget(
   deps: ClackPromptDeps,
   event: HumanGatePausedEvent,
   budget: BudgetPromptContext,
 ): Promise<Awaited<ReturnType<GatePrompter['prompt']>>> {
-  const body =
-    budget.kind === 'amount'
-      ? `Frozen allowance: ${budget.microcents} microcents. Approval funds this agent execution only.`
-      : budget.kind === 'legacy'
-        ? 'Legacy budget gate: no frozen allowance. Continuing grants no allowance; current budget checks still apply.'
-        : budget.reason === 'unpriced'
-          ? 'Reject only: this execution has no priced allowance.'
-          : 'Reject only: this execution allowance cannot be represented safely.';
-  const lines = [body];
+  const body = budgetPromptBody(budget);
+  const lines = [body, ...budgetPromptDetails(budget)];
   if (event.expiresAt !== undefined) lines.push(`Expires at ${budgetIdentifier(event.expiresAt)}`);
   deps.note(
     lines.join('\n'),

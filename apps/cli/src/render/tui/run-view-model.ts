@@ -5,7 +5,13 @@ import {
   type NodeCompletedEvent,
   type RunEvent,
 } from '@relavium/shared';
-import { budgetAllowanceLabel, budgetGateIdentity, budgetIdentifier } from '../../gate/budget.js';
+import {
+  budgetAllowanceLabel,
+  budgetGateIdentity,
+  budgetIdentifier,
+  budgetPromptContext,
+  budgetPromptDetails,
+} from '../../gate/budget.js';
 
 /**
  * The pure, framework-free view model for the `ink` streaming TUI (workstream **2.E**). It reduces the
@@ -496,7 +502,11 @@ function reduceBudgetNotice(
     base.pendingBudgetNotices.some((gate) => budgetGateIdentity(gate) === budgetGateIdentity(event))
   )
     return base;
-  const notice = `budget gate ${budgetIdentifier(event.gateId)} at ${budgetIdentifier(event.nodeId)} — ${budgetAllowanceLabel(allowance)}`;
+  const details = budgetPromptDetails(budgetPromptContext(allowance));
+  const notice = [
+    `budget gate ${budgetIdentifier(event.gateId)} at ${budgetIdentifier(event.nodeId)} — ${budgetAllowanceLabel(allowance)}`,
+    ...details,
+  ].join('; ');
   return {
     ...base,
     pendingBudgetNotices: [

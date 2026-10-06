@@ -3,6 +3,7 @@ import { statSync } from 'node:fs';
 
 import {
   EngineStateError,
+  budgetAllowancePricesMatch,
   isTransientEngineStateError,
   type CheckpointState,
   type RunHandle,
@@ -44,7 +45,7 @@ import {
   sweepMediaAtTerminal,
 } from '../engine/media-gc.js';
 import { buildMediaEngineWiring } from '../engine/media-wiring.js';
-import { readUserPricingOverlay } from '../engine/pricing-overlay.js';
+import { readBudgetPricingOverlay, readUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { decisionFromFlags, type GateFlags } from '../gate/decision.js';
 import {
@@ -154,8 +155,8 @@ export interface GateCommandDeps {
   readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
   readonly consentGate?: StdioConsentGate;
   readonly mcpSecretResolver?: McpSecretResolver;
-  /** Production creates keychain-backed resolvers only after strict selection/amount refusal. */
-  readonly resolveKeys?: () => {
+  /** After selection/amount refusal, production reads providers from the command's existing db. */
+  readonly resolveKeys?: (db: Db) => {
     readonly providers: ProviderResolver;
     readonly mcpSecretResolver: McpSecretResolver;
   };
@@ -235,6 +236,25 @@ export async function budgetCommand(
   deps: GateCommandDeps,
 ): Promise<ExitCode> {
   return resumeGateCommand(args, deps, 'budget', budgetDecisionFromFlags(args));
+}
+
+/** Build only a copyable invocation; input-provided decisions require a different transport. */
+function formatResumeInvocation(
+  commandBase: string | undefined,
+  kind: 'human' | 'budget',
+  decision: GateDecision,
+): string | undefined {
+  if (commandBase === undefined || decision.decision === 'input_provided') return undefined;
+  let flag: string;
+  if (kind === 'budget') {
+    flag =
+      decision.decision === 'rejected'
+        ? '--abort'
+        : `--approve-amount ${decision.approvedAmountMicrocents}`;
+  } else {
+    flag = decision.decision === 'rejected' ? '--reject' : '--approve';
+  }
+  return `${commandBase} ${flag}`;
 }
 
 async function resumeGateCommand(
@@ -326,19 +346,21 @@ async function resumeGateCommand(
       const gate = checkpoint.pendingGates.find((entry) => entry.gateId === selection.gateId);
       assertBudgetDecision(gate?.allowance, decision);
     }
+    // Recorded priced quantities let stale rates refuse before secrets/key-resolver construction/MCP.
+    // A match grants nothing; the later full preparation reads a fresh price snapshot again.
+    if (kind === 'budget' && decision.decision === 'approved') {
+      const gate = checkpoint.pendingGates.find((entry) => entry.gateId === selection.gateId);
+      if (
+        gate?.allowance?.kind === 'frozen' &&
+        !budgetAllowancePricesMatch(gate.allowance.quote, readBudgetPricingOverlay(opened.db))
+      )
+        throw new CliError(
+          'invalid_invocation',
+          'the frozen budget quote no longer matches current pricing; reject this gate and start a new run',
+        );
+    }
     const commandBase = resumeCommandBase(kind, args.runId, selection.gateId);
-    const resumeInvocation =
-      commandBase === undefined || decision.decision === 'input_provided'
-        ? undefined
-        : `${commandBase} ${
-            kind === 'budget'
-              ? decision.decision === 'rejected'
-                ? '--abort'
-                : `--approve-amount ${decision.approvedAmountMicrocents}`
-              : decision.decision === 'rejected'
-                ? '--reject'
-                : '--approve'
-          }`;
+    const resumeInvocation = formatResumeInvocation(commandBase, kind, decision);
     const inputs = await resolveSecretInputs(
       parseInputs(snapshot.inputJson, args.runId),
       args,
@@ -346,7 +368,9 @@ async function resumeGateCommand(
       resumeInvocation,
     );
     const keys =
-      kind === 'budget' && decision.decision === 'rejected' ? undefined : deps.resolveKeys?.();
+      kind === 'budget' && decision.decision === 'rejected'
+        ? undefined
+        : deps.resolveKeys?.(opened.db);
     const providers = deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env);
     // Media host-wiring (2.S), the SAME helper `run` uses: a gate-resumed run that produces media must wire the
     // same CAS + retention + catalog as the original run (else it would be silently text-only). The checkpointer

@@ -16,12 +16,14 @@ const CHECKPOINT_DEFERRED =
   'warning: session effect WAL erasure was deferred by a database reader; it will be retried on the next open or session sweep.';
 
 /** Driver diagnostics, ids and database contents are never interpolated into a warning. */
+async function writeWarning(io: CliIo, text: string): Promise<void> {
+  // The async boundary also converts a synchronous host-port throw into a rejected promise.
+  await io.writeErrAcknowledged(`${text}\n`);
+}
+
 function warn(io: CliIo, text: string): void {
-  try {
-    void io.writeErrAcknowledged(`${text}\n`).catch(() => undefined);
-  } catch {
-    // A failed output sink must not change the outcome or trigger another cleanup attempt.
-  }
+  // A failed output sink must not change the outcome or trigger another cleanup attempt.
+  void writeWarning(io, text).catch(() => undefined);
 }
 
 /** Delete only committed rows of a RUN the caller knows can no longer be resumed. */
@@ -135,12 +137,11 @@ function sessionEffectNotice(
   if (snapshot.disclosures.length === 0) return undefined;
   const listed = snapshot.disclosures
     .map((record) => {
-      const reason =
-        record.reason === 'unresolved'
-          ? `unresolved: ${record.state}`
-          : record.reason === 'turn_incomplete'
-            ? 'landed in a turn that did not complete'
-            : 'may belong to a turn that did not complete; durable attribution unavailable';
+      let reason: string;
+      if (record.reason === 'unresolved') reason = `unresolved: ${record.state}`;
+      else if (record.reason === 'turn_incomplete')
+        reason = 'landed in a turn that did not complete';
+      else reason = 'may belong to a turn that did not complete; durable attribution unavailable';
       return `${sanitize(record.toolId)} (${reason})`;
     })
     .join(', ');

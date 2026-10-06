@@ -143,8 +143,11 @@ YAML as `timeout_action`; see
 one-shot timer from the injected clock when the gate parks. The two timeout outcomes differ from a
 human decision: `approve` **auto-resolves** the gate as approved (`decidedBy: 'timeout'`, the run
 continues); `reject` **fails** the run with `run_timeout` (the `AwaitingGate → Failed` edge above) —
-this is what stops a forgotten gate from blocking a run forever. A decision that arrives first
-disarms the timer.
+this is what stops a forgotten gate from blocking a run forever. If an automatic approval is
+refused, including a stale or reject-only budget quote, that deadline also fails the run with
+`run_timeout`; it does not override the refusal or leave an unresolved gate without a timer.
+A decision that arrives first disarms the timer. A competing resolved gate or terminal outcome
+is preserved.
 
 A new frozen **budget** gate has different semantics: approval requires its exact amount and leaves
 the agent pending for a governed dispatch; rejection fails `budget_exceeded`. A legacy approval

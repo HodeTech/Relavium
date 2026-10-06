@@ -43,6 +43,37 @@ afterEach(() => {
 });
 
 describe('active session disclosure before exact retention (ADR-0098)', () => {
+  it.each(['synchronous throw', 'promise rejection'] as const)(
+    'keeps audit evidence when the fallback diagnostic writer fails with %s',
+    async (failure) => {
+      effect();
+      const io = captureIo();
+      const writeErrAcknowledged = vi.fn((): Promise<void> => {
+        if (failure === 'synchronous throw') throw new Error('SECRET_DIAGNOSTIC_FAILURE');
+        return Promise.reject(new Error('SECRET_DIAGNOSTIC_FAILURE'));
+      });
+      const deliverNotice = vi.fn(() => {
+        throw new Error('SECRET_DISCLOSURE_FAILURE');
+      });
+      expect(() =>
+        reconcileResumedSessionEffects({
+          io: { ...io.io, writeErrAcknowledged },
+          db: client.db,
+          sessionId: 's1',
+          sanitize: sanitizeInline,
+          deliverNotice,
+        }),
+      ).not.toThrow();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(deliverNotice).toHaveBeenCalledTimes(2);
+      expect(writeErrAcknowledged).toHaveBeenCalledExactlyOnceWith(
+        'warning: session effect disclosure could not be completed; audit evidence was retained.\n',
+      );
+      expect(rows()).toHaveLength(1);
+      expect(io.out() + io.err()).toBe('');
+    },
+  );
+
   it.each(['omitted', 'discarded rejection'] as const)(
     'refuses a flush that falsely acknowledges publication (%s)',
     async (kind) => {

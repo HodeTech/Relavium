@@ -4,6 +4,7 @@ import {
   createModelCatalogStore,
   createModelMetadataStore,
   createProviderStore,
+  type Db,
   type ProviderStore,
 } from '@relavium/db';
 import type { CatalogModel } from '@relavium/llm';
@@ -366,40 +367,48 @@ export function buildModelsPricingArgs(input: CommandInput): ModelsPricingComman
  * creation (`applyCustomEndpoints` reads `list()` once), so no db handle is held past this call — a self-contained
  * short-lived read that needs no lifecycle threaded into the command's own db/teardown ordering.
  *
- * The `run`/`chat`/`gate` commands then re-open the same `history.db` for their own stores — a deliberate, PURELY
+ * The `run`/`chat` commands then re-open the same `history.db` for their own stores — a deliberate, PURELY
  * SEQUENTIAL second open (the first handle is fully closed here first, so no WAL/lock race), accepted as the
  * low-risk alternative to threading the db handle through each command's careful teardown. The `models` /
- * `provider` paths avoid it entirely — they build the resolver from the db they already hold (`withModelsDeps` /
+ * `provider` paths and human/budget resume avoid it entirely — they build the resolver from the db they already hold (`withModelsDeps` /
  * `withProviderDeps`), and the long-lived Home builds it over its one open handle in the S7 port block.
  */
 function storeAwareResolver(
   ctx: DispatchContext,
   keychain: KeychainStore,
+  openedDb?: Db,
 ): ReturnType<typeof createProviderResolver> {
+  const fromDb = (db: Db): ReturnType<typeof createProviderResolver> => {
+    const providerStore = createProviderStore(db, {
+      uuid: () => randomUUID(),
+      now: () => Date.now(),
+    });
+    return createProviderResolver(ctx.io.env, keychain, { providerStore });
+  };
+  if (openedDb !== undefined) return fromDb(openedDb);
   const { homeDir } = loadResolvedConfig({
     cwd: ctx.global.cwd,
     configPath: ctx.global.configPath,
   });
   const { db, close } = openLocalDb(homeDir);
   try {
-    const providerStore = createProviderStore(db, {
-      uuid: () => randomUUID(),
-      now: () => Date.now(),
-    });
-    return createProviderResolver(ctx.io.env, keychain, { providerStore });
+    return fromDb(db);
   } finally {
     close();
   }
 }
 
 /** One native keychain accessor, shared by the key resolver (2.C) + the MCP named-secret resolver (2.R §6). */
-function keyResolvers(ctx: DispatchContext): {
+function keyResolvers(
+  ctx: DispatchContext,
+  openedDb?: Db,
+): {
   providers: ReturnType<typeof createProviderResolver>;
   mcpSecretResolver: ReturnType<typeof createMcpSecretResolver>;
 } {
   const keychain = createOsKeychainStore();
   return {
-    providers: storeAwareResolver(ctx, keychain),
+    providers: storeAwareResolver(ctx, keychain, openedDb),
     mcpSecretResolver: createMcpSecretResolver(ctx.io.env, keychain),
   };
 }
@@ -465,14 +474,14 @@ const executeGate: CommandExecutor = (input, ctx) =>
   gateCommand(buildGateArgs(input), {
     io: ctx.io,
     global: ctx.global,
-    resolveKeys: () => keyResolvers(ctx),
+    resolveKeys: (db) => keyResolvers(ctx, db),
   });
 
 const executeBudget: CommandExecutor = (input, ctx) =>
   budgetCommand(buildBudgetArgs(input), {
     io: ctx.io,
     global: ctx.global,
-    resolveKeys: () => keyResolvers(ctx),
+    resolveKeys: (db) => keyResolvers(ctx, db),
   });
 
 const executeGateList: CommandExecutor = (input, ctx) => {

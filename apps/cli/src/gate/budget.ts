@@ -27,7 +27,7 @@ export function budgetDecisionFromFlags(flags: BudgetDecisionFlags): GateDecisio
   if (aborting) return rejectionDecision();
   const raw = flags.approveAmount;
   const parsed = BudgetMicrocentsSchema.safeParse(Number(raw));
-  if (raw === undefined || !/^[0-9]+$/.test(raw) || !parsed.success) {
+  if (raw === undefined || !/^\d+$/.test(raw) || !parsed.success) {
     throw new CliError(
       'invalid_invocation',
       '--approve-amount must be a non-negative safe integer in decimal microcents',
@@ -45,7 +45,7 @@ export function budgetAllowanceLabel(allowance: BudgetAllowanceState | undefined
   return budgetPromptLabel(budgetPromptContext(allowance));
 }
 
-/** One scalar label for prompts, status and streaming views; it never receives provenance. */
+/** The authoritative scalar label; excluded candidate notices never supply an approval amount. */
 export function budgetPromptLabel(context: BudgetPromptContext): string {
   if (context.kind === 'legacy') return 'legacy gate: no frozen allowance';
   if (context.kind === 'amount') return `${context.microcents} microcents`;
@@ -73,14 +73,16 @@ export function selectBudgetGate(
     };
   }
   const pending = checkpoint.pendingGates.filter((gate) => gate.isBudgetGate);
-  const choices = pending.map(
-    (gate) => `${budgetIdentifier(gate.gateId)}: ${budgetAllowanceLabel(gate.allowance)}`,
-  );
+  const choices = pending.map((gate) => {
+    const context = budgetPromptContext(gate.allowance);
+    const details = budgetPromptDetails(context);
+    return `${budgetIdentifier(gate.gateId)}: ${budgetPromptLabel(context)}${details.length === 0 ? '' : ` [${details.join('; ')}]`}`;
+  });
   const list = choices.length === 0 ? '' : ` (pending budget gates: ${choices.join('; ')})`;
   if (requested !== undefined) {
     const gate = pending.find((gate) => gate.gateId === requested);
     if (gate !== undefined) return { kind: 'resume', gateId: gate.gateId };
-    if (checkpoint.resolvedGateIds.includes(requested)) {
+    if (checkpoint.resolvedBudgetGateIds?.includes(requested) === true) {
       return {
         kind: 'idempotent',
         message: `gate ${budgetIdentifier(requested)} already resolved`,
@@ -135,24 +137,50 @@ export function assertBudgetDecision(
   }
 }
 
-/** The prompt receives only scalar authority, never private pricing/model provenance. */
-export type BudgetPromptContext =
+/** Scalar authority and safe excluded-candidate notices, without priced model/rate provenance. */
+export type BudgetPromptContext = (
   | { readonly kind: 'amount'; readonly microcents: number }
   | {
       readonly kind: 'reject_only';
       readonly reason: 'unpriced' | 'unrepresentable';
     }
-  | { readonly kind: 'legacy' };
+  | { readonly kind: 'legacy' }
+) & { readonly excludedEntries?: readonly string[] };
+
+const EXCLUDED_REASON = {
+  unsupported: 'unsupported request',
+  unpriced_model: 'unpriced model',
+  unpriced_modality: 'unpriced modality',
+} as const;
+
+/** Only an excluded model is disclosed, quoted after redaction and bounded inline sanitization. */
+function excludedBudgetEntries(allowance: BudgetAllowanceState): readonly string[] {
+  if (allowance.kind !== 'frozen') return [];
+  const result = allowance.quote;
+  const entries =
+    result.kind === 'unpriced' ? result.excludedEntries : result.quote.excludedEntries;
+  return entries.map(
+    (entry) =>
+      `Excluded ${entry.provider} candidate ${entry.index + 1} ${JSON.stringify(budgetIdentifier(entry.model))}: ${EXCLUDED_REASON[entry.reason]}`,
+  );
+}
+
+/** Already-projected notices: no raw quote is forwarded to a prompt or status renderer. */
+export function budgetPromptDetails(context: BudgetPromptContext): readonly string[] {
+  return context.excludedEntries ?? [];
+}
 
 export function budgetPromptContext(
   allowance: BudgetAllowanceState | undefined,
 ): BudgetPromptContext {
   if (allowance?.kind !== 'frozen') return { kind: 'legacy' };
   const result = allowance.quote;
-  if (result.kind === 'unpriced') return { kind: 'reject_only', reason: 'unpriced' };
+  const entries = excludedBudgetEntries(allowance);
+  const details = entries.length === 0 ? {} : { excludedEntries: entries };
+  if (result.kind === 'unpriced') return { kind: 'reject_only', reason: 'unpriced', ...details };
   return result.quote.amount.kind === 'unrepresentable'
-    ? { kind: 'reject_only', reason: 'unrepresentable' }
-    : { kind: 'amount', microcents: result.quote.amount.microcents };
+    ? { kind: 'reject_only', reason: 'unrepresentable', ...details }
+    : { kind: 'amount', microcents: result.quote.amount.microcents, ...details };
 }
 
 /** Gate/node IDs are untrusted display text; do not echo secret-shaped or unbounded values. */

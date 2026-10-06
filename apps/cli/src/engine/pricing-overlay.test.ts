@@ -5,17 +5,21 @@ import { join } from 'node:path';
 import {
   createClient,
   createModelCatalogStore,
+  createModelMetadataStore,
   createProviderStore,
   runMigrations,
   type Db,
   type DbClient,
 } from '@relavium/db';
+import { clearCatalogRefresh, priceModel } from '@relavium/llm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { openLocalDb } from '../db/open.js';
+import { catalogModelToRow } from './catalog-metadata.js';
 import {
   buildUserPricingOverlay,
   loadUserPricingOverlay,
+  readBudgetPricingOverlay,
   readUserPricingOverlay,
 } from './pricing-overlay.js';
 
@@ -60,6 +64,7 @@ describe('buildUserPricingOverlay (over an open db)', () => {
     runMigrations(client.db);
   });
   afterEach(() => {
+    clearCatalogRefresh();
     client.sqlite.close();
   });
 
@@ -92,6 +97,41 @@ describe('buildUserPricingOverlay (over an open db)', () => {
     runMigrations(doomed.db);
     doomed.sqlite.close();
     expect(readUserPricingOverlay(doomed.db).size).toBe(0);
+  });
+
+  it('reads current approval prices without writing or seeding an empty catalog', () => {
+    seedUserPriced(client.db);
+    const before = client.sqlite.prepare('SELECT total_changes()').pluck().get();
+    expect(readBudgetPricingOverlay(client.db).get('acme-custom-1')?.inputPerMtokMicrocents).toBe(
+      300_000_000,
+    );
+    expect(client.sqlite.prepare('SELECT total_changes()').pluck().get()).toBe(before);
+    expect(createModelMetadataStore(client.db, deps).readAll()).toEqual([]);
+  });
+
+  it('installs existing refreshed approval prices in memory without changing durable rows', () => {
+    const store = createModelMetadataStore(client.db, deps);
+    store.upsert([
+      catalogModelToRow(
+        {
+          modelId: 'approval-current-tail',
+          provider: 'openai',
+          displayName: 'Current approval tail',
+          contextWindowTokens: 32_000,
+          maxOutputTokens: 4_000,
+          inputPerMtokMicrocents: 7_000_000,
+          outputPerMtokMicrocents: 13_000_000,
+        },
+        'refreshed',
+        NOW,
+      ),
+    ]);
+    const before = client.sqlite.prepare('SELECT total_changes()').pluck().get();
+    const rows = store.readAll();
+    expect(readBudgetPricingOverlay(client.db).size).toBe(0);
+    expect(priceModel('approval-current-tail').inputPerMtokMicrocents).toBe(7_000_000);
+    expect(client.sqlite.prepare('SELECT total_changes()').pluck().get()).toBe(before);
+    expect(store.readAll()).toEqual(rows);
   });
 });
 

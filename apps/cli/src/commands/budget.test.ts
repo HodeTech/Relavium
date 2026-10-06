@@ -9,6 +9,8 @@ import { isMainThread } from 'node:worker_threads';
 import { parseWorkflow, reconstructCheckpointState, type RunStore } from '@relavium/core';
 import {
   createClient,
+  createModelCatalogStore,
+  createProviderStore,
   createRunHistoryStore,
   createRunLeasePort,
   runMigrations,
@@ -64,11 +66,32 @@ beforeEach(() => {
   builds = 0;
   toolMode = false;
   prices = new Map([[MODEL, PRICE]]);
+  persistPrice(PRICE);
 });
 afterEach(() => {
   client.sqlite.close();
   rmSync(root, { recursive: true, force: true });
 });
+/** Production's early price read must use actual durable user pricing, not the engine test override. */
+function persistPrice(price: ModelPricing): void {
+  const storeDeps = { uuid: randomUUID, now: Date.now };
+  const providerId = createProviderStore(client.db, storeDeps).upsert({
+    name: 'openai',
+    displayName: 'Offline fixture',
+    baseUrl: 'https://offline.example.invalid/v1',
+  }).id;
+  createModelCatalogStore(client.db, storeDeps).upsert({
+    providerId,
+    modelId: price.nativeId,
+    displayName: price.displayName,
+    source: 'user',
+    contextWindowTokens: price.contextWindowTokens,
+    maxOutputTokens: price.maxOutputTokens,
+    inputCostPerMtokMicrocents: price.inputPerMtokMicrocents,
+    outputCostPerMtokMicrocents: price.outputPerMtokMicrocents,
+    cachedInputCostPerMtokMicrocents: price.cachedInputPerMtokMicrocents,
+  });
+}
 const provider: LlmProvider = {
   id: 'openai',
   customEndpoint: true,
@@ -136,6 +159,7 @@ async function seed(
   } = {},
 ): Promise<{ runId: string; gateId: string; amount: number }> {
   const { mcp = false, secret = false, laterGate = false } = options;
+  for (const price of prices.values()) persistPrice(price);
   const workflow = parseWorkflow(
     `schema_version: '1.0'\nworkflow:\n  id: budget-command\n${secret ? '  inputs: [{name: api_key, type: secret}]\n' : ''}  budget: {max_cost_microcents: 1, on_exceed: pause_for_approval, strict_cost_cap: true}\n  agents:\n    - {id: worker, model: ${MODEL}, provider: openai, system_prompt: go${mcp ? ', tools: [mcp_fs_read], mcp_servers: [{id: fs, transport: stdio, command: node}]' : ''}}\n  nodes:\n    - {id: agent, type: agent, agent_ref: worker, prompt_template: hello, max_tokens: 64}\n${laterGate ? '    - {id: later, type: human_gate, gate_type: approval}\n' : ''}    - {id: out, type: output}\n  edges:\n${laterGate ? '    - {from: agent, to: later}\n    - {from: later, to: out}\n' : '    - {from: agent, to: out}\n'}`,
   );
@@ -200,7 +224,8 @@ function deps(io: ReturnType<typeof captureIo>['io']): GateCommandDeps {
       verbosity: 'normal',
     },
     openDb: () => ({ db: client.db, close: () => undefined }),
-    resolveKeys: () => {
+    resolveKeys: (openedDb) => {
+      expect(openedDb).toBe(client.db);
       factories++;
       return {
         providers: providers(),
@@ -390,6 +415,36 @@ it('changed price with the recorded amount remains pending without claim or egre
   expect(reader().loadRunEventLogForReplay(paused.runId)).toEqual(before);
   expect(await createRunLeasePort(reader()).read(paused.runId)).toBeUndefined();
 });
+it.each([1, 1000000])(
+  'durable input rate drift of %d refuses before secret input, resolver factory or MCP connection',
+  async (increase) => {
+    const paused = await seed({ mcp: true, secret: true });
+    // An increase of one changes the basis even when rounded money/aggregate A stay identical.
+    persistPrice({ ...PRICE, inputPerMtokMicrocents: PRICE.inputPerMtokMicrocents + increase });
+    const before = reader().loadRunEventLogForReplay(paused.runId);
+    const readSecretInput = vi.fn(() => Promise.resolve('api_key=sk-fixture-budget-secret\n'));
+    const startMcpClient = vi.fn(() =>
+      Promise.reject(new Error('must not connect stale approval')),
+    );
+    const { io } = captureIo();
+    await expect(
+      budgetCommand(
+        { runId: paused.runId, approveAmount: String(paused.amount), secretStdin: true },
+        { ...deps(io), readSecretInput, startMcpClient },
+      ),
+    ).rejects.toMatchObject({ code: 'invalid_invocation' });
+    expect(readSecretInput).not.toHaveBeenCalled();
+    expect(startMcpClient).not.toHaveBeenCalled();
+    expect({ factories, builds, calls, keyReads }).toEqual({
+      factories: 0,
+      builds: 0,
+      calls: 0,
+      keyReads: 0,
+    });
+    expect(reader().loadRunEventLogForReplay(paused.runId)).toEqual(before);
+    expect(await createRunLeasePort(reader()).read(paused.runId)).toBeUndefined();
+  },
+);
 it('ordinary gate command refuses a budget gate without credential factory or engine build', async () => {
   const paused = await seed();
   const { io } = captureIo();
@@ -1005,6 +1060,7 @@ it('a native zero allowance after a paid node can be explicitly approved with --
     outputPerMtokMicrocents: 0,
     cachedInputPerMtokMicrocents: 0,
   });
+  for (const price of prices.values()) persistPrice(price);
   const workflow = parseWorkflow(`schema_version: '1.0'
 workflow:
   id: budget-command

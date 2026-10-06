@@ -303,17 +303,26 @@ relavium budget resume <runId> [--gate <gateId>] --abort
   before secret input, key resolver construction, MCP connection, engine construction or ownership.
 - With one pending budget gate, `--gate` is filled automatically. With multiple budget gates it is
   required; ordinary human gates are separate. Pin the gate id in an automated retry so a later gate is
-  never selected accidentally. `relavium status` reports budget ids and scalar allowance amounts;
-  `relavium gate list` and `relavium gate` continue to cover ordinary gates only.
+  never selected accidentally. Human `relavium status` and ambiguous resume discovery report budget
+  ids, scalar allowance amounts and the recorded excluded candidates. Candidate model identifiers
+  are redacted, quoted, truncated and escaped; they cannot supply an approval amount. Priced
+  model/rate provenance stays out of this display. `relavium gate list` and `relavium gate`
+  continue to cover ordinary gates only.
 - A legacy gate with no frozen allowance, an unpriced quote or an unrepresentable amount offers
   **`--abort` only** on this surface. There is no input payload, comment or generic `--approve` flag.
 - Approval preserves the governor and its dispatch-owned allowance. It does not lift the workflow cap.
-  The engine independently rechecks the current request/price provenance before claiming the gate; a stale
-  quote remains pending and is refused (exit `2`). See
+  The CLI first checks recorded priced quantities against current prices without seeding database
+  rows, before secret input, credential-resolver construction or MCP connection. That check grants
+  no approval. The engine independently prepares the actual request and rechecks the complete
+  current quote before claiming the gate; a stale quote remains pending and is refused (exit `2`).
+  Human and budget resume build their provider resolvers over the command's existing database
+  connection. See
   [the preparation/resume contract](../shared-core/agent-runner.md#preparing-and-resuming-a-budget-dispatch).
 - `--abort` rejects the selected budget gate, dispatches no agent and fails the run with
   `budget_exceeded` (exit `1`). It calls no credential factory and creates no MCP client. A doubled resolved
-  gate or terminal-run decision is a clean exit-`0` no-op before resource construction.
+  budget gate or terminal-run decision is a clean exit-`0` no-op before resource construction.
+  For a nonterminal run, naming a resolved ordinary human gate is an invalid invocation
+  (exit `2`), not a budget no-op.
 - `--secret-stdin` follows [the human-resume stdin contract](#relavium-gate). A secret-bearing frozen
   run still needs its masked slots re-supplied, including on abort. The advice preserves the selected
   run, gate and decision; values stay out of argv. Drained stdin disables any later interactive prompt.
@@ -336,7 +345,10 @@ relavium budget resume <runId> [--gate <gateId>] --abort
   the frozen scalar amount and requires that exact amount or rejection; unpriced/unrepresentable
   gates offer rejection only. A legacy inline card may explicitly continue **without an allowance**
   under current budget checks; the amount-bearing shell command cannot invent an amount for it.
-  Ordinary human-gate prompts retain their existing decisions.
+  The card also shows the safely projected excluded candidates. An engine-refused stale or invalid
+  inline budget approval returns the paused outcome (exit `3`) with the gate still pending, so the
+  operator can inspect or reject it through `budget resume`. Ordinary human-gate prompts retain
+  their existing decisions.
 - Authority and matching companions produce one budget notice per `(runId, nodeId, gateId)` in plain
   and TUI views. They never fall through to an ordinary human approval prompt. The durable protocol is
   [defined once in the event contract](../contracts/sse-event-schema.md#durable-budget-authorization).
