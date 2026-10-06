@@ -225,6 +225,10 @@ added.
   complete contracts review and incomplete runtime observations; generated observer provenance and
   second tool-round reflection reproduced and corrected, fresh complete round 8 required.
 
+- [2026-10-06 — W7 systematic group 2a, round 13](2026-10-06T16-53-54-w7-systematic-group-2a-round-13-review.md):
+  cold nested-operation ownership independently reproduced and corrected; complete qualified reviews,
+  8,195 passing tests, fresh complete round 14 required.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

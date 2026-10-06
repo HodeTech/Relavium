@@ -1546,3 +1546,13 @@ group 2a, remaining groups, Steps 7–8/12, Sonar, W7 and draft PR #90 remain op
 verify all six submitted clarifications at `1f7c353e`; no new material draft finding. SDK HTTP acceptance
 is still required during implementation. **ADR-0102 stays Proposed, pending maintainer approval.
 No dependent ownership implementation or additional paid generation is authorized.**
+
+**Systematic group 2a, round 13 — 2026-10-06.** [Both complete independent reviews](../reviews/2026-10-06T16-53-54-w7-systematic-group-2a-round-13-review.md)
+reproduce a cold provider resolver starting a real nested turn, after which compaction overwrites
+its controller. `9f35173a` rechecks existing idle ownership before arming compaction; cold cancel,
+idle abort and warm memoization remain intact. The Original regression fails before correction;
+final forced lint/typecheck/test passes 23 tasks, 357 files, 8,195 tests / 12 existing skips,
+six build tasks and isolation. Both reports, the complete Runtime static supplement and all
+3,526 physical entries are audited, with early launch/read/preparation gaps retained.
+**Fresh complete round 14 is required; group 2a, Proposed ADR-0102 approval/implementation,
+remaining groups, live-fixture-gated Steps 7–8, final Step 12, Sonar, W7 and draft PR #90 remain open.**
