@@ -2,14 +2,15 @@
 
 - **Status**: Proposed — maintainer approval required before dependent implementation
 - **Date**: 2026-10-04
-- **Related**: [ADR-0011](0011-internal-llm-abstraction.md) · [ADR-0031](0031-llm-seam-shape-amendment-multimodal-io.md) · [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md) · [ADR-0096](0096-a-request-is-measured-before-it-is-sent.md) · [ADR-0097](0097-a-budget-approval-is-an-allowance-not-an-exemption.md) · [ADR-0099](0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md) · [ADR-0100](0100-budget-authorization-is-durable-state-with-a-replay-barrier.md) · [ADR-0101](0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md) · [architectural principles](../standards/architectural-principles.md)
-- **Scope**: W7's post-PR measured-request ownership correction. Refines the construction handoff in ADR-0096/0101 and explicitly narrows opaque non-cap seam inputs. Leaves output-cap precedence, input pricing, allowance authority, compaction outcomes, media charges and durable payload schemas unchanged.
+- **Related**: [ADR-0011](0011-internal-llm-abstraction.md) · [ADR-0031](0031-llm-seam-shape-amendment-multimodal-io.md) · [ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) · [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md) · [ADR-0096](0096-a-request-is-measured-before-it-is-sent.md) · [ADR-0097](0097-a-budget-approval-is-an-allowance-not-an-exemption.md) · [ADR-0099](0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md) · [ADR-0100](0100-budget-authorization-is-durable-state-with-a-replay-barrier.md) · [ADR-0101](0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md) · [architectural principles](../standards/architectural-principles.md)
+- **Scope**: W7's post-PR measured-request ownership correction for `LlmRequest` generate/stream, including inline media and request-media resolution. Refines the construction handoff in ADR-0096/0101 and explicitly narrows opaque non-cap seam inputs. Separate-endpoint `MediaGenRequest`/`generateMedia` and `pollMediaJob` are outside this ownership guarantee; their ADR-0031/0045 contracts remain unchanged. Leaves output-cap precedence, input pricing, allowance authority, compaction outcomes, media charges and durable payload schemas unchanged.
 
 ## Context
 
 PR 90's systematic review demonstrates that a shallow cap snapshot leaves message arrays and nested
-tool schemas mutable. An admission check can measure 33 tokens while the actual installed OpenAI SDK
-sends a later-mutated construction measuring 50,031. Independent owned-tree controls also reproduce
+tool schemas mutable. The [independent intake probe](../reviews/2026-10-04T10-35-00-w7-systematic-review-intake-review.md)
+measures 37 tokens at admission while the actual installed OpenAI SDK sends a later-mutated
+construction measuring 50,035. Independent owned-tree controls also reproduce
 mutation through response schemas, tool arguments/results and provider options. This breaks the
 existing requirement to measure the construction actually sent.
 
@@ -66,7 +67,9 @@ narrows previously accepted or ignored JavaScript objects; it is a new compatibi
   bound the existing SDK's eventual JSON expansion of a recognized shared graph. Cap serialization
   remains separately governed and must not be collapsed into this memoization rule.
 - Capture owns and freezes Relavium containers without freezing any caller object. Preserve literal
-  `__proto__` as a data key. Detach record prototypes. Owned arrays keep only trusted intrinsic array
+  `__proto__` as a data key. Owned records have null prototypes; graph-preserving mutable working
+  copies of those records also have null prototypes, without restoring caller or `Object.prototype`
+  inheritance. Arrays in both graphs keep only trusted intrinsic array
   behaviour and shadow inherited `toJSON` with an own non-enumerable undefined data property before
   freezing; distinguish this helper-generated property from caller-supplied unsupported metadata.
   Later request preparation must not invoke a caller serializer through a retained prototype.
@@ -83,8 +86,13 @@ narrows previously accepted or ignored JavaScript objects; it is a new compatibi
 
 ### One ownership helper, existing cap authority
 
-- A pure helper in `@relavium/llm` owns the canonical payload and non-cap options once. It keeps live
-  `signal` and genuine Relavium prepared-cap metadata outside data traversal. The canonical seam
+- A pure helper in `@relavium/llm` owns the request once. Except for live `signal` and genuine
+  `preparedOutputCaps`, every `LlmRequest` field is owned and traversed: `model`, `system`, `messages`,
+  `tools`, `toolChoice`, `responseFormat`, `outputModalities`, `temperature`, `maxTokens`,
+  `reasoningEffort`, `stopSequences` and non-cap `providerOptions`. This rule covers future request
+  fields too; it is not an allowlist that silently drops a new field. Native cap controls inside
+  `providerOptions` are descriptor-separated and captured by the existing cap authority below,
+  rather than generic data traversal. The canonical seam
   documents the helper and supported-data contract when implementation lands. `LLMProvider` keeps
   its existing generate/stream signatures; `PreAttemptInfo`/`PreAttemptHook` remain cap-only.
 - [output-cap.ts](../../packages/llm/src/output-cap.ts) remains the one authority for identifying,
@@ -145,8 +153,9 @@ narrows previously accepted or ignored JavaScript objects; it is a new compatibi
   implementations invoked through Relavium receive the same owned canonical data; they must treat it
   as read-only and create their own working copies. Independently implemented providers called
   outside Relavium's controlled entry points are outside this ownership guarantee.
-- Local unsupported-data inspection uses a fixed, content-free typed error distinct from
-  `InvalidOutputCapPlanError`, normalized to fatal `bad_request` at the chain and `validation` in core.
+- Local unsupported-data inspection uses `UnsupportedRequestDataError`, a fixed, content-free typed
+  error distinct from `InvalidOutputCapPlanError`, normalized to fatal `bad_request` at the chain and
+  `validation` in core. Its name and normalization are part of the canonical seam acceptance tests.
   Caller messages, property names, causes and private paths are not exposed. No new shared ErrorCode,
   durable request body, budget-quote payload or provider-native type crosses the seam.
 
@@ -157,6 +166,10 @@ Before closing the HIGH, actual installed SDK HTTP captures in an offline owned 
 1. Both generate and stream preserve measured text, tool/schema/response-schema data, arguments,
    results and non-cap options when the original is mutated during money join, preAttempt, key
    resolution and media resolution; mutation between `stream()` and first `next()` is also covered.
+   The mutation matrix covers every data field listed above, including `toolChoice`,
+   `stopSequences`, `outputModalities`, `temperature` and `reasoningEffort`; missing ownership of one
+   field must break its corresponding control. Live signal and genuine prepared-plan behavior are
+   tested separately rather than traversed as data.
 2. First context measurement/allowance quotation and execution share the same payload; heterogeneous
    fallback cap plans bind correctly through primary retries/failover; unused candidate-local failure
    does not stop a valid primary. Matching incoming raw/captured plans retain serializer-once and
@@ -169,6 +182,14 @@ Before closing the HIGH, actual installed SDK HTTP captures in an offline owned 
    existing provider/SDK wire bodies. Every newly refused input has a fixed typed error and zero
    admission/key/egress. Existing discarded opaque cap controls and surviving key-sensitive cap
    serializers preserve their independently tested semantics and causal negative controls.
+   Actual installed OpenAI (including the DeepSeek-compatible route), Anthropic and Gemini SDK
+   generate and stream HTTP paths must accept null-prototype records throughout supported messages,
+   tool definitions/arguments/results, response formats and non-cap options, including mutable
+   working copies, with baseline-equivalent wire bodies. Test array serializer shadowing and literal
+   `__proto__` too. Small cap-JSON tests do not establish this full-payload obligation. Containers
+   created by the existing adapter/SDK lowerers remain those lowerers' authority; no caller prototype
+   may return through a working copy. If an installed path needs different prototype handling,
+   revise this decision before claiming acceptance rather than silently restoring inheritance.
 5. Both installed-SDK Gemini paths preserve the existing converter body when one inert declaration
    is shared between native `tools[].functionDeclarations[]` and `responseJsonSchema`. Capture and
    mutable working copies preserve that alias while SDK mutation leaves the caller/owned graph and
@@ -184,7 +205,9 @@ Land the supported-input and ownership contract once in the
 [LLM seam](../reference/shared-core/llm-provider-seam.md), with links from the
 [agent runner](../reference/shared-core/agent-runner.md) and
 [agent-session contract](../reference/contracts/agent-session-spec.md).
-Add dated ADR-0096/0101 handoff/compatibility notes without rewriting historical bodies. Update the
+Add dated ADR-0011/0031 compatibility and ADR-0096/0101 handoff notes without rewriting historical
+bodies. These forward references land with the approved implementation, not as an assertion that
+this Proposed decision is already in force. Update the
 W7 correction register/review records and PR description. Proposed status authorizes drafting and
 review only; no dependent ownership implementation is authorized before maintainer approval.
 
