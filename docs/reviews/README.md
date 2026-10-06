@@ -233,6 +233,10 @@ added.
   two complete independent qualified reviews; 955 and 934 passing tests, all released evidence
   independently audited; Group 2a accepted within scope, remaining W7 and PR gates open.
 
+- [2026-10-06 — W7 systematic group 3, round 1](2026-10-06T18-43-01-w7-systematic-group-3-round-1-review.md):
+  two verified decision/pause acknowledgement races corrected; 8,239 passing tests, all sealed
+  evidence independently audited; fresh complete round 2 required, W7 and PR gates open.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

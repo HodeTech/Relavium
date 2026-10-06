@@ -3488,3 +3488,15 @@ all 3,553 actual physical entries and 153 external artifact tuples are independe
 Original resumes; initial launch/read/preparation gaps stay qualified. **Group 2a is accepted within
 this scope. Proposed ADR-0102 approval/implementation, remaining Groups 3–6, live-fixture-gated
 Steps 7–8, final Step 12, current Sonar, whole W7 and draft PR #90 remain open.**
+
+**Systematic group 3, round 1 — 2026-10-06.** [Both complete independent reviews](../../reviews/2026-10-06T18-43-01-w7-systematic-group-3-round-1-review.md)
+verify two High acknowledgement races: late timeout refusal overrides a claimed budget decision;
+invalid inline approval closes native SQLite before the aggregate pause append is acknowledged.
+`a78f859a` preserves the synchronous decision claim, and `7ceae889` drains the actual durable pause
+or terminal before resource release. Nineteen independent regressions are promoted; the old-code
+baseline has seven expected failures among 24 cases, and the correction passes all 24. Forced
+Original checks pass 23 tasks, 362 files, 8,239 tests and 12 existing skips, plus six builds and
+isolation. Both complete reports, all 3,802 actual entries and 362 external artifact tuples are
+independently audited with timestamp, inherited-read and exercised-guard qualifications retained.
+**Fresh complete round 2 is required; Group 3, Proposed ADR-0102, remaining Groups 4–6, Steps 7–8/12,
+current Sonar, W7 and draft PR #90 remain open.**

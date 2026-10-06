@@ -493,3 +493,21 @@ or terminal outcome is retained. These enforce the existing allowance and deadli
 add no approval unit, expiry policy, error code or request-ownership decision. The canonical
 [command contract](../reference/cli/commands.md#relavium-budget-resume) and
 [execution model](../architecture/execution-model.md#4-human-gate) describe the operator behaviour.
+
+## Implementation correction — 2026-10-06, independent operator review races
+
+The first systematic operator correction exposed two acknowledgement races. A budget decision
+already claimed synchronously keeps its pending row until the authorization append is acknowledged.
+A late refused timeout approval or queued timeout rejection must check that claim before attempting
+the timeout failure path; a pending row alone is not evidence that the decision is still available.
+The original human approval or rejection therefore retains both its durable authorization and its
+runtime outcome while acknowledgement is held.
+
+After an invalid inline approval, the CLI stops prompting and consumes the actual aggregate pause
+through its durable acknowledgement before releasing the database and cooperative-cancel handler.
+It does not synthesize a pause from the gate companion or close native SQLite while an aggregate
+pause write is outstanding. A concurrent cancellation or other terminal retains its actual result.
+The canonical [command contract](../reference/cli/commands.md#relavium-budget-resume) and
+[execution model](../architecture/execution-model.md#4-human-gate) record these barriers. Independent
+held-acknowledgement and delayed-native-write regressions require the existing claim and ordered
+delivery guarantees; no new decision, timeout policy, error code or durable schema is introduced.

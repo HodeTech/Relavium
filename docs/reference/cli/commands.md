@@ -346,8 +346,11 @@ relavium budget resume <runId> [--gate <gateId>] --abort
   gates offer rejection only. A legacy inline card may explicitly continue **without an allowance**
   under current budget checks; the amount-bearing shell command cannot invent an amount for it.
   The card also shows the safely projected excluded candidates. An engine-refused stale or invalid
-  inline budget approval returns the paused outcome (exit `3`) with the gate still pending, so the
-  operator can inspect or reject it through `budget resume`. Ordinary human-gate prompts retain
+  inline budget approval stops further prompts and drains the actual ordered event stream until
+  the aggregate `run:paused` is durably acknowledged, retaining the command's database and cancel
+  handler through that barrier. It then returns exit `3` with the gate pending; a competing
+  terminal retains its own outcome. The operator can inspect or reject the pending gate through
+  `budget resume`. Ordinary human-gate prompts retain
   their existing decisions.
 - Authority and matching companions produce one budget notice per `(runId, nodeId, gateId)` in plain
   and TUI views. They never fall through to an ordinary human approval prompt. The durable protocol is
