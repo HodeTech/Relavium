@@ -153,7 +153,9 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
       }
       // A non-breaking run:paused (a prompter handled every gate inline, no media park) is informational —
       // the resumed run continues. Only a real pause (CI/plain/json, or an unresolvable park) stops → exit 3.
+      // Once cancellation starts, drain through an already queued pause to the durable cancellation terminal.
       if (
+        !cancelRequested &&
         event.type === 'run:paused' &&
         shouldBreakOnPause(event, gatePrompter !== undefined && !inlineRefused, handledGates)
       ) {
