@@ -257,6 +257,10 @@ added.
   nine-path correction accepted after two fresh static/runtime rounds and complete evidence audits;
   voluntary paused-departure High and lifecycle/ownership approvals remain open.
 
+- [2026-10-07 — W7 systematic group 4, round 1](2026-10-07T06-17-17-w7-systematic-group-4-round-1-review.md):
+  acknowledged cleanup could delete quarantined identity evidence and reissue a key; transactional
+  preservation and native controls correct the verified High, with fresh complete round 2 required.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

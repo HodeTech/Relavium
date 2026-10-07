@@ -244,6 +244,23 @@ describe('durable session effect-turn high-water mark (ADR-0098)', () => {
           updatedAt: 0,
         })
         .run();
+      for (const turn of [2, 99]) {
+        client.db
+          .insert(runEffects)
+          .values({
+            id: `valid-effect-${String(turn)}`,
+            scope: `session:s1:${String(turn)}`,
+            slot: 0,
+            toolId: 'run_command',
+            tier: 3,
+            state: 'committed',
+            argsDigest: 'digest',
+            attemptJson: `{"providerAttempt":1,"toolCallId":"session-tool:${String(turn)}:0"}`,
+            createdAt: turn,
+            updatedAt: turn,
+          })
+          .run();
+      }
       client.sqlite.close();
       client = createClient(join(root, 'history.db'));
       expect(() => runMigrations(client.db)).not.toThrow();
@@ -260,7 +277,16 @@ describe('durable session effect-turn high-water mark (ADR-0098)', () => {
       expect(() => runMigrations(client.db)).not.toThrow();
       expect(reopened.reserveEffectTurnKey('good')).toBe(3);
       refusal(() => reopened.reserveEffectTurnKey('s1'), 'history_invalid');
-      expect(client.db.select().from(runEffects).all()).toHaveLength(1);
+      const journal = createEffectJournalStore(client.db, { uuid: () => 'unused', now: () => 1 });
+      const before = client.db.select().from(runEffects).all();
+      const snapshot = journal.readSessionDisclosureSnapshot('s1');
+      expect(snapshot.committed).toHaveLength(3);
+      expect(() => journal.sweepCommittedForSession('s1', snapshot.committed)).toThrow(
+        SessionEffectTurnError,
+      );
+      expect(client.db.select().from(runEffects).all()).toEqual(before);
+      expect(key()).toBe(0);
+      refusal(() => reopened.reserveEffectTurnKey('s1'), 'history_invalid');
     },
   );
 

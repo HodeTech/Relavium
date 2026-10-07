@@ -49,6 +49,7 @@ import {
   requireSessionEffectTransactionOwnership,
   type SessionEffectCheckpoint,
 } from './session-effect-privacy.js';
+import { preserveSessionEffectTurnKeyBeforeSweep } from './session-effect-turns.js';
 
 /** Pair the physical id with its immutable effect address: an id alone is vulnerable to delete/reinsert. */
 export interface CapturedSessionEffect {
@@ -420,6 +421,9 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
       const deleted = withBusyRetry(() =>
         db.transaction(
           (tx) => {
+            // Opening may isolate corrupt legacy history without a trustworthy high-water mark.
+            // Preserve the evidence or its durable floor before consuming any captured row.
+            if (captured.length > 0) preserveSessionEffectTurnKeyBeforeSweep(tx, sessionId);
             let changes = 0;
             // Four bindings per captured address plus the range/state predicates, below 999 per statement.
             // All chunks share ONE transaction: failure cannot consume only part of the disclosed snapshot.

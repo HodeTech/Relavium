@@ -785,8 +785,12 @@ per-session history reads or writes. An invalid legacy scope or historical assis
 only its affected session uninitialized, with the original evidence intact. Opening the database and
 initializing healthy sessions still succeeds; reserving an effect key for the affected session continues
 to refuse with `history_invalid`. No inferred floor, deleted evidence or reused identity repairs that
-corruption. Other initialization faults still fail the operation. Allocation repeats initialization for
-a new session whose mark is still zero.
+corruption. Before deleting captured committed rows for an existing session, the sweep repeats the
+same initialization **inside its deletion transaction**. Invalid history refuses the sweep and preserves
+all rows; a trustworthy floor commits atomically with all deletion chunks. Rollback cannot consume
+evidence without retaining its floor. Row-less orphan privacy erasure remains available because those
+scopes cannot be resumed or allocated. Other initialization faults still fail the operation. Allocation
+repeats initialization for a new session whose mark is still zero.
 The required engine host allocator is late-bound by each interactive persister. The engine caches
 one key for idle `!` commands and the next model turn, consuming it on every model-turn exit.
 Commands use disjoint negative slots and engine ids `session-command:<key>:<ordinal>`; model

@@ -3,6 +3,7 @@ import {
   createEffectJournalStore,
   createSessionStore,
   runMigrations,
+  SessionEffectTurnError,
   type DbClient,
 } from '@relavium/db';
 import { effectScope, type EffectCorrelation } from '@relavium/shared';
@@ -302,4 +303,109 @@ describe('active session disclosure before exact retention (ADR-0098)', () => {
       if (result === 'failed') expect(notices.at(-1)).toContain('audit evidence was retained');
     },
   );
+});
+
+describe('legacy identity evidence across acknowledged activation retention', () => {
+  const sessionId = 'legacy-activation';
+  function legacy(malformed: boolean): void {
+    createSessionStore(client.db).createSession({
+      id: sessionId,
+      agentSlug: 'chatter',
+      context: { workingDir: '/workspace', fsScopeTier: 'sandboxed' },
+      status: 'active',
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCostMicrocents: 0,
+      totalConservativeMicrocents: 0,
+      createdAt: '2026-10-07T00:00:00.000Z',
+      updatedAt: '2026-10-07T00:00:00.000Z',
+    });
+    createSessionStore(client.db).appendMessage({
+      id: 'legacy-terminal',
+      sessionId,
+      sequenceNumber: 0,
+      role: 'assistant',
+      content: [{ type: 'text', text: '' }],
+      timestamp: '2026-10-07T00:00:00.000Z',
+    });
+    for (const turn of [2, 99]) {
+      const correlation: EffectCorrelation = { kind: 'session', sessionId, turn };
+      const identity = { scope: effectScope(correlation), slot: 0, toolId: 'run_command' };
+      journal().prepare(
+        identity,
+        correlation,
+        { providerAttempt: 1, toolCallId: `session-tool:${String(turn)}:0` },
+        3,
+        'digest',
+      );
+      journal().settle(identity, 'committed');
+    }
+    if (malformed) {
+      client.sqlite
+        .prepare('UPDATE run_effects SET scope = ? WHERE scope = ?')
+        .run(`session:${sessionId}:01`, `session:${sessionId}:2`);
+      // Keep both previously used canonical identities in addition to the corrupt address.
+      const correlation: EffectCorrelation = { kind: 'session', sessionId, turn: 2 };
+      const identity = { scope: effectScope(correlation), slot: 0, toolId: 'run_command' };
+      journal().prepare(
+        identity,
+        correlation,
+        { providerAttempt: 1, toolCallId: 'session-tool:2:0' },
+        3,
+        'digest',
+      );
+      journal().settle(identity, 'committed');
+    }
+  }
+
+  it('retains quarantined committed evidence after genuine acknowledged activation and refuses reissue', async () => {
+    legacy(true);
+    expect(() => runMigrations(client.db)).not.toThrow();
+    const session = createSessionStore(client.db);
+    expect(session.loadFull(sessionId)).toBeDefined();
+    const before = rows();
+    expect(() => session.reserveEffectTurnKey(sessionId)).toThrow(SessionEffectTurnError);
+    const notices: string[] = [];
+    const io = captureIo();
+    await reconcileResumedSessionEffects({
+      io: io.io,
+      db: client.db,
+      sessionId,
+      sanitize: sanitizeInline,
+      isActive: () => true,
+      deliverNotice: (text) => {
+        notices.push(text);
+      },
+      flushNotice: async (publish) => {
+        await publish?.();
+      },
+    });
+    expect(rows()).toEqual(before);
+    expect(notices.at(-1)).toBe(
+      'warning: session effect identity history is invalid; audit evidence was retained and effect-turn allocation remains blocked.',
+    );
+    expect(() => session.reserveEffectTurnKey(sessionId)).toThrow(SessionEffectTurnError);
+    expect(io.out() + io.err()).toBe('');
+  });
+
+  it('seeds a trustworthy floor atomically with acknowledged cleanup without requiring another open', async () => {
+    legacy(false);
+    const notices: string[] = [];
+    const io = captureIo();
+    await reconcileResumedSessionEffects({
+      io: io.io,
+      db: client.db,
+      sessionId,
+      sanitize: sanitizeInline,
+      deliverNotice: (text) => {
+        notices.push(text);
+      },
+      flushNotice: async (publish) => {
+        await publish?.();
+      },
+    });
+    expect(rows()).toEqual([]);
+    expect(notices.join('')).not.toContain('warning:');
+    expect(createSessionStore(client.db).reserveEffectTurnKey(sessionId)).toBe(100);
+  });
 });

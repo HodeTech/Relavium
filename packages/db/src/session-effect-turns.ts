@@ -79,6 +79,20 @@ function seedLegacyKey(on: Executor, sessionId: string): number {
   return floor;
 }
 
+/**
+ * Preserve a resumable session's legacy identity evidence in the SAME transaction as its sweep.
+ * Opening may isolate invalid history, so cleanup cannot rely on open-time seeding alone.
+ * Row-less scopes cannot be resumed/allocated; their privacy erasure remains independent.
+ */
+export function preserveSessionEffectTurnKeyBeforeSweep(on: Executor, sessionId: string): void {
+  const session = on
+    .select({ id: agentSessions.id })
+    .from(agentSessions)
+    .where(eq(agentSessions.id, sessionId))
+    .get();
+  if (session !== undefined) seedLegacyKey(on, sessionId);
+}
+
 /** Open-time backfill precedes journal cleanup; a later sweep cannot lower the issued high-water mark. */
 export function initializeSessionEffectTurnKeys(db: Db): void {
   withBusyRetry(() =>
@@ -132,8 +146,8 @@ export function initializeSessionEffectTurnKeys(db: Db): void {
             if (!(error instanceof SessionEffectTurnError) || error.code !== 'history_invalid')
               throw error;
             // Keep this session uninitialized, with its original evidence intact. Its reservation
-            // path still refuses corrupt history; unrelated sessions and database operations remain
-            // usable. Never guess a terminal-count floor that could reissue an old effect identity.
+            // and sweep paths still refuse corrupt history; unrelated sessions and database operations
+            // remain usable. Never guess a terminal-count floor that could reissue an old effect identity.
           }
         }
       },

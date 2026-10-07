@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
   createEffectJournalStore,
+  SessionEffectTurnError,
   type Db,
   type SessionEffectDisclosureSnapshot,
 } from '@relavium/db';
@@ -12,6 +13,8 @@ import type { CliIo } from '../process/io.js';
 const RETENTION_FAILED = 'warning: effect-journal retention could not be completed.';
 const DISCLOSURE_FAILED =
   'warning: session effect disclosure could not be completed; audit evidence was retained.';
+const IDENTITY_HISTORY_INVALID =
+  'warning: session effect identity history is invalid; audit evidence was retained and effect-turn allocation remains blocked.';
 const CHECKPOINT_DEFERRED =
   'warning: session effect WAL erasure was deferred by a database reader; it will be retried on the next open or session sweep.';
 
@@ -84,7 +87,9 @@ export function reconcileResumedSessionEffects(
     try {
       const swept = store.sweepCommittedForSession(options.sessionId, snapshot.committed);
       if (swept.checkpoint === 'deferred') return warning(CHECKPOINT_DEFERRED);
-    } catch {
+    } catch (error) {
+      if (error instanceof SessionEffectTurnError && error.code === 'history_invalid')
+        return warning(IDENTITY_HISTORY_INVALID);
       // A checkpoint can fail AFTER logical deletion committed: do not assert all rows remain.
       return warning('warning: session effect retention or WAL erasure could not be completed.');
     }

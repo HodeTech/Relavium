@@ -310,3 +310,15 @@ weaken monotonic allocation. Bounded discovery also avoids individual history re
 idle sessions. Result clearing, exact disclosure/sweep ordering and physical erasure residuals remain
 unchanged. The canonical allocation contract is
 [database-schema.md](../reference/shared-core/database-schema.md#session-content-parts).
+
+### Implementation correction — 2026-10-07, isolated history cannot be swept into a reused identity
+
+Independent Group-4 review demonstrated that acknowledged activation could delete committed rows
+from an uninitialized corrupt session, then allocate a previously used key from the shorter transcript.
+An existing session's sweep now invokes the same legacy initializer inside its deletion transaction.
+A trustworthy floor and all captured deletion chunks commit together; invalid history refuses deletion,
+retains its evidence and continues to refuse allocation. The active surface diagnoses that specific
+refusal without exposing stored or driver content. Healthy sessions and row-less orphan privacy erasure
+remain available; no marker value, migration or inferred corruption repair is added. Native disclosure,
+activation, rollback and key-reservation controls cover both refusal and healthy cleanup. The canonical
+contract remains [database-schema.md](../reference/shared-core/database-schema.md#session-content-parts).

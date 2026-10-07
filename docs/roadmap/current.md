@@ -1637,3 +1637,17 @@ and all 1,154 source/Original receipts before releasing both freezes. The [quali
 retains all preparation/read/guard/platform bounds. Full Group 3 remains changes requested: the
 voluntary paused-departure High is open, ADR-0103 remains an unapproved draft and ADR-0102 remains
 Proposed. Independent Groups 4–6 may proceed under the existing plan; no W7/merge acceptance is granted.
+
+### W7 systematic group 4, round 1 — 2026-10-07
+
+Both [complete independent reviews](../reviews/2026-10-07T06-17-17-w7-systematic-group-4-round-1-review.md)
+verify one High: acknowledged activation can delete isolated corrupt identity evidence, then reissue
+an old effect-turn key. The correction preserves the canonical legacy floor inside the same deletion
+transaction, or refuses deletion and allocation with evidence intact. Parent focus passes 585 tests;
+removing only the preservation call fails seven controls, and exact restoration passes all 51 cases.
+Original passes 23 forced tasks, 371 files, 8,316 tests / 12 existing skips and six forced builds.
+Both reports and all 3,067 actual sealed entries / 2,704 regular artifacts are independently audited
+before Original resumes, with preparation, register and native-helper qualifications retained.
+**Group 4 remains changes requested; fresh complete round 2 is required. Group 3's High,
+Proposed ADR-0102, unapproved ADR-0103, Groups 5–6, Steps 7–8/12, current CI/Sonar, W7 and draft
+PR #90 remain open. No additional paid generation is authorised.**

@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createClient, runMigrations, type Db, type DbClient } from './client.js';
 import { createEffectJournalStore } from './effect-journal-store.js';
-import { runEffects, sessionMessages } from './schema.js';
+import { agentSessions, runEffects, sessionMessages } from './schema.js';
 import { SessionEffectPrivacyError } from './session-effect-privacy.js';
 import { createSessionStore, SessionMessageBoundaryError } from './session-store.js';
 
@@ -373,9 +373,13 @@ setInterval(() => {}, 1000);
     );
     expect(() => store().sweepCommittedForSession('s1', snapshot.committed)).toThrow();
     expect(client.db.select().from(runEffects).all()).toHaveLength(101);
+    expect(
+      client.db.select({ key: agentSessions.effectTurnHighWater }).from(agentSessions).get(),
+    ).toEqual({ key: 0 }); // Seeding and every deletion chunk roll back together.
     client.sqlite.exec('DROP TRIGGER refuse_late_delete');
     expect(store().sweepCommittedForSession('s1', snapshot.committed).deleted).toBe(101);
     expect(store().sweepCommittedForSession('s1', snapshot.committed).deleted).toBe(0);
+    expect(createSessionStore(client.db).reserveEffectTurnKey('s1')).toBe(102);
   });
 
   it('keeps the effects and transcript on the SAME read snapshot across a concurrent completion', () => {

@@ -351,8 +351,12 @@ examined. A matching prepare refuses rather than replaying, and readers suppress
 A **run** row retains its bounded result until the terminal sweep, preserving §4's replay contract.
 
 Open-time high-water backfill isolates invalid legacy identity/history evidence to its affected
-session; reservation for that session still refuses, and evidence is not guessed or removed by
-backfill. Healthy sessions remain usable. The exact initialization and allocation contract lives in
+session; reservation and existing-session committed-row retention both refuse until the identity
+history is trustworthy. Before deletion, the same initializer runs inside the sweep transaction; its
+floor and all deletion chunks commit together. Invalid evidence remains intact and the active surface
+shows a fixed warning that effect-turn allocation remains blocked. Row-less orphan privacy erasure
+is preserved. Evidence is never guessed or removed by backfill. Healthy sessions remain usable. The exact
+initialization and allocation contract lives in
 [database-schema.md](database-schema.md#session-content-parts).
 
 The Node client opens with `secure_delete = ON`. After schema migration and **high-water initialization**,
