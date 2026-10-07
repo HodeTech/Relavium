@@ -3587,3 +3587,18 @@ all 3,082 actual sealed entries / 2,719 regular artifacts and actual native-chil
 Original resumes, preserving read/preparation/checkJs limits. **Group 4 remains changes requested;
 fresh complete round 3 is required. Group 3, Proposed ADR-0102, unapproved ADR-0103, Groups 5–6,
 Steps 7–8/12, final CI/coverage/Sonar, W7 and draft PR #90 remain open.**
+
+### W7 systematic group 4, round 3 — 2026-10-07
+
+Both [independent reports](../../reviews/2026-10-07T07-43-01-w7-systematic-group-4-round-3-review.md) verify a High: discovery and the state reader could trust a
+streaming SQL label before validating a genuine suspension payload. Actual native reconciliation then
+invented an internal failure terminal. The correction validates every stored row through the existing
+parser before excluding genuine streaming events from the returned fold; persisted-history validation
+includes their parsing cost. The two permanent native files pass 81 cases; with existing run-history
+tests, 164 pass. Separate causal removals fail 19 discovery and 11 state-read controls; exact restoration
+passes. Original passes 23 forced tasks, 373 files, 8,397 tests / 12 existing skips, six forced builds and isolation. Parent audits all 3,126 sealed physical entries / 2,763 regular artifacts,
+full actual self bindings, registers and child provenance before Original resumes. The runtime report
+is interrupted and its wrong store/reader API attempt is not counted as state-refusal evidence; the
+complete static report and independent Parent actual-reader regressions establish that surface.
+**Group 4 remains changes requested; fresh complete round 4 is required. Group 3, Proposed ADR-0102,
+unapproved ADR-0103, Groups 5–6, Steps 7–8/12, final CI/coverage/Sonar, W7 and draft PR #90 remain open.**

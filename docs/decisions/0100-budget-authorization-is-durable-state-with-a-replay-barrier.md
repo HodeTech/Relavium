@@ -158,3 +158,17 @@ Matching genuinely unknown rows keep their existing display/discovery tolerance 
 refusal. This completes the existing corruption policy above, without a new durable event, migration,
 error code or approval rule. The [canonical database contract](../reference/shared-core/database-schema.md#run_events)
 records the read boundary.
+
+## Implementation correction — 2026-10-07, validate before streaming exclusion
+
+A subsequent independent Group 4 round found two earlier SQL-discriminator exclusion paths that
+still bypassed the shared row validator: interrupted-run discovery and the state reader. Changing
+only a genuine suspension's stored `event_type` to a streaming type hid that suspension and allowed
+native reconciliation to append an invented failure. Both paths now validate every stored row
+through the existing parser before excluding genuine streaming events from their returned fold.
+Known streaming rows also retain the normal JSON/schema, run-id and sequence projection checks.
+The returned state fold still omits genuine streaming events, while persisted-history validation
+necessarily includes their parsing cost. This closes the existing aggregate corruption boundary;
+it adds no event, schema, error code, authority or new parser. The
+[canonical database contract](../reference/shared-core/database-schema.md#run_events) records the
+tradeoff and all four read surfaces. Fresh independent review is still required for wave acceptance.

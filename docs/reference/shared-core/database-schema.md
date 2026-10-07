@@ -493,13 +493,16 @@ CREATE INDEX idx_messages_run  ON messages (run_id, created_at ASC);
 
 The append-only event log for a run — the persistent record of the [SSE/RunEvent stream](../contracts/sse-event-schema.md). This is what the run-detail log drawer replays and what powers reconnect/resync. `seq` is monotonic per run and is used for gap detection.
 
-The SQLite reader compares the raw JSON `type` with `event_type` before applying tolerant
-unknown-event parsing. A mismatch is the existing `CorruptRunEventError` on display, interrupted-run
-discovery and strict replay; it cannot hide a known suspension row and permit reconciliation to
-append a terminal. A matching unknown type retains read-only display/discovery tolerance, while
-strict replay refuses the unreadable log. Discovery remains aggregate fail-closed, with corrupt
-evidence retained and no partially trusted result; see the
-[event contract](../contracts/sse-event-schema.md#durable-budget-authorization).
+The SQLite reader validates every stored row before applying tolerant unknown-event parsing or
+excluding genuine streaming events from a state/discovery fold. The raw JSON `type` must agree with
+`event_type`; a known event must also parse and agree with its run-id and sequence projections. A
+mismatch is the existing `CorruptRunEventError` on display, state reads, interrupted-run discovery
+and strict replay; a damaged SQL streaming discriminator cannot hide a known suspension and permit
+reconciliation to append a terminal. Genuine streaming events remain excluded from the returned
+state fold, but validating persisted history includes their JSON/schema cost. A matching unknown
+type retains read-only display/discovery tolerance, while strict replay refuses the unreadable log.
+Discovery remains aggregate fail-closed, with corrupt evidence retained and no partially trusted
+result; see the [event contract](../contracts/sse-event-schema.md#durable-budget-authorization).
 
 | Column | Type | Constraints |
 |--------|------|-------------|

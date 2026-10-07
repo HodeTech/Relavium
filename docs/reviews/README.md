@@ -343,3 +343,6 @@ Record its model, effort and review scope in the coverage section where availabl
   interrupted reviews recovered with explicit limits; cold-plan cancellation and generated pricing ownership corrected; fresh complete round 13 required.
 - [2026-10-06 — ADR-0102 maintainer clarifications](2026-10-06T16-02-49-w7-adr-0102-maintainer-clarifications-review.md):
   six clarifications pass two fresh qualified static draft reviews; Proposed status and approval gate remain.
+
+- [2026-10-07 — W7 systematic group 4, round 3](2026-10-07T07-43-01-w7-systematic-group-4-round-3-review.md):
+  streaming SQL exclusions bypassed persisted-row validation; verified High corrected with actual-reader/native-engine regressions, interrupted runtime qualifications retained and fresh round 4 pending.

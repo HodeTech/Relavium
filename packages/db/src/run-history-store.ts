@@ -11,7 +11,7 @@ import {
   type RunLeasePort,
   type RunStatus,
 } from '@relavium/shared';
-import { and, asc, desc, eq, getTableColumns, inArray, isNull, notInArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, getTableColumns, inArray, isNull, sql } from 'drizzle-orm';
 
 import type { Db, TxDb } from './client.js';
 import { withBusyRetry, withBusyRetryAsync } from './retry.js';
@@ -289,8 +289,8 @@ export interface RunHistoryReader {
   loadRunEventLogForReplay: (runId: string) => RunEvent[];
   /** A run's STATE-BEARING events in `seq` order — the full log MINUS the per-token/tool streaming firehose
    *  (`agent:token` / `agent:tool_call` / `agent:tool_result`), which neither checkpoint reconstruction nor gate
-   *  detection consults. For a bounded gate/checkpoint fold over a long run (the Home strip) that must NOT pay to
-   *  parse the whole firehose. NOT for `logs`/resume, which need every event. */
+   *  detection consults. Every stored row is validated before genuine streaming events are excluded from
+   *  the returned gate/checkpoint fold. NOT for `logs`/resume, which need every event. */
   loadRunStateEvents: (runId: string) => RunEvent[];
   /** Non-terminal runs (pending/running/paused), newest first — `relavium status` + `gate list` (all-runs). */
   listActiveRuns: () => RunRecord[];
@@ -375,8 +375,9 @@ export interface RunLeaseState extends RunLease {
 const NON_TERMINAL_STATUSES = ['pending', 'running', 'paused'] as const;
 
 /** The per-token/tool streaming firehose — the highest-volume events, which checkpoint reconstruction and gate
- *  detection ignore. {@link RunHistoryReader.loadRunStateEvents} excludes these so a bounded fold over a long run
- *  does not pay to parse them. (Matches `runEvents.eventType`, which stores `event.type`.) `agent:reasoning`
+ *  detection ignore. {@link RunHistoryReader.loadRunStateEvents} validates every stored row first, then excludes
+ *  these from its returned fold so a corrupted discriminator cannot hide a durable suspension.
+ *  (Matches `runEvents.eventType`, which stores `event.type`.) `agent:reasoning`
  *  (EA6, 2.5.H) is a streamed firehose event of the same class; it is never persisted (streamed `agent:*` events
  *  go through the bus, not `persistEvent`), so it is listed here for defensive consistency, not effect. */
 const STREAMING_EVENT_TYPES = [
@@ -428,13 +429,9 @@ function readEventLog(
       payloadJson: runEvents.payloadJson,
     })
     .from(runEvents)
-    // Excluding the per-token/tool streaming firehose at the DB level keeps a gate/checkpoint fold over a long run
-    // from paying to JSON.parse + Zod-validate thousands of `agent:token` rows the reconstruction ignores.
-    .where(
-      opts.streamingIncluded
-        ? eq(runEvents.runId, runId)
-        : and(eq(runEvents.runId, runId), notInArray(runEvents.eventType, STREAMING_EVENT_TYPES)),
-    )
+    // Validate every stored projection before excluding streaming events from the fold.
+    // Filtering by the SQL discriminator first could hide a corrupted durable suspension.
+    .where(eq(runEvents.runId, runId))
     .orderBy(asc(runEvents.seq))
     .all();
 
@@ -446,6 +443,7 @@ function readEventLog(
       skipped.push({ sequenceNumber: row.seq, type: row.eventType });
       continue;
     }
+    if (!opts.streamingIncluded && STREAMING_EVENT_TYPES.includes(event.type)) continue;
     events.push(event);
   }
   return { events, skipped };
@@ -479,7 +477,7 @@ function readStoredEventRow(
 
 /**
  * One ordered join over active runs, without an N+1 read or an inArray(ids) parameter limit.
- * All stored rows contribute to the high-water mark. Only non-streaming rows need parsing;
+ * All stored rows are validated before any streaming exclusion and contribute to the high-water mark;
  * unknown newer events retain the same tolerant discovery policy as the display reader.
  * Strict replay still refuses every skipped row before execution.
  */
@@ -507,19 +505,13 @@ function readInterruptedRuns(db: Db): InterruptedRunInfo[] {
       resumable: false,
       lastSequenceNumber: Math.max(prior?.lastSequenceNumber ?? 0, row.seq ?? 0),
     });
-    if (
-      row.seq === null ||
-      row.eventType === null ||
-      row.payloadJson === null ||
-      STREAMING_EVENT_TYPES.includes(row.eventType)
-    )
-      continue;
+    if (row.seq === null || row.eventType === null || row.payloadJson === null) continue;
     const event = readStoredEventRow(row.id, {
       seq: row.seq,
       eventType: row.eventType,
       payloadJson: row.payloadJson,
     });
-    if (event === undefined) continue;
+    if (event === undefined || STREAMING_EVENT_TYPES.includes(event.type)) continue;
     try {
       suspension.apply(event);
     } catch (cause) {

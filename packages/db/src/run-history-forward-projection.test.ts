@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createClient, runMigrations, type DbClient } from './client.js';
 import {
   CorruptRunEventError,
+  createRunHistoryReader,
   createRunHistoryStore,
   UnreadableRunEventLogError,
   type RunHistoryStore,
@@ -80,21 +81,38 @@ describe('stored event discriminator agrees with its column before forward skipp
   }
 
   for (const type of ['human_gate:paused', 'budget:authorization'] as const) {
-    for (const surface of ['display', 'discovery', 'replay'] as const) {
-      it(`refuses ${type} changed only to an unknown payload discriminator on ${surface}`, async () => {
-        const event = await pause(type);
-        client.sqlite
-          .prepare('UPDATE run_events SET payload_json = ? WHERE run_id = ? AND seq = ?')
-          .run(JSON.stringify({ ...event, type: futureType }), 'run-1', 1);
-        const before = client.db.select().from(runEvents).all();
-        const read = async () => {
-          if (surface === 'discovery') return store.listInterruptedRuns();
-          if (surface === 'display') return store.loadRunEventLog('run-1');
-          return store.loadRunEventLogForReplay('run-1');
-        };
-        await expect(read()).rejects.toBeInstanceOf(CorruptRunEventError);
-        expect(client.db.select().from(runEvents).all()).toEqual(before);
-      });
+    for (const mutation of [
+      'unknown-payload',
+      'future:pause',
+      'agent:token',
+      'agent:reasoning',
+      'agent:tool_call',
+      'agent:tool_result',
+    ] as const) {
+      for (const surface of ['display', 'state', 'discovery', 'replay'] as const) {
+        it(`refuses ${type} with ${mutation} corruption on ${surface}`, async () => {
+          const event = await pause(type);
+          if (mutation === 'unknown-payload') {
+            client.sqlite
+              .prepare('UPDATE run_events SET payload_json = ? WHERE run_id = ? AND seq = ?')
+              .run(JSON.stringify({ ...event, type: futureType }), 'run-1', 1);
+          } else {
+            client.sqlite
+              .prepare('UPDATE run_events SET event_type = ? WHERE run_id = ? AND seq = ?')
+              .run(mutation, 'run-1', 1);
+          }
+          const before = client.db.select().from(runEvents).all();
+          const read = async () => {
+            if (surface === 'discovery') return store.listInterruptedRuns();
+            if (surface === 'display') return store.loadRunEventLog('run-1');
+            if (surface === 'state')
+              return createRunHistoryReader(client.db).loadRunStateEvents('run-1');
+            return store.loadRunEventLogForReplay('run-1');
+          };
+          await expect(read()).rejects.toBeInstanceOf(CorruptRunEventError);
+          expect(client.db.select().from(runEvents).all()).toEqual(before);
+        });
+      }
     }
 
     it(`keeps an unmodified ${type} pause resumable`, async () => {
@@ -125,4 +143,78 @@ describe('stored event discriminator agrees with its column before forward skipp
     });
     expect(() => store.loadRunEventLogForReplay('run-1')).toThrow(UnreadableRunEventLogError);
   });
+
+  const streams = [
+    { type: 'agent:token', token: 'text', model: 'model' },
+    { type: 'agent:reasoning', text: 'reasoning', model: 'model' },
+    { type: 'agent:tool_call', model: 'model', toolId: 'tool', toolInput: {} },
+    { type: 'agent:tool_result', toolId: 'tool', success: true, outputSummary: 'done' },
+  ] as const;
+
+  for (const stream of streams) {
+    it(`validates and excludes a genuine ${stream.type} without losing the pause or high-water`, async () => {
+      await pause('human_gate:paused');
+      await store.persistEvent(
+        RunEventSchema.parse({
+          ...stream,
+          runId: 'run-1',
+          timestamp,
+          sequenceNumber: 2,
+          nodeId: 'agent',
+        }),
+      );
+      const before = client.db.select().from(runEvents).all();
+      expect(
+        createRunHistoryReader(client.db)
+          .loadRunStateEvents('run-1')
+          .map((event) => event.type),
+      ).toEqual(['run:started', 'human_gate:paused']);
+      expect(store.loadRunEventLog('run-1').events.at(-1)?.type).toBe(stream.type);
+      expect(store.loadRunEventLogForReplay('run-1').at(-1)?.type).toBe(stream.type);
+      expect((await store.listInterruptedRuns())[0]).toMatchObject({
+        runId: 'run-1',
+        resumable: true,
+        lastSequenceNumber: 2,
+      });
+      expect(client.db.select().from(runEvents).all()).toEqual(before);
+    });
+  }
+
+  for (const damage of ['invalid-json', 'wrong-run-id', 'wrong-sequence'] as const) {
+    for (const surface of ['display', 'state', 'discovery', 'replay'] as const) {
+      it(`refuses ${damage} in a genuine streaming row before ${surface} filtering`, async () => {
+        await pause('human_gate:paused');
+        const stream = RunEventSchema.parse({
+          type: 'agent:token',
+          runId: 'run-1',
+          timestamp,
+          sequenceNumber: 2,
+          nodeId: 'agent',
+          token: 'text',
+          model: 'model',
+        });
+        await store.persistEvent(stream);
+        const payload =
+          damage === 'invalid-json'
+            ? '{'
+            : JSON.stringify({
+                ...stream,
+                ...(damage === 'wrong-run-id' ? { runId: 'other-run' } : { sequenceNumber: 99 }),
+              });
+        client.sqlite
+          .prepare('UPDATE run_events SET payload_json = ? WHERE run_id = ? AND seq = ?')
+          .run(payload, 'run-1', 2);
+        const before = client.db.select().from(runEvents).all();
+        const read = async () => {
+          if (surface === 'display') return store.loadRunEventLog('run-1');
+          if (surface === 'state')
+            return createRunHistoryReader(client.db).loadRunStateEvents('run-1');
+          if (surface === 'discovery') return store.listInterruptedRuns();
+          return store.loadRunEventLogForReplay('run-1');
+        };
+        await expect(read()).rejects.toBeInstanceOf(CorruptRunEventError);
+        expect(client.db.select().from(runEvents).all()).toEqual(before);
+      });
+    }
+  }
 });

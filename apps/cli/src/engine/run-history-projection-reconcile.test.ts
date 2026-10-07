@@ -101,28 +101,45 @@ describe('native reconciliation refuses a corrupted known suspension discriminat
   }
 
   for (const type of ['human_gate:paused', 'budget:authorization'] as const) {
-    it(`refuses ${type} corruption before acquiring a lease or writing any terminal`, async () => {
-      const pause = await populate(type);
-      client.sqlite
-        .prepare('UPDATE run_events SET payload_json = ? WHERE run_id = ? AND seq = ?')
-        .run(JSON.stringify({ ...pause, type: 'future:pause' }), 'damaged', 1);
-      const evidence = client.sqlite.prepare('SELECT * FROM run_events ORDER BY run_id, seq').all();
-      const runs = client.sqlite.prepare('SELECT * FROM runs ORDER BY id').all();
-      const { engine, execute } = recovery();
+    for (const mutation of [
+      'unknown-payload',
+      'future:pause',
+      'agent:token',
+      'agent:reasoning',
+      'agent:tool_call',
+      'agent:tool_result',
+    ] as const) {
+      it(`refuses ${type} with ${mutation} corruption before acquiring a lease or writing any terminal`, async () => {
+        const pause = await populate(type);
+        if (mutation === 'unknown-payload') {
+          client.sqlite
+            .prepare('UPDATE run_events SET payload_json = ? WHERE run_id = ? AND seq = ?')
+            .run(JSON.stringify({ ...pause, type: 'future:pause' }), 'damaged', 1);
+        } else {
+          client.sqlite
+            .prepare('UPDATE run_events SET event_type = ? WHERE run_id = ? AND seq = ?')
+            .run(mutation, 'damaged', 1);
+        }
+        const evidence = client.sqlite
+          .prepare('SELECT * FROM run_events ORDER BY run_id, seq')
+          .all();
+        const runs = client.sqlite.prepare('SELECT * FROM runs ORDER BY id').all();
+        const { engine, execute } = recovery();
 
-      for (let attempt = 0; attempt < 2; attempt++) {
-        await expect(engine.reconcile()).rejects.toBeInstanceOf(CorruptRunEventError);
-        expect(
-          client.sqlite.prepare('SELECT * FROM run_events ORDER BY run_id, seq').all(),
-        ).toEqual(evidence);
-        expect(client.sqlite.prepare('SELECT * FROM runs ORDER BY id').all()).toEqual(runs);
-        expect(store.leases.read('damaged')).toBeUndefined();
-        expect(store.leases.read('healthy')).toBeUndefined();
-      }
-      expect(store.loadRun('damaged')?.status).toBe('paused');
-      expect(store.loadRun('healthy')?.status).toBe('paused');
-      expect(execute).not.toHaveBeenCalled();
-    });
+        for (let attempt = 0; attempt < 2; attempt++) {
+          await expect(engine.reconcile()).rejects.toBeInstanceOf(CorruptRunEventError);
+          expect(
+            client.sqlite.prepare('SELECT * FROM run_events ORDER BY run_id, seq').all(),
+          ).toEqual(evidence);
+          expect(client.sqlite.prepare('SELECT * FROM runs ORDER BY id').all()).toEqual(runs);
+          expect(store.leases.read('damaged')).toBeUndefined();
+          expect(store.leases.read('healthy')).toBeUndefined();
+        }
+        expect(store.loadRun('damaged')?.status).toBe('paused');
+        expect(store.loadRun('healthy')?.status).toBe('paused');
+        expect(execute).not.toHaveBeenCalled();
+      });
+    }
 
     it(`preserves both genuine ${type} suspensions without dispatch or terminal writes`, async () => {
       await populate(type);
