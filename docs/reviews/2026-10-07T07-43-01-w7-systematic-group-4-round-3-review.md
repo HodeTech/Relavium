@@ -59,7 +59,10 @@ Each causal check uses freshly built JavaScript. Exact restoration, fresh builds
 164-case run establish the correction; earlier preparations guessed the wrong reader API before
 execution and are retained as qualifications.
 
-Original passes **23 forced lint/typecheck/test tasks**, **373 test files**, **8,397 passing tests /\n12 existing skips**, **six forced builds**, isolation, formatting and diff checks. The later source\nedit only wraps an explanatory comment; build and formatting cover it. These are local checks,\nnot current coverage/Sonar, real terminal, Windows, provider or whole-wave acceptance.
+Original passes **23 forced lint/typecheck/test tasks**, **373 test files**, **8,397 passing tests /
+12 existing skips**, **six forced builds**, isolation, formatting and diff checks. The later source
+edit only wraps an explanatory comment; build and formatting cover it. These are local checks,
+not current coverage/Sonar, real terminal, Windows, provider or whole-wave acceptance.
 
 ## Independent evidence audit and qualifications
 

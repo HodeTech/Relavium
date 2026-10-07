@@ -3602,3 +3602,17 @@ is interrupted and its wrong store/reader API attempt is not counted as state-re
 complete static report and independent Parent actual-reader regressions establish that surface.
 **Group 4 remains changes requested; fresh complete round 4 is required. Group 3, Proposed ADR-0102,
 unapproved ADR-0103, Groups 5–6, Steps 7–8/12, final CI/coverage/Sonar, W7 and draft PR #90 remain open.**
+
+### W7 systematic group 4, round 4 — 2026-10-07
+
+[Both fresh reviews](../../reviews/2026-10-07T09-10-29-w7-systematic-group-4-round-4-review.md) cover all 33 corrected paths / 61 hunks and ten complete test files / 5,108 lines.
+No new material implementation finding remains. Three literal newline escapes in the preceding
+review prose are corrected without changing its historical result. Independent runtime passes
+29 files / 753 tests, five fresh builds and strict fixture/setup/config inclusion. Discovery-only
+and state-only removals fail 43 and 31 controls; exact restoration passes. Parent audits both
+complete reports, all 3,145 physical entries / 2,781 regular files, source receipts, self bindings,
+registers and eight actual native-child proof closures before Original resumes. Read ordering,
+18 historical Own-evidence revisions, capture/format repairs and increased parsing cost remain
+explicit qualifications. **Group 4 is accepted within scope. Group 3's High, Proposed ADR-0102,
+unapproved ADR-0103, Groups 5–6, Steps 7–8/12, final CI/coverage/Sonar, W7 and draft PR #90 remain
+open. No additional paid capture or ADR-dependent implementation is authorised.**

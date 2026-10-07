@@ -346,3 +346,6 @@ Record its model, effort and review scope in the coverage section where availabl
 
 - [2026-10-07 — W7 systematic group 4, round 3](2026-10-07T07-43-01-w7-systematic-group-4-round-3-review.md):
   streaming SQL exclusions bypassed persisted-row validation; verified High corrected with actual-reader/native-engine regressions, interrupted runtime qualifications retained and fresh round 4 pending.
+
+- [2026-10-07 — W7 systematic group 4, round 4](2026-10-07T09-10-29-w7-systematic-group-4-round-4-review.md):
+  two fresh full-scope reviews and Parent audits accept data-integrity corrections; one literal-newline Low fixed, 753 independent tests and 43/31 causal controls; other W7 gates remain open.
