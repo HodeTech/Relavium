@@ -457,7 +457,17 @@ function readStoredEventRow(
   row: { readonly seq: number; readonly eventType: string; readonly payloadJson: string },
 ): RunEvent | undefined {
   try {
-    const event = parseStoredRunEvent(JSON.parse(row.payloadJson));
+    const candidate: unknown = JSON.parse(row.payloadJson);
+    // Forward compatibility is only a matching unknown type, never a damaged column projection.
+    // Check before the tolerant parser can skip the payload and conceal a known state-bearing row.
+    if (
+      typeof candidate !== 'object' ||
+      candidate === null ||
+      !('type' in candidate) ||
+      candidate.type !== row.eventType
+    )
+      throw new Error('stored run event type does not match its column');
+    const event = parseStoredRunEvent(candidate);
     if (event === undefined) return undefined;
     const mismatch = projectionMismatch(event, runId, row);
     if (mismatch !== undefined) throw new Error(mismatch);

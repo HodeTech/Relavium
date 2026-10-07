@@ -145,3 +145,16 @@ interruption, outstanding-gate resumability, lease fencing and strict replay rem
 does not promise automatic startup reconciliation on a shipping surface. The materialized `running`
 status between decision and terminal is not a new resumable approval. See the canonical
 [event contract](../reference/contracts/sse-event-schema.md#durable-budget-authorization).
+
+## Implementation correction — 2026-10-07, raw discriminator before forward tolerance
+
+Independent Group 4 review found that SQLite could skip an unknown payload discriminator before
+checking it against the stored event-type column. A damaged known human or budget suspension could
+therefore appear non-resumable and receive an invented interruption terminal during reconciliation.
+The raw discriminator now agrees with its column before tolerant parsing can skip it; mismatches use
+the existing structured corruption refusal on every read surface. Aggregate discovery refuses before
+reconciliation acquires a lease or writes any terminal, retaining both corrupt and healthy evidence.
+Matching genuinely unknown rows keep their existing display/discovery tolerance and strict replay
+refusal. This completes the existing corruption policy above, without a new durable event, migration,
+error code or approval rule. The [canonical database contract](../reference/shared-core/database-schema.md#run_events)
+records the read boundary.

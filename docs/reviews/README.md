@@ -261,6 +261,10 @@ added.
   acknowledged cleanup could delete quarantined identity evidence and reissue a key; transactional
   preservation and native controls correct the verified High, with fresh complete round 2 required.
 
+- [2026-10-07 — W7 systematic group 4, round 2](2026-10-07T07-00-05-w7-systematic-group-4-round-2-review.md):
+  verified discriminator-corruption High corrected before tolerant parsing; 8,329 passing tests,
+  complete sealed evidence audit and causal native engine controls; fresh complete round 3 required.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

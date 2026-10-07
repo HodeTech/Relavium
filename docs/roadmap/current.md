@@ -1651,3 +1651,16 @@ before Original resumes, with preparation, register and native-helper qualificat
 **Group 4 remains changes requested; fresh complete round 2 is required. Group 3's High,
 Proposed ADR-0102, unapproved ADR-0103, Groups 5–6, Steps 7–8/12, current CI/Sonar, W7 and draft
 PR #90 remain open. No additional paid generation is authorised.**
+
+### W7 systematic group 4, round 2 — 2026-10-07
+
+Both [complete independent reviews](../reviews/2026-10-07T07-00-05-w7-systematic-group-4-round-2-review.md) verify a High: a known SQLite suspension column
+with an unknown payload discriminator could be skipped, letting reconciliation invent an interruption
+terminal. The correction checks raw type equality before tolerant parsing and refuses without leases,
+terminal writes or changes to either run. Thirteen new native regressions pass; removing only the guard
+fails eight required-refusal controls while five genuine/matching-unknown controls pass. Original passes
+23 forced tasks, 373 files, 8,329 tests / 12 existing skips, six forced builds and isolation. Parent audits
+all 3,082 actual sealed entries / 2,719 regular artifacts and actual native-child proof closure before
+Original resumes, preserving read/preparation/checkJs limits. **Group 4 remains changes requested;
+fresh complete round 3 is required. Group 3, Proposed ADR-0102, unapproved ADR-0103, Groups 5–6,
+Steps 7–8/12, final CI/coverage/Sonar, W7 and draft PR #90 remain open.**
