@@ -63,6 +63,8 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
+          # The offline replay check independently verifies frozen blobs against its actual predecessor commit.
+          fetch-depth: 0
 
       - name: Set up pnpm
         # pnpm version comes from the root package.json `packageManager`.
@@ -161,6 +163,11 @@ jobs:
       # cancellation boundary offline, through the same script as the local required gate.
       - name: Smoke the overflow capture command (offline)
         run: pnpm smoke:overflow-capture
+
+      # Durable budget authorization must remain unreadable by the actual pre-W7 predecessor.
+      # Keep the required GitHub gate aligned with the offline smoke in pnpm run ci (ADR-0100).
+      - name: Smoke the budget replay compatibility harness (offline)
+        run: pnpm smoke:budget-replay
 
   # Supported-floor gate (ADR-0067). TWO floors, deliberately different:
   #   * the PUBLISHED floor is `apps/cli` `engines.node` = `>=22` — the max constraint in the CLI's RUNTIME

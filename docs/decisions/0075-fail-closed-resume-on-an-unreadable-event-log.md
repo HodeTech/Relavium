@@ -79,3 +79,12 @@ out.
 - **A newer binary's purely observational event blocks an older binary's resume.** A `run:started` written by a future Relavium with an added `agent:thought` row is refused even though nothing state-bearing was lost. This is deliberate — see the rejected classification alternative — and the cost is bounded by the remedy being an upgrade rather than data recovery. Mitigation: the message says which rows, so a user can see it is a version gap and not corruption.
 - **A user who cannot upgrade cannot resume that run.** The run is not lost — every read-only surface still shows it, and its outputs and costs remain readable. Mitigation: that asymmetry is the point, and the message states it, so the user is not left guessing whether the data is gone.
 - **Two read entry points where there was one**, and a future caller could pick the tolerant one for a replay — the type system cannot prevent it, since both return readable events. Mitigation: the strict entry point is the one named for replay, both docblocks carry the constraint, and `checkpointer.test.ts` pins that the resume path refuses a log with a skipped row. That pins today's caller, not tomorrow's; a reviewer, not a compiler, is what catches a new one.
+
+## Implementation correction — 2026-10-07, mandatory compatibility CI
+
+The W7 downgrade smoke now runs in the mandatory GitHub CI job as well as the root CI script.
+Portable predecessor dependencies come from the fixed shipped byte archive, and the source manifest
+is verified against the actual recorded Git baseline. The canonical
+[harness description](../../tools/budget-replay-compat/README.md) records the separately hashed native
+ABI exception and bounded completed-evidence retention. This closes the implementation gaps in the
+2026-10-03 full-CI claim above without changing tolerant display or fail-closed replay policy.

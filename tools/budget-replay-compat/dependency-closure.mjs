@@ -1,11 +1,11 @@
 /** Freeze actual Node lookup edges before running either source version. */
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
   realpathSync,
   symlinkSync,
   writeFileSync,
@@ -27,23 +27,6 @@ function lookup(root, name) {
       assert.ok(!existsSync(`${candidate}${extension}`), `unpackaged dependency: ${name}`);
   }
   return undefined;
-}
-
-function portableFiles(root, native) {
-  const files = [];
-  function walk(path) {
-    for (const entry of readdirSync(join(root, path), { withFileTypes: true })) {
-      const child = join(path, entry.name);
-      if (entry.name === 'node_modules' || (native && child === 'build')) continue;
-      if (entry.isDirectory()) walk(child);
-      else {
-        assert.ok(entry.isFile(), `unexpected dependency symlink: ${child}`);
-        files.push(portable(child));
-      }
-    }
-  }
-  walk('');
-  return files.sort((a, b) => a.localeCompare(b));
 }
 
 function declaredEdges(metadata) {
@@ -93,35 +76,36 @@ function verifyEdges(root, pin, roots) {
   }
 }
 
-export function snapshotDependencyClosure(repository, owned, pins) {
+export const dependencyArchiveMagic = Buffer.from('relavium-budget-replay-dependencies-v1\n');
+
+export function snapshotDependencyClosure(repository, owned, pins, portableBytes) {
   assert.equal(pins.schemaVersion, 2);
-  const installed = new Map();
+  assert.ok(Buffer.isBuffer(portableBytes), 'frozen portable dependency bytes required');
+  assert.ok(
+    portableBytes.subarray(0, dependencyArchiveMagic.length).equals(dependencyArchiveMagic),
+    'frozen portable dependency archive version',
+  );
+  let offset = dependencyArchiveMagic.length;
   const copied = new Map();
   const files = [];
   for (const pin of pins.packages) {
     assert.ok(pin.relativePackageRoot.startsWith('node_modules/'));
-    const root = resolve(repository, pin.relativePackageRoot);
-    assert.equal(portable(relative(repository, root)), pin.relativePackageRoot);
-    assert.equal(realpathSync(root), root, `package root redirected: ${pin.name}`);
-    assert.ok(!installed.has(pin.relativePackageRoot));
-    installed.set(pin.relativePackageRoot, root);
+    assert.equal(
+      portable(relative(owned, resolve(owned, pin.relativePackageRoot))),
+      pin.relativePackageRoot,
+    );
+    assert.ok(!copied.has(pin.relativePackageRoot), `duplicate package root: ${pin.name}`);
     const target = join(owned, 'dependencies', pin.relativePackageRoot);
     copied.set(pin.relativePackageRoot, target);
-    const metadata = readFileSync(join(root, 'package.json'));
-    assert.equal(digest(metadata), pin.packageJsonSha256, pin.name);
-    const parsed = JSON.parse(metadata.toString('utf8'));
-    assert.equal(parsed.name, pin.name);
-    assert.equal(parsed.version, pin.version);
-    assert.equal(pin.baselineLockPackageKey, `${pin.name}@${pin.version}`);
-    assert.deepEqual(
-      portableFiles(root, pin.name === 'better-sqlite3'),
-      pin.files.map((file) => file.path),
-      `portable file inventory: ${pin.name}`,
-    );
     for (const file of pin.files) {
-      const source = resolve(root, file.path);
-      assert.equal(portable(relative(root, source)), file.path);
-      const bytes = readFileSync(source);
+      assert.equal(portable(relative(target, resolve(target, file.path))), file.path);
+      assert.ok(Number.isSafeInteger(file.bytes) && file.bytes >= 0, 'invalid portable byte count');
+      assert.ok(
+        offset + file.bytes <= portableBytes.length,
+        `truncated portable archive: ${pin.name}/${file.path}`,
+      );
+      const bytes = portableBytes.subarray(offset, offset + file.bytes);
+      offset += file.bytes;
       assert.equal(bytes.length, file.bytes, `${pin.name}/${file.path}`);
       assert.equal(digest(bytes), file.sha256, `${pin.name}/${file.path}`);
       const destination = join(target, file.path);
@@ -133,7 +117,21 @@ export function snapshotDependencyClosure(repository, owned, pins) {
         package: pin.relativePackageRoot,
       });
     }
+    const metadata = readFileSync(join(target, 'package.json'));
+    assert.equal(digest(metadata), pin.packageJsonSha256, pin.name);
+    const parsed = JSON.parse(metadata.toString('utf8'));
+    assert.equal(parsed.name, pin.name);
+    assert.equal(parsed.version, pin.version);
+    assert.equal(pin.baselineLockPackageKey, `${pin.name}@${pin.version}`);
     if (pin.name === 'better-sqlite3') {
+      const root = resolve(repository, pin.relativePackageRoot);
+      assert.equal(portable(relative(repository, root)), pin.relativePackageRoot);
+      assert.equal(realpathSync(root), root, `native package root redirected: ${pin.name}`);
+      assert.equal(
+        digest(readFileSync(join(root, 'package.json'))),
+        pin.packageJsonSha256,
+        'native SQLite package must match the frozen source version',
+      );
       // The native build remains the documented platform exception, captured and hashed for THIS run.
       const path = 'build/Release/better_sqlite3.node';
       const bytes = readFileSync(join(root, path));
@@ -149,9 +147,8 @@ export function snapshotDependencyClosure(repository, owned, pins) {
       });
     }
   }
-  // No package code has executed. Bind installed CJS, ESM, peer, optional and missing edges first.
-  for (const pin of pins.packages)
-    verifyEdges(installed.get(pin.relativePackageRoot), pin, installed);
+  assert.equal(offset, portableBytes.length, 'unlisted trailing portable dependency bytes');
+  // No installed portable package is read or executed. Reconstruct the immutable captured lookup graph.
   for (const pin of pins.packages) {
     const root = copied.get(pin.relativePackageRoot);
     for (const edge of pin.edges) {
@@ -173,8 +170,9 @@ export function snapshotDependencyClosure(repository, owned, pins) {
   }
   // Check the reconstructed lookup, including absent edges, so root imports cannot change a peer's presence.
   for (const pin of pins.packages) verifyEdges(copied.get(pin.relativePackageRoot), pin, copied);
+  files.sort((a, b) => a.path.localeCompare(b.path));
   const runtime = {
-    files: files.sort((a, b) => a.path.localeCompare(b.path)),
+    files,
     packages: pins.packages.map(({ name, relativePackageRoot, edges }) => ({
       name,
       relativePackageRoot,

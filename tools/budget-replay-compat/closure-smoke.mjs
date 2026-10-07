@@ -1,5 +1,6 @@
 /** Real CommonJS lookup controls and graph interventions, in invocation-owned fixtures only. */
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -12,7 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { snapshotDependencyClosure } from './dependency-closure.mjs';
+import { dependencyArchiveMagic, snapshotDependencyClosure } from './dependency-closure.mjs';
 
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 export function checkClosureGuards(owned, tooling, environment) {
@@ -121,6 +122,12 @@ module.exports = { shared: require('fixture-shared'), peer: require('fixture-pee
       target: pin.relativePackageRoot,
     })),
   };
+  const portableBytes = Buffer.concat([
+    dependencyArchiveMagic,
+    ...packages.flatMap((pin) =>
+      pin.files.map((file) => readFileSync(join(repository, pin.relativePackageRoot, file.path))),
+    ),
+  ]);
   const results = [];
   function caseDirectory(label) {
     const directory = join(root, label);
@@ -130,7 +137,7 @@ module.exports = { shared: require('fixture-shared'), peer: require('fixture-pee
     return directory;
   }
   const control = caseDirectory('control');
-  const runtime = snapshotDependencyClosure(repository, control, pins);
+  const runtime = snapshotDependencyClosure(repository, control, pins, portableBytes);
   mkdirSync(join(control, 'frozen'));
   writeFileSync(join(control, 'frozen/source-manifest.json'), '{"files":[]}\n');
   for (const file of ['dependency-runtime.mjs', 'loader.mjs', 'register.mjs'])
@@ -200,21 +207,27 @@ assert.equal((await import('fixture-esm')).default, 'one');
     join(unpinned, 'index.js'),
     `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'loaded'); module.exports = 'one';\n`,
   );
-  for (const [label, name, message] of [
-    ['redirected-cjs-edge', shared1.name, /dependency edge changed/],
-    ['redirected-peer-edge', peer.name, /dependency edge changed/],
-    ['newly-resolving-optional', 'fixture-optional', /previously absent optional edge/],
+  // Installed portable drift must be irrelevant to this immutable archived closure.
+  for (const [label, name] of [
+    ['installed-cjs-edge-drift', shared1.name],
+    ['installed-peer-edge-drift', peer.name],
+    ['installed-new-optional', 'fixture-optional'],
   ]) {
     const link = join(repository, primary.relativePackageRoot, 'node_modules', name);
     const original = name === shared1.name ? shared1 : name === peer.name ? peer : undefined;
     if (original) unlinkSync(link);
     symlinkSync(unpinned, link, 'dir');
     try {
-      assert.throws(
-        () => snapshotDependencyClosure(repository, caseDirectory(label), pins),
-        message,
+      const directory = caseDirectory(label);
+      snapshotDependencyClosure(repository, directory, pins, portableBytes);
+      assert.equal(
+        readFileSync(
+          join(directory, 'dependencies', shared1.relativePackageRoot, 'index.js'),
+          'utf8',
+        ),
+        "module.exports = 'one';\n",
       );
-      results.push({ label, refusedBeforeWorker: true });
+      results.push({ label, frozenBytesAndGraphRetained: true });
     } finally {
       unlinkSync(link);
       if (original) symlinkSync(join(repository, original.relativePackageRoot), link, 'dir');
@@ -223,13 +236,45 @@ assert.equal((await import('fixture-esm')).default, 'one');
   const extra = join(repository, shared1.relativePackageRoot, 'extra.js');
   writeFileSync(extra, 'module.exports = 1;\n');
   try {
-    assert.throws(
-      () => snapshotDependencyClosure(repository, caseDirectory('unlisted-file'), pins),
-      /portable file inventory/,
+    const directory = caseDirectory('installed-unlisted-file');
+    snapshotDependencyClosure(repository, directory, pins, portableBytes);
+    assert.equal(
+      existsSync(join(directory, 'dependencies', shared1.relativePackageRoot, 'extra.js')),
+      false,
     );
-    results.push({ label: 'unlisted-file', refusedBeforeWorker: true });
+    results.push({ label: 'installed-unlisted-file', frozenBytesRetained: true });
   } finally {
     unlinkSync(extra);
+  }
+  // No portable live install is required, even for previously present peers/two-version graphs.
+  snapshotDependencyClosure(
+    join(root, 'missing-install'),
+    caseDirectory('missing-live-install'),
+    pins,
+    portableBytes,
+  );
+  results.push({ label: 'missing-live-install', frozenBytesAndGraphRetained: true });
+  const tampered = Buffer.from(portableBytes);
+  tampered[dependencyArchiveMagic.length] ^= 1;
+  for (const [label, bytes, message] of [
+    ['archive-byte-drift', tampered, /fixture-shared\/index.js/],
+    [
+      'archive-truncated',
+      portableBytes.subarray(0, portableBytes.length - 1),
+      /truncated portable archive/,
+    ],
+    [
+      'archive-trailing-byte',
+      Buffer.concat([portableBytes, Buffer.from('x')]),
+      /unlisted trailing/,
+    ],
+  ]) {
+    assert.throws(
+      () => snapshotDependencyClosure(repository, caseDirectory(label), pins, bytes),
+      message,
+    );
+    assert.equal(existsSync(marker), false);
+    results.push({ label, refusedBeforeWorker: true });
   }
 
   // Change only an owned copied edge AFTER preflight. The runtime fence must reject before marker code runs.

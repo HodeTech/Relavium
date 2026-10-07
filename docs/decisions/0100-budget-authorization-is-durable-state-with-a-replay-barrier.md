@@ -172,3 +172,20 @@ necessarily includes their parsing cost. This closes the existing aggregate corr
 it adds no event, schema, error code, authority or new parser. The
 [canonical database contract](../reference/shared-core/database-schema.md#run_events) records the
 tradeoff and all four read surfaces. Fresh independent review is still required for wave acceptance.
+
+## Implementation correction — 2026-10-07, systematic compatibility review
+
+The predecessor's portable dependency bytes are now shipped with the fixed baseline artifact;
+installation availability in the current workspace is no longer its source of truth. All original
+portable pins and the `1b3f8d70` source archive remain unchanged. The harness independently checks
+the source manifest's recorded blobs against that Git commit, and full GitHub CI fetches the required
+history. The invocation-specific native SQLite ABI exception remains explicit and separately hashed;
+it does not authorize another portable byte baseline.
+
+Both the root CI script and the mandatory GitHub job run the offline budget replay smoke. Evidence
+retention is bounded to the current completed invocation plus the newest two completed siblings;
+active, interrupted, unrecognized and redirected evidence is preserved. Completion and retirement
+cannot mask a prior check failure. These repairs complete the existing immutable-baseline and full-CI
+obligations. They introduce no replay policy, dependency authority or execution network call. The
+canonical [harness description](../../tools/budget-replay-compat/README.md) documents provenance,
+portable/native boundaries and retention.

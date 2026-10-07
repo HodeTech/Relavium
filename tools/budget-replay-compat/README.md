@@ -2,7 +2,7 @@
 
 `pnpm smoke:budget-replay` is the offline downgrade acceptance check for
 [ADR-0100](../../docs/decisions/0100-budget-authorization-is-durable-state-with-a-replay-barrier.md).
-It is also part of `pnpm run ci`. The canonical authorization contract is
+It is part of `pnpm run ci` and the required GitHub CI job. The canonical authorization contract is
 [sse-event-schema.md](../../docs/reference/contracts/sse-event-schema.md).
 
 The check freezes the actual predecessor at
@@ -24,7 +24,11 @@ lockfile, SQLite migrations and source manifest. Its SHA256 is
 `cf980edd6d4d8a8652fa236c1c0d46055249fe59944ec284a120aea19c6b10bb`;
 the source manifest's SHA256 is
 `cb3361e5c0f75d427ee936ba43beba871acacbc117729df7820dbb7aa5ec229b`.
-Both are verified before any frozen source runs. The loader also verifies each
+Both are verified before any frozen source runs. Every one of the 143 manifest files is also checked
+against the actual Git blob at the pinned baseline commit, using `git --no-replace-objects cat-file`
+and the manifest byte/hash inventory. An archive and self-declared digest changed together cannot
+certify a different predecessor. The pinned commit must be available locally; CI checks out full
+history (`fetch-depth: 0`). The loader also verifies each
 source it loads and forbids mixing versions or resolving workspace source/dist.
 It transpiles TypeScript for execution; normal CI owns typechecking.
 
@@ -37,10 +41,18 @@ extends their metadata closure to installed peers rather than changing their ver
 The 296 edges record exact target roots, two Node builtins and 29 absent optional
 edges. Multiple versions have distinct identities; a name alone is not a join key.
 
-The check verifies installed metadata, complete portable file inventories and actual
-Node lookup edges before a worker starts. It copies verified bytes into its owned
-tree and reconstructs each explicit dependency link, including Drizzle's SQLite peer.
-It verifies lookup again in the copied graph. A redirected edge or a newly resolving
+`frozen/dependency-bytes.bin.gz` ships those portable bytes in the exact package/file order of the
+existing pins. Its 20,143,535 compressed bytes have SHA256
+`807644e6f71d153f7bfa4e0f47a3304f851391ee40ad18635ded1468a8fc5c49`.
+The decompressed payload is a fixed `relavium-budget-replay-dependencies-v1\n` header followed by
+112,929,534 file bytes; its full 112,929,573 bytes have SHA256
+`e37029d0ea9fdfbae33a97e2fce68a260bb2ad1af2ce867d6b28f2f9abcedd53`.
+Compressed size/digest, bounded decompression, full payload size/digest and every per-file
+size/hash are checked before a worker starts. There are no names or lengths trusted from the
+binary stream; the already-pinned manifest is the only index. Truncation and trailing bytes fail.
+
+The check reconstructs the archived metadata/files and all explicit dependency links inside its
+owned tree, including Drizzle's SQLite peer. It verifies actual lookup in that copied graph. A redirected edge or a newly resolving
 optional package is refused. Both the ESM loader and CommonJS `module.require` check
 the resolved file against the copied byte inventory and its issuer-specific frozen edge before loading it;
 neither accepts a switch to a different already-pinned version. Root imports and same-package
@@ -55,20 +67,38 @@ The locally compiled `better-sqlite3/build/Release/better_sqlite3.node` is the e
 platform exception to portable matching. Its package version and source are pinned;
 its actual binary is copied, hashed for the invocation and checked at runtime. The
 archived baseline lockfile is immutable. The current repository lockfile can evolve;
-the check verifies the archived lockfile and requires the matching installed pnpm
-closure, refusing mismatches. It never installs packages or resolves dependencies
-over the network. A future dependency update must retain an explicit way to run
-this predecessor rather than silently refreshing its source or dependency pins.
+the check verifies the archived lockfile and reads portable packages only from the shipped byte
+archive. Ordinary installed portable dependency updates, removals, changed peers or newly present
+optionals do not change this predecessor. Only the matching installed `better-sqlite3` native
+package/version is required for the current platform; its binary is intentionally invocation-specific.
+The check never installs packages or resolves dependencies over the network. Native updates must
+retain that explicit baseline platform exception; neither source, portable bytes nor pins are refreshed.
+Git and tar are invoked by absolute standard OS installation paths, not an inherited PATH entry.
 
 All extraction, snapshots, logs, loader traces, SQLite databases, caches and
 temporary files go into one exclusive external `relavium-budget-replay-*`
-directory printed by the command. Its `OWNER` identifies the invocation. The
-directory is preserved on success and failure for inspection. No old source or
+directory printed by the command. Its `OWNER.json` identifies the canonical repository and parent
+PID. Each invocation atomically acquires its own directory; no shared initialization marker can
+leave concurrent or interrupted runs stuck. On success or failure, `completion.json` publishes the
+completed state after workers close. The current invocation plus the newest two other completed
+invocations for that exact repository are retained; older completed owned evidence is pruned.
+Active/interrupted evidence, foreign owners, redirected paths and malformed records are untouched.
+Interrupted evidence is intentionally not automatically reclaimed. A finalization error fails a
+successful check; when the check already failed, it reports a separate fixed diagnostic and preserves
+that primary failure. The worker-closure evidence writer follows the same rule, so a secondary log
+write cannot replace the original worker failure. No old source or
 test is extracted into the repository or normal Vitest collection. Dependencies are
 physical owned copies with individual links inside physical `node_modules` directories.
-Thirteen permanent graph/runtime controls cover CJS/ESM/peer drift, optional presence,
-unlisted files, post-preflight unpinned and pinned-to-pinned resolution, root-import/byte drift,
-and positive/restored two-version graphs. The ESM control uses the actual production loader
+Seventeen permanent graph/runtime controls distinguish installed portable drift from immutable
+archive tampering, truncation/trailing bytes, post-preflight unpinned and pinned-to-pinned resolution,
+root-import/byte drift and positive/restored two-version graphs. Seven provenance controls refuse
+forged blob/digest/path/baseline identities and changed source plus a matching self-declared digest,
+then prove the unchanged 143-file baseline. Those interventions use a separate writable source copy;
+they never modify the extracted predecessor, whose archived files can be read-only. Eight retention controls cover bounded sequential and
+ten concurrent completions, future timestamps, active/interrupted/foreign/redirected records,
+current-owner refusal and direct-child ownership. Seven additional finalization cases, grouped into
+three results, preserve Error/primitive primary failures and a failed diagnostic sink while surfacing
+finalization-only failures. The ESM control uses the actual production loader
 with an inert, pinned TypeScript stand-in; it loads no TS source and is separate from the
 real predecessor/source/dependency acceptance workers.
 Their probe code cannot run its inert marker on a rejected load. Workers have

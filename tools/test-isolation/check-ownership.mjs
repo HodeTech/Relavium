@@ -25,8 +25,10 @@ import {writeFileSync,readFileSync,existsSync,readdirSync} from 'node:fs';
 import {join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
 if (process.env.GUARD_PROBE_ROLE === 'A') {
+  // Deliberately delay actual readiness; polling iterations do not measure elapsed time.
+  await delay(2250);
   writeFileSync(join(process.cwd(),'ready'),'1');
-  const deadline = Date.now() + 5000;
+  const deadline = Date.now() + 45000;
   while (!existsSync(join(process.cwd(),'release'))) {
     if (Date.now() > deadline) throw new Error('release timeout');
     await delay(5);
@@ -71,7 +73,7 @@ try {
   const result = spawnSync(process.execPath, [join(preserved, 'tools/test-isolation/check.mjs')], {
     cwd: preserved,
     encoding: 'utf8',
-    timeout: 8000,
+    timeout: 45000,
   });
   assert.equal(result.status, 0, result.stderr);
   for (const path of sentinels) {
@@ -109,7 +111,8 @@ function start(dir, role, preload) {
     stderr += chunk;
   });
   child.stdout.resume();
-  const timer = setTimeout(() => child.kill('SIGKILL'), 8000);
+  // This is a failsafe for a deadlocked child, not a deadline for reaching a scheduler phase.
+  const timer = setTimeout(() => child.kill('SIGKILL'), 45000);
   const done = new Promise((resolve, reject) => {
     child.once('error', reject);
     child.once('close', (code, signal) => {
@@ -121,10 +124,29 @@ function start(dir, role, preload) {
   completions.push(done);
   return done;
 }
+
+async function waitForMarker(dir, name, done) {
+  const controller = new globalThis.AbortController();
+  const ready = (async () => {
+    while (!existsSync(join(dir, name))) await delay(10, undefined, { signal: controller.signal });
+  })();
+  try {
+    await Promise.race([
+      ready,
+      done.then((result) => {
+        throw new Error(
+          `guard closed before ${name}: code=${result.code}, signal=${result.signal}`,
+        );
+      }),
+    ]);
+  } finally {
+    controller.abort();
+    await ready.catch(() => undefined);
+  }
+}
 try {
   const a = start(concurrent, 'A');
-  for (let i = 0; i < 400 && !existsSync(join(concurrent, 'ready')); i += 1) await delay(5);
-  assert.ok(existsSync(join(concurrent, 'ready')), 'guard A never reached collection');
+  await waitForMarker(concurrent, 'ready', a);
   const b = await start(concurrent, 'B');
   writeFileSync(join(concurrent, 'release'), '1');
   const first = await a;
@@ -155,7 +177,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {join} from 'node:path';
 if(process.env.GUARD_PROBE_ROLE==='B') {
   writeFileSync(join(process.cwd(),'B-ready'),'1');
-  const bound=Date.now()+5000;
+  const bound=Date.now()+45000;
   while(!existsSync(join(process.cwd(),'A-planting'))) {
     if(Date.now()>bound) throw new Error('collector scheduling timeout');
     await delay(2);
@@ -180,7 +202,7 @@ fs.mkdirSync=function(path,...args) {
   if(role==='A' && !delayed && path===join(root,'.claude')) {
     delayed=true;
     fs.writeFileSync(join(root,'A-planting'),'1');
-    const bound=Date.now()+5000;
+    const bound=Date.now()+45000;
     while(!fs.existsSync(join(root,'B-closed'))) {
       if(Date.now()>bound) throw new Error('preload scheduling timeout');
       Atomics.wait(waitBuf,0,0,2);
@@ -192,8 +214,7 @@ syncBuiltinESMExports();`,
 );
 try {
   const b = start(cleanup, 'B', preload);
-  for (let i = 0; i < 400 && !existsSync(join(cleanup, 'B-ready')); i += 1) await delay(5);
-  assert.ok(existsSync(join(cleanup, 'B-ready')), 'guard B never reached collection');
+  await waitForMarker(cleanup, 'B-ready', b);
   const results = await Promise.all([start(cleanup, 'A', preload), b]);
   for (const result of results) {
     assert.equal(result.signal, null, 'passing/starting probe exceeded its deadline');

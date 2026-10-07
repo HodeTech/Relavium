@@ -3616,3 +3616,23 @@ registers and eight actual native-child proof closures before Original resumes. 
 explicit qualifications. **Group 4 is accepted within scope. Group 3's High, Proposed ADR-0102,
 unapproved ADR-0103, Groups 5–6, Steps 7–8/12, final CI/coverage/Sonar, W7 and draft PR #90 remain
 open. No additional paid capture or ADR-dependent implementation is authorised.**
+
+### W7 systematic group 5, implementation — 2026-10-07
+
+The [budget replay harness](../../../tools/budget-replay-compat/README.md) now runs in the mandatory GitHub CI job. Its predecessor
+portable bytes are shipped independently of live installed dependencies, and all 143 source files
+are checked against the actual pinned Git baseline. Native SQLite remains the documented,
+invocation-hashed ABI exception. Completed evidence is bounded to three invocations; active,
+interrupted, foreign and redirected evidence is preserved. Seven provenance, 17 closure and eight
+retention controls pass, with seven additional finalization cases in three result groups. The
+isolation probe uses explicit IPC readiness instead of elapsed-time assumptions. Turbo is pinned
+exactly to the cooled 2.11.4 release, with its installed local schema and unchanged task definitions.
+
+Forced Original `pnpm run ci` passes: 23 lint/typecheck/test tasks, 373 test files, 8,397 passing
+cases / 12 existing skips, six builds, formatting, migration sync, fences and all three offline
+smokes. Initial tool-lint and formatting failures are retained; neither is presented as a passing
+CI run. `typecheck:tools` covers its configured TypeScript programme, not every MJS helper.
+**Group 5 is implemented and awaits fresh independent reviews; it is not accepted. Group 3's
+High, Proposed ADR-0102, unapproved ADR-0103, Group 6, Steps 7–8/12, final coverage/Sonar, W7
+and draft PR #90 remain open. No additional paid capture or ADR-dependent implementation is
+authorised.**
