@@ -3790,3 +3790,9 @@ The next increment integrates the already accepted ADR-0102 factory into adapter
 handoffs and exact core measured rounds. Approved ADR-0103 host departure, Step 8 atomic
 compaction/recovery and Step 12 remain open; all six W7 register items retain their open status.
 No new ADR approval, credential or paid provider call is required for these approved increments.
+
+### W7 owned adapter/chain increment accepted — 2026-10-08
+
+[Two complete fresh round-3 reviews](../../reviews/2026-10-08T23-47-31-w7-owned-adapter-chain-round-3-review.md) accept all 24 cumulative paths/78 hunks through `0c3c185b`. Parent reads both entire reports, independently matches all path/hunk/evidence seals and verifies all 1,224 tracked bytes in both exact archives and shared Git before releasing the freeze. Authority passes 4,311 permanent tests plus 15 independent controls; lifecycle passes 8,839 permanent tests plus 16 controls. Selections overlap and causal guard survival is explicit. Exact-head PR/push required CI, coverage, Node 22, Windows, peers and Sonar pass; earlier stress/fixture failures remain dated history.
+
+This accepts controlled adapter/chain handoff only. Core exact measured-round reuse now proceeds, then approved ADR-0103 host departure and Step 8 compaction/recovery. The production ownership/lifecycle Highs, Step 12 and all six W7 register items remain open; 41/51 is unchanged. No new paid call, credential or ADR approval is required.

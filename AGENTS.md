@@ -33,8 +33,9 @@ liveness-and-deadlines wave (ADR-0085, merged 2026-08-28 as PR #85), `W3` resour
 independent acceptance; systematic review reopened production request ownership and paused-host
 lifecycle obligations. All five live overflow records are complete. Step 7 is accepted after
 [four cumulative review rounds](docs/reviews/2026-10-08T22-30-10-w7-step-7-round-4-review.md).
-Approved ADR-0102/0103 production integration, Step 8 compaction/recovery and the final whole-wave
-Step 12 remain open. Supplemental ADR-0099–ADR-0103 are Accepted.
+ADR-0102 controlled adapters/chain are accepted after three cumulative rounds; exact core
+measured-round reuse and ADR-0103 host integration remain open, as do Step 8 compaction/recovery
+and final whole-wave Step 12. Supplemental ADR-0099–ADR-0103 are Accepted.
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 
 ## The non-negotiable rules

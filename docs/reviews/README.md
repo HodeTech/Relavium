@@ -11,6 +11,9 @@ added.
 
 ## Records
 
+- [2026-10-08 — W7 owned adapter/chain integration, round 3](2026-10-08T23-47-31-w7-owned-adapter-chain-round-3-review.md):
+  two complete fresh reviews and exact-head CI accept all 24 paths/78 hunks; core/host/Step 8 and whole-wave obligations remain open.
+
 - [2026-10-08 — W7 owned adapter/chain integration, round 2](2026-10-08T23-25-19-w7-owned-adapter-chain-round-2-review.md):
   both complete cumulative reviews find no new product defect; required deep-core and advisory Windows fixture timeouts corrected, fresh round 3 and CI required.
 
