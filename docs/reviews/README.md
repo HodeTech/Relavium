@@ -11,6 +11,9 @@ added.
 
 ## Records
 
+- [2026-10-08 — W7 owned adapter/chain integration, round 2](2026-10-08T23-25-19-w7-owned-adapter-chain-round-2-review.md):
+  both complete cumulative reviews find no new product defect; required deep-core and advisory Windows fixture timeouts corrected, fresh round 3 and CI required.
+
 - [2026-10-08 — W7 owned adapter/chain integration, round 1](2026-10-08T23-02-00-w7-owned-adapter-chain-round-1-review.md):
   both full 18-path reviews verify a CI structural-stress timeout; guarded record reuse and scoped test budget corrected, fresh cumulative round 2 required.
 

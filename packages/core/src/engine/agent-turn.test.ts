@@ -1184,6 +1184,7 @@ describe('runAgentTurn — tool loop', () => {
       });
       expect(JSON.stringify(result.toolHistory)).not.toContain('provider-id');
     },
+    30_000, // Structural depth control, matching owned-graph stress; no five-second latency guarantee.
   );
 
   it('retains a registered call name when a recoverable host denial carries no tool id', async () => {
