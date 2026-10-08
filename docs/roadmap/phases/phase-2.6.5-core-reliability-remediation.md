@@ -3707,3 +3707,28 @@ legal agreement or a larger minimum prepayment remains an explicit account-setup
 new provider request has been made under this authorisation yet. Implementation, provider
 evidence, final CI/coverage/Sonar and all six remaining W7 register items remain open until
 their actual acceptance evidence lands.
+
+
+### W7 authorised provider evidence and internal ownership foundation — 2026-10-08
+
+The maintainer completed Gemini billing; the selected Gemini 3.5 Flash-Lite model has paid
+Tier 1 access and a 4M input-TPM quota. The existing OS-keychain account was used through stdin,
+without exposing its key. One authorised Gemini request returned the genuine HTTP 400
+`INVALID_ARGUMENT` input-overflow body; its exact v1 artifact is preserved in the
+[fixture index](../../../packages/llm/src/conformance/fixtures/overflow/README.md). **Four of five genuine records now exist. Only Anthropic's native
+`model_context_window_exceeded` response is missing.** The earlier approval sequence's
+no-new-call/two-missing statements describe its publication checkpoint, not the present state.
+
+One free Anthropic token-count request calibrated 199,762 input tokens. One accepted Haiku 4.5
+probe ended with `end_turn`, so it is retained privately and does not establish native overflow.
+Its reported 199,762 input / 1,505 output tokens imply 0.207287 USD at the published rates; this
+is usage-priced evidence, not an invoice. The Gemini overflow was an unsuccessful 400 request;
+no successful token usage or invoice was returned. The bounded next Anthropic probe, available
+only through explicit capture purpose selection, remains subject to the maintainer's 2 USD
+limit and independent capture-tool review. No automated paid retry is authorised or introduced.
+
+[Fresh ownership foundation round 2](../../reviews/2026-10-08T19-29-00-w7-inert-graph-round-2-review.md)
+accepts only the internal inert-graph helper after descriptor/native-brand fixes and separate
+mutable-alias controls. Full request/cap associations, actual SDK handoffs and core measured-round
+reuse are not implemented or accepted by that record. ADR-0102/0103 implementation, the remaining
+provider record, Steps 7–8/12, final CI/coverage/Sonar and all six W7 register items remain open.
