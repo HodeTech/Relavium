@@ -41,7 +41,7 @@ function inheritedSerializer(source: object): void {
 }
 
 /** Inspect data descriptors only. Map/Set entries retain their existing ignored JSON semantics. */
-function properties(source: object): readonly Property[] {
+function properties(source: object, omitted?: ReadonlySet<string>): readonly Property[] {
   const array = Array.isArray(source);
   const prototype: unknown = Object.getPrototypeOf(source);
   if (
@@ -80,6 +80,8 @@ function properties(source: object): readonly Property[] {
   let indices = 0;
   for (const key of Reflect.ownKeys(source)) {
     if (typeof key !== 'string' || key === '__proto__') refuse();
+    // Only internal request/cap ownership supplies these descriptor-separated exceptions.
+    if (omitted?.has(key)) continue;
     const descriptor = Object.getOwnPropertyDescriptor(source, key);
     if (descriptor === undefined || !('value' in descriptor)) refuse();
     const value: unknown = descriptor.value;
@@ -128,23 +130,67 @@ function container(source: object): object {
  * reuse the same destination. No recursion, per-occurrence expansion or new size/depth policy.
  */
 export function copyInertData(value: unknown, freeze: boolean = true): unknown {
+  return copyData(value, freeze);
+}
+
+/**
+ * Internal typed-root bridge. The caller seeds a typed target and delegates every data property
+ * to the same graph traversal; no parser reconstructs fields or drops future request members.
+ * Omitted descriptors must already have been inspected by their owning live-signal/cap authority.
+ */
+export function copyInertDataInto(
+  value: object,
+  target: object,
+  freeze: boolean,
+  omissions: ReadonlyMap<object, ReadonlySet<string>>,
+  additions?: ReadonlyMap<object, Readonly<Record<string, unknown>>>,
+  exceptionEdges?: ReadonlyMap<object, { readonly parent: object; readonly key: string }>,
+  exceptionAliases?: Set<object>,
+): void {
+  Object.setPrototypeOf(target, null);
+  copyData(value, freeze, omissions, target, additions, exceptionEdges, exceptionAliases);
+}
+
+function copyData(
+  value: unknown,
+  freeze: boolean,
+  omissions?: ReadonlyMap<object, ReadonlySet<string>>,
+  target?: object,
+  additions?: ReadonlyMap<object, Readonly<Record<string, unknown>>>,
+  exceptionEdges?: ReadonlyMap<object, { readonly parent: object; readonly key: string }>,
+  exceptionAliases?: Set<object>,
+): unknown {
   try {
     if (typeof value !== 'object' || value === null) {
       if (typeof value === 'function' || typeof value === 'symbol' || typeof value === 'bigint')
         refuse();
       return value;
     }
-    const root = container(value);
+    const root = target ?? container(value);
     const memo = new Map<object, object>([[value, root]]);
     const active = new Set<object>([value]);
+    const inspectedAliases = new Set<object>();
     const frames: Frame[] = [
-      { source: value, target: root, properties: properties(value), next: 0 },
+      {
+        source: value,
+        target: root,
+        properties: properties(value, omissions?.get(value)),
+        next: 0,
+      },
     ];
     while (frames.length > 0) {
       const frame = frames[frames.length - 1];
       if (frame === undefined) refuse();
       const property = frame.properties[frame.next];
       if (property === undefined) {
+        for (const [key, added] of Object.entries(additions?.get(frame.source) ?? {})) {
+          Object.defineProperty(frame.target, key, {
+            value: added,
+            enumerable: true,
+            writable: true,
+            configurable: true,
+          });
+        }
         if (freeze) Object.freeze(frame.target);
         active.delete(frame.source);
         frames.pop();
@@ -156,6 +202,18 @@ export function copyInertData(value: unknown, freeze: boolean = true): unknown {
       let next: Frame | undefined;
       if (typeof child === 'object' && child !== null) {
         if (active.has(child)) refuse();
+        const edge = exceptionEdges?.get(child);
+        if (
+          edge !== undefined &&
+          (edge.parent !== frame.source || edge.key !== property.key) &&
+          !inspectedAliases.has(child)
+        ) {
+          // An exception belongs to a slot, not to the object's identity. An alias through
+          // ordinary request data must satisfy the full inert domain without that privilege.
+          copyInertData(child);
+          inspectedAliases.add(child);
+          exceptionAliases?.add(child);
+        }
         const existing = memo.get(child);
         if (existing !== undefined) copied = existing;
         else {
@@ -164,7 +222,12 @@ export function copyInertData(value: unknown, freeze: boolean = true): unknown {
           if (typeof copied !== 'object' || copied === null) refuse();
           memo.set(child, copied);
           active.add(child);
-          next = { source: child, target: copied, properties: properties(child), next: 0 };
+          next = {
+            source: child,
+            target: copied,
+            properties: properties(child, omissions?.get(child)),
+            next: 0,
+          };
         }
       } else if (
         typeof child === 'function' ||
