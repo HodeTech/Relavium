@@ -430,3 +430,7 @@ Record its model, effort and review scope in the coverage section where availabl
 - [2026-10-08 — W7 factory stress allowance, round 2](2026-10-08T20-50-11-w7-factory-stress-round-2-review.md):
   narrow correction accepted after 110 independent tests and stable pinned-formatter
   verification; production ownership and exact-head remote CI remain open.
+
+- [2026-10-08 — W7 reviewed Sonar dispositions applied](2026-10-08T20-54-08-w7-sonar-disposition-application-review.md):
+  three caller-scoped false positives verified by UI and API; current gate is green,
+  eight new factory labels checked, with source integration and whole-wave gates still open.
