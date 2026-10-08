@@ -418,3 +418,7 @@ Record its model, effort and review scope in the coverage section where availabl
 - [2026-10-08 — W7 internal request factory, round 1](2026-10-08T20-28-00-w7-request-factory-round-1-review.md):
   two complete reviews find no defect in the internal factory; 110 focused tests and
   independent graph/binding controls pass, with fresh round 2 and production integration required.
+
+- [2026-10-08 — W7 internal request factory, round 2](2026-10-08T20-36-55-w7-request-factory-round-2-review.md):
+  two fresh reviews accept the internal factory; 110 tests, sixty authority groups and 620
+  graph assertions pass, while production/SDK ownership acceptance remains open.

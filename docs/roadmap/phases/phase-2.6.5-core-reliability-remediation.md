@@ -3754,3 +3754,19 @@ the evidence gate. The earlier four-record and missing-response statements above
 
 Step 7 classification may now proceed against all five unchanged records. Step 8, ADR-0102/0103
 production integration, Step 12, final CI/coverage/Sonar and the six W7 register items remain open.
+
+### W7 internal request factory accepted — 2026-10-08
+
+[Round 1](../../reviews/2026-10-08T20-28-00-w7-request-factory-round-1-review.md) and
+[two fresh round-2 reviews](../../reviews/2026-10-08T20-36-55-w7-request-factory-round-2-review.md)
+accept the four-path internal factory at `44da68dc`. Exact candidate views, original/native
+controls, exceptional cap slots, full ordinary aliases, signals and trusted derivations retain
+their boundaries. Both fresh reviewers pass 110 focused tests; sixty authority case groups,
+620 graph assertions and seven separate in-memory causal removals pass their stated controls.
+Parent repository lint/typecheck/test and build also pass before the separate Step 7 work.
+
+This increment is not yet consumed by production adapters, chain or core. Its acceptance does
+not establish full SDK compatibility, measured-round reuse, call-time stream ownership or closure
+of the ownership High. Those integrations and ADR-0103, Steps 7–8/12, final CI/coverage/Sonar and
+all six W7 register items remain open. Step 7 now proceeds using all five genuine live records;
+no further paid call is required.
