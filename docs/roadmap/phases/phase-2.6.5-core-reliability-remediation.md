@@ -1989,7 +1989,7 @@ correction inside its own ADR rather than a rewrite, so the wrong reasoning stay
 
 ### W7 pre-implementation review and proposed execution plan — 2026-10-02
 
-**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–6 and 9–11 obtained scoped independent acceptance, but the 2026-10-04 systematic PR review reopens Step 6 request ownership and adjacent session/CLI, replay-tool and document obligations. Previous acceptance records remain historical. Step 6's configured-output-estimate precedence follows ADR-0101, approved on 2026-10-02. Four of five live captures exist; the separate Anthropic native context-stop response is missing. Steps 7–8 and whole Step 12 remain open. All systematic corrections require fresh independent acceptance.**
+**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–6 and 9–11 obtained scoped independent acceptance, but the 2026-10-04 systematic PR review reopens Step 6 request ownership and adjacent session/CLI, replay-tool and document obligations. Previous acceptance records remain historical. Step 6's configured-output-estimate precedence follows ADR-0101, approved on 2026-10-02. All five live captures exist as of 2026-10-08, including Anthropic's separate native context-stop response. Steps 7–8 and whole Step 12 remain open. All systematic corrections require fresh independent acceptance.**
 The four Accepted ADRs retain their decisions. Three verified gaps were explicitly resolved before code:
 manual compaction with an unknown window and the budget outcome of idle compaction
 ([ADR-0099](../../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md)),
@@ -3732,3 +3732,25 @@ accepts only the internal inert-graph helper after descriptor/native-brand fixes
 mutable-alias controls. Full request/cap associations, actual SDK handoffs and core measured-round
 reuse are not implemented or accepted by that record. ADR-0102/0103 implementation, the remaining
 provider record, Steps 7–8/12, final CI/coverage/Sonar and all six W7 register items remain open.
+
+### W7 live provider evidence complete — 2026-10-08
+
+After both fresh [v4 capture-tool review rounds](../../reviews/2026-10-08T20-23-20-w7-capture-v4-round-2-review.md),
+one explicitly selected Haiku 4.5 request completed at `2026-10-08T20:25:27.454Z` with HTTP 200
+and `model_context_window_exceeded`. The complete artifact was inspected, then copied
+byte-for-byte into the [five-record index](../../../packages/llm/src/conformance/fixtures/overflow/README.md).
+Its SHA-256 is `0f8ed2eb3b5b1f6dc6419e16e25d97ea5ce42b05d06e9f75ef85426a21dabc9e`.
+Only sequential synthetic integer text, provider identifiers, usage and null diagnostic fields
+are present; no key, authentication header or request body is retained.
+
+The response reports 199,885 input / 12,792 output tokens, implying 0.263845 USD at Haiku's
+published rates. Successful Anthropic usage under the renewed authorisation totals 0.671881 USD;
+including the earlier client timeout's full 0.281920 USD reservation yields 0.953801 USD.
+Provider-side HTTP 400 failures are uncharged under the published [Google](https://ai.google.dev/gemini-api/docs/billing#am-i-charged-for-failed-requests)
+and [Anthropic](https://support.claude.com/en/articles/8977456-how-do-i-pay-for-my-claude-api-usage) billing policies;
+this is usage/policy-based accounting, not an independently verified invoice. No automatic
+retry occurred. The 2 USD limit is respected and no further provider call is required for
+the evidence gate. The earlier four-record and missing-response statements above are historical.
+
+Step 7 classification may now proceed against all five unchanged records. Step 8, ADR-0102/0103
+production integration, Step 12, final CI/coverage/Sonar and the six W7 register items remain open.

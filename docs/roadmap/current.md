@@ -211,13 +211,14 @@ merged too (PR #85, 2026-08-28).
 > Required Linux CI revealed an actual-Ink test-context mismatch. Further controlled checks found
 > undisplayed disclosure under the existing CI opt-outs and Home's inline reseat Static cursor;
 > corrections pass two fresh independent review rounds. Prior scoped acceptance does not waive other findings.
-> Four actual overflow captures (Anthropic, OpenAI, DeepSeek and Gemini) are now preserved in the
+> All five required actual overflow records (Anthropic input rejection and native context stop,
+> OpenAI, DeepSeek and Gemini) are now preserved in the
 > [fixture index](../../packages/llm/src/conformance/fixtures/overflow/README.md).
-> The separate Anthropic native context-stop response is still missing;
-> Step 7 classification, Step 8 and whole-wave acceptance remain open.
+> The separate Anthropic native context-stop response was captured on 2026-10-08;
+> the evidence prerequisite is satisfied. Step 7 classification, Step 8 and whole-wave acceptance remain open.
 > Step 1 repaired collection without deleting private artifacts and provides the
 > [maintainer-run live overflow capture procedure](../runbooks/capture-provider-overflow.md).
-> Live fixtures are still required before step 7's classification commit. The six W7 items stay open.
+> Classification must replay the preserved live fixtures. The six W7 items stay open.
 
 > **PR 90 systematic follow-up — 2026-10-04.** Two maintainer reports against `95137c34` register 35
 > deduplicated findings, with [qualified independent triage](../reviews/2026-10-04T10-35-00-w7-systematic-review-intake-review.md).

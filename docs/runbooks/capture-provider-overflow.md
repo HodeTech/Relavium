@@ -1,6 +1,6 @@
 # Capture provider overflow evidence
 
-- **Status**: Available for maintainer use; live fixtures still required for W7 step 7
+- **Status**: Available for maintainer use; all five W7 live records captured, classification/recovery acceptance pending
 - **Date**: 2026-10-08
 - **Related**: [ADR-0096](../decisions/0096-a-request-is-measured-before-it-is-sent.md), [LLM provider seam](../reference/shared-core/llm-provider-seam.md), [keychain and secrets](../reference/desktop/keychain-and-secrets.md)
 
@@ -67,6 +67,14 @@ Anthropic `context-stop-probe` a 180-second response deadline, allowing more tim
 non-streaming continuation. The longer wait does not guarantee a response or the desired stop
 reason. [A client timeout may still be billed](https://support.claude.com/en/articles/8977456-how-do-i-pay-for-my-claude-api-usage), so reserve the request's maximum charge when usage
 is unavailable and choose another attempt only explicitly within the approved budget.
+
+On 2026-10-08, the explicitly selected v4 Haiku 4.5 probe completed with HTTP 200 and
+`model_context_window_exceeded`: 199,885 input / 12,792 output tokens. Its unchanged artifact
+is in the [five-record evidence index](../../packages/llm/src/conformance/fixtures/overflow/README.md).
+The response's synthetic text contains integers 6 through 4,600. Earlier unsuitable results
+remain private; the 60-second client timeout remains fully reserved in cost accounting.
+No further provider call is needed for this evidence prerequisite. Adapter replay and
+session recovery still require implementation and independent acceptance.
 
 ## Review and accept the evidence
 
