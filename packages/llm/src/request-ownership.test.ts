@@ -540,8 +540,7 @@ describe('internal request ownership factory (ADR-0102)', () => {
     let cursor = working.providerOptions?.['deep'];
     for (let index = 0; index < 15_000; index += 1) cursor = field(cursor, 'next');
     expect(field(cursor, 'end')).toBe(true);
-  }, // Structural stress coverage, not a five-second latency guarantee on shared CI runners.
-  30_000);
+  }, 30_000); // Structural stress coverage, not a five-second latency guarantee on shared CI runners.
 
   it('owns fresh trusted message derivations without recapturing plans or borrowing metadata', () => {
     const schema = { type: 'object' };
