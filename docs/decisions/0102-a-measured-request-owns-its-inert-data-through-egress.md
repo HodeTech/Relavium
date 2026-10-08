@@ -1,6 +1,6 @@
 # ADR-0102: A measured request owns its inert data through egress
 
-- **Status**: Proposed — maintainer approval required before dependent implementation
+- **Status**: Accepted — maintainer approval recorded 2026-10-08
 - **Date**: 2026-10-04
 - **Related**: [ADR-0011](0011-internal-llm-abstraction.md) · [ADR-0031](0031-llm-seam-shape-amendment-multimodal-io.md) · [ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) · [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md) · [ADR-0096](0096-a-request-is-measured-before-it-is-sent.md) · [ADR-0097](0097-a-budget-approval-is-an-allowance-not-an-exemption.md) · [ADR-0099](0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md) · [ADR-0100](0100-budget-authorization-is-durable-state-with-a-replay-barrier.md) · [ADR-0101](0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md) · [architectural principles](../standards/architectural-principles.md)
 - **Scope**: W7's post-PR measured-request ownership correction for `LlmRequest` generate/stream, including inline media and request-media resolution. Refines the construction handoff in ADR-0096/0101 and explicitly narrows opaque non-cap seam inputs. Separate-endpoint `MediaGenRequest`/`generateMedia` and `pollMediaJob` are outside this ownership guarantee; their ADR-0031/0045 contracts remain unchanged. Leaves output-cap precedence, input pricing, allowance authority, compaction outcomes, media charges and durable payload schemas unchanged.
@@ -318,3 +318,12 @@ why source prototype detachment is insufficient. Removing only the key refusal m
 corresponding control. Other supported-data destination/prototype observations remain required;
 neither this key restriction nor static inspection proves full SDK compatibility. No implementation
 acceptance is claimed, and this Proposed qualification authorises no dependent code.
+
+
+## Maintainer approval — 2026-10-08
+
+The maintainer approves this decision in its latest reviewed form, including the dated
+2026-10-08 clarifications, and authorises dependent W7 implementation on `development`.
+Earlier Proposed/unauthorised statements above describe the proposal history; this approval
+opens the implementation gate. Acceptance still requires the specified implementation,
+causal controls and fresh independent review rounds; approval alone does not close W7.

@@ -1,6 +1,6 @@
 # ADR-0103: A paused run hands off its local producers before its host closes
 
-- **Status**: Proposed — maintainer approval required before dependent implementation
+- **Status**: Accepted — maintainer approval recorded 2026-10-08
 - **Date**: 2026-10-07
 - **Related**: [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) · [ADR-0042](0042-engine-media-storage-substrate-mediastore-deinline-retention.md) · [ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) · [ADR-0049](0049-cli-machine-output-contract.md) · [ADR-0076](0076-durable-per-attempt-realized-cost-ledger.md) · [ADR-0077](0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md) · [ADR-0078](0078-ordered-durable-append-and-the-terminal-outbox.md) · [ADR-0079](0079-cross-process-run-ownership-lease-and-fencing-token.md) · [ADR-0080](0080-durable-effect-journal-and-the-tiered-effect-contract.md) · [ADR-0085](0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) · [ADR-0097](0097-a-budget-approval-is-an-allowance-not-an-exemption.md) · [ADR-0100](0100-budget-authorization-is-durable-state-with-a-replay-barrier.md)
 - **Scope**: W7's verified voluntary paused-finalization race. Adds one engine-owned graceful local host-departure operation to `RunHandle`, including the real terminal/fenced branches that can win during departure. Covers ordinary/budget gates, submitted media jobs and combinations. Clarifies permitted late-receipt lifetime and preserves the authored deadline of a reattached parked agent. AgentSession, running crash-attempt restart policy, provider-side cancellation and a background daemon are outside this decision.
@@ -655,3 +655,12 @@ keeps its existing separate home. Lifecycle and runner contracts link to the CLI
 than reproduce the stderr envelope; this clarification adds no schema copy or new durable event.
 The acceptance text's spacing/line-wrap corrections are editorial only and do not change the
 specified money-before-effect priority or any 0–7 meaning.
+
+
+## Maintainer approval — 2026-10-08
+
+The maintainer approves this decision in its latest reviewed form, including the dated
+2026-10-08 clarifications, and authorises dependent W7 implementation on `development`.
+Earlier Proposed/unauthorised statements above describe the proposal history; this approval
+opens the implementation gate. Acceptance still requires the specified implementation,
+causal controls and fresh independent review rounds; approval alone does not close W7.

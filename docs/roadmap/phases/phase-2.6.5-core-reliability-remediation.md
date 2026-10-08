@@ -3679,3 +3679,31 @@ Two complete independent reviews of `c6c55b3b..bbe01091` verify one new MCP-cons
 ### W7 ADR-0102/0103 maintainer follow-up — 2026-10-08
 
 [Round 1](../../reviews/2026-10-08T18-21-45-w7-adr-0102-0103-maintainer-round-1-review.md) checks the eight maintainer items and verifies a reachable Gemini SDK prototype-key merge conflict. The corrected Proposed ADR-0102 explicitly narrows non-cap data to refuse own `__proto__` keys while retaining cap authority and the unchanged measurement subset. Proposed ADR-0103 specifies actual primary-delivery observation, gap/abandonment refusal and the local terminal-invariant qualification. [Two fresh complete round-2 reviews](../../reviews/2026-10-08T18-25-00-w7-adr-0102-0103-maintainer-round-2-review.md) find no new material decision-level issue. **Both proposals still require maintainer approval before dependent implementation.** The review records the supplied Gemini Free Tier quota without claiming a new capture or authorising billing/spend. Runtime ownership/lifecycle acceptance, missing provider artifacts, Steps 7–8/12, Sonar and final W7/PR acceptance remain open.
+
+
+### W7 latest decisions approved and completion sequence — 2026-10-08
+
+The maintainer approves the latest [ADR-0102](../../decisions/0102-a-measured-request-owns-its-inert-data-through-egress.md)
+and [ADR-0103](../../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md),
+including their 2026-10-08 clarifications. Both are Accepted. Dependent implementation is
+authorised on `development`; earlier approval restrictions remain historical records.
+
+Complete the remaining work in these reviewable increments:
+
+1. Own request data and candidate cap projections at invocation; prove actual SDK generate/stream
+   parity and typed refusals, then reuse the measured construction through core/media handoffs.
+2. Implement engine departure, primary delivery observation, structured receipt authority and
+   retained exact-fence writer lifetimes; preserve bounded terminal publication.
+3. Derive parked-node deadlines and integrate acknowledged CLI input/host departure, final
+   receipt disposition, exit 8 and the canonical diagnostic contract.
+4. Obtain the two missing genuine provider records, complete Step 7 classification and Step 8
+   compaction/recovery, and close Step 12 through whole-wave acceptance and document updates.
+
+Each increment receives an implementation commit, fresh independent review, confirmed fixes
+and another fresh review before acceptance. These are implementation subdivisions of the
+approved work, not replacement W7 step numbers. The maintainer authorises paid Gemini access
+and necessary new provider work with a 2 USD test-call limit. Billing setup requiring a separate
+legal agreement or a larger minimum prepayment remains an explicit account-setup action; no
+new provider request has been made under this authorisation yet. Implementation, provider
+evidence, final CI/coverage/Sonar and all six remaining W7 register items remain open until
+their actual acceptance evidence lands.
