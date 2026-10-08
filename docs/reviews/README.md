@@ -410,3 +410,7 @@ Record its model, effort and review scope in the coverage section where availabl
 - [2026-10-08 — W7 capture v4, round 1](2026-10-08T20-17-30-w7-capture-v4-round-1-review.md):
   purpose-specific absolute deadline is clean in 67 tests and twelve native command controls;
   fresh second review precedes an explicitly selected paid probe.
+
+- [2026-10-08 — W7 capture v4, round 2](2026-10-08T20-23-20-w7-capture-v4-round-2-review.md):
+  bounded tool accepted after 67 tests and 36 additional native controls; one explicit
+  budgeted probe may proceed, while the fifth genuine record remains required.
