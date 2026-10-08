@@ -271,6 +271,9 @@ added.
 - [2026-10-08 — W7 systematic group 5, round 2](2026-10-08T11-44-55-w7-systematic-group-5-round-2-review.md):
   two complete fresh reviews and full Parent audits accept replay tooling within scope; lifecycle ADRs, captures and final W7 gates remain open.
 
+- [2026-10-08 — ADR-0103 eighth proposal](2026-10-08T11-44-55-w7-adr-0103-eighth-proposal-review.md):
+  two complete static reviews and qualified Parent audits support maintainer review; Proposed status and dependent-implementation gate remain.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and
