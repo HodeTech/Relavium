@@ -369,3 +369,9 @@ Record its model, effort and review scope in the coverage section where availabl
 - [2026-10-08 — W7 systematic Group 6, round 3](2026-10-08T15-45-57-w7-systematic-group-6-round-3-review.md):
   two complete cumulative reviews plus all 175 current Sonar keys audited; Group 6 accepted within scope,
   three remote security disposition proposals and whole-wave gates remain open.
+
+- [2026-10-08 — W7 ADR-0102/0103 maintainer follow-up, round 1](2026-10-08T18-21-45-w7-adr-0102-0103-maintainer-round-1-review.md):
+  eight maintainer items checked; a reachable Gemini SDK prototype-key merge High requires a narrower Proposed data policy.
+
+- [2026-10-08 — W7 ADR-0102/0103 maintainer follow-up, round 2](2026-10-08T18-25-00-w7-adr-0102-0103-maintainer-round-2-review.md):
+  two fresh complete static reviews clear the clarified proposals at decision level; maintainer approval and implementation evidence remain required, with the supplied Gemini quota recorded separately.
