@@ -406,3 +406,7 @@ Record its model, effort and review scope in the coverage section where availabl
 - [2026-10-08 — W7 capture v3, round 2](2026-10-08T20-01-42-w7-capture-v3-round-2-review.md):
   bounded probe accepted after 54 tests, 432 module cases and 80 actual-command controls;
   the genuine Anthropic native-stop record and Steps 7–8 remain required.
+
+- [2026-10-08 — W7 capture v4, round 1](2026-10-08T20-17-30-w7-capture-v4-round-1-review.md):
+  purpose-specific absolute deadline is clean in 67 tests and twelve native command controls;
+  fresh second review precedes an explicitly selected paid probe.
