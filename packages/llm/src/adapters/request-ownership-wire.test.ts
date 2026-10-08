@@ -944,7 +944,7 @@ describe('retained inert containers through installed SDKs (ADR-0102)', () => {
       expect(bodies).toEqual([expected]);
       // Gemini's own converter decides to discard this option; this does not promise stack-safe
       // serialization of a recognized deep graph in any SDK or impose a new request size limit.
-    });
+    }, 30_000); // Structural stress, matching the inert-graph control; no five-second latency guarantee.
 });
 
 const positions = [

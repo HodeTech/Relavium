@@ -2,6 +2,9 @@ import { UnsupportedRequestDataError } from './errors.js';
 
 // Only our own array serializer shadows are exempt from caller metadata refusal.
 const generatedArrays = new WeakSet<object>();
+// Only a fresh ordinary allocation proves the absence of native boxed/Date internal slots.
+// Still inspect all descriptors/prototypes on reuse; mutable SDK records may gain unsafe data.
+const generatedRecords = new WeakSet<object>();
 // Intrinsic brand probes do not consult caller prototypes, getters or conversion hooks.
 const unsupportedBrands: readonly unknown[] = [
   Object.getOwnPropertyDescriptor(Boolean.prototype, 'valueOf')?.value,
@@ -53,7 +56,7 @@ function properties(source: object, omitted?: ReadonlySet<string>): readonly Pro
         prototype !== Set.prototype
   )
     refuse();
-  if (!array) {
+  if (!array && !generatedRecords.has(source)) {
     for (const probe of unsupportedBrands) {
       if (typeof probe !== 'function') refuse();
       let branded = false;
@@ -122,6 +125,7 @@ function container(source: object): object {
   }
   const target: Record<string, unknown> = {};
   Object.setPrototypeOf(target, null);
+  generatedRecords.add(target);
   return target;
 }
 

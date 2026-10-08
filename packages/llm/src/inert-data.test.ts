@@ -251,4 +251,74 @@ describe('inert request graph ownership (ADR-0102)', () => {
       '{"toJSON":{"value":"data"}}',
     );
   });
+
+  const workingMutations: readonly [string, (record: object, invoked: () => never) => void][] = [
+    [
+      'accessor',
+      (record, invoked) =>
+        Object.defineProperty(record, 'nested', { get: invoked, enumerable: true }),
+    ],
+    [
+      'symbol metadata',
+      (record) => Object.defineProperty(record, Symbol('private'), { value: 1, enumerable: true }),
+    ],
+    [
+      'prototype key',
+      (record) => Object.defineProperty(record, '__proto__', { value: {}, enumerable: true }),
+    ],
+    ['hidden metadata', (record) => Object.defineProperty(record, 'hidden', { value: 1 })],
+    [
+      'own serializer',
+      (record, invoked) =>
+        Object.defineProperty(record, 'toJSON', { value: invoked, enumerable: true }),
+    ],
+    [
+      'custom prototype',
+      (record, invoked) => {
+        Object.setPrototypeOf(record, { toJSON: invoked });
+      },
+    ],
+    [
+      'ancestor cycle',
+      (record) => Object.defineProperty(record, 'self', { value: record, enumerable: true }),
+    ],
+  ];
+  it.each(workingMutations)(
+    'revalidates %s installed on a helper-created mutable record without executing it',
+    (_name, mutate) => {
+      const working = copyInertData({ child: { retained: true } }, false);
+      const child = field(working, 'child');
+      if (typeof child !== 'object' || child === null) throw new Error('missing working record');
+      let invocations = 0;
+      mutate(child, () => {
+        invocations += 1;
+        throw new Error('private inspection cause');
+      });
+      expect(() => copyInertData(working)).toThrow(UnsupportedRequestDataError);
+      expect(invocations).toBe(0);
+    },
+  );
+
+  it.each([
+    { make: () => boxedData(true) },
+    { make: () => boxedData(1) },
+    { make: () => boxedData('value') },
+    { make: () => boxedData(1n) },
+    { make: () => boxedData(Symbol('value')) },
+    { make: () => new Date(0) },
+  ])(
+    'refuses disguised raw native data inserted into an otherwise generated record',
+    ({ make }) => {
+      for (const prototype of [null, Object.prototype]) {
+        const native = make();
+        if (typeof native !== 'object' || native === null) throw new Error('missing native record');
+        Object.setPrototypeOf(native, prototype);
+        const working = copyInertData({ retained: true }, false);
+        if (typeof working !== 'object' || working === null)
+          throw new Error('missing working record');
+        Object.defineProperty(working, 'later', { value: native, enumerable: true });
+        expect(() => copyInertData(working)).toThrow(UnsupportedRequestDataError);
+      }
+    },
+  );
 });

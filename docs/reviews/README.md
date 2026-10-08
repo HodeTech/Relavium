@@ -11,6 +11,9 @@ added.
 
 ## Records
 
+- [2026-10-08 — W7 owned adapter/chain integration, round 1](2026-10-08T23-02-00-w7-owned-adapter-chain-round-1-review.md):
+  both full 18-path reviews verify a CI structural-stress timeout; guarded record reuse and scoped test budget corrected, fresh cumulative round 2 required.
+
 - [2026-10-02 — W7 documentation and implementation preflight](2026-10-02T01-14-15-w7-preflight-review.md):
   existing contract review, supplemental Proposed decisions and execution-plan approval gate.
 - [2026-10-02 — W7 step 1, round 1](2026-10-02T03-04-05-w7-step-1-round-1-review.md):
