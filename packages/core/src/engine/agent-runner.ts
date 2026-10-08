@@ -38,7 +38,7 @@ import {
   LlmProviderError,
   ResponseFormatSchema,
   ToolDefSchema,
-  cost,
+  estimateMediaCost,
   makeLlmError,
   type FallbackPlanEntry,
   type LlmMessage,
@@ -46,7 +46,6 @@ import {
   type MediaGenRequest,
   type MediaGenResult,
   type MediaJobStatus,
-  type MediaUnitsEntry,
   type MediaUnitsEstimate,
   type PricingOverlay,
   type ProviderId,
@@ -1023,15 +1022,16 @@ export function generativeUnits(modality: MediaBilledModality, node: AgentNode):
 
 /**
  * Best-effort realized media cost for a generative call (ADR-0045 §5): the request volume × the per-model
- * media rate, via the shared `cost()` fold (token counts are 0).
+ * media rate, via the shared rate-only pricing kernel. Native request volume is not provider-reported
+ * `Usage`: audio/video duration may be fractional while the `Usage` quantities remain integers.
  *
  * **It reports whether it could price the call, and that is the point**
  * ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4). This path does NOT
  * go through a `FallbackChain` attempt record, so the `priced: false` signal the chain emits for an unpriced
  * model never reaches it — and a media generation is the call class most likely to be unpriced, which made
- * the one path `CR-55` is about the one path unable to say so. It still degrades to 0 rather than failing (H4
- * — a successful, already-paid generation must never become a failed node); what is new is that the caller is
- * told the 0 is a gap, not a charge.
+ * the one path `CR-55` is about the one path unable to say so. An unknown model still degrades to 0 rather
+ * than failing the already-paid generation; the caller is told that 0 is a gap, not a charge. Other accounting
+ * faults remain loud under the narrow catch below.
  */
 export function realizedMediaCost(
   model: string,
@@ -1039,11 +1039,13 @@ export function realizedMediaCost(
   units: number,
   resolvePrice?: PricingOverlay,
 ): { readonly costMicrocents: number; readonly priced: boolean } {
-  const mediaUnits: MediaUnitsEntry[] = [
-    { modality, direction: 'output', units, unit: modality === 'image' ? 'count' : 'second' },
-  ];
+  // Preserve the count guard formerly supplied by `UsageSchema`; only durations permit fractions. The
+  // rate-only kernel validates finite non-negative volumes and safe integer costs before any cost fold.
+  if (modality === 'image' && (!Number.isSafeInteger(units) || units < 0)) {
+    throw new TypeError('native media accounting expected a non-negative safe image count');
+  }
   try {
-    const priced = cost(model, { inputTokens: 0, outputTokens: 0, mediaUnits }, resolvePrice);
+    const priced = estimateMediaCost(model, [{ modality, units }], resolvePrice);
     return {
       costMicrocents: priced.microcents,
       priced: priced.unpricedModalities.length === 0,

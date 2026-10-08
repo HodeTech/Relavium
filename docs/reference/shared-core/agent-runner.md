@@ -167,6 +167,13 @@ after terminal cleanup, and timer installation disposes a handle if its callback
 cleared that job. Immediate cancellation and the early exactly-once marker remain, while
 terminal accounting joins any active cost fold before capturing the durable total.
 
+Native generation prices the authored output volume through the existing rate-only
+`estimateMediaCost` kernel rather than constructing provider-reported `Usage`. Image counts remain
+non-negative safe integers; audio/video seconds may be fractional. The kernel rounds the charge
+once to integer micro-cents and refuses malformed volume or unsafe cost before the engine folds it.
+Both synchronous completion and parked-job settlement use this path; the integer `Usage` contract
+and priced-versus-gap settlement above are unchanged.
+
 A consumed positive allowance, a prospective E larger than the remainder, an unsafe E or a real
 overdraw closes later admission with `budget_exceeded`; it cannot produce a new pause or retry.
 An originally zero allowance still admits a genuinely free call and ordinary non-strict unpriced
