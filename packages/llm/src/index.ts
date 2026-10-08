@@ -105,6 +105,7 @@ export {
   UnknownModelError,
   ToolSchemaError,
   UnsupportedCapabilityError,
+  UnsupportedRequestDataError,
   InvalidBaseUrlError,
   InvalidTokenEstimateError,
 } from './errors.js';

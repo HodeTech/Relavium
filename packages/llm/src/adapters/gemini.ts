@@ -12,9 +12,11 @@ import type {
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { catalogModel, modelAccepts } from '../catalog/lookup.js';
 import {
-  outputCapNativeOptions,
-  outputCapPlanForRequest,
-  prepareOutputCapRequest,
+  InvalidOutputCapPlanError,
+  mutableOutputCapNativeOptions,
+  mutableOwnedRequest,
+  prepareOwnedRequest,
+  type PreparedOutputCapPlan,
 } from '../output-cap.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import {
@@ -26,7 +28,7 @@ import {
   toGeminiThinkingLevel,
 } from '../reasoning-wire.js';
 import { GeminiToolCallIds, normalizeToolCall, toWire } from '../tool-normalizer.js';
-import { UnsupportedCapabilityError } from '../errors.js';
+import { UnsupportedCapabilityError, UnsupportedRequestDataError } from '../errors.js';
 import type {
   CapabilityFlags,
   LlmError,
@@ -692,6 +694,12 @@ function applyThinkingConfig(
 
 /** Lower a canonical request into the Gemini request shape (system → `systemInstruction`, etc.). */
 export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
+  const owned = prepareOwnedRequest(req, PROVIDER, 'official');
+  return lowerGeminiRequest(mutableOwnedRequest(owned.request), owned.plan);
+}
+
+/** The plan belongs to the frozen source; the SDK may mutate only this fresh working graph. */
+function lowerGeminiRequest(req: LlmRequest, capPlan: PreparedOutputCapPlan): GeminiRequest {
   const config: Record<string, unknown> = {};
   if (req.system !== undefined) {
     config['systemInstruction'] = req.system;
@@ -714,7 +722,6 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
   }
   // The output cap, held at or below the model's own ceiling (ADR-0071 §7) — down, never up: a cap BELOW the
   // ceiling is the author's deliberate budget, and raising it would spend their money for them.
-  const capPlan = outputCapPlanForRequest(req, PROVIDER, 'official');
   const maxOutputTokens = capPlan.mappedValue;
   if (maxOutputTokens !== undefined) {
     config['maxOutputTokens'] = maxOutputTokens;
@@ -741,7 +748,7 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
     req.providerOptions === undefined
       ? config
       : {
-          ...stripTransportKeys(outputCapNativeOptions(capPlan, req.providerOptions) ?? {}),
+          ...stripTransportKeys(mutableOutputCapNativeOptions(capPlan, req.providerOptions) ?? {}),
           ...config, // mapped fields win
         };
   return { model: req.model, contents: toGeminiContents(req.messages), config: merged };
@@ -1224,11 +1231,15 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
     id: PROVIDER,
     supports: GEMINI_SUPPORTS,
     async generate(req: LlmRequest, key: string): Promise<LlmResult> {
-      req = prepareOutputCapRequest(req, PROVIDER, 'official').request;
+      const owned = prepareOwnedRequest(req, PROVIDER, 'official');
+      req = owned.request;
       assertSupported(PROVIDER, GEMINI_SUPPORTS, req); // fail fast on an unsupported feature
       assertMediaCapabilities(PROVIDER, GEMINI_SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       try {
-        const response = await transport.generate(buildGeminiRequest(req), key);
+        const response = await transport.generate(
+          lowerGeminiRequest(mutableOwnedRequest(req), owned.plan),
+          key,
+        );
         const ids = new GeminiToolCallIds();
         const content = mapContent(response, ids);
         const hasToolCalls = content.some((part) => part.type === 'tool_call');
@@ -1249,12 +1260,32 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
       }
     },
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
-      req = prepareOutputCapRequest(req, PROVIDER, 'official').request;
+      let owned: ReturnType<typeof prepareOwnedRequest>;
+      try {
+        owned = prepareOwnedRequest(req, PROVIDER, 'official');
+      } catch (error) {
+        return (async function* (): AsyncIterable<StreamChunk> {
+          await Promise.resolve();
+          yield {
+            type: 'error',
+            error: makeLlmError({
+              provider: PROVIDER,
+              kind: 'bad_request',
+              message:
+                error instanceof UnsupportedRequestDataError
+                  ? new UnsupportedRequestDataError().message
+                  : new InvalidOutputCapPlanError().message,
+              cause: error,
+            }),
+          };
+        })();
+      }
+      req = owned.request;
       assertSupported(PROVIDER, GEMINI_SUPPORTS, req); // fail fast on an unsupported feature
       assertStreamable(PROVIDER, GEMINI_SUPPORTS);
       assertMediaCapabilities(PROVIDER, GEMINI_SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       assertNoStreamingMediaOutput(PROVIDER, req); // media-out is generate()-only; streaming triad deferred (ADR-0046 §4)
-      return streamChunks(transport, buildGeminiRequest(req), key);
+      return streamChunks(transport, lowerGeminiRequest(mutableOwnedRequest(req), owned.plan), key);
     },
     /**
      * Live model discovery (ADR-0064 §1) over the injected transport's `listModels` (default wraps

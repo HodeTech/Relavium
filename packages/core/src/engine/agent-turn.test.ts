@@ -2284,7 +2284,14 @@ describe('pre-egress current-round request estimation (ADR-0096/0101)', () => {
         }),
       );
       expect(seen).toHaveLength(1);
-      expect(request?.responseFormat).toBe(responseFormat);
+      expect(request?.responseFormat).toEqual(responseFormat);
+      expect(request?.responseFormat).not.toBe(responseFormat);
+      expect(Object.isFrozen(request?.responseFormat)).toBe(true);
+      expect(Object.isFrozen(responseFormat)).toBe(false);
+      responseFormat.schema.description = 'caller changed after completion';
+      expect(request?.responseFormat).toMatchObject({
+        schema: { description: 'x'.repeat(40_000) },
+      });
       expect(seen[0]?.inputTokensEstimate).toBeGreaterThan(10_000);
       if (request === undefined) throw new Error('missing constructed request');
       expect(seen[0]?.inputTokensEstimate).toBe(

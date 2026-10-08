@@ -686,6 +686,29 @@ function mutableCapData(value: unknown): unknown {
   return root;
 }
 
+/** SDK-only working controls; reconciliation still belongs to the single cap authority. */
+export function mutableOutputCapNativeOptions(
+  plan: PreparedOutputCapPlan,
+  options: Readonly<Record<string, unknown>> | undefined,
+): Readonly<Record<string, unknown>> | undefined {
+  const merged = outputCapNativeOptions(plan, options);
+  if (merged === undefined) return undefined;
+  // Non-cap references already belong to one mutable request graph. Keep those aliases while
+  // copying the separately serialized cap values, rather than reinstalling frozen SDK inputs.
+  Object.setPrototypeOf(merged, null);
+  for (const field of CAP_FIELDS) {
+    if (Object.hasOwn(plan.nativeOptions ?? {}, field)) {
+      Object.defineProperty(merged, field, {
+        value: mutableCapData(plan.nativeOptions?.[field]),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+  }
+  return merged;
+}
+
 function projectRequest(
   payload: LlmRequest,
   outcome: CandidateOutcome,

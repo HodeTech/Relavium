@@ -2,7 +2,7 @@ import { ContentPartSchema, StopReasonSchema } from '@relavium/shared';
 import type { AbortSignalLike, BackoffStrategy, ContentPart, MediaSource } from '@relavium/shared';
 
 import { snapshotAccountableUsage, type CostTracker, type CostUpdate } from './cost-tracker.js';
-import { UnknownModelError } from './errors.js';
+import { UnknownModelError, UnsupportedRequestDataError } from './errors.js';
 import {
   DEFAULT_ATTEMPT_TIMEOUT_MS,
   openDeadline,
@@ -23,11 +23,19 @@ import type {
   StreamChunk,
   Usage,
 } from './types.js';
-import { requestSupportReason } from './capabilities.js';
 import { catalogModel } from './catalog/lookup.js';
 import { acceptedTiers } from './reasoning-wire.js';
 import {
-  prepareOutputCapRequest,
+  deriveOwnedRequestMessages,
+  ownLlmRequest,
+  ownedRequestSignal,
+  ownedRequestSupportReason,
+  outputCapPlanForRequest,
+  selectOwnedRequest,
+  withOwnedRequestSignal,
+  withoutOwnedRequestEffort,
+  type OwnedLlmRequest,
+  type RequestCandidate,
   InvalidOutputCapPlanError,
   type OutputCapIdentity,
   type PreparedOutputCapPlan,
@@ -414,7 +422,7 @@ function committed(error: LlmError): LlmError {
  * in place would leave a disposed scope's signal attached to the next attempt.
  */
 function withSignal(req: LlmRequest, signal: AbortSignalLike): LlmRequest {
-  return { ...req, signal };
+  return withOwnedRequestSignal(req, signal);
 }
 
 /** A content chunk commits a stream — anything other than the terminal `stop`/`error` arms. */
@@ -427,6 +435,34 @@ function hasHandleMedia(req: LlmRequest): boolean {
   return req.messages.some((message) =>
     message.content.some((part) => part.type === 'media' && part.source.kind === 'handle'),
   );
+}
+
+type CapturedChainRequest =
+  | { readonly ok: true; readonly request: OwnedLlmRequest }
+  | { readonly ok: false; readonly error: LlmError };
+
+type SelectedChainRequest =
+  | { readonly ok: true; readonly request: LlmRequest }
+  | { readonly ok: false; readonly error: LlmError };
+
+function candidateFor(entry: FallbackPlanEntry): RequestCandidate {
+  return {
+    model: entry.model,
+    provider: entry.provider.id,
+    endpoint: entry.provider.customEndpoint === true ? 'custom' : 'official',
+  };
+}
+
+function captureResolvedSource(source: MediaSource): MediaSource {
+  const kind = source.kind;
+  switch (kind) {
+    case 'base64':
+      return Object.freeze({ kind, data: source.data });
+    case 'url':
+      return Object.freeze({ kind, url: source.url });
+    case 'handle':
+      return Object.freeze({ kind, ref: source.ref });
+  }
 }
 
 /** What one `generate` attempt produced. */
@@ -502,13 +538,53 @@ export class FallbackChain {
     this.#setTimer = options.setTimer;
   }
 
+  #captureRequest(request: LlmRequest): CapturedChainRequest {
+    try {
+      return { ok: true, request: ownLlmRequest(request, this.#plan.map(candidateFor)) };
+    } catch (error) {
+      return { ok: false, error: this.#errorOf(error, this.#firstEntry().provider.id) };
+    }
+  }
+
+  #firstEntry(): FallbackPlanEntry {
+    const entry = this.#plan[0];
+    if (entry === undefined) throw new Error('FallbackChain requires at least one plan entry');
+    return entry;
+  }
+
+  #captureFailureRecord(): AttemptRecord {
+    const entry = this.#firstEntry();
+    return {
+      attemptNumber: 1,
+      contentReceived: false,
+      providerInvoked: false,
+      customEndpoint: entry.provider.customEndpoint === true,
+      provider: entry.provider.id,
+      model: entry.model,
+      outcome: 'failed',
+    };
+  }
+
+  #beginEntry(entry: FallbackPlanEntry, run: ChainRun): SelectedChainRequest {
+    try {
+      return { ok: true, request: run.beginEntry(entry) };
+    } catch (error) {
+      return { ok: false, error: this.#errorOf(error, entry.provider.id) };
+    }
+  }
+
   /**
    * Run the chain for a non-streaming request. Returns the first entry's `LlmResult`; throws an
    * `LlmProviderError` carrying the classified `LlmError` once the chain is exhausted or a fatal
    * error stops it. Each attempt is reported via `onAttempt`; per-attempt usage is recorded against
    * that attempt's model so cost stays accurate across a failover.
    */
-  async generate(req: LlmRequest): Promise<LlmResult> {
+  async generate(request: LlmRequest): Promise<LlmResult> {
+    const captured = this.#captureRequest(request);
+    if (!captured.ok) {
+      throw new LlmProviderError(this.#emitFailure(this.#captureFailureRecord(), captured.error));
+    }
+    const req = captured.request;
     const run = new ChainRun(req, this.#lastProviderAcrossCalls);
     // Why every skip's reason is kept: when the whole plan is skipped there is no provider error to report,
     // and the synthesized one is the only thing the user sees (`CR-51` — see `#exhaustedError`).
@@ -516,14 +592,17 @@ export class FallbackChain {
     try {
       for (const entry of this.#plan) {
         this.#throwIfAborted(req, entry.provider.id);
-        const skip = this.#skipReason(entry, run.previewRequest(entry));
+        const skip = this.#skipReason(entry, run.source);
         if (skip !== undefined) {
           skipped.push(skip);
           this.#emit(run.next(entry, { outcome: 'skipped', skipReason: skip }));
           continue;
         }
-        const entryReq = run.beginEntry(entry); // strips on a provider boundary — only for attempted entries
-        const materialized = await this.#materializeForEntry(entry, entryReq, run);
+        const selected = this.#beginEntry(entry, run);
+        if (!selected.ok) {
+          throw new LlmProviderError(this.#emitFailure(run.next(entry), selected.error));
+        }
+        const materialized = await this.#materializeForEntry(entry, selected.request, run);
         if (materialized === undefined) {
           continue; // a failed media re-materialization advances to the next provider (retryable-advance)
         }
@@ -546,7 +625,7 @@ export class FallbackChain {
   async #runEntryGenerate(
     entry: FallbackPlanEntry,
     entryReq: LlmRequest,
-    req: LlmRequest,
+    req: OwnedLlmRequest,
     run: ChainRun,
   ): Promise<LlmResult | undefined> {
     const budget = entry.maxAttempts;
@@ -582,7 +661,20 @@ export class FallbackChain {
    * later error chunk is surfaced to the consumer (1.S node-retry) rather than re-issued. Like the
    * seam's `stream`, a terminal failure is surfaced as an `error` chunk, not a throw.
    */
-  async *stream(req: LlmRequest): AsyncIterable<StreamChunk> {
+  stream(request: LlmRequest): AsyncIterable<StreamChunk> {
+    // Async-generator bodies start on first next(). Own caller data now, before that handoff.
+    return this.#streamOwned(this.#captureRequest(request));
+  }
+
+  async *#streamOwned(captured: CapturedChainRequest): AsyncIterable<StreamChunk> {
+    if (!captured.ok) {
+      yield {
+        type: 'error',
+        error: this.#emitFailure(this.#captureFailureRecord(), captured.error),
+      };
+      return;
+    }
+    const req = captured.request;
     const run = new ChainRun(req, this.#lastProviderAcrossCalls);
     // See the `generate` twin: a wholly-skipped plan has no provider error, so the reasons ARE the report.
     const skipped: string[] = [];
@@ -592,14 +684,18 @@ export class FallbackChain {
           yield { type: 'error', error: this.#cancelledError(entry.provider.id) };
           return;
         }
-        const skip = this.#skipReason(entry, run.previewRequest(entry), { streaming: true });
+        const skip = this.#skipReason(entry, run.source, { streaming: true });
         if (skip !== undefined) {
           skipped.push(skip);
           this.#emit(run.next(entry, { outcome: 'skipped', skipReason: skip }));
           continue;
         }
-        const entryReq = run.beginEntry(entry); // strips on a provider boundary — only for attempted entries
-        const materialized = await this.#materializeForEntry(entry, entryReq, run);
+        const selected = this.#beginEntry(entry, run);
+        if (!selected.ok) {
+          yield { type: 'error', error: this.#emitFailure(run.next(entry), selected.error) };
+          return;
+        }
+        const materialized = await this.#materializeForEntry(entry, selected.request, run);
         if (materialized === undefined) {
           continue; // a failed media re-materialization advances to the next provider (retryable-advance)
         }
@@ -622,7 +718,7 @@ export class FallbackChain {
   async *#runEntryStream(
     entry: FallbackPlanEntry,
     entryReq: LlmRequest,
-    req: LlmRequest,
+    req: OwnedLlmRequest,
     run: ChainRun,
   ): AsyncGenerator<StreamChunk, 'done' | 'advance'> {
     const budget = entry.maxAttempts;
@@ -686,13 +782,12 @@ export class FallbackChain {
     let providerSucceeded = false;
     let outcome: GenerateAttempt;
     try {
-      const prepared = prepareOutputCapRequest(
+      const plan = outputCapPlanForRequest(
         entryReq,
         entry.provider.id,
         record.customEndpoint ? 'custom' : 'official',
       );
-      entryReq = prepared.request;
-      await this.#options.preAttempt?.({ ...prepared.plan, outputCapPlan: prepared.plan });
+      await this.#options.preAttempt?.({ ...plan, outputCapPlan: plan });
       const key = await this.#resolveKey(entry.provider.id);
       // **Re-check the caller AFTER credential resolution, BEFORE the seam call.** `#resolveKey` is I/O — a
       // keychain read, and in Phase 2 a network one — so a cancel landing inside it used to be invisible
@@ -924,13 +1019,12 @@ export class FallbackChain {
     // EVERY exit, and a `let` inside the `try` would not be in scope there.
     let iterator: AsyncIterator<StreamChunk> | undefined;
     try {
-      const prepared = prepareOutputCapRequest(
+      const plan = outputCapPlanForRequest(
         entryReq,
         entry.provider.id,
         record.customEndpoint ? 'custom' : 'official',
       );
-      entryReq = prepared.request;
-      await this.#options.preAttempt?.({ ...prepared.plan, outputCapPlan: prepared.plan });
+      await this.#options.preAttempt?.({ ...plan, outputCapPlan: plan });
       const key = await this.#resolveKey(entry.provider.id);
       // **Re-check the caller AFTER credential resolution, BEFORE the seam call.** `#resolveKey` is I/O — a
       // keychain read, and in Phase 2 a network one — so a cancel landing inside it used to be invisible
@@ -1203,7 +1297,7 @@ export class FallbackChain {
       }
       messages.push({ ...message, content });
     }
-    return { ...req, messages };
+    return deriveOwnedRequestMessages(req, { route: 'media', messages });
   }
 
   /** Resolve one handle for `provider`, caching only a non-base64 ref in the byte-free egress sidecar. */
@@ -1217,7 +1311,10 @@ export class FallbackChain {
     if (cached !== undefined) {
       return cached;
     }
-    const resolved = await resolve(handle, provider);
+    const returned = await resolve(handle, provider);
+    // Resolver ownership ends at its return. Copy the typed scalar slots immediately, before
+    // cache insertion or a later media await can expose the returned object to host mutation.
+    const resolved = captureResolvedSource(returned);
     if (resolved.kind !== 'base64') {
       // Cache only a provider ref (url/handle) — a base64 source carries bytes and is never cached, so the
       // sidecar stays byte-free (ADR-0043 §4). A later same-provider re-use then skips the re-upload.
@@ -1229,7 +1326,7 @@ export class FallbackChain {
   /** Whether to skip an entry without consuming an attempt (cooldown or unmet capability). */
   #skipReason(
     entry: FallbackPlanEntry,
-    req: LlmRequest,
+    req: OwnedLlmRequest | LlmRequest,
     opts?: { readonly streaming?: boolean },
   ): string | undefined {
     const cooldownUntil = this.#cooldownUntil.get(entry.provider.id);
@@ -1241,9 +1338,11 @@ export class FallbackChain {
     }
     // The catalog is authoritative only for the OFFICIAL endpoint: a custom `base_url` reusing a known
     // model id must not inherit that id's verdicts (`LlmProvider.customEndpoint`).
-    const unsupported = requestSupportReason(entry.provider.supports, req, {
-      catalogAuthoritative: entry.provider.customEndpoint !== true,
-    });
+    const unsupported = ownedRequestSupportReason(
+      req,
+      candidateFor(entry),
+      entry.provider.supports,
+    );
     if (unsupported !== null) {
       // Per-modality (1.AF): an incapable provider is SKIPPED with the specific reason, never silently
       // flattened; the reason matches the adapter-entry `assertMediaCapabilities` throw (one predicate).
@@ -1252,14 +1351,14 @@ export class FallbackChain {
     return undefined;
   }
 
-  #throwIfAborted(req: LlmRequest, provider: ProviderId): void {
+  #throwIfAborted(req: OwnedLlmRequest | LlmRequest, provider: ProviderId): void {
     if (this.#aborted(req)) {
       throw new LlmProviderError(this.#cancelledError(provider));
     }
   }
 
-  #aborted(req: LlmRequest): boolean {
-    return req.signal?.aborted === true;
+  #aborted(req: OwnedLlmRequest | LlmRequest): boolean {
+    return ownedRequestSignal(req)?.aborted === true;
   }
 
   #cancelledError(provider: ProviderId): LlmError {
@@ -1378,7 +1477,10 @@ export class FallbackChain {
         // Detach and validate nested diagnostics while reflection is still guarded. Cause stays private.
         return snapshotLlmError(caught.llmError);
       }
-      if (caught instanceof InvalidOutputCapPlanError) {
+      if (
+        caught instanceof InvalidOutputCapPlanError ||
+        caught instanceof UnsupportedRequestDataError
+      ) {
         return makeLlmError({
           provider,
           kind: 'bad_request',
@@ -1421,7 +1523,7 @@ export class FallbackChain {
   async #backoff(
     entry: FallbackPlanEntry,
     retryIndex: number,
-    req: LlmRequest,
+    req: OwnedLlmRequest,
     error?: LlmError,
   ): Promise<void> {
     const requested = error?.retryAfterMs;
@@ -1433,7 +1535,7 @@ export class FallbackChain {
         this.#backoffBaseMs,
         this.#backoffMaxMs,
       );
-    await this.#sleep(delay, req.signal);
+    await this.#sleep(delay, ownedRequestSignal(req));
   }
 
   async #resolveKey(provider: ProviderId): Promise<string> {
@@ -1550,7 +1652,7 @@ const COOLDOWN_SKIP_REASON = 'provider in rate-limit cooldown';
  * latch, the attempt counter, and the most recent failure for exhaustion surfacing.
  */
 class ChainRun {
-  #req: LlmRequest;
+  #req: OwnedLlmRequest | LlmRequest;
   #lastProvider: ProviderId | undefined;
   /** `provider\0model` of the last ATTEMPTED entry — the strip latch's real key (ADR-0090, `CR-52`). */
   #lastIssuer: string | undefined;
@@ -1564,7 +1666,7 @@ class ChainRun {
    * the previous call settled on a *different* provider — closing the multi-turn cross-provider replay
    * hole a fresh-per-call latch left open.
    */
-  constructor(req: LlmRequest, seedLastIssuer?: string) {
+  constructor(req: OwnedLlmRequest, seedLastIssuer?: string) {
     this.#req = req;
     this.#lastIssuer = seedLastIssuer;
     // Derived so `lastProvider` keeps its meaning for any consumer that only cares about the provider half.
@@ -1591,8 +1693,8 @@ class ChainRun {
    * **without** advancing the strip latch. A skipped entry is not a provider boundary, so it must not
    * pollute `#lastProvider` (which would wrongly strip reasoning for a later same-provider entry).
    */
-  previewRequest(entry: FallbackPlanEntry): LlmRequest {
-    return withEntryModel(this.#req, entry.model);
+  get source(): OwnedLlmRequest | LlmRequest {
+    return this.#req;
   }
 
   /**
@@ -1605,6 +1707,7 @@ class ChainRun {
   beginEntry(entry: FallbackPlanEntry): LlmRequest {
     const providerId = entry.provider.id;
     const issuer = `${providerId}\u0000${entry.model}`;
+    let selected = selectOwnedRequest(this.#req, candidateFor(entry)).request;
     // TWO latches, at deliberately different granularities.
     //
     // REASONING strips on a PROVIDER boundary — ADR-0039's accepted rule, unchanged. Narrowing it to the
@@ -1621,14 +1724,25 @@ class ChainRun {
     // entry itself issued, so a continuation is LOST rather than rejected. That is the pre-`CR-52` behaviour
     // — never worse — and closing it needs per-part issuer provenance the seam does not carry. Recorded.
     if (this.#lastProvider !== undefined && this.#lastProvider !== providerId) {
-      this.#req = stripReasoningParts(this.#req);
+      selected = deriveOwnedRequestMessages(selected, {
+        route: 'reasoning',
+        messages: stripReasoningParts(selected).messages,
+      });
     }
     if (this.#lastIssuer !== undefined && this.#lastIssuer !== issuer) {
-      this.#req = stripToolCallSignatures(this.#req);
+      selected = deriveOwnedRequestMessages(selected, {
+        route: 'reasoning',
+        messages: stripToolCallSignatures(selected).messages,
+      });
     }
+    // Keep the pre-effort source for the next candidate; an incapable tier here does not
+    // erase the authored tier for a later model which accepts it.
+    this.#req = selected;
     this.#lastProvider = providerId;
     this.#lastIssuer = issuer;
-    return withEntryModel(this.#req, entry.model);
+    return withEntryModel(selected, entry.model).reasoningEffort === selected.reasoningEffort
+      ? selected
+      : withoutOwnedRequestEffort(selected);
   }
 
   /** Allocate the next 1-based attempt record skeleton for this entry. */

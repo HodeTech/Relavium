@@ -22,6 +22,70 @@ dry reference for the types and the normalization rules.
 > adapter implementation behind the seam is deliberately reversible; the seam is
 > not. Provider SDKs stay strictly inside the adapter package.
 
+## Request data ownership
+
+[ADR-0102](../../decisions/0102-a-measured-request-owns-its-inert-data-through-egress.md)
+defines the supported JavaScript data domain for controlled `LlmRequest` generate/stream calls.
+Before the first asynchronous handoff, the internal `ownLlmRequest` factory owns and freezes one
+canonical construction. Every current or future request field is traversed except the live
+`signal` and authentic `preparedOutputCaps`. This includes messages, tool arguments/results and
+schemas, response formats, tool choice, stop sequences, modalities, temperature, reasoning effort
+and non-cap provider options. Ownership does not expand the estimator's system/messages/tools/
+response-format subset or change pricing, wire cap precedence or allowance authority.
+
+Supported data comprises primitive strings, booleans, numbers, null and undefined; dense ordinary
+arrays; and ordinary or null-prototype records with own enumerable string-keyed data properties.
+Numbers, including non-finite values, and present undefined retain their values; native encoding
+and validation remain the lowerer's responsibility. Standard Map/Set objects become records of
+inert own properties; internal entries are ignored under their existing JSON semantics. Frozen
+inert caller containers are accepted. Repeated acyclic aliases are preserved across the entire
+payload/options graph through iterative memoized copying, without an added depth/size limit.
+
+Unsupported inputs include functions, symbols, BigInt, ancestor cycles, custom/boxed/Date instances,
+accessors, callable own/inherited `toJSON`, sparse arrays, additional array properties and unsupported
+non-enumerable/symbol metadata. An own string key exactly `__proto__` anywhere in the traversed non-cap
+graph is also refused, including Map/Set properties, schemas and tool arguments/results. Values
+previously serialized through Date/custom serializers, or ignored by a provider, are intentionally
+outside this narrowed domain. Convert them to inert supported data before calling the seam; use
+host tools for executable behavior. Noncallable enumerable `toJSON` remains data. Descriptor
+inspection avoids getters; reflection failures receive the same fixed, content-free
+`UnsupportedRequestDataError`. No caller property, value, path or inspection cause is exposed.
+This is ownership inside the trusted host process, not a sandbox for reflection traps or global
+built-in mutation. Standalone `estimateRequestTokens` retains its conservative fallback behavior.
+
+Owned records and their private mutable SDK working copies have null prototypes. Arrays retain
+trusted intrinsic behavior and shadow inherited `toJSON` with a helper-generated non-enumerable
+undefined property. Capture never freezes the caller. Each SDK attempt receives a fresh working
+graph with one memo across all fields; SDK schema mutation cannot change the caller, owned graph
+or another attempt. OpenAI learned-parameter retries create a fresh graph too. Gemini's existing
+converter observes shared declaration/response-schema aliases without splitting them.
+
+Native cap controls remain the separate exception governed solely by `output-cap.ts`: descriptor
+separation, captured real-key serialization, discarded outer-option serializer and exact candidate
+binding retain their existing rules. Matching prepared plans are validated before projection can
+mask original-control changes, and their captured values/ceiling survive catalog refresh. Candidate
+capture failure is surfaced only when the candidate is applicable; an unused candidate cannot stop
+a valid primary. Quote-relevant failure remains fail-closed rather than becoming a new exclusion.
+Mutable SDK native controls delegate the same cap reconciliation; they do not resolve a plan from
+an unauthenticated mutable working copy.
+
+The fallback chain captures at method invocation. `stream()` synchronously captures and returns a
+private asynchronous iterator, so caller mutation before first `next()` cannot change transmission.
+A capture refusal yields one fatal `bad_request` terminal through that iterator, with no admission,
+credential resolution or provider invocation; generate rejects with the normalized provider error.
+Direct adapter generate retains typed configuration refusal; direct stream capture refusal likewise
+uses a terminal `bad_request`, while existing successful-capture capability checks retain their
+contract. Foreign providers called by the chain receive read-only owned canonical data and must
+make their own working copies. Independently called foreign implementations are outside this guarantee.
+The chain immediately copies resolved media discriminants/scalars before caching or another await;
+only existing typed media slots change and base64 data is never cached. Live cancellation remains
+observable. Separate-endpoint `MediaGenRequest`/generation/polling remains outside this ownership scope.
+
+**W7 integration boundary:** the controlled adapters and chain implement this ownership handoff.
+Core's first measured/quoted-round reuse and pre-attempt construction closure are the next increment;
+the request-ownership High remains open until that production integration and its controls pass fresh
+independent review. Step 8 summariser/pre-send/recovery integration remains separate work.
+
 ## The core interface
 
 The interface in `packages/llm/src/types.ts` is deliberately small: a
@@ -272,8 +336,9 @@ native caps must never pass through it. Gemini's uncapped thinking control keeps
 fallback; a native output envelope is a reservation and cannot become an invented thinking budget.
 
 Plans are factory-created immutable cap projections, guarded at runtime and bound to model, actual
-provider/endpoint, canonical cap and the three native cap fields. `prepareOutputCapRequest` stages a
-cap/options copy before admission and credential awaits. Surviving object, function and BigInt cap values
+provider/endpoint, canonical cap and the three native cap fields. `prepareOutputCapRequest` remains
+a cap-only compatibility staging helper. Controlled adapters and the chain instead use the
+[owned-request handoff](#request-data-ownership) before admission and credential awaits. Surviving object, function and BigInt cap values
 are JSON-lowered once under their original property key, then copied and deeply frozen with detached
 object/array prototypes, so an inherited `toJSON` cannot run again after admission. Array identity and
 own JSON data keys are preserved. Boxed numbers,
@@ -1058,8 +1123,9 @@ followed by each authored `fallback_chain` entry:
   detaches the schema-defined content fields, including nested typed media shapes, and validates stop
   reason before host pricing or observer delivery. A later mutation of provider-owned content cannot alter that typed
   projection or install a downstream accessor with retry, budget or failure-writer authority. Opaque
-  tool arguments/results and raw response payloads retain their existing contract; generic deep
-  payload or whole-request ownership is not claimed. An admission
+  returned tool arguments/results and raw response payloads retain their existing output contract.
+  Their later use as request data follows the [owned-request boundary](#request-data-ownership);
+  the output projection does not itself acquire that wider ownership. An admission
   stays owned until its release or settlement succeeds, so a diagnostic failure reaches conservative
   cleanup rather than losing the lease.
 - Surface **per-attempt usage** to the injected `CostTracker` (against that

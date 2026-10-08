@@ -34,6 +34,11 @@ the seam rather than restating them.
 - A session is **auto-persisted and resumable** (below); it is **not** a workflow run and does not
   appear in run history. It can be **exported** to a workflow ([export](#export-to-workflow)).
 
+Request data handed to the controlled provider chain follows the
+[seam's supported inert-data and ownership contract](../shared-core/llm-provider-seam.md#request-data-ownership).
+That adapter/chain boundary does not yet establish exact core measured-round reuse or Step 8's
+atomic pre-send compaction and overflow recovery; those W7 integrations remain open.
+
 ## Lifecycle
 
 ```mermaid

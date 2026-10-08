@@ -89,3 +89,19 @@ Provider details and built-in tool wiring are in [architecture/multi-llm-provide
 - More code to write and test up front than importing a ready-made multi-provider library.
 - We forgo a framework's broader long-tail provider catalog; acceptable because MVP scope is API-based providers only (no Ollama / local models), so the target set is small and well covered.
 - Cost/token accounting depends on mapping each provider's usage fields correctly into our cost model; this is an adapter responsibility, covered by the conformance suite and documented in [architecture/multi-llm-providers.md](../architecture/multi-llm-providers.md).
+
+## W7 owned adapter/chain handoff — 2026-10-08
+
+The maintainer-approved [ADR-0102](0102-a-measured-request-owns-its-inert-data-through-egress.md)
+now supplies the production controlled-adapter/fallback-chain boundary. Its supported inert-data
+contract, intentional compatibility narrowing and separate native-cap exception have one canonical
+home in the [LLM seam](../reference/shared-core/llm-provider-seam.md#request-data-ownership).
+Generate/stream own data before asynchronous handoff, SDK attempts get fresh graph-preserving
+mutable copies, and streams capture at invocation. No provider preparation interface, vendor type
+across the seam, runtime dependency, input-pricing change or durable body is added. Separate-endpoint
+media generation/polling retains its existing contract.
+
+This is the adapter/chain integration increment, not closure of the measured-request High. Core's
+exact first measured/quoted-round reuse, pre-attempt closure and Step 8 summariser/context recovery
+remain open and require their own production controls and fresh independent acceptance. Implementation
+of this increment does not assert that those later obligations have landed.

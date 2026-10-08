@@ -4,8 +4,9 @@ import { createAnthropicAdapter } from './anthropic.js';
 import { createGeminiAdapter } from './gemini.js';
 import { createOpenAiAdapter } from './openai.js';
 import { FallbackChain } from '../fallback-chain.js';
+import { UnsupportedRequestDataError } from '../errors.js';
 import { InvalidOutputCapPlanError } from '../output-cap.js';
-import type { LlmProvider, LlmRequest } from '../types.js';
+import { LlmErrorSchema, type LlmProvider, type LlmRequest } from '../types.js';
 
 const syntheticKey = 'offline-opaque-private-credential';
 const failInspection = (): never => {
@@ -57,7 +58,7 @@ function adapterFor(route: Route, fetch: () => never): LlmProvider {
   });
 }
 
-describe('cap inspection is content-free before direct adapter egress (ADR-0101)', () => {
+describe('request inspection is content-free before direct adapter egress (ADR-0101/0102)', () => {
   for (const route of routes)
     for (const path of ['generate', 'stream'] as const)
       for (const fault of faults) {
@@ -69,25 +70,47 @@ describe('cap inspection is content-free before direct adapter egress (ADR-0101)
           });
           let failure: unknown;
           try {
-            try {
-              const request = failingRequest(route, fault);
-              if (path === 'generate') await adapter.generate(request, syntheticKey);
-              else
-                for await (const chunk of adapter.stream(request, syntheticKey)) {
-                  if (chunk.type === 'error') failure = chunk.error;
-                }
-            } catch (error) {
-              failure = error;
+            const request = failingRequest(route, fault);
+            if (path === 'generate') {
+              try {
+                await adapter.generate(request, syntheticKey);
+              } catch (error) {
+                failure = error;
+              }
+            } else {
+              // Capture happens now; refusal still arrives through the iterator, never a throw.
+              const stream = adapter.stream(request, syntheticKey);
+              let chunks = 0;
+              for await (const chunk of stream) {
+                chunks++;
+                expect(chunk.type).toBe('error');
+                if (chunk.type === 'error') failure = chunk.error;
+              }
+              expect(chunks).toBe(1);
             }
             expect(fetches).toBe(0);
-            expect(failure).toBeInstanceOf(InvalidOutputCapPlanError);
-            if (!(failure instanceof InvalidOutputCapPlanError))
+            const expected =
+              fault === 'cap-getter'
+                ? new InvalidOutputCapPlanError()
+                : new UnsupportedRequestDataError();
+            const typed = path === 'generate' ? failure : LlmErrorSchema.parse(failure).cause;
+            expect(typed).toBeInstanceOf(expected.constructor);
+            if (
+              !(typed instanceof InvalidOutputCapPlanError) &&
+              !(typed instanceof UnsupportedRequestDataError)
+            )
               throw new Error('missing typed refusal');
-            expect(failure.message).toBe(new InvalidOutputCapPlanError().message);
-            expect(Object.hasOwn(failure, 'cause')).toBe(false);
-            expect(
-              `${failure.message}\n${failure.stack}\n${JSON.stringify(failure)}`,
-            ).not.toContain(syntheticKey);
+            expect(typed.message).toBe(expected.message);
+            expect(Object.hasOwn(typed, 'cause')).toBe(false);
+            if (path === 'stream')
+              expect(failure).toMatchObject({
+                kind: 'bad_request',
+                retryable: false,
+                message: expected.message,
+              });
+            expect(`${typed.message}\n${typed.stack}\n${JSON.stringify(failure)}`).not.toContain(
+              syntheticKey,
+            );
           } finally {
             vi.unstubAllGlobals();
           }
@@ -142,7 +165,11 @@ describe('cap inspection terminates a chain before admission, key resolution, re
             ? `${failure.message}\n${failure.stack}\n${JSON.stringify(failure)}`
             : JSON.stringify(failure);
         expect(encoded).not.toContain(syntheticKey);
-        expect(encoded).toContain(new InvalidOutputCapPlanError().message);
+        expect(encoded).toContain(
+          fault === 'cap-getter'
+            ? new InvalidOutputCapPlanError().message
+            : new UnsupportedRequestDataError().message,
+        );
         expect(keys).toBe(0);
         expect(admissions).toBe(0);
         expect(fetches).toBe(0);

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createOpenAiAdapter } from './openai.js';
 import { createGeminiAdapter } from './gemini.js';
 import { FallbackChain } from '../fallback-chain.js';
-import { outputTokensReservation } from '../output-cap.js';
+import { outputTokensReservation, prepareOwnedRequest } from '../output-cap.js';
 import type { LlmProvider, LlmRequest } from '../types.js';
 
 const messages: LlmRequest['messages'] = [
@@ -95,9 +95,25 @@ describe('captured native JSON resists inherited serializers across SDK awaits (
             const install = (): void => {
               Object.defineProperty(prototype, 'toJSON', { configurable: true, value: serializer });
             };
+            const model = provider === 'gemini' ? 'gemini-2.5-pro' : 'gpt-5.4-pro';
+            // This is a CAP-serializer control. Own ordinary payload before installing a global
+            // executable serializer: ADR-0102 deliberately refuses raw non-cap inheritance.
+            // The native cap below is still constructed/captured AFTER the existing hook is set.
+            const payload = prepareOwnedRequest(
+              { model, messages },
+              adapter.id,
+              adapter.customEndpoint === true ? 'custom' : 'official',
+            ).request;
+            const options: Record<string, unknown> = {};
+            Object.setPrototypeOf(options, null);
+            const request: LlmRequest = {
+              model,
+              messages: payload.messages,
+              providerOptions: options,
+            };
+            Object.setPrototypeOf(request, null);
             try {
               if (variant === 'existing-property') install();
-              const model = provider === 'gemini' ? 'gemini-2.5-pro' : 'gpt-5.4-pro';
               const chain = new FallbackChain([{ provider: adapter, model, maxAttempts: 1 }], {
                 preAttempt: (info) => {
                   reserved = outputTokensReservation(info.outputCapPlan, 17);
@@ -111,7 +127,7 @@ describe('captured native JSON resists inherited serializers across SDK awaits (
                 sleep: () => Promise.resolve(),
               });
               const cap = shape === 'array' ? [] : { limit: 1 };
-              const request: LlmRequest = { model, messages, providerOptions: { [field]: cap } };
+              options[field] = cap;
               if (path === 'generate') await chain.generate(request);
               else
                 for await (const chunk of chain.stream(request))

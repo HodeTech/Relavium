@@ -5,11 +5,13 @@ import type { AbortSignalLike, ContentPart, StopReason } from '@relavium/shared'
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { catalogModel, modelAccepts } from '../catalog/lookup.js';
+import { UnsupportedRequestDataError } from '../errors.js';
 import {
-  outputCapNativeOptions,
-  outputCapPlanForRequest,
-  prepareOutputCapRequest,
+  mutableOutputCapNativeOptions,
+  mutableOwnedRequest,
+  prepareOwnedRequest,
   InvalidOutputCapPlanError,
+  type PreparedOutputCapPlan,
 } from '../output-cap.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import {
@@ -549,6 +551,7 @@ function applyAnthropicReasoning(
 /** The shared request body (everything except the `stream` discriminant each method sets). */
 function buildCommonBody(
   req: LlmRequest,
+  capPlan: PreparedOutputCapPlan,
 ): Omit<Anthropic.MessageCreateParamsNonStreaming, 'stream'> {
   // The output cap, held at or below the model's own ceiling (ADR-0071 §7). Anthropic REQUIRES `max_tokens`, so an
   // absent one defaults — and the default is clamped too, in case a model's ceiling is ever below it.
@@ -556,7 +559,6 @@ function buildCommonBody(
   // This value is also the ceiling the thinking budget is derived from, a few lines down. Clamping here and not
   // there would put `budget_tokens` above the `max_tokens` we actually send, which Anthropic rejects outright —
   // so it is computed ONCE and both uses read it.
-  const capPlan = outputCapPlanForRequest(req, PROVIDER, 'official');
   // Anthropic always has its required mapped default in the shared plan.
   const maxTokens = capPlan.mappedValue;
   if (maxTokens === undefined) throw new InvalidOutputCapPlanError();
@@ -622,7 +624,7 @@ function buildCommonBody(
   // `metadata`) the common path doesn't model. `body` is spread LAST so the mapped common-path
   // fields (model / messages / max_tokens / tools / …) always win — providerOptions can only ADD,
   // never override or smuggle past the canonical request.
-  return { ...outputCapNativeOptions(capPlan, req.providerOptions), ...body };
+  return { ...mutableOutputCapNativeOptions(capPlan, req.providerOptions), ...body };
 }
 
 /** Bridge the host's `AbortSignalLike` (a real `AbortSignal` at runtime) to the SDK's signal option. */
@@ -819,7 +821,11 @@ function nativeContextOverflow(usage: Usage): LlmError {
 }
 
 /** Fold the Anthropic SSE event stream into the canonical `StreamChunk` sequence. */
-async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<StreamChunk> {
+async function* streamChunks(
+  client: Anthropic,
+  req: LlmRequest,
+  capPlan: PreparedOutputCapPlan,
+): AsyncIterable<StreamChunk> {
   const toolIdByIndex = new Map<number, string>();
   const reasoningByIndex = new Map<number, ReasoningBlock>();
   let usage: Usage = { inputTokens: 0, outputTokens: 0 };
@@ -830,9 +836,10 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
   let emittedNativeOverflow = false;
   let sdkStream: AsyncIterable<Anthropic.RawMessageStreamEvent>;
   try {
+    const working = mutableOwnedRequest(req);
     sdkStream = await client.messages.create(
-      { ...buildCommonBody(req), stream: true },
-      buildRequestOptions(req),
+      { ...buildCommonBody(working, capPlan), stream: true },
+      buildRequestOptions(working),
     );
   } catch (err) {
     // A pre-egress guard (e.g. temperature > Anthropic max) already carries a classified LlmError —
@@ -926,15 +933,17 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
     id: PROVIDER,
     supports: SUPPORTS,
     async generate(req: LlmRequest, key: string): Promise<LlmResult> {
-      req = prepareOutputCapRequest(req, PROVIDER, 'official').request;
+      const owned = prepareOwnedRequest(req, PROVIDER, 'official');
+      req = owned.request;
       assertSupported(PROVIDER, SUPPORTS, req); // fail fast, never silently drop an unsupported feature
       assertMediaCapabilities(PROVIDER, SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       const client = createClient(key);
       let message: Anthropic.Message;
       try {
+        const working = mutableOwnedRequest(req);
         message = await client.messages.create(
-          { ...buildCommonBody(req), stream: false },
-          buildRequestOptions(req),
+          { ...buildCommonBody(working, owned.plan), stream: false },
+          buildRequestOptions(working),
         );
       } catch (err) {
         if (err instanceof LlmProviderError) throw err; // a pre-egress guard error — keep its classification
@@ -952,11 +961,31 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
       };
     },
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
-      req = prepareOutputCapRequest(req, PROVIDER, 'official').request;
+      let owned: ReturnType<typeof prepareOwnedRequest>;
+      try {
+        owned = prepareOwnedRequest(req, PROVIDER, 'official');
+      } catch (error) {
+        return (async function* (): AsyncIterable<StreamChunk> {
+          await Promise.resolve();
+          yield {
+            type: 'error',
+            error: makeLlmError({
+              provider: PROVIDER,
+              kind: 'bad_request',
+              message:
+                error instanceof UnsupportedRequestDataError
+                  ? new UnsupportedRequestDataError().message
+                  : new InvalidOutputCapPlanError().message,
+              cause: error,
+            }),
+          };
+        })();
+      }
+      req = owned.request;
       assertSupported(PROVIDER, SUPPORTS, req); // fail fast on an unsupported feature or no streaming
       assertStreamable(PROVIDER, SUPPORTS);
       assertMediaCapabilities(PROVIDER, SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
-      return streamChunks(createClient(key), req);
+      return streamChunks(createClient(key), req, owned.plan);
     },
     /**
      * Live model discovery (ADR-0064 §1) over the SDK's `models.list()` — a rich, auto-paginating

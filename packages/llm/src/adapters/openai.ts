@@ -16,15 +16,21 @@ import {
 } from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
-import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
+import {
+  InvalidBaseUrlError,
+  UnsupportedCapabilityError,
+  UnsupportedRequestDataError,
+} from '../errors.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import { catalogModel, catalogModelIds, modelAccepts } from '../catalog/lookup.js';
 import { isNonChatModelId } from '../model-kind.js';
 import {
-  outputCapNativeOptions,
-  outputCapPlanForRequest,
-  prepareOutputCapRequest,
+  InvalidOutputCapPlanError,
+  mutableOutputCapNativeOptions,
+  mutableOwnedRequest,
+  prepareOwnedRequest,
   type EndpointKind,
+  type PreparedOutputCapPlan,
 } from '../output-cap.js';
 import { DEEPSEEK_WIRE, acceptedTiers, openAiWireValue } from '../reasoning-wire.js';
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
@@ -875,7 +881,7 @@ type OpenAiCompatibleBody = Omit<OpenAI.ChatCompletionCreateParamsNonStreaming, 
 function buildCommonBody(
   req: LlmRequest,
   provider: ProviderId,
-  endpoint: EndpointKind,
+  capPlan: PreparedOutputCapPlan,
   scope: string,
 ): OpenAiCompatibleBody {
   const messages: OpenAI.ChatCompletionMessageParam[] = [];
@@ -908,7 +914,6 @@ function buildCommonBody(
   ) {
     body.temperature = req.temperature;
   }
-  const capPlan = outputCapPlanForRequest(req, provider, endpoint);
   if (capPlan.mappedValue !== undefined) {
     if (capPlan.mappedField === 'max_completion_tokens')
       body.max_completion_tokens = capPlan.mappedValue;
@@ -937,7 +942,7 @@ function buildCommonBody(
   // So the two cap keys are reconciled explicitly. Whichever field we mapped wins outright; the other is dropped.
   // If the caller mapped NO cap and reached for a cap through `providerOptions`, theirs stands untouched — that is
   // the §10a escape hatch, and the way an exotic gateway asks for the field its server actually implements.
-  const escape = { ...outputCapNativeOptions(capPlan, req.providerOptions) };
+  const escape = { ...mutableOutputCapNativeOptions(capPlan, req.providerOptions) };
   // A param the live API has PROVABLY rejected for this (endpoint, model) is dropped from the escape hatch too.
   // The escape hatch is spread BEFORE the mapped body, so withholding the mapped field is not enough on its own:
   // with `body` omitting the key there is nothing left to shadow an override of that SAME key, and it sails through
@@ -1227,7 +1232,7 @@ async function* streamChunks(
   client: OpenAI,
   req: LlmRequest,
   provider: ProviderId,
-  endpoint: EndpointKind,
+  capPlan: PreparedOutputCapPlan,
   scope: string,
   key: string,
 ): AsyncIterable<StreamChunk> {
@@ -1242,15 +1247,18 @@ async function* streamChunks(
   let sdkStream: AsyncIterable<OpenAI.ChatCompletionChunk>;
   try {
     sdkStream = await createWithParamFallback(
-      () =>
-        client.chat.completions.create(
+      () => {
+        // A learned-parameter retry must never reuse an SDK-mutated envelope.
+        const working = mutableOwnedRequest(req);
+        return client.chat.completions.create(
           {
-            ...buildCommonBody(req, provider, endpoint, scope),
+            ...buildCommonBody(working, provider, capPlan, scope),
             stream: true,
             stream_options: { include_usage: true },
           },
-          buildRequestOptions(req),
-        ),
+          buildRequestOptions(working),
+        );
+      },
       provider,
       scope,
       req.model,
@@ -1370,17 +1378,23 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
     customEndpoint: endpoint === 'custom',
     supports,
     async generate(req: LlmRequest, key: string): Promise<LlmResult> {
-      req = prepareOutputCapRequest(req, providerId, endpoint).request;
+      const owned = prepareOwnedRequest(req, providerId, endpoint);
+      req = owned.request;
       assertSupported(providerId, supports, req); // fail fast, never silently drop an unsupported feature
       assertMediaCapabilities(providerId, supports, req); // per-modality input/output gate (ADR-0031, 1.AE)
       const client = createClient(key);
       try {
         const completion = await createWithParamFallback(
-          () =>
-            client.chat.completions.create(
-              { ...buildCommonBody(req, providerId, endpoint, rejectionScope), stream: false },
-              buildRequestOptions(req),
-            ),
+          () => {
+            const working = mutableOwnedRequest(req);
+            return client.chat.completions.create(
+              {
+                ...buildCommonBody(working, providerId, owned.plan, rejectionScope),
+                stream: false,
+              },
+              buildRequestOptions(working),
+            );
+          },
           providerId,
           rejectionScope,
           req.model,
@@ -1406,12 +1420,33 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       }
     },
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
-      req = prepareOutputCapRequest(req, providerId, endpoint).request;
+      let owned: ReturnType<typeof prepareOwnedRequest>;
+      try {
+        // Capture at invocation, before the caller can defer the first iterator pull.
+        owned = prepareOwnedRequest(req, providerId, endpoint);
+      } catch (error) {
+        return (async function* (): AsyncIterable<StreamChunk> {
+          await Promise.resolve();
+          yield {
+            type: 'error',
+            error: makeLlmError({
+              provider: providerId,
+              kind: 'bad_request',
+              message:
+                error instanceof UnsupportedRequestDataError
+                  ? new UnsupportedRequestDataError().message
+                  : new InvalidOutputCapPlanError().message,
+              cause: error,
+            }),
+          };
+        })();
+      }
+      req = owned.request;
       assertSupported(providerId, supports, req); // fail fast on an unsupported feature or no streaming
       assertStreamable(providerId, supports);
       assertMediaCapabilities(providerId, supports, req); // per-modality input/output gate (ADR-0031, 1.AE)
       assertNoStreamingMediaOutput(providerId, req); // media-out is generate()-only; streaming triad deferred (ADR-0046 §4)
-      return streamChunks(createClient(key), req, providerId, endpoint, rejectionScope, key);
+      return streamChunks(createClient(key), req, providerId, owned.plan, rejectionScope, key);
     },
     /**
      * Live model discovery (ADR-0064 §1) over the SDK's `models.list()`. The OpenAI/DeepSeek list is

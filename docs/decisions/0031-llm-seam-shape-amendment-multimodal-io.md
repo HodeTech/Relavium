@@ -314,3 +314,19 @@ These do not change the accepted seam shape; defaults are recorded and the resid
   discipline (owned by the 1.K `FallbackChain` strip/re-materialize-on-failover), the per-modality media
   cost estimate in the governor, a new `MediaStore` retention/GC story, and the feature-flagged `url`
   carrier gated on the shared SSRF primitive.
+
+## W7 owned adapter/chain handoff — 2026-10-08
+
+The maintainer-approved [ADR-0102](0102-a-measured-request-owns-its-inert-data-through-egress.md)
+now supplies the production controlled-adapter/fallback-chain boundary. Its supported inert-data
+contract, intentional compatibility narrowing and separate native-cap exception have one canonical
+home in the [LLM seam](../reference/shared-core/llm-provider-seam.md#request-data-ownership).
+Generate/stream own data before asynchronous handoff, SDK attempts get fresh graph-preserving
+mutable copies, and streams capture at invocation. No provider preparation interface, vendor type
+across the seam, runtime dependency, input-pricing change or durable body is added. Separate-endpoint
+media generation/polling retains its existing contract.
+
+This is the adapter/chain integration increment, not closure of the measured-request High. Core's
+exact first measured/quoted-round reuse, pre-attempt closure and Step 8 summariser/context recovery
+remain open and require their own production controls and fresh independent acceptance. Implementation
+of this increment does not assert that those later obligations have landed.

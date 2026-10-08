@@ -70,8 +70,12 @@ later tool rounds; it runs before credential resolution and provider invocation.
 ## Pre-egress injection contract
 
 `PreEgressHook(info)` receives the required `PreEgressInfo` union and may return an admission
-lease, synchronously or asynchronously. A refusal prevents that attempt's egress. The hook owns
-no message body or credential. The chain's cap projection has its canonical home in the
+lease, synchronously or asynchronously. A refusal prevents that attempt's egress. The hook has
+process-local access to the current construction through `allowanceQuoteContext`; the raw request
+and provider options never enter the durable allowance quote or run events, and no credential is
+passed to this hook. Controlled chain/adapter request ownership is specified once in the
+[LLM seam](llm-provider-seam.md#request-data-ownership); core's exact measured-round reuse is still
+staged for the next W7 increment. The chain's cap projection has its canonical home in the
 [LLM seam](llm-provider-seam.md#current-request-estimates-and-bound-output-caps).
 
 | Route | Required fields |
