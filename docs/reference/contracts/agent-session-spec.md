@@ -36,8 +36,11 @@ the seam rather than restating them.
 
 Request data handed to the controlled provider chain follows the
 [seam's supported inert-data and ownership contract](../shared-core/llm-provider-seam.md#request-data-ownership).
-That adapter/chain boundary does not yet establish exact core measured-round reuse or Step 8's
-atomic pre-send compaction and overflow recovery; those W7 integrations remain open.
+The shared turn core captures before admission/money awaits and reuses its owned round through
+pre-attempt hooks and dispatch, retaining live cancellation and creating fresh owned tool rounds.
+The factory-measured first request can be reused by exact identity as described in the
+[runner contract](../shared-core/agent-runner.md#pre-egress-injection-contract). Fresh core acceptance
+and Step 8's session measurement, atomic compaction and overflow recovery remain open.
 
 ## Lifecycle
 

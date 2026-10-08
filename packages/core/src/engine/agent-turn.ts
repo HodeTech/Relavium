@@ -42,7 +42,15 @@ import {
   FallbackChain,
   LlmProviderError,
   estimateRequestTokens,
-  prepareOutputCapPlan,
+  ownLlmRequest,
+  selectOwnedRequest,
+  withOwnedRequestSignal,
+  withoutOwnedRequestTools,
+  ownedRequestSupportReason,
+  ownedRequestShape,
+  ownedRequestSource,
+  InvalidOutputCapPlanError,
+  UnsupportedRequestDataError,
   type AttemptRecord,
   type FallbackChainOptions,
   type FallbackPlanEntry,
@@ -50,6 +58,7 @@ import {
   type LlmMessage,
   type LlmProvider,
   type LlmRequest,
+  type LlmRequestConstruction,
   type MediaUnitsEstimate,
   type PricingOverlay,
   type PreAttemptInfo,
@@ -57,6 +66,7 @@ import {
   type EndpointKind,
   type ProviderId,
   type ResponseFormat,
+  type RequestCandidate,
   type StreamChunk,
   type ToolDef as LlmToolDef,
 } from '@relavium/llm';
@@ -139,7 +149,7 @@ export interface TextPreEgressInfo extends PreAttemptInfo {
   readonly maxTokensEstimate: number | undefined;
   readonly outputModalities?: readonly OutputModality[];
   readonly mediaUnitsEstimate?: readonly MediaUnitsEstimate[];
-  /** Raw construction remains process-local so each allowance candidate can resolve its own dialect cap. */
+  /** Owned construction remains process-local so each allowance candidate selects its own captured cap. */
   readonly allowanceQuoteContext?: import('./budget-allowance.js').AllowanceQuoteContext;
 }
 
@@ -210,6 +220,8 @@ export interface AgentTurnParams {
   readonly maxTokens?: number;
   /** Same frozen uncapped fallback supplied to context measurement and the governor. */
   readonly maxTokensEstimate?: number;
+  /** Exact request returned by prepareAgentTurnRequest, reused with only the live signal overlaid. */
+  readonly preparedRequest?: LlmRequest;
   /** Measured candidate plans for the first constructed request, never a vendor option. */
   readonly preparedOutputCaps?: readonly PreparedOutputCapPlan[];
   /** Normalized reasoning-effort tier (ADR-0066) — passed onto every chain attempt's `LlmRequest.reasoningEffort`;
@@ -501,59 +513,110 @@ type AgentTurnRequestParams = Pick<
   | 'preparedOutputCaps'
 >;
 
-function buildRequest(messages: readonly LlmMessage[], params: AgentTurnRequestParams): LlmRequest {
+function buildRequest(
+  messages: readonly LlmMessage[],
+  params: AgentTurnRequestParams,
+): LlmRequestConstruction {
   return {
     model: params.planEntries[0]?.model ?? '',
     ...(params.system === undefined ? {} : { system: params.system }),
-    messages: [...messages],
-    // A media-output turn is single-shot/terminal (1.AG/ADR-0046): it runs one `generate()` with no tool
-    // loop, so offering tools is meaningless and would invite an unrunnable `tool_use` stop. Omit them — a
-    // text turn (the only other `buildRequest` caller, via `streamOneTurn`) keeps its tool grant.
-    ...(params.tools === undefined || requestsMediaOutput(params)
-      ? {}
-      : { tools: [...params.tools] }),
+    messages,
+    // Preserve the original graph until ownership validates descriptors and captures its aliases.
+    // Inline-media tools are omitted from the owned construction before candidate applicability.
+    ...(params.tools === undefined ? {} : { tools: params.tools }),
     ...(params.responseFormat === undefined ? {} : { responseFormat: params.responseFormat }),
     ...(params.temperature === undefined ? {} : { temperature: params.temperature }),
     ...(params.maxTokens === undefined ? {} : { maxTokens: params.maxTokens }),
-    ...(params.preparedOutputCaps === undefined || messages.length !== params.messages.length
+    ...(params.preparedOutputCaps === undefined
       ? {}
-      : { preparedOutputCaps: [...params.preparedOutputCaps] }),
+      : { preparedOutputCaps: params.preparedOutputCaps }),
     // ADR-0066: the normalized reasoning-effort tier onto every attempt's request (the adapter maps it natively).
     ...(params.reasoningEffort === undefined ? {} : { reasoningEffort: params.reasoningEffort }),
     // Lower the node's requested non-text output onto the request (1.AF/D15) so the FallbackChain
     // per-attempt capability pre-skip (requestSupportReason → outputCombinationReason) can skip a model
     // that cannot emit the combination — the runtime backstop the load-check defers to (ADR-0044 §2). Without
     // this the request carries no outputModalities and an incapable model would silently return text.
-    ...(params.outputModalities === undefined
-      ? {}
-      : { outputModalities: [...params.outputModalities] }),
+    ...(params.outputModalities === undefined ? {} : { outputModalities: params.outputModalities }),
     signal: params.signal,
   };
 }
 
-/** The real request builder, including inline-tool removal, without any attempt capability. */
-export function prepareAgentTurnRequest(params: AgentTurnRequestParams): {
+interface PreparedAgentTurnRequest {
   readonly request: LlmRequest;
   readonly inputTokensEstimate: number;
-  readonly preparedOutputCaps: readonly PreparedOutputCapPlan[];
-} {
-  const request = buildRequest(params.messages, params);
-  const preparedOutputCaps = Object.freeze(
-    params.planEntries.map((entry) =>
-      prepareOutputCapPlan({
-        model: entry.model,
-        provider: entry.provider.id,
-        endpoint: entry.provider.customEndpoint === true ? 'custom' : 'official',
-        maxTokens: request.maxTokens,
-        providerOptions: request.providerOptions,
-      }),
-    ),
-  );
+}
+
+// Measurement metadata is local to the core factory; LLM ownership stays in @relavium/llm.
+const preparedRounds = new WeakMap<LlmRequest, PreparedAgentTurnRequest>();
+
+function requestCandidate(entry: FallbackPlanEntry): RequestCandidate {
+  return {
+    model: entry.model,
+    provider: entry.provider.id,
+    endpoint: entry.provider.customEndpoint === true ? 'custom' : 'official',
+  };
+}
+
+/** Normalize only local preparation failures; observer/money failures keep their exact identities. */
+function prepareRequest<T>(prepare: () => T): T {
+  try {
+    return prepare();
+  } catch (error) {
+    if (error instanceof UnsupportedRequestDataError)
+      throw new AgentTurnError('validation', new UnsupportedRequestDataError().message, false);
+    if (error instanceof InvalidOutputCapPlanError)
+      throw new AgentTurnError('validation', new InvalidOutputCapPlanError().message, false);
+    throw error;
+  }
+}
+
+function measureOwnedRequest(request: LlmRequest): PreparedAgentTurnRequest {
   return Object.freeze({
-    request: { ...request, preparedOutputCaps: [...preparedOutputCaps] },
-    inputTokensEstimate: estimateRequestTokens({ ...request, system: params.system ?? '' }),
-    preparedOutputCaps,
+    request,
+    // Ownership is wider than this existing input-price subset (ADR-0102 clarification).
+    inputTokensEstimate: estimateRequestTokens({
+      system: request.system ?? '',
+      messages: request.messages,
+      ...(request.tools === undefined ? {} : { tools: request.tools }),
+      ...(request.responseFormat === undefined ? {} : { responseFormat: request.responseFormat }),
+    }),
   });
+}
+
+function ownRoundRequest(
+  request: LlmRequestConstruction,
+  entries: readonly FallbackPlanEntry[],
+): PreparedAgentTurnRequest {
+  return prepareRequest(() => {
+    let owned = ownLlmRequest(request, entries.map(requestCandidate));
+    const inline =
+      ownedRequestShape(owned).outputModalities?.some((modality) => modality !== 'text') === true;
+    // A media-output turn is single-shot/terminal (ADR-0046), with no callable tool loop.
+    if (inline) owned = withoutOwnedRequestTools(owned);
+    // A fresh chain has no cooldown. Select its first capability-applicable entry without
+    // selecting failed caps belonging only to skipped candidates. The chain still owns skips.
+    const first = entries.find(
+      (entry) =>
+        (inline || entry.provider.supports.streaming) &&
+        ownedRequestSupportReason(owned, requestCandidate(entry), entry.provider.supports) === null,
+    );
+    if (entries.length === 0)
+      throw new AgentTurnError('internal', 'agent turn has no fallback-plan entries', false);
+    // With no applicable candidate, preserve construction ownership without selecting an unused
+    // failed cap. The chain still owns skip records and the final unsupported diagnostic.
+    const measured =
+      first === undefined
+        ? ownedRequestSource(owned)
+        : selectOwnedRequest(owned, requestCandidate(first)).request;
+    return measureOwnedRequest(measured);
+  });
+}
+
+/** Own the real construction, including inline-tool removal, before measurement or any await. */
+export function prepareAgentTurnRequest(params: AgentTurnRequestParams): PreparedAgentTurnRequest {
+  const prepared = ownRoundRequest(buildRequest(params.messages, params), params.planEntries);
+  preparedRounds.set(prepared.request, prepared);
+  return prepared;
 }
 
 /**
@@ -563,7 +626,7 @@ export function prepareAgentTurnRequest(params: AgentTurnRequestParams): {
  */
 async function streamOneTurn(
   chain: FallbackChain,
-  messages: readonly LlmMessage[],
+  request: LlmRequest,
   params: AgentTurnParams,
   getModel: () => string,
   usage: TurnUsageAccumulator,
@@ -579,7 +642,7 @@ async function streamOneTurn(
 ): Promise<{ content: ContentPart[]; stopReason: StopReason }> {
   const acc = newAccumulator();
   let stopReason: StopReason = 'stop';
-  for await (const chunk of chain.stream(buildRequest(messages, params))) {
+  for await (const chunk of chain.stream(request)) {
     // An error alone may be a local pre-egress refusal. Every other actual provider chunk proves
     // engagement before a host readiness/sink fault can prevent the chain's AttemptRecord.
     if (chunk.type !== 'error') usage.engaged = true;
@@ -632,14 +695,14 @@ async function streamOneTurn(
  */
 async function generateOneTurn(
   chain: FallbackChain,
-  messages: readonly LlmMessage[],
+  request: LlmRequest,
   params: AgentTurnParams,
   wasObserverFailure: (error: unknown) => boolean,
   preAttemptFailure: () => { readonly error: unknown } | undefined,
   getModel: () => string,
 ): Promise<{ content: ContentPart[]; stopReason: StopReason }> {
   try {
-    const result = await chain.generate(buildRequest(messages, params));
+    const result = await chain.generate(request);
     return { content: result.content, stopReason: result.stopReason };
   } catch (err) {
     // A successful provider call can be followed by a host/money observer throwing this same class.
@@ -755,20 +818,6 @@ export function contextOverflowMessage(
  */
 export function foldRetryable(error: LlmError, turnCommitted = false): boolean {
   return error.retryable && error.contentCommitted !== true && !turnCommitted;
-}
-
-/**
- * True when the node authored a non-text output modality — the inline media-out routing signal (1.AG).
- *
- * ADR-0046 §1's full condition is `media_surface: 'chat'` **and** a non-text `output_modalities`. The
- * `'chat'` conjunct is satisfied STRUCTURALLY, not here: the AgentRunner forks a `'generative'` model to
- * `generateMedia` (Section C, ADR-0045 §1) BEFORE it ever calls `runAgentTurn`, so this turn-core predicate
- * only ever runs for a `'chat'` model — a `'generative'` model never reaches the inline `generate()` path.
- * (The turn core is correlation-agnostic and holds no `CapabilityFlags`, so the surface check rightly lives
- * at the routing layer that resolves the provider, not in this predicate.)
- */
-function requestsMediaOutput(params: Pick<AgentTurnParams, 'outputModalities'>): boolean {
-  return params.outputModalities?.some((m) => m !== 'text') ?? false;
 }
 
 /** Fold a single stream chunk into the accumulator, emitting `agent:token` for visible text deltas. */
@@ -1444,6 +1493,23 @@ async function driveAgentTurn(
     throw new AgentTurnError('internal', 'agent turn has no fallback-plan entries', false);
   }
 
+  throwIfAborted(params.signal);
+  // Capture before chain callbacks, money joins, or admission can suspend execution. A supplied
+  // measured request must be an exact factory projection: a spread cannot borrow its authority.
+  const preparedRequest = params.preparedRequest;
+  let round =
+    preparedRequest === undefined
+      ? prepareAgentTurnRequest(params)
+      : prepareRequest(() => {
+          const prepared = preparedRounds.get(preparedRequest);
+          if (prepared === undefined) throw new InvalidOutputCapPlanError();
+          const request = withOwnedRequestSignal(prepared.request, params.signal);
+          // Validate every resolved identity without reselecting or remeasuring the first projection.
+          ownLlmRequest(request, params.planEntries.map(requestCandidate));
+          return Object.freeze({ request, inputTokensEstimate: prepared.inputTokensEstimate });
+        });
+  const firstRequest = round.request;
+
   // The cost path is the core's, not the host's: one tracker per turn, one cost:updated per
   // non-skipped attempt (attemptNumber counts non-skipped records, not the positional index). The user-pricing
   // overlay (2.5.G S10) lets the tracker price a user-priced model the static registry lacks.
@@ -1647,6 +1713,7 @@ async function driveAgentTurn(
       : {
           preAttempt: async (info: PreAttemptInfo) => {
             delete usage.preAttemptFailure;
+            const currentRound = round;
             try {
               // **Barrier B1 (ADR-0077)** — before the next egress admission, and before the governor call, so a
               // run whose ledger write did not land admits nothing further. It awaits AND observes: `join()`
@@ -1664,11 +1731,7 @@ async function driveAgentTurn(
               if (preEgress === undefined) return;
               // This is the only admitting boundary. Re-check after the governor await and release any newly
               // acquired lease before propagating a cancellation during warning durability/admission.
-              const request = buildRequest(messages, params);
-              const inputTokensEstimate = estimateRequestTokens({
-                ...request,
-                system: params.system ?? '',
-              });
+              const { request, inputTokensEstimate } = currentRound;
               const nextAdmission = await preEgress({
                 ...info,
                 route: 'text',
@@ -1685,9 +1748,9 @@ async function driveAgentTurn(
                     ? {}
                     : { mediaUnitsEstimate: params.mediaUnitsEstimate }),
                 },
-                ...(params.outputModalities === undefined
+                ...(request.outputModalities === undefined
                   ? {}
-                  : { outputModalities: params.outputModalities }),
+                  : { outputModalities: request.outputModalities }),
                 ...(params.mediaUnitsEstimate === undefined
                   ? {}
                   : { mediaUnitsEstimate: params.mediaUnitsEstimate }),
@@ -1708,7 +1771,7 @@ async function driveAgentTurn(
         }),
   });
 
-  const messages: LlmMessage[] = params.messages.map((m) => ({
+  const messages: LlmMessage[] = firstRequest.messages.map((m) => ({
     role: m.role,
     content: [...m.content],
   }));
@@ -1718,11 +1781,11 @@ async function driveAgentTurn(
     // `generate()` (the chain's existing non-streaming path) — terminal, NO tool loop (a media turn is the
     // agent's final artifact and `generate()` is one round-trip). Its sole budget gate is the chain's true
     // per-attempt `preAttempt`, which retains the admission through the matching attempt record.
-    if (requestsMediaOutput(params)) {
+    if (firstRequest.outputModalities?.some((modality) => modality !== 'text') === true) {
       throwIfAborted(params.signal);
       const turn = await generateOneTurn(
         chain,
-        messages,
+        round.request,
         params,
         (error) =>
           (usage.attemptFailure !== undefined && Object.is(usage.attemptFailure.error, error)) ||
@@ -1766,6 +1829,13 @@ async function driveAgentTurn(
           false,
         );
       }
+      if (toolTurn > 0) {
+        // Only real tool results create a new round. The static fields and earlier messages
+        // belong to the first owned construction, never to mutable caller containers.
+        const nextRequest = { ...firstRequest, messages };
+        delete nextRequest.preparedOutputCaps;
+        round = ownRoundRequest(nextRequest, params.planEntries);
+      }
       // The FallbackChain hook is the sole true provider-attempt gate (including each failover). It performs its
       // own post-await cancellation re-check before credential resolution, so there is no speculative loop-top
       // reservation that can deny a concurrent branch without ever reaching egress.
@@ -1787,9 +1857,10 @@ async function driveAgentTurn(
       // round both reached the user — so a failure here is content-committed even though this `stream()`
       // call may have produced nothing yet (ADR-0082 §4).
       const turnCommitted = toolTurn > 0;
+      const request = round.request;
       const turn = await (toolTurn === 0
-        ? streamOneTurn(chain, messages, params, () => activeModel, usage)
-        : streamOneTurn(chain, messages, params, () => activeModel, usage, turnCommitted).catch(
+        ? streamOneTurn(chain, request, params, () => activeModel, usage)
+        : streamOneTurn(chain, request, params, () => activeModel, usage, turnCommitted).catch(
             (error: unknown) => {
               if (
                 (usage.attemptFailure !== undefined &&

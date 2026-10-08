@@ -327,3 +327,22 @@ The maintainer approves this decision in its latest reviewed form, including the
 Earlier Proposed/unauthorised statements above describe the proposal history; this approval
 opens the implementation gate. Acceptance still requires the specified implementation,
 causal controls and fresh independent review rounds; approval alone does not close W7.
+
+## Core owned-round implementation checkpoint — 2026-10-08
+
+The approved core increment prepares the initial construction before measurement and passes that
+exact factory request through the runner's quote and execution handoff, overlaying only the live
+execution signal. Each pre-attempt check captures its current request/estimate before money waits;
+real tool results create fresh owned rounds from owned static fields and working history. The
+existing estimator subset and chain capability/cap authorities remain unchanged.
+
+The same factory supplies an immutable capless tools/modalities view for quote sizing and, when
+every candidate is inapplicable, an unselected canonical construction for measurement/skip checks.
+That construction grants no selected cap, SDK working-copy or reasoning/media derivation authority;
+an applicable failed cap remains refused. Legacy governor handoff validates the already-measured
+attempt plan against original controls and exact candidate identity without a raw spread or recapture.
+
+The canonical contracts remain the [LLM seam](../reference/shared-core/llm-provider-seam.md#request-data-ownership)
+and [runner injection contract](../reference/shared-core/agent-runner.md#pre-egress-injection-contract).
+This is an implementation checkpoint, pending fresh independent core reviews. It does not close
+the ownership High, Step 8's session/summariser/recovery integration, ADR-0103 or whole W7.

@@ -1,8 +1,10 @@
 import {
   estimateResolvedRequestCost,
-  outputCapPlanForRequest,
+  ownLlmRequest,
+  selectOwnedRequest,
+  ownedRequestSupportReason,
+  ownedRequestShape,
   outputTokensReservation,
-  supportsRequest,
   InvalidTokenEstimateError,
   UnknownModelError,
   type FallbackPlanEntry,
@@ -41,7 +43,7 @@ export type AllowanceQuoteContext = QuoteCommon &
   (
     | {
         readonly route: 'text';
-        /** The paused construction request, before any candidate's dialect filtering. */
+        /** The paused owned construction, before reasoning stripping; raw direct callers are owned here. */
         readonly request: LlmRequest;
         readonly inputTokensEstimate: number;
         readonly maxTokensEstimate: number | undefined;
@@ -64,17 +66,28 @@ function assertCount(value: number, positive: boolean): void {
 /**
  * Freeze A = calls × attempts × largest E at the paused input size (ADR-0097).
  * Capability/streaming skips are excluded; cooldown does not remove an eligible entry. Node retries do
- * not multiply the amount. Every text candidate consumes its own cap plan against the SAME raw canonical
- * and native cap inputs; a primary's filtered request is insufficient for a heterogeneous chain.
+ * not multiply the amount. Every text candidate selects its cap plan from the SAME factory-owned
+ * construction; a primary's public projection cannot transfer another candidate's authority.
  */
 export function quoteBudgetAllowance(input: AllowanceQuoteInput): AllowanceQuoteResult {
   if (input.entries.length === 0) throw new InvalidTokenEstimateError();
-  const inline =
-    input.route === 'text' && input.request.outputModalities?.some((m) => m !== 'text') === true;
+  const owned =
+    input.route === 'text'
+      ? ownLlmRequest(
+          input.request,
+          input.entries.map((entry) => ({
+            model: entry.model,
+            provider: entry.provider.id,
+            endpoint: entry.provider.customEndpoint === true ? 'custom' : 'official',
+          })),
+        )
+      : undefined;
+  const shape = owned === undefined ? undefined : ownedRequestShape(owned);
+  const inline = shape?.outputModalities?.some((modality) => modality !== 'text') === true;
   let calls = 1;
   if (input.route === 'text') {
     assertCount(input.maxToolTurns, false);
-    if (!inline && (input.request.tools?.length ?? 0) > 0) {
+    if (!inline && (shape?.tools?.length ?? 0) > 0) {
       calls = input.maxToolTurns + 1;
       assertCount(calls, true);
     }
@@ -96,18 +109,16 @@ export function quoteBudgetAllowance(input: AllowanceQuoteInput): AllowanceQuote
     };
     let output = 0;
     if (input.route === 'text') {
-      const request = { ...input.request, model: entry.model };
+      if (owned === undefined) throw new InvalidTokenEstimateError();
       if (
         (!inline && !entry.provider.supports.streaming) ||
-        !supportsRequest(entry.provider.supports, request, {
-          catalogAuthoritative: identity.endpoint === 'official',
-        })
+        ownedRequestSupportReason(owned, identity, entry.provider.supports) !== null
       ) {
         excluded.push(Object.freeze({ ...identity, reason: 'unsupported' }));
         continue;
       }
       output = outputTokensReservation(
-        outputCapPlanForRequest(request, identity.provider, identity.endpoint),
+        selectOwnedRequest(owned, identity).plan,
         input.maxTokensEstimate,
       );
     } else if (entry.provider.generateMedia === undefined) {

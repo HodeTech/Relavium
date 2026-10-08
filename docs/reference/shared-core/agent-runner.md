@@ -71,11 +71,15 @@ later tool rounds; it runs before credential resolution and provider invocation.
 
 `PreEgressHook(info)` receives the required `PreEgressInfo` union and may return an admission
 lease, synchronously or asynchronously. A refusal prevents that attempt's egress. The hook has
-process-local access to the current construction through `allowanceQuoteContext`; the raw request
-and provider options never enter the durable allowance quote or run events, and no credential is
-passed to this hook. Controlled chain/adapter request ownership is specified once in the
-[LLM seam](llm-provider-seam.md#request-data-ownership); core's exact measured-round reuse is still
-staged for the next W7 increment. The chain's cap projection has its canonical home in the
+process-local access to the current owned construction through `allowanceQuoteContext`; the request
+body and provider options never enter the durable allowance quote or run events, and no credential is
+passed to this hook. Controlled request ownership is specified once in the
+[LLM seam](llm-provider-seam.md#request-data-ownership). Core prepares its first round before measurement
+and quotes and executes that exact factory request with only the live execution signal overlaid.
+`prepareAgentTurnRequest` returns `{ request, inputTokensEstimate }`; execution accepts that exact
+request through `preparedRequest`, refusing a borrowed spread. Incoming `preparedOutputCaps` remains
+supported and is validated by the same ownership/cap authority. The chain's cap projection has its
+canonical home in the
 [LLM seam](llm-provider-seam.md#current-request-estimates-and-bound-output-caps).
 
 | Route | Required fields |
@@ -85,9 +89,14 @@ staged for the next W7 increment. The chain's cap projection has its canonical h
 
 Both routes may carry `outputModalities` and disjoint `mediaUnitsEstimate`. Text `maxTokens`,
 `providerOptions` and `maxTokensEstimate` have required keys allowing `undefined`. The turn core
-computes input from the constructed current request's system text, messages, advertised tools
-and JSON response format/output schema before dialect-specific stripping; it recomputes after a
-tool round rather than reusing provider usage.
+computes input from the owned current request's system text, messages, advertised tools
+and JSON response format/output schema before dialect-specific stripping. The pre-attempt hook closes
+over that request and estimate before money durability can await; it never rebuilds from caller data
+afterward. A real tool result creates a fresh owned round and estimate from owned static fields and
+working history rather than provider usage. The current core input surface does not carry native
+provider options, tool choice or stop sequences; no heterogeneous native-serializer continuation
+guarantee is claimed for its later tool-round reconstruction. Local ownership/cap refusals are fixed,
+nonretryable `validation` outcomes; existing observer/money/cancellation provenance remains intact.
 
 All governor evaluation, admission and commitment-restoration entry points consume the whole
 object. The host captures `max_tokens_estimate` once and forwards it through workflow,

@@ -1,6 +1,8 @@
 import {
   estimateResolvedRequestCost,
   outputTokensReservation,
+  ownLlmRequest,
+  selectOwnedRequest,
   assertOutputCapPlanMatches,
   DEFAULT_OUTPUT_TOKENS_ESTIMATE,
   InvalidOutputCapPlanError,
@@ -852,17 +854,23 @@ export class BudgetGovernor {
     const context = info.allowanceQuoteContext;
     if (context === undefined) return undefined;
     if (context.route === 'text' && info.route === 'text') {
-      // Reuse THIS attempt's once-captured cap and retain every other candidate's original construction.
-      const otherCaps =
-        context.request.preparedOutputCaps?.filter(
-          (plan) =>
-            plan.model !== info.model ||
-            plan.provider !== info.provider ||
-            plan.endpoint !== info.endpoint,
-        ) ?? [];
+      // An owned projection already carries every candidate through its private association.
+      // Spreading it would discard that association and borrow other dialects' captured plans.
+      // Legacy direct callers without prepared metadata still provide the current attempt's
+      // captured plan; bind it to their original controls before quote ownership projects them.
+      const owned = ownLlmRequest(
+        context.request,
+        context.entries.map((entry) => ({
+          model: entry.model,
+          provider: entry.provider.id,
+          endpoint: entry.provider.customEndpoint === true ? 'custom' : 'official',
+        })),
+        info.outputCapPlan,
+      );
+      const { request } = selectOwnedRequest(owned, info);
       return quoteBudgetAllowance({
         ...context,
-        request: { ...context.request, preparedOutputCaps: [info.outputCapPlan, ...otherCaps] },
+        request,
         strictCostCap: this.#budget.strict_cost_cap === true,
         ...(this.#overlay === undefined ? {} : { overlay: this.#overlay }),
       });

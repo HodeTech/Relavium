@@ -245,12 +245,22 @@ export {
   prepareOutputCapRequest,
   assertOutputCapPlanMatches,
   InvalidOutputCapPlanError,
+  ownLlmRequest,
+  selectOwnedRequest,
+  withOwnedRequestSignal,
+  withoutOwnedRequestTools,
+  ownedRequestSupportReason,
+  ownedRequestShape,
+  ownedRequestSource,
 } from './output-cap.js';
 export type {
   EndpointKind,
   OutputCapInputs,
   OutputCapIdentity,
   PreparedOutputCapPlan,
+  OwnedLlmRequest,
+  LlmRequestConstruction,
+  RequestCandidate,
 } from './output-cap.js';
 // The per-attempt provider deadline (ADR-0082 §5–§7) and the deadline vocabulary it reads from
 // `@relavium/shared` (ADR-0085 §9). §9 says this package "re-exports it" — `attempt-deadline.ts` did, but

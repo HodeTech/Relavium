@@ -26,8 +26,10 @@ dry reference for the types and the normalization rules.
 
 [ADR-0102](../../decisions/0102-a-measured-request-owns-its-inert-data-through-egress.md)
 defines the supported JavaScript data domain for controlled `LlmRequest` generate/stream calls.
-Before the first asynchronous handoff, the internal `ownLlmRequest` factory owns and freezes one
-canonical construction. Every current or future request field is traversed except the live
+Before the first asynchronous handoff, the `ownLlmRequest` factory owns and freezes one
+canonical construction. Its mapped readonly `LlmRequestConstruction` input accepts original caller
+arrays without normalizing away their descriptors or cross-field aliases. Every current or future
+request field is traversed except the live
 `signal` and authentic `preparedOutputCaps`. This includes messages, tool arguments/results and
 schemas, response formats, tool choice, stop sequences, modalities, temperature, reasoning effort
 and non-cap provider options. Ownership does not expand the estimator's system/messages/tools/
@@ -69,6 +71,17 @@ a valid primary. Quote-relevant failure remains fail-closed rather than becoming
 Mutable SDK native controls delegate the same cap reconciliation; they do not resolve a plan from
 an unauthenticated mutable working copy.
 
+A genuine factory association survives the trusted live-signal overlay and inline-media tool omission.
+`ownedRequestShape` exposes immutable tools/modalities for applicability and quote sizing without
+selecting a cap. `ownedRequestSource` exposes the frozen canonical construction when all candidates
+are inapplicable; it carries no selected cap authority. The chain may record its skips, but cap lookup,
+SDK working-copy construction and reasoning/media derivation require genuine candidate selection.
+A failed applicable cap remains refused. Legacy raw governor callers may supply their measured attempt
+plan to `ownLlmRequest`; the existing authority validates original controls and exact configured
+model/provider/endpoint binding before projection. Changed controls, wrong candidate identity and
+different existing authority are refused, without reserializing the measured plan or applying a
+refreshed ceiling.
+
 The fallback chain captures at method invocation. `stream()` synchronously captures and returns a
 private asynchronous iterator, so caller mutation before first `next()` cannot change transmission.
 A capture refusal yields one fatal `bad_request` terminal through that iterator, with no admission,
@@ -82,9 +95,11 @@ only existing typed media slots change and base64 data is never cached. Live can
 observable. Separate-endpoint `MediaGenRequest`/generation/polling remains outside this ownership scope.
 
 **W7 integration boundary:** the controlled adapters and chain implement this ownership handoff.
-Core's first measured/quoted-round reuse and pre-attempt construction closure are the next increment;
-the request-ownership High remains open until that production integration and its controls pass fresh
-independent review. Step 8 summariser/pre-send/recovery integration remains separate work.
+Core now captures its first round before measurement, reuses the factory request for quote/execution
+with only the live signal overlaid, and closes each pre-attempt check over that round before money waits.
+Real tool results create fresh owned rounds from owned static fields and working history. This core
+increment awaits fresh independent acceptance; the ownership High and Step 8's owned summariser/
+pre-send/recovery integration remain open.
 
 ## The core interface
 

@@ -493,7 +493,13 @@ async function prepareAgentDispatch(
     ...(node.output_modalities === undefined ? {} : { outputModalities: node.output_modalities }),
     ...(mediaUnitsEstimate === undefined ? {} : { mediaUnitsEstimate }),
   };
-  const first = prepareAgentTurnRequest({ ...fields, signal: ctx.signal });
+  let first: ReturnType<typeof prepareAgentTurnRequest>;
+  try {
+    first = prepareAgentTurnRequest({ ...fields, signal: ctx.signal });
+  } catch (error) {
+    if (error instanceof AgentTurnError) return failed(error.code, error.message, error.retryable);
+    throw error;
+  }
   return {
     kind: 'prepared',
     preparation: {
@@ -514,7 +520,7 @@ async function prepareAgentDispatch(
         generation.notify();
         const outcome = await captureAgentTurnOutcome({
           ...fields,
-          preparedOutputCaps: first.preparedOutputCaps,
+          preparedRequest: first.request,
           chainCapabilities: chainCapabilities(deps),
           nodeId: node.id,
           emit: execution.emit,

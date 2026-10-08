@@ -325,10 +325,15 @@ export interface RequestCandidate {
   readonly endpoint: EndpointKind;
 }
 
-/** Opaque factory handle. Only selected projections are dispatchable LlmRequests. */
+/** Opaque factory handle. Only selected projections carry a candidate's cap authority. */
 export interface OwnedLlmRequest {
   readonly candidates: readonly RequestCandidate[];
 }
+
+/** Construction accepts readonly caller arrays without normalizing away descriptors or aliases. */
+export type LlmRequestConstruction = {
+  readonly [Field in keyof LlmRequest]: Readonly<LlmRequest[Field]>;
+};
 
 interface CandidateOutcome {
   readonly candidate: RequestCandidate;
@@ -346,7 +351,7 @@ interface OwnedRequestState {
 const ownedHandles = new WeakMap<object, OwnedRequestState>();
 const ownedRequests = new WeakMap<
   object,
-  { readonly state: OwnedRequestState; readonly outcome: CandidateOutcome }
+  { readonly state: OwnedRequestState; readonly outcome: CandidateOutcome | undefined }
 >();
 const requestExceptions = new Set(['signal', 'preparedOutputCaps']);
 const preparedPlanArrays = new WeakSet<object>();
@@ -392,13 +397,35 @@ export function ownedRequestSupportReason(
   );
 }
 
+/**
+ * Immutable data needed to size a quote before candidate applicability/cap selection. Keeping
+ * this view capless and non-dispatchable lets callers inspect the owned shape even when every
+ * candidate's cap failed, without rereading originals a cap serializer may have mutated.
+ */
+export function ownedRequestShape(
+  source: OwnedLlmRequest | LlmRequest,
+): Pick<LlmRequestConstruction, 'tools' | 'outputModalities'> {
+  const payload = ownedState(source).payload;
+  return Object.freeze({ tools: payload.tools, outputModalities: payload.outputModalities });
+}
+
+/**
+ * Canonical construction for measurement and chain skip checks when no candidate is applicable.
+ * It carries ownership, never selected cap authority; dispatch must select a genuine candidate.
+ */
+export function ownedRequestSource(source: OwnedLlmRequest | LlmRequest): LlmRequest {
+  const state = ownedState(source);
+  ownedRequests.set(state.payload, { state, outcome: undefined });
+  return state.payload;
+}
+
 /** Cancellation stays observable even when the first configured candidate has a failed cap. */
 export function ownedRequestSignal(source: OwnedLlmRequest | LlmRequest): LlmRequest['signal'] {
   return ownedState(source).payload.signal;
 }
 
 /** Inspect root descriptors without invoking any request getter or dropping future fields. */
-function requestDescriptors(request: LlmRequest): LlmRequest {
+function requestDescriptors(request: LlmRequestConstruction): LlmRequest {
   try {
     const target: LlmRequest = { model: '', messages: [] };
     Object.setPrototypeOf(target, null);
@@ -535,7 +562,7 @@ function optionsAreAliased(payload: LlmRequest): boolean {
  * that shared container would silently rewrite a tool result, schema or future request field.
  * The first traversal detects and validates such aliases; the full capture keeps one final memo.
  */
-function captureRequestData(request: LlmRequest, inspected: LlmRequest): LlmRequest {
+function captureRequestData(request: LlmRequestConstruction, inspected: LlmRequest): LlmRequest {
   const omissions = new Map<object, ReadonlySet<string>>([[request, requestExceptions]]);
   const edges = new Map<object, { readonly parent: object; readonly key: string }>();
   const aliases = new Set<object>();
@@ -565,7 +592,7 @@ function assertOwnedRequestBinding(
   endpoint: EndpointKind,
 ): PreparedOutputCapPlan {
   const owned = ownedRequests.get(request);
-  if (owned === undefined) throw new InvalidOutputCapPlanError();
+  if (owned?.outcome === undefined) throw new InvalidOutputCapPlanError();
   const outcome = candidateOutcome(owned.state, { model: request.model, provider, endpoint });
   const plan = outcome.plan;
   if (plan === undefined || outcome !== owned.outcome) throw new InvalidOutputCapPlanError();
@@ -593,14 +620,23 @@ function assertOwnedRequestBinding(
  * Own all non-cap fields and eagerly capture every configured candidate before the first await.
  * Incoming plans are checked against ORIGINAL controls before any captured projection is installed.
  * Candidate-local failures remain private until selection (including quote selection) requires them.
+ * A legacy caller may supply its already-measured attempt plan without copying the raw request.
  */
 export function ownLlmRequest(
-  request: LlmRequest,
+  request: LlmRequestConstruction,
   candidates: readonly RequestCandidate[],
+  attemptPlan?: PreparedOutputCapPlan,
 ): OwnedLlmRequest {
   const prior = ownedRequests.get(request);
   if (prior !== undefined) {
     for (const candidate of candidates) candidateOutcome(prior.state, candidate);
+    if (
+      attemptPlan !== undefined &&
+      (!isPreparedOutputCapPlan(attemptPlan) ||
+        !candidates.some((candidate) => sameCandidate(candidate, attemptPlan)) ||
+        candidateOutcome(prior.state, attemptPlan).plan !== attemptPlan)
+    )
+      throw new InvalidOutputCapPlanError();
     return handleFor(prior.state);
   }
   const inspected = requestDescriptors(request);
@@ -617,7 +653,14 @@ export function ownLlmRequest(
       }),
     );
   }
-  const plans = incomingPlans(inspected);
+  const plans = [...incomingPlans(inspected)];
+  if (attemptPlan !== undefined) {
+    if (!isPreparedOutputCapPlan(attemptPlan) || !originalControlsMatch(attemptPlan, inspected))
+      throw new InvalidOutputCapPlanError();
+    const existing = plans.find((plan) => sameCandidate(plan, attemptPlan));
+    if (existing !== undefined && existing !== attemptPlan) throw new InvalidOutputCapPlanError();
+    if (existing === undefined) plans.push(attemptPlan);
+  }
   for (const plan of plans) {
     const candidate = configured.find((item) => sameCandidate(item, plan));
     if (candidate === undefined || plans.filter((item) => sameCandidate(item, plan)).length !== 1)
@@ -793,7 +836,7 @@ export function prepareOwnedRequest(
  */
 export function mutableOwnedRequest(request: LlmRequest): LlmRequest {
   const owned = ownedRequests.get(request);
-  if (owned === undefined) throw new InvalidOutputCapPlanError();
+  if (owned?.outcome === undefined) throw new InvalidOutputCapPlanError();
   return projectRequest(request, owned.outcome, false, false, owned.state.optionsAliased);
 }
 
@@ -812,14 +855,24 @@ export function withOwnedRequestSignal(
   Object.setPrototypeOf(selected, null);
   Object.freeze(selected);
   ownedRequests.set(selected, { state, outcome: owned.outcome });
-  state.projections.set(owned.outcome, selected);
+  if (owned.outcome !== undefined) state.projections.set(owned.outcome, selected);
   return selected;
+}
+
+/** The existing inline-media policy omits tools only after the entire input is safely owned. */
+export function withoutOwnedRequestTools(source: OwnedLlmRequest | LlmRequest): OwnedLlmRequest {
+  const owned = ownedState(source);
+  const payload: LlmRequest = { ...owned.payload };
+  delete payload.tools;
+  Object.setPrototypeOf(payload, null);
+  Object.freeze(payload);
+  return handleFor(requestState(payload, owned.outcomes));
 }
 
 /** The existing model-tier policy chooses when this trusted omission is applicable. */
 export function withoutOwnedRequestEffort(request: LlmRequest): LlmRequest {
   const owned = ownedRequests.get(request);
-  if (owned === undefined) throw new InvalidOutputCapPlanError();
+  if (owned?.outcome === undefined) throw new InvalidOutputCapPlanError();
   const payload: LlmRequest = { ...owned.state.payload };
   delete payload.reasoningEffort;
   Object.setPrototypeOf(payload, null);
@@ -845,7 +898,7 @@ export function deriveOwnedRequestMessages(
   change: { readonly route: 'reasoning' | 'media'; readonly messages: LlmRequest['messages'] },
 ): LlmRequest {
   const owned = ownedRequests.get(request);
-  if (owned === undefined) throw new InvalidOutputCapPlanError();
+  if (owned?.outcome === undefined) throw new InvalidOutputCapPlanError();
   const source: LlmRequest = { ...request, messages: change.messages };
   const payload = captureRequestData(source, source);
   return selectOwnedRequest(
