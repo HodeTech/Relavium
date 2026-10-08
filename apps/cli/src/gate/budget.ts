@@ -76,7 +76,8 @@ export function selectBudgetGate(
   const choices = pending.map((gate) => {
     const context = budgetPromptContext(gate.allowance);
     const details = budgetPromptDetails(context);
-    return `${budgetIdentifier(gate.gateId)}: ${budgetPromptLabel(context)}${details.length === 0 ? '' : ` [${details.join('; ')}]`}`;
+    const detailLabel = details.length === 0 ? '' : ` [${details.join('; ')}]`;
+    return `${budgetIdentifier(gate.gateId)}: ${budgetPromptLabel(context)}${detailLabel}`;
   });
   const list = choices.length === 0 ? '' : ` (pending budget gates: ${choices.join('; ')})`;
   if (requested !== undefined) {

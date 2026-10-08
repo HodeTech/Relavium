@@ -255,4 +255,4 @@ Its public surface is exported from `packages/core/src/index.ts`. Adversarial ac
 VM because the `Eval` intrinsic must stay on for `evalCode` to compile, yet reach no host reference or
 forbidden capability — `Date`/`Math.random`/`Promise` absent, secret-in-scope yields a secret-free
 error, cap-trip classification, determinism over shuffled `run.outputs` key order) are a binding part of 1.AB per
-[testing.md](../../standards/testing.md#security-critical-primitive-tests).
+[testing.md](../../standards/testing.md#security-critical-primitive-tests-direct-negative-case).

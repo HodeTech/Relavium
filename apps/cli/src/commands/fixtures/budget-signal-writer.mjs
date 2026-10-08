@@ -11,6 +11,7 @@ assert.ok(database && directory && parentPid && holdMs);
 assert.equal(Number(parentPid), process.ppid);
 assert.ok(interrupt === 'true' || interrupt === 'false');
 assert.ok(holdMs === '1200' || holdMs === '5500');
+/** @param {string} name */
 const waitFor = async (name) => {
   const deadline = Date.now() + 10000;
   while (!existsSync(join(directory, name))) {

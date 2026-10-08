@@ -82,8 +82,8 @@ export interface EffectJournalStoreDeps {
 /**
  * The synchronous store; `createEffectJournalPort` adapts its WRITE half to the engine's Promise-typed
  * dispatch seam, and `createEffectResumePort` adapts its READ half to the engine's resume gate (ADR-0080
- * §2b, effect-journal.md §4) — `recordsFor` feeds that gate and `unresolvedForSession` feeds `chat-resume`'s
- * disclosure. `flagForAttention` has no caller yet: it is the primitive the operator-resolution command will
+ * §2b, effect-journal.md §4) — `recordsFor` feeds that gate. Session disclosure instead reads the
+ * full-history `readSessionDisclosureSnapshot` (ADR-0098), including captured committed evidence. `flagForAttention` has no caller yet: it is the primitive the operator-resolution command will
  * use, which effect-journal.md §8 names as a follow-up.
  */
 export interface EffectJournalStore {

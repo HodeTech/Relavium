@@ -155,7 +155,7 @@ describe('cold compaction operation ownership', () => {
       h.finish.release();
       const result = await work;
       expect(result.kind).toBe(action === 'cancel' ? 'cancelled' : 'compacted');
-      expect(h.requests.length).toBe(action === 'cancel' ? 0 : 1);
+      expect(Object.is(h.requests.length, action === 'cancel' ? 0 : 1)).toBe(true);
       expect(h.controllers()).toBe(action === 'cancel' ? 0 : 1);
       h.session.cancel();
       await h.drain;

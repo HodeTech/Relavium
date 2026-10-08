@@ -128,18 +128,24 @@ export function fixture(
           sha256: digest(serialized),
         });
         const event = args[0];
-        const cut =
-          event.type === 'budget:authorization'
-            ? `authority-${event.authorization.state}`
-            : event.type === 'budget:paused'
-              ? 'budget-paused-companion'
-              : event.type === 'human_gate:paused'
-                ? 'human-gate-paused-companion'
-                : event.type === 'human_gate:resumed'
-                  ? 'human-gate-resumed-companion'
-                  : event.type === 'run:paused'
-                    ? 'aggregate-paused'
-                    : undefined;
+        let cut;
+        switch (event.type) {
+          case 'budget:authorization':
+            cut = `authority-${event.authorization.state}`;
+            break;
+          case 'budget:paused':
+            cut = 'budget-paused-companion';
+            break;
+          case 'human_gate:paused':
+            cut = 'human-gate-paused-companion';
+            break;
+          case 'human_gate:resumed':
+            cut = 'human-gate-resumed-companion';
+            break;
+          case 'run:paused':
+            cut = 'aggregate-paused';
+            break;
+        }
         if (!suppressCapture && cut) {
           const relative = `raw/${label}-${cut}.ndjson`;
           const bytes = `${rows.join('\n')}\n`;

@@ -302,7 +302,7 @@ flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
     LEDGER["#W15-1 — realized-cost ledger ✅<br/>ADR-0076 + ADR-0077"]
-    P265["Phase 2.6.5 — Core reliability<br/>50 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094<br/>W7 unblocked — ADR-0095–0098 accepted"]
+    P265["Phase 2.6.5 — Core reliability<br/>51 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094<br/>W7 unblocked — ADR-0095–0098 accepted"]
     W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
@@ -1734,3 +1734,9 @@ Group 6, ADR approvals, provider captures and final whole-wave acceptance remain
 ### W7 Proposed ADR-0103 published for maintainer review — 2026-10-08
 
 [ADR-0103](../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md) is published with the exact eighth reviewed candidate bytes, after [two complete static reviews and qualified Parent audits](../reviews/2026-10-08T11-44-55-w7-adr-0103-eighth-proposal-review.md). It proposes engine-owned safe paused-host departure, narrow late-receipt authority, truthful money/effect disposition and CLI exit 8. **It remains Proposed; no dependent implementation is authorised before maintainer approval. ADR-0102 also remains Proposed.** Independent Group 6 work continues; the lifecycle High, provider captures, Steps 7–8/12 and final W7/PR acceptance remain open.
+
+### W7 systematic group 6, narrow corrections implemented — 2026-10-08
+
+The remaining review-document discrepancies are corrected: 51-item diagram, five recorded security sittings, MCP consent flags, expression anchor, disclosure-reader docblock and review EOF whitespace. Behaviour-preserving leaf changes make streaming membership a Set after full persisted-row validation, flatten the replay capture-cut selector, preserve exact generated loader bytes with raw literals, spell the bounded overflow close observation inside the loop, extract the budget detail label and retain primitive-only cold-request assertion formatting. The native signal fixture also receives its explicit string parameter annotation.
+
+Forced full Root `pnpm run ci` passes **373 files / 8,397 tests / 12 skips**, 23 initial tasks including build dependencies, six package build targets, seven build/format tasks and all offline smokes. Explicit strict/checkJs inclusion of the changed native fixture passes separately. Sixty-three synthetic loader cases generate identical bytes and parse; 32 event/state cases keep the exact capture cuts. **These are implementation checks, not independent Group 6 acceptance. Fresh independent rounds and individual adjudication of the current 180 Sonar labels remain required. ADR-0102/0103, provider captures, Steps 7–8/12 and final W7/PR acceptance remain open. No additional paid call or ADR-dependent implementation occurred.**

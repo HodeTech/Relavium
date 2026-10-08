@@ -21,7 +21,7 @@ const main = fileURLToPath(new URL('./capture.mjs', import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), 'relavium-capture-check-'));
 const loader = join(dir, 'fake-fetch.mjs');
 const key = 'capture-probe-key-12345'; // Explicitly synthetic; never a live capture fixture.
-const duplicateSecret = `{"duplicate":"${key.replace('capture-', '\\u0063apture-')}","duplicate":"safe"}`;
+const duplicateSecret = `{"duplicate":"${key.replace('capture-', String.raw`\u0063apture-`)}","duplicate":"safe"}`;
 const out = join(dir, 'capture.json');
 const marker = join(dir, 'calls');
 const raceReady = join(dir, 'cleanup-stat-ready');
@@ -38,7 +38,7 @@ const args = [
 ];
 writeFileSync(
   loader,
-  `
+  String.raw`
 import fs, { appendFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 // Delay-only regression: return the real lstat result after the parent swaps the pathname. The fixed
@@ -62,7 +62,7 @@ fs.lstatSync = function(path, ...args) {
 syncBuiltinESMExports();
 globalThis.fetch = async (url, init) => {
   if (url !== 'https://api.anthropic.com/v1/messages' || init.redirect !== 'error') throw new Error('wrong request');
-  appendFileSync(process.env.CAPTURE_PROBE_MARKER, 'call\\n');
+  appendFileSync(process.env.CAPTURE_PROBE_MARKER, 'call\n');
   switch (process.env.CAPTURE_PROBE_MODE) {
     case 'hang': return new Promise(() => {});
     case 'caller-abort':
@@ -118,7 +118,10 @@ async function run(argv = args, mode = 'safe', input = key, interrupt = false) {
       });
     });
     if (mode === 'cleanup-race') {
-      for (let i = 0; i < 400 && !hasClosed && !existsSync(raceReady); i += 1) await sleep(5);
+      for (let i = 0; i < 400; i += 1) {
+        if (hasClosed || existsSync(raceReady)) break;
+        await sleep(5);
+      }
       assert.ok(
         hasClosed || existsSync(raceReady),
         'cleanup race never reached a terminal or stat',

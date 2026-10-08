@@ -455,7 +455,7 @@ relavium provider list --verify                         # + a live key-verificat
 ### Local MCP servers need consent
 
 Every command that can open an **MCP-bearing artifact** — `relavium run`, `relavium chat`,
-`relavium chat-resume`, `relavium agent run`, and the bare-invocation Home — passes through the same gate
+`relavium chat-resume`, `relavium agent run`, `relavium gate`, `relavium budget resume`, and the bare-invocation Home — passes through the same gate
 before any local program starts ([ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md)). An
 agent or workflow with a `stdio` MCP server declares a **program on your machine**; the artifact chooses it,
 so the decision is yours. Network transports (`http`, `sse`, `websocket`) need no consent — there is no local
@@ -487,8 +487,10 @@ relavium run pipeline.relavium.yaml --allow-mcp-stdio v1:9f2c… --allow-mcp-std
 ```
 
 `--allow-mcp-stdio` is repeatable, authorizes **only that invocation**, and **writes no grant** — a CI runner
-does not accumulate standing trust. It exists on `relavium run` and `relavium agent run`, the two commands a
-pipeline invokes; the interactive chat family answers at the prompt instead.
+does not accumulate standing trust. It exists on `relavium run`, `relavium agent run`, `relavium gate`
+and `relavium budget resume`, including their non-interactive execution-resume paths. Rejecting a gate
+or aborting a budget suspension does not start MCP servers; the interactive chat family answers at
+the prompt instead.
 
 ## Exit codes
 

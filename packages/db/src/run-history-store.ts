@@ -380,12 +380,12 @@ const NON_TERMINAL_STATUSES = ['pending', 'running', 'paused'] as const;
  *  (Matches `runEvents.eventType`, which stores `event.type`.) `agent:reasoning`
  *  (EA6, 2.5.H) is a streamed firehose event of the same class; it is never persisted (streamed `agent:*` events
  *  go through the bus, not `persistEvent`), so it is listed here for defensive consistency, not effect. */
-const STREAMING_EVENT_TYPES = [
+const STREAMING_EVENT_TYPES = new Set([
   'agent:token',
   'agent:reasoning',
   'agent:tool_call',
   'agent:tool_result',
-];
+]);
 
 /**
  * The `run_costs.node_id` used for a RUN-level cost addend — the residual a `run:failed` / `run:cancelled`
@@ -443,7 +443,7 @@ function readEventLog(
       skipped.push({ sequenceNumber: row.seq, type: row.eventType });
       continue;
     }
-    if (!opts.streamingIncluded && STREAMING_EVENT_TYPES.includes(event.type)) continue;
+    if (!opts.streamingIncluded && STREAMING_EVENT_TYPES.has(event.type)) continue;
     events.push(event);
   }
   return { events, skipped };
@@ -511,7 +511,7 @@ function readInterruptedRuns(db: Db): InterruptedRunInfo[] {
       eventType: row.eventType,
       payloadJson: row.payloadJson,
     });
-    if (event === undefined || STREAMING_EVENT_TYPES.includes(event.type)) continue;
+    if (event === undefined || STREAMING_EVENT_TYPES.has(event.type)) continue;
     try {
       suspension.apply(event);
     } catch (cause) {
