@@ -15,12 +15,23 @@ export type LlmConfigErrorCode =
   | 'unsupported_tool_schema'
   | 'unsupported_capability'
   | 'invalid_output_cap_plan'
+  | 'unsupported_request_data'
   | 'invalid_token_estimate'
   | 'invalid_base_url';
 
 /** Base for the seam's thrown config errors — narrow on `code`, never on `message`. */
 export abstract class LlmConfigError extends Error {
   abstract readonly code: LlmConfigErrorCode;
+}
+
+/** Unsupported executable/opaque request data never exposes caller values or inspection causes. */
+export class UnsupportedRequestDataError extends LlmConfigError {
+  readonly code = 'unsupported_request_data';
+
+  constructor() {
+    super('request data must contain only supported inert values');
+    this.name = 'UnsupportedRequestDataError';
+  }
 }
 
 /**
