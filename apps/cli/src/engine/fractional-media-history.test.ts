@@ -2,19 +2,29 @@ import type { ContentPart, MediaBilledModality, RunEvent } from '@relavium/share
 import { eq, sum } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
-// Test-only composition: the host-bound DB owns SQLite; shipping core remains platform-free. Concrete
-// adapters stay host-injected, and the fixture observes only Relavium seam types and native Fetch types.
-import { createAgentNodeExecutor } from '../../core/src/engine/agent-runner.js';
-import { WorkflowEngine } from '../../core/src/engine/engine.js';
-import { createInMemoryHost } from '../../core/src/engine/execution-host.js';
-import { parseWorkflow } from '../../core/src/parser.js';
-import { createOpenAiAdapter } from '../../llm/src/adapters/openai.js';
-import type { LlmProvider, MediaGenRequest, MediaJobStatus } from '../../llm/src/types.js';
-import type { ModelPricing } from '../../llm/src/pricing.js';
-import type { PricingOverlay } from '../../llm/src/cost-tracker.js';
-import { createClient, runMigrations } from './client.js';
-import { createRunHistoryStore, createRunLeasePort } from './run-history-store.js';
-import { runCosts } from './schema.js';
+// Host-bound integration composition uses the CLI's declared core/DB/LLM workspace dependencies.
+// Shipping core remains platform-free, and SDK details remain behind the LLM seam.
+import {
+  createAgentNodeExecutor,
+  WorkflowEngine,
+  createInMemoryHost,
+  parseWorkflow,
+} from '@relavium/core';
+import {
+  createCustomOpenAiProvider,
+  type LlmProvider,
+  type MediaGenRequest,
+  type MediaJobStatus,
+  type ModelPricing,
+  type PricingOverlay,
+} from '@relavium/llm';
+import {
+  createClient,
+  runMigrations,
+  createRunHistoryStore,
+  createRunLeasePort,
+  runCosts,
+} from '@relavium/db';
 
 const VOLUME = 12.5;
 const CHARGE = 2513;
@@ -96,7 +106,9 @@ async function runMedia(finish: Finish) {
       source: { kind: 'handle', ref: HANDLE },
     };
     const wireBodies: unknown[] = [];
-    const adapter = createOpenAiAdapter({
+    const adapter = createCustomOpenAiProvider({
+      providerId: 'openai',
+      baseURL: 'https://api.openai.com/v1',
       fetch: (input, init) => {
         const url =
           typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
