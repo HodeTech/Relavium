@@ -48,6 +48,7 @@ import {
   type FallbackPlanEntry,
   type LlmError,
   type LlmMessage,
+  type LlmProvider,
   type LlmRequest,
   type MediaUnitsEstimate,
   type PricingOverlay,
@@ -320,6 +321,8 @@ export class AgentTurnError extends Error {
    * internal canonical outcome independently of these compatibility fields.
    */
   engaged?: boolean;
+  /** Engine-internal evidence for ADR-0096 session recovery; never a public event field. */
+  recoverableOverflow = false;
   constructor(
     readonly code: ErrorCode,
     message: string,
@@ -357,6 +360,8 @@ export function codeForLlmError(error: LlmError): ErrorCode {
       return 'content_filter'; // a provider content-policy block — its own fatal cause (1.AG/ADR-0045 §6), not `validation`
     case 'bad_request':
       return 'validation';
+    case 'context_overflow':
+      return 'context_overflow';
     case 'unknown':
       return 'internal';
   }
@@ -603,7 +608,13 @@ async function streamOneTurn(
     await params.whenReady?.();
     foldChunk(chunk, acc, params, getModel);
     if (chunk.type === 'error') {
-      throwMappedChainError(chunk.error, turnCommitted, usage.preAttemptFailure);
+      throwMappedChainError(
+        chunk.error,
+        turnCommitted,
+        usage.preAttemptFailure,
+        params,
+        getModel(),
+      );
     }
     if (chunk.type === 'stop') stopReason = chunk.stopReason;
   }
@@ -625,6 +636,7 @@ async function generateOneTurn(
   params: AgentTurnParams,
   wasObserverFailure: (error: unknown) => boolean,
   preAttemptFailure: () => { readonly error: unknown } | undefined,
+  getModel: () => string,
 ): Promise<{ content: ContentPart[]; stopReason: StopReason }> {
   try {
     const result = await chain.generate(buildRequest(messages, params));
@@ -639,7 +651,8 @@ async function generateOneTurn(
     } catch {
       throw err;
     }
-    if (diagnostic !== undefined) throwMappedChainError(diagnostic, false, preAttemptFailure());
+    if (diagnostic !== undefined)
+      throwMappedChainError(diagnostic, false, preAttemptFailure(), params, getModel());
     throw err;
   }
 }
@@ -648,7 +661,9 @@ async function generateOneTurn(
 function throwMappedChainError(
   error: LlmError,
   turnCommitted = false,
-  preAttemptFailure?: { readonly error: unknown },
+  preAttemptFailure: { readonly error: unknown } | undefined,
+  params: AgentTurnParams,
+  model: string,
 ): never {
   // Preserve host/money identities without letting hostile prototype or diagnostic access replace them.
   // Shared commitment/realised barriers retain the failing writer's node, rather than this observer's node.
@@ -677,11 +692,48 @@ function throwMappedChainError(
   }
   if (mapped?.kind === 'original') throw cause;
   if (mapped?.kind === 'budget') throw new AgentTurnError('budget_exceeded', mapped.message, false);
+  if (error.kind === 'context_overflow') {
+    const matches = params.planEntries.filter(
+      (candidate) => candidate.model === model && candidate.provider.id === error.provider,
+    );
+    // A duplicate binding with different metadata is not evidence of which window was attempted.
+    const entry = matches.length === 1 ? matches[0] : undefined;
+    const mapped = new AgentTurnError(
+      'context_overflow',
+      contextOverflowMessage(model, entry?.provider, turnCommitted),
+      false,
+    );
+    mapped.recoverableOverflow = !turnCommitted && error.contentCommitted !== true;
+    throw mapped;
+  }
   throw new AgentTurnError(
     codeForLlmError(error),
     error.message,
     foldRetryable(error, turnCommitted),
   );
+}
+
+/** Fixed surface-neutral overflow facts. Only the attempted binding may supply a window; never provider text. */
+export function contextOverflowMessage(
+  model: string,
+  provider?: LlmProvider,
+  toolsRan = false,
+): string {
+  let window: number | undefined;
+  try {
+    if (provider?.customEndpoint !== true) {
+      const candidate = provider?.contextLimit?.(model);
+      if (candidate !== undefined && Number.isSafeInteger(candidate) && candidate > 0)
+        window = candidate;
+    }
+  } catch {
+    // Unavailable metadata cannot turn an overflow into an invented window.
+  }
+  const windowLabel =
+    window === undefined
+      ? 'its context window (size unknown)'
+      : `its ${window}-token context window`;
+  return `The request exceeded ${windowLabel} for model ${model}. ${toolsRan ? 'Tools already ran in this turn.' : 'No tools ran in this turn.'}`;
 }
 
 /**
@@ -1457,8 +1509,8 @@ async function driveAgentTurn(
         record.outcome === 'failed' &&
         record.contentReceived === false &&
         record.customEndpoint === false &&
-        status !== undefined &&
-        PRE_CONTENT_REFUSAL_STATUSES.has(status)
+        (record.error?.kind === 'context_overflow' ||
+          (status !== undefined && PRE_CONTENT_REFUSAL_STATUSES.has(status)))
       ) {
         dischargeAttemptAdmission((active) => active?.release());
         return;
@@ -1676,6 +1728,7 @@ async function driveAgentTurn(
           (usage.attemptFailure !== undefined && Object.is(usage.attemptFailure.error, error)) ||
           (usage.observerFailure !== undefined && Object.is(usage.observerFailure.error, error)),
         () => usage.preAttemptFailure,
+        () => activeModel,
       );
       throwIfAborted(params.signal); // cancel-wins independent of adapter cooperation (mirrors the stream path)
       if (turn.stopReason === 'tool_use') {

@@ -115,6 +115,19 @@ fallback to admission. The canonical estimator, cap precedence, handoff and fail
 lives in [llm-provider-seam.md](../shared-core/llm-provider-seam.md#current-request-estimates-and-bound-output-caps).
 Measured session context and multi-pass compaction remain later W7 step 8 work.
 
+### Classified context-window failures
+
+An official, fixture-matched overflow settles the turn with `context_overflow`, never a
+provider-authored message. The engine names the attempted model, its authoritative window
+(or fixed `size unknown` wording) and whether tools already ran. The internal recoverability
+fact is true only before any tool round or committed content; it is not persisted or emitted.
+Step 7 carries this evidence; automatic compaction/recovery remains W7 step 8 work. A turn
+that already dispatched tools is never restarted by this classification. Native Anthropic
+context stops retain their actual usage through the failed turn and money ledger. The
+[LLM seam](../shared-core/llm-provider-seam.md#classified-context-overflow) owns the dialect
+criteria, custom-endpoint downgrade and admission-release evidence; the
+[CLI](../cli/chat-session.md#actionable-error-recovery-25h) owns command-specific remedies.
+
 ### Hard turn cap
 
 A session carries a **hard turn cap** — a finite DoS fail-safe on the number of turns it will run (engine

@@ -97,8 +97,7 @@ describe('inert request graph ownership (ADR-0102)', () => {
       owned = field(owned, 'left');
     }
     expect(field(owned, 'leaf')).toBe('retained');
-  }, // Structural stress, not a latency target: the unchanged graph took 8s on a loaded CI runner.
-  30_000);
+  }, 30_000); // Structural stress, not a five-second latency guarantee on shared CI runners.
 
   const unsupported: readonly [string, () => unknown][] = [
     ['function', () => ({ nested: () => 'private' })],

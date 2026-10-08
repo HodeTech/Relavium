@@ -435,7 +435,16 @@ export function geminiErrorToLlmError(err: unknown): LlmError {
   if (isRecord(err) && typeof err['status'] === 'number') {
     const status = err['status'];
     const message = typeof err['message'] === 'string' ? err['message'] : 'gemini API error';
-    return makeLlmError({ provider: PROVIDER, kind: kindFromHttpStatus(status), message, status });
+    // ApiError.message retains the response JSON; the replay preserves the same body/message.
+    const overflow =
+      status === 400 &&
+      /The input token count exceeds the maximum number of tokens allowed \d+\./u.test(message);
+    return makeLlmError({
+      provider: PROVIDER,
+      kind: overflow ? 'context_overflow' : kindFromHttpStatus(status),
+      message,
+      status,
+    });
   }
   return makeLlmError({
     provider: PROVIDER,

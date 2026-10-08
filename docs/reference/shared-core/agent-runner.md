@@ -50,6 +50,7 @@ The error mapping to the closed `ErrorCode` ([error-handling.md](../../standards
 | `UnknownToolError` / `ToolArgsInvalidError` | (model-correctable) | — | converted to an `isError` tool result fed back, within a bounded correction budget; after it ⇒ `tool_failed` |
 | `ToolExecutionError` | `tool_failed` | true | |
 | absent host capability (`ToolUnavailableError`) | `tool_unavailable` | false | a host/config gap — names the unwired arm actionably, never a bare `internal` (EA1, [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)) |
+| official `LlmError.context_overflow` | `context_overflow` | no | fixed engine-authored message names the actual attempted model and its authoritative window (or `size unknown`), and whether tools ran; never provider text |
 | chain-exhausted `LlmError` | `provider_auth` / `provider_rate_limit` / `provider_unavailable` / `content_filter` (content_filter, 1.AG/ADR-0045 §6) / `validation` (bad_request) / `internal` (unknown) | per `LlmError.retryable` | classified from `error.kind`, never `error.message` |
 | max-tool-turns hit | `turn_limit` | false | |
 
@@ -105,9 +106,11 @@ checked after that join before the no-hook return, and again after any awaited a
 newly acquired admission is released before cancellation propagates.
 
 An admission settles from accountable usage. A usage-less failed attempt releases only with
-positive pre-provider proof, or an actual **official** endpoint's pre-content HTTP status in
+positive pre-provider proof, or an actual **official** endpoint's classified pre-content
+`context_overflow`, or its pre-content HTTP status in
 `429, 400, 401, 402, 403, 404, 413, 422`. A returned generation, even empty, and every forwarded
-non-stop/non-error stream chunk establish processing evidence. Custom routes and uncertain
+non-stop/non-error stream chunk establish processing evidence. A rejected generated response with
+accountable usage also proves processing; its actual quantities settle once and are never refunded. Custom routes and uncertain
 failures retain the reserved estimate. Chain-owned facts cannot be replaced by an accounting
 or observer exception; observers run once outside provider error normalization.
 
@@ -116,6 +119,12 @@ construction and eligible plan, current input estimate, actual lowered tools, co
 fallback and turn limit. The generative fork supplies only its primary and authored media volume.
 The governor freezes scalar `AllowanceQuoteResult` onto `BudgetPauseError`/`GateRequest`; raw
 requests, native options, cap plans, provider objects and closures never enter that quote.
+
+`AgentTurnError` retains an internal `recoverableOverflow` fact only for classified overflow
+before any tool round and before any committed content. It is not an event field and does not
+itself retry or compact; session recovery lands in W7 step 8. A later tool-round overflow ends
+the turn without redispatching tools. Generative media paths never acquire session recovery;
+their overflow mapping also uses fixed facts and preserves custom-endpoint authority.
 
 ### Dispatch allowance foundation
 

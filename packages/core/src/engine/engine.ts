@@ -121,7 +121,7 @@ import type {
 import { sameBudgetAllowanceQuote } from './budget-allowance.js';
 import type { DispatchAllowanceToken } from './dispatch-allowance.js';
 import { NodeMediaPinError } from './media-pin-error.js';
-import { codeForLlmError } from './agent-turn.js';
+import { codeForLlmError, contextOverflowMessage } from './agent-turn.js';
 import {
   DEFAULT_MEDIA_UNIT_ESTIMATE,
   generativeUnits,
@@ -3411,7 +3411,10 @@ class RunExecution {
       case 'failed':
         await this.#settleMediaJobFailed(vertex, job, {
           code: codeForLlmError(status.error),
-          message: status.error.message,
+          message:
+            status.error.kind === 'context_overflow'
+              ? contextOverflowMessage(job.model)
+              : status.error.message,
           retryable: status.error.retryable,
         });
         return;

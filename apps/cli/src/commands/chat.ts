@@ -9,7 +9,12 @@ import {
   type UserCommandOutcome,
 } from '@relavium/core';
 import type { ProviderId } from '@relavium/llm';
-import { REASONING_EFFORTS, type AgentSessionRecord, type ReasoningEffort } from '@relavium/shared';
+import {
+  REASONING_EFFORTS,
+  type AgentSessionRecord,
+  type Memory,
+  type ReasoningEffort,
+} from '@relavium/shared';
 import { exportSession } from '../chat/export.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
@@ -105,6 +110,7 @@ import {
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import {
   errorRecoveryHint,
+  contextOverflowRemedy,
   formatToolCall,
   sanitizeInline,
   stripTerminalControls,
@@ -1116,6 +1122,7 @@ export function createChatLineHandler(
   deps: ChatReplDeps,
 ): ChatLineHandler {
   const { built, opened, store, persister, doctorProbes } = wiring;
+  store.setMemoryPolicy(built.session.memoryPolicy);
   let stop = false;
   let cancelled = false;
   // Set by `/clear` (ADR-0062 §7): the loop stopped to SWAP the session, not to end the REPL — `stopReason` reports
@@ -2494,7 +2501,9 @@ export async function runReplLoop(
  * TTY is attached (a pipe / CI without `--json`, which is 2.Q); the TTY ink driver overrides `deps.drive`.
  */
 export async function drivePlain(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
-  const unsubscribe = ctx.handle.subscribe(makePlainPrinter(ctx.io));
+  const unsubscribe = ctx.handle.subscribe(
+    makePlainPrinter(ctx.io, true, ctx.store.getSnapshot().state.memoryPolicy),
+  );
   const rl = createInterface({ input: ctx.io.stdin, terminal: false });
   const lines = rl[Symbol.asyncIterator](); // buffer piped lines before any awaited activation can yield.
   // Ctrl-C (cooked mode here, unlike the raw-mode ink path) closes the input so the loop ends and the
@@ -2596,14 +2605,20 @@ export function makePlainPrinter(
   // FALSE for the ONE-SHOT `agent run`, which cancels the session in its `finally` right after: those hints would
   // be false (no live session, no slash REPL to resend into), so a one-shot prints only `[turn failed: <code>]`.
   recoveryHints = true,
+  memoryPolicy?: Memory,
 ): (event: SessionStreamHandleEvent) => void {
+  let toolsRan = false;
   return (event) => {
     switch (event.type) {
+      case 'session:turn_started':
+        toolsRan = false;
+        return;
       case 'agent:token':
         // Sanitize the model's tokens before they reach the terminal (no ANSI/OSC/control injection).
         io.writeOut(stripTerminalControls(event.token));
         return;
       case 'agent:tool_call': {
+        toolsRan = true;
         const annotation = formatToolCall({
           id: `tc-${event.sequenceNumber}`,
           toolId: event.toolId,
@@ -2621,11 +2636,20 @@ export function makePlainPrinter(
         // making explicit the session is still active. A one-shot `agent run` sets `recoveryHints = false` — its
         // session is cancelled immediately after, so a session-continuity hint would be false there.
         const hint = recoveryHints
-          ? errorRecoveryHint(event.error.code, event.error.message)
+          ? event.error.code === 'context_overflow'
+            ? contextOverflowRemedy(memoryPolicy, toolsRan)
+            : errorRecoveryHint(event.error.code, event.error.message, {
+                ...(memoryPolicy === undefined ? {} : { memoryPolicy }),
+                toolsRan,
+              })
           : undefined;
         // Build the optional hint LINE separately (no nested template literal) before composing the output.
         const hintLine = hint === undefined ? '' : `${hint}\n`;
-        io.writeOut(`\n[turn failed: ${event.error.code}]\n${hintLine}`);
+        const fact =
+          event.error.code === 'context_overflow'
+            ? ` — ${sanitizeInline(event.error.message)}`
+            : '';
+        io.writeOut(`\n[turn failed: ${event.error.code}${fact}]\n${hintLine}`);
         return;
       }
       default:

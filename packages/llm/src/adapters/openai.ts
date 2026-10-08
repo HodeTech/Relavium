@@ -394,6 +394,16 @@ function mapOpenAiApiError(
   let kind: LlmErrorKind;
   if (isContentPolicyCode(code)) {
     kind = 'content_filter';
+  } else if (
+    status === 400 &&
+    ((provider === 'openai' && code === 'context_length_exceeded') ||
+      (provider === 'deepseek' &&
+        code === 'invalid_request_error' &&
+        /This model's maximum context length is \d+ tokens\. However, you requested \d+ tokens/u.test(
+          err.message,
+        )))
+  ) {
+    kind = 'context_overflow';
   } else if (status === undefined) {
     kind = 'unknown';
   } else {

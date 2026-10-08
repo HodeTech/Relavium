@@ -42,3 +42,8 @@ describe('media constants', () => {
     expect([...MEDIA_SURFACES]).toEqual(['chat', 'generative']);
   });
 });
+
+it('context overflow has a stored event code but cannot be selected for authored retries (ADR-0096)', () => {
+  expect(ERROR_CODES).toContain('context_overflow');
+  expect(RETRYABLE_ERROR_CODES).not.toContain('context_overflow');
+});

@@ -378,7 +378,8 @@ interface LlmError {
   provider: LlmProvider['id']; // which adapter produced it
   message: string;           // human-readable, already redacted of any secret material
   cause?: unknown;           // original error, for debugging/escape hatch only — never re-thrown across the seam
-  contentCommitted?: true;   // the attempt had already yielded a non-terminal chunk when it failed
+  contentCommitted?: true;   // chain-observed streamed content or a processed generated response
+  usage?: Usage;             // actual provider usage on a failed response, never a reserved estimate
 }
 
 type LlmErrorKind =
@@ -391,18 +392,52 @@ type LlmErrorKind =
   | 'protocol'               // the provider broke the STREAM GRAMMAR below (ADR-0082)
   | 'auth'                   // 401/403 — bad or missing key
   | 'bad_request'            // 400 — malformed request, unsupported model id, rejected tool schema
+  | 'context_overflow'       // fixture-pinned official context-window failure; never chain-retried
   | 'content_filter'         // content-policy refusal
   | 'cancelled'              // AbortSignal
   | 'unknown';               // unclassifiable — treated as fatal
 ```
 
 **`contentCommitted` is the CHAIN's field, never an adapter's.** It is set only when `FallbackChain`
-surfaces a failure past the first non-terminal chunk, and the chain strips it from any error a provider
-supplies — otherwise a pre-content failure claiming commitment would delete the node's whole retry budget
+surfaces a failure past the first non-terminal chunk, or observes actual usage on a rejected generated
+response. The chain strips it from any error a provider supplies — otherwise a pre-content failure claiming commitment would delete the node's whole retry budget
 through the fold above the chain. It exists because *whether to advance to another provider* and *whether to
 re-run the node* are different questions: `retryable` stays a pure function of `kind` (so a miswired adapter
 cannot produce an inconsistent pair), and commitment is carried as the separate fact it is
 ([ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) §4).
+
+### Classified context overflow
+
+[ADR-0096](../../decisions/0096-a-request-is-measured-before-it-is-sent.md) classification is pinned
+by the [unchanged live captures](../../../packages/llm/src/conformance/fixtures/overflow/README.md).
+Each HTTP rejection is exercised through the installed SDK on both generate and stream paths.
+Unmatched 400 responses remain `bad_request`; other statuses cannot gain overflow classification
+from these message patterns.
+
+| Dialect | Classification evidence |
+| --- | --- |
+| Anthropic | HTTP 400, `invalid_request_error`, and `prompt is too long: N tokens > N maximum` |
+| OpenAI | HTTP 400 and structured `context_length_exceeded` code |
+| DeepSeek | HTTP 400, `invalid_request_error`, and `This model's maximum context length is N tokens. However, you requested N tokens` |
+| Gemini | HTTP 400 and `The input token count exceeds the maximum number of tokens allowed N.` in the SDK message; transport replay preserves the recorded body/message |
+| Anthropic native stop | `model_context_window_exceeded` in the captured HTTP 200 message or streamed `message_delta`; a failed generation, never a clean `stop` |
+
+The native stop carries canonical actual `usage` on `LlmError`. The chain validates, owns and
+freezes nested quantities before observer/provider handoffs, applies accountable-usage checks,
+and folds them into the failed `AttemptRecord`, pricing and realised ledger exactly once. An
+invalid quantity preserves the conservative reservation; a pricing failure retains valid usage
+and marks the failed record unpriced. Cancellation, custom-endpoint downgrade and a grammar
+violation after the held terminal preserve already observed usage. Stream `contentReceived`
+is set only by chunks the chain observed; a failed generate carrying validated usage proves a
+processed response, even when its text is empty. A provider-supplied `contentCommitted` never
+owns that fact. No usage-bearing failure receives a proven-refusal refund.
+
+`customEndpoint === true` downgrades `context_overflow` to fatal `bad_request` in the chain
+**before** recording or surfacing it, including an adapter spread that retains an official host
+or model ID. Classification never silently switches models. Usage-less official overflow
+releases its admission only with chain-owned `contentReceived: false`; post-content, custom
+and uncertain failures retain the reservation. The existing enumerated pre-content HTTP
+refusal rule remains independent of overflow classification.
 
 ### The stream grammar
 
@@ -969,7 +1004,7 @@ followed by each authored `fallback_chain` entry:
   identities keep their existing handling. Any streamed content chunk, including an empty delta or
   reasoning/tool start, counts; a resolved non-streaming response counts even when empty. After a provider is engaged, core releases
   a failed usage-less reservation only with explicit no-content evidence on an official route and
-  status **429, 400, 401, 402, 403, 404, 413 or 422**. Custom, missing or uncertain evidence, other
+  either classified `context_overflow` or status **429, 400, 401, 402, 403, 404, 413 or 422**. Custom, missing or uncertain evidence, other
   statuses, transport failures and timeouts retain conservative commitment. Existing proven
   pre-provider failures still release. Accounting failures after a resolved generation use a fixed
   non-retryable `unknown` error and preserve a detached schema-valid usage copy that also passes the

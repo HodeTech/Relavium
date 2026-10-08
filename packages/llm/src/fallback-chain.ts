@@ -138,7 +138,7 @@ export interface AttemptRecord {
   readonly model: string;
   /** Whether the attempt succeeded, failed (provider error), or was skipped (capability/cooldown). */
   readonly outcome: AttemptOutcome;
-  /** The usage the attempt produced, when it produced any (a successful call). */
+  /** Actual usage supplied by a successful or failed processed response; never a reservation. */
   readonly usage?: Usage;
   /** The cost folded into the tracker for this attempt (present iff a `costTracker` is wired and usage existed). */
   readonly cost?: CostUpdate;
@@ -734,8 +734,12 @@ export class FallbackChain {
     if (outcome.status === 'error') {
       // A cleanup fault is secondary to an existing provider/admission failure. Preserve its
       // original diagnosis, refusal proof and attempt observation instead of replacing them.
-      this.#emit({ ...record, outcome: 'failed', error: outcome.error });
-      return outcome;
+      // A failed generated response may carry real usage (native context-window stop).
+      // Usage is processed-response evidence; a provider-supplied commitment flag is still disowned.
+      const received =
+        outcome.error.usage === undefined ? record : { ...record, contentReceived: true };
+      const error = this.#emitFailure(received, outcome.error);
+      return { status: 'error', error: received.contentReceived ? committed(error) : error };
     }
     const result = outcome.result;
     // A returned generation, even empty, was processed. Guard accounting separately from the
@@ -844,11 +848,51 @@ export class FallbackChain {
     error: LlmError,
     state: StreamAttemptState,
   ): Generator<StreamChunk, LlmError | undefined> {
-    this.#emit({ ...record, contentReceived: state.committed, outcome: 'failed', error });
+    error = this.#emitFailure({ ...record, contentReceived: state.committed }, error);
     if (state.committed) {
       yield { type: 'error', error: committed(error) };
       return undefined;
     }
+    return error;
+  }
+
+  /** Own and account failure evidence before calling an observer; diagnostic rewrites never erase usage. */
+  #emitFailure(record: AttemptRecord, diagnostic: LlmError): LlmError {
+    let error =
+      record.customEndpoint && diagnostic.kind === 'context_overflow'
+        ? Object.freeze({ ...diagnostic, kind: 'bad_request' as const, retryable: false })
+        : diagnostic;
+    let usage: Usage | undefined;
+    let folded: FoldedUsage | undefined;
+    try {
+      if (error.usage !== undefined) {
+        usage = snapshotAccountableUsage(record.model, error.usage);
+        folded = this.#foldUsage(record.model, usage);
+      }
+    } catch (cause) {
+      error = Object.freeze({
+        ...makeLlmError({
+          provider: record.provider,
+          kind: 'unknown',
+          message: 'cost accounting failed after a failed provider response',
+          cause,
+        }),
+        ...(usage === undefined ? {} : { usage }),
+      });
+    }
+    // The observer is outside the accounting catch, and its exact exception escapes once.
+    this.#emit({
+      ...record,
+      outcome: 'failed',
+      error,
+      ...(usage === undefined
+        ? {}
+        : {
+            usage,
+            ...(folded === undefined || folded.unpriced ? { priced: false as const } : {}),
+            ...(folded?.cost === undefined ? {} : { cost: folded.cost }),
+          }),
+    });
     return error;
   }
 
@@ -1046,6 +1090,7 @@ export class FallbackChain {
    * optional refresh) and the rate-limit cooldown.
    */
   async #afterFailure(entry: FallbackPlanEntry, error: LlmError): Promise<Verdict> {
+    if (error.contentCommitted === true) return 'fatal';
     if (error.kind === 'auth') {
       // Never a blind retry loop — at most ONE out-of-band credential refresh, then fatal.
       const hook = this.#options.onAuthError;
@@ -1259,7 +1304,12 @@ export class FallbackChain {
   }
 
   #abortAware(error: LlmError, req: LlmRequest, provider: ProviderId): LlmError {
-    return this.#aborted(req) ? this.#cancelledError(provider) : disown(error);
+    return this.#aborted(req)
+      ? Object.freeze({
+          ...this.#cancelledError(provider),
+          ...(error.usage === undefined ? {} : { usage: error.usage }),
+        })
+      : disown(error);
   }
 
   /**

@@ -192,7 +192,11 @@ function TranscriptLine(
   // An actionable, secret-free recovery hint for a failed turn (2.5.H) — a yellow one-liner below the gray summary
   // that names the next step and makes explicit the session is still active. `undefined` (a success/aborted turn, or
   // a code with no guidance) renders nothing.
-  const hint = errorRecoveryHint(entry.summary.errorCode, entry.summary.errorMessage);
+  const hint = errorRecoveryHint(
+    entry.summary.errorCode,
+    entry.summary.errorMessage,
+    entry.summary,
+  );
   return (
     <Box flexDirection="column">
       <Text>{stripTerminalControls(entry.text)}</Text>

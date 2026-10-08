@@ -49,7 +49,8 @@ knowing which provider produced it:
 - **Fatal** — not worth retrying anywhere; surface it and stop: authentication/permission
   failures (401/403, a bad or missing key; **402** an account billing / insufficient-balance
   problem — classified `auth` so it surfaces as `provider_auth`, never `internal`), malformed
-  requests (400, an unsupported model id, a tool schema a provider rejected), content-policy
+  requests (400, an unsupported model id, a tool schema a provider rejected), classified
+  `context_overflow` (ADR-0096, carried as the same fatal engine `ErrorCode`), content-policy
   refusals, request cancellation (`AbortSignal`), and — since
   [ADR-0082](../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) —
   **`protocol`**, a provider that broke the stream grammar. A fatal error does **not** silently
@@ -82,6 +83,14 @@ The runner — not the adapter — owns the retry/fallback policy
 ([ADR-0011](../decisions/0011-internal-llm-abstraction.md)); adapters stay dumb and only
 classify. The classification mapping (per-provider status/code → retryable vs fatal) is
 covered by the [per-provider conformance suite](testing.md#per-provider-conformance-tests).
+
+A surfaced engine `context_overflow` message is always engine-authored and content-free: it names the actual
+attempted model, its authoritative window or fixed unknown wording, and whether tools ran.
+Neither chain failover nor node retries handle it. The
+[seam's dialect table](../reference/shared-core/llm-provider-seam.md#classified-context-overflow)
+owns the fixture-pinned classification and custom-endpoint downgrade. Actual usage supplied
+with a failed native response is still priced and recorded; a reserved estimate is never
+reported as actual usage. Surfaces supply their own policy-aware commands.
 
 ## No silent catches
 

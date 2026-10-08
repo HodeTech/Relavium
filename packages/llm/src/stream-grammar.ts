@@ -102,12 +102,20 @@ export async function* verifyStreamGrammar(
         // which one it was because a provider author needs to know.
         yield {
           type: 'error',
-          error: violation(
-            provider,
-            isTerminal(chunk)
-              ? `the provider emitted a second terminal (\`${chunk.type}\` after \`${held.type}\`) — a stream carries exactly one`
-              : `the provider emitted a \`${chunk.type}\` chunk after the terminal \`${held.type}\` — the terminal must be last`,
-          ),
+          error: {
+            ...violation(
+              provider,
+              isTerminal(chunk)
+                ? `the provider emitted a second terminal (\`${chunk.type}\` after \`${held.type}\`) — a stream carries exactly one`
+                : `the provider emitted a \`${chunk.type}\` chunk after the terminal \`${held.type}\` — the terminal must be last`,
+            ),
+            // A malformed tail changes the diagnosis, never usage already owned at the terminal.
+            ...(held.type === 'stop'
+              ? { usage: held.usage }
+              : held.type === 'error' && held.error.usage !== undefined
+                ? { usage: held.error.usage }
+                : {}),
+          },
         };
         return;
       }

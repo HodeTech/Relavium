@@ -111,30 +111,27 @@ describe('independently designed held-terminal controls', () => {
             chunks.push(c);
           expect(calls).toBe(1);
           expect(records).toHaveLength(1);
-          if (ending === 'duplicate') {
-            expect(records[0]?.usage).toBeUndefined();
+          if (ending === 'duplicate')
             expect(records[0]).toMatchObject({
               outcome: 'failed',
               providerInvoked: true,
               contentReceived: true,
             });
-          } else
-            expect(records[0]?.usage).toMatchObject({
-              inputTokens: quantity === 'zero' ? 0 : 2,
-              outputTokens: quantity === 'zero' ? 0 : 3,
-              cacheReadTokens: quantity === 'zero' ? 0 : 1,
-              cacheWriteTokens: quantity === 'zero' ? 0 : 2,
-              mediaUnits: [
-                {
-                  modality: 'image',
-                  direction: 'output',
-                  unit: 'count',
-                  units: quantity === 'zero' ? 0 : 4,
-                },
-              ],
-            });
-          if (ending === 'duplicate') expect(records[0]?.cost).toBeUndefined();
-          else if (quantity === 'unpriced') expect(records[0]?.priced).toBe(false);
+          expect(records[0]?.usage).toMatchObject({
+            inputTokens: quantity === 'zero' ? 0 : 2,
+            outputTokens: quantity === 'zero' ? 0 : 3,
+            cacheReadTokens: quantity === 'zero' ? 0 : 1,
+            cacheWriteTokens: quantity === 'zero' ? 0 : 2,
+            mediaUnits: [
+              {
+                modality: 'image',
+                direction: 'output',
+                unit: 'count',
+                units: quantity === 'zero' ? 0 : 4,
+              },
+            ],
+          });
+          if (quantity === 'unpriced') expect(records[0]?.priced).toBe(false);
           else expect(records[0]?.cost?.costMicrocents).toBe(quantity === 'zero' ? 0 : 60);
           if (ending === 'duplicate')
             expect(chunks.at(-1)).toMatchObject({

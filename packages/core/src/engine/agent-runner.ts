@@ -68,6 +68,7 @@ import {
   AgentTurnError,
   DEFAULT_AGENT_TURN_LIMITS,
   codeForLlmError,
+  contextOverflowMessage,
   captureAgentTurnOutcome,
   prepareAgentTurnRequest,
   type AgentTurnLimits,
@@ -327,7 +328,23 @@ async function pollMediaJobThroughDeps(
       }),
     };
   }
-  return provider.pollMediaJob(job.jobId, key, signal);
+  const status = await provider.pollMediaJob(job.jobId, key, signal);
+  if (
+    status.state === 'failed' &&
+    status.error.kind === 'context_overflow' &&
+    provider.customEndpoint === true
+  ) {
+    return {
+      state: 'failed',
+      error: {
+        ...status.error,
+        kind: 'bad_request',
+        retryable: false,
+        message: contextOverflowMessage(job.model, provider),
+      },
+    };
+  }
+  return status;
 }
 
 // The agent arm's local `failed` factory — the parallel of the canonical one in
@@ -802,7 +819,7 @@ async function executeGenerativeMedia(
       result = submitted.result;
     } catch (err) {
       admission?.settleAtReservedEstimate({ nodeId: node.id });
-      return mapGenerateMediaError(err);
+      return mapGenerateMediaError(err, primary);
     } finally {
       deadline?.dispose();
     }
@@ -852,8 +869,15 @@ async function executeGenerativeMedia(
  * `UnsupportedCapabilityError` for a non-image modality / DeepSeek) → `validation` with its secret-free
  * message (never let the engine catch-all flatten it to opaque `internal`); anything else → `turnOutcomeForError`.
  */
-function mapGenerateMediaError(err: unknown): NodeOutcome {
+function mapGenerateMediaError(err: unknown, primary: FallbackPlanEntry): NodeOutcome {
   if (err instanceof LlmProviderError) {
+    if (err.llmError.kind === 'context_overflow') {
+      return failed(
+        primary.provider.customEndpoint === true ? 'validation' : 'context_overflow',
+        contextOverflowMessage(primary.model, primary.provider),
+        false,
+      );
+    }
     return failed(codeForLlmError(err.llmError), err.llmError.message, err.llmError.retryable);
   }
   if (err instanceof LlmConfigError) {

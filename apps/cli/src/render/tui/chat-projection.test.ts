@@ -6,6 +6,7 @@ import { ERROR_CODES } from '@relavium/shared';
 import {
   entryLines,
   errorRecoveryHint,
+  contextOverflowRemedy,
   formatApprovalTarget,
   formatBusyLine,
   formatReasoningPanel,
@@ -201,7 +202,12 @@ describe('chat-projection', () => {
     // heuristic test below). Every OTHER `ErrorCode` MUST have a session-survives hint; deriving from ERROR_CODES
     // makes a NEW code force a decision here (the test fails until it is classified) rather than silently
     // falling through to no hint.
-    const NO_HINT: ReadonlySet<string> = new Set(['cancelled', 'sandbox_error', 'run_timeout']);
+    const NO_HINT: ReadonlySet<string> = new Set([
+      'cancelled',
+      'sandbox_error',
+      'run_timeout',
+      'context_overflow',
+    ]);
     const CONDITIONAL: ReadonlySet<string> = new Set(['validation']);
 
     it('classifies EVERY ErrorCode: a session-survives hint, or a deliberate no-hint (drift-guarded)', () => {
@@ -1177,4 +1183,41 @@ describe('the reseat carry is O(n) — the perf claim ADR-0059 makes', () => {
       expect(large / small).toBeLessThan(13);
     },
   );
+});
+
+describe('policy-aware overflow display (ADR-0096)', () => {
+  for (const memoryPolicy of [
+    { type: 'none' },
+    { type: 'window', window_size: 2 },
+    { type: 'summary' },
+    undefined,
+  ] as const) {
+    for (const toolsRan of [false, true]) {
+      it(`memory=${memoryPolicy?.type ?? 'omitted'}, tools=${toolsRan}: one remedy serves classified and heuristic paths`, () => {
+        const context = { ...(memoryPolicy === undefined ? {} : { memoryPolicy }), toolsRan };
+        const remedy = contextOverflowRemedy(memoryPolicy, toolsRan);
+        const rendered = formatTurnSummary({
+          stopReason: 'stop',
+          tokensUsed: { input: 0, output: 0 },
+          errorCode: 'context_overflow',
+          errorMessage:
+            'The request exceeded its context window for model test. Tools already ran in this turn.',
+          ...context,
+        });
+        expect(rendered).toContain('context window for model test');
+        expect(rendered).toContain(remedy);
+        expect(errorRecoveryHint('context_overflow', 'any', context)).toBeUndefined();
+        expect(
+          errorRecoveryHint('validation', 'context length PRIVATE_SENTINEL', context),
+        ).toContain(remedy);
+        expect(rendered).not.toContain('PRIVATE_SENTINEL');
+        expect(remedy.includes('/compact')).toBe(
+          memoryPolicy === undefined || memoryPolicy.type === 'summary',
+        );
+        expect(remedy.includes('/trim')).toBe(memoryPolicy?.type !== 'none');
+        expect(remedy.includes('Check the effects')).toBe(toolsRan);
+        if (toolsRan) expect(remedy).not.toContain('Then send');
+      });
+    }
+  }
 });

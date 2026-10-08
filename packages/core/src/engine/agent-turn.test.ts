@@ -2549,3 +2549,192 @@ describe('generated accounting retains validated quantities independently of pri
       }
     });
 });
+
+describe('classified overflow turn evidence and admission (ADR-0096 Step 7)', () => {
+  for (const status of [undefined, 200]) {
+    for (const customEndpoint of [false, true]) {
+      for (const content of [false, true]) {
+        it(`status=${status}: custom=${customEndpoint}, content=${content} gates classification and release independently`, async () => {
+          let release = 0;
+          let retained = 0;
+          const error = makeLlmError({
+            provider: 'anthropic',
+            kind: 'context_overflow',
+            message: 'PRIVATE provider prompt echo must not reach the surface',
+            ...(status === undefined ? {} : { status }),
+          });
+          const provider: LlmProvider = {
+            ...scriptedProvider('anthropic', [
+              [
+                ...(content ? [{ type: 'text_delta' as const, text: 'partial' }] : []),
+                { type: 'error', error },
+              ],
+            ]),
+            customEndpoint,
+            contextLimit: () => 12345,
+          };
+          const params = baseParams(provider, {
+            preEgress: () => ({
+              release: () => {
+                release++;
+              },
+              settle: () => {
+                throw new Error('unexpected actual settlement');
+              },
+              settleAtReservedEstimate: () => {
+                retained++;
+              },
+            }),
+          });
+          await expect(runAgentTurn(params)).rejects.toMatchObject({
+            code: customEndpoint ? 'validation' : 'context_overflow',
+            retryable: false,
+            recoverableOverflow: !customEndpoint && !content,
+          });
+          expect(release).toBe(!customEndpoint && !content ? 1 : 0);
+          expect(retained).toBe(customEndpoint || content ? 1 : 0);
+        });
+      }
+    }
+  }
+  for (const window of ['known', 'absent', 'throws', 'invalid'] as const) {
+    it(`names the actual attempted fallback model and ${window} window without provider text`, async () => {
+      const primary = scriptedProvider('anthropic', [
+        [
+          {
+            type: 'error',
+            error: makeLlmError({ provider: 'anthropic', kind: 'overloaded', message: 'busy' }),
+          },
+        ],
+      ]);
+      const overflow: LlmProvider = {
+        ...scriptedProvider('openai', [
+          [
+            {
+              type: 'error',
+              error: makeLlmError({
+                provider: 'openai',
+                kind: 'context_overflow',
+                message: 'PRIVATE_SENTINEL',
+              }),
+            },
+          ],
+        ]),
+        ...(window === 'absent'
+          ? {}
+          : {
+              contextLimit: () => {
+                if (window === 'throws') throw new Error('PRIVATE_LOOKUP');
+                return window === 'known' ? 12345 : Number.NaN;
+              },
+            }),
+      };
+      const params = baseParams(primary, {
+        planEntries: [
+          { provider: primary, model: 'primary-model', maxAttempts: 1 },
+          { provider: overflow, model: 'actual-fallback-model', maxAttempts: 1 },
+        ],
+      });
+      await expect(runAgentTurn(params)).rejects.toMatchObject({
+        code: 'context_overflow',
+        message: `The request exceeded ${window === 'known' ? 'its 12345-token context window' : 'its context window (size unknown)'} for model actual-fallback-model. No tools ran in this turn.`,
+        recoverableOverflow: true,
+      });
+    });
+  }
+  it('an overflow after a tool round never re-dispatches tools and names that fact', async () => {
+    let dispatches = 0;
+    const delegate = stubRegistry();
+    const provider = scriptedProvider('anthropic', [
+      [
+        { type: 'tool_call_start', id: 't', name: 'echo' },
+        { type: 'tool_call_delta', id: 't', argsJsonDelta: '{}' },
+        { type: 'tool_call_end', id: 't' },
+        STOP('tool_use'),
+      ],
+      [
+        {
+          type: 'error',
+          error: makeLlmError({
+            provider: 'anthropic',
+            kind: 'context_overflow',
+            message: 'PRIVATE_SENTINEL',
+          }),
+        },
+      ],
+    ]);
+    await expect(
+      runAgentTurn(
+        baseParams(provider, {
+          registry: {
+            ...delegate,
+            dispatch: (call, ctx) => {
+              dispatches++;
+              return delegate.dispatch(call, ctx);
+            },
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: 'context_overflow',
+      recoverableOverflow: false,
+      retryable: false,
+      message:
+        'The request exceeded its context window (size unknown) for model claude-opus-4-8. Tools already ran in this turn.',
+    });
+    expect(dispatches).toBe(1);
+  });
+  it('a failed processed response with usage settles actual cost and emits the realized record once', async () => {
+    let releases = 0;
+    let estimates = 0;
+    const settled: number[] = [];
+    const realized: { inputTokens: number; outputTokens: number }[] = [];
+    const provider = scriptedProvider('anthropic', [
+      [
+        { type: 'text_delta', text: 'partial answer' },
+        {
+          type: 'error',
+          error: {
+            ...makeLlmError({
+              provider: 'anthropic',
+              kind: 'context_overflow',
+              message: 'PRIVATE_SENTINEL',
+              status: 400,
+            }),
+            usage: { inputTokens: 199885, outputTokens: 12792 },
+          },
+        },
+      ],
+    ]);
+    const params = baseParams(provider, {
+      preEgress: () => ({
+        release: () => {
+          releases++;
+        },
+        settleAtReservedEstimate: () => {
+          estimates++;
+        },
+        settle: (amount) => {
+          settled.push(amount);
+        },
+      }),
+      money: {
+        join: () => Promise.resolve(),
+        record: (record) => {
+          realized.push(record);
+        },
+      },
+    });
+    await expect(runAgentTurn(params)).rejects.toMatchObject({
+      code: 'context_overflow',
+      recoverableOverflow: false,
+      usage: { input: 199885, output: 12792 },
+    });
+    expect(releases).toBe(0);
+    expect(estimates).toBe(0);
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toBeGreaterThan(0);
+    expect(realized).toMatchObject([{ inputTokens: 199885, outputTokens: 12792 }]);
+    expect(eventsOf(params).filter((event) => event.type === 'cost:updated')).toHaveLength(1);
+  });
+});

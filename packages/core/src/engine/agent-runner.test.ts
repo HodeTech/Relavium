@@ -1334,6 +1334,34 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
     expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'content_filter' } });
   });
 
+  for (const customEndpoint of [false, true]) {
+    it(`generative overflow keeps content-free facts and endpoint authority, custom=${customEndpoint}`, async () => {
+      const provider: LlmProvider = {
+        ...generativeProvider({
+          throws: new LlmProviderError(
+            makeLlmError({
+              provider: 'openai',
+              kind: 'context_overflow',
+              message: 'PRIVATE_PROVIDER_TEXT',
+            }),
+          ),
+        }),
+        customEndpoint,
+        contextLimit: () => 12345,
+      };
+      const outcome = await createAgentNodeExecutor(genDeps(provider)).execute(
+        ctxFor(genVertex()).ctx,
+      );
+      expect(outcome).toMatchObject({
+        kind: 'failed',
+        error: { code: customEndpoint ? 'validation' : 'context_overflow', retryable: false },
+      });
+      if (outcome.kind !== 'failed') throw new Error('expected media failure');
+      expect(outcome.error.message).not.toContain('PRIVATE_PROVIDER_TEXT');
+      expect(outcome.error.message).toContain(customEndpoint ? 'size unknown' : '12345-token');
+    });
+  }
+
   it('fails validation for an empty resolved prompt (the seam nonEmptyString contract) — no provider egress', async () => {
     let called = false;
     const provider = generativeProvider();
@@ -1466,6 +1494,39 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
       expect(outcome.error.message).not.toContain('SECRET-BEARING-KEY-RESOLUTION-DETAIL');
     }
   });
+
+  for (const customEndpoint of [false, true]) {
+    it(`media poll overflow honours custom endpoint authority, custom=${customEndpoint}`, async () => {
+      const provider: LlmProvider = {
+        ...generativeProvider(),
+        customEndpoint,
+        contextLimit: () => 12345,
+        pollMediaJob: () =>
+          Promise.resolve({
+            state: 'failed',
+            error: makeLlmError({
+              provider: 'openai',
+              kind: 'context_overflow',
+              message: 'PRIVATE_PROVIDER_TEXT',
+            }),
+          }),
+      };
+      const exec = createAgentNodeExecutor(genDeps(provider, { resolveProvider: () => provider }));
+      const status = await exec.pollMediaJob?.(
+        { jobId: 'j1', provider: 'openai', model: 'actual-model', modality: 'image', units: 1 },
+        new AbortController().signal,
+      );
+      expect(status).toMatchObject({
+        state: 'failed',
+        error: { kind: customEndpoint ? 'bad_request' : 'context_overflow', retryable: false },
+      });
+      if (customEndpoint && status?.state === 'failed') {
+        expect(status.error.message).toBe(
+          'The request exceeded its context window (size unknown) for model actual-model. No tools ran in this turn.',
+        );
+      }
+    });
+  }
 
   it('pollMediaJob (the engine delegate): missing pollMediaJob → failed(unknown); a keyFor throw → secret-free failed(auth)', async () => {
     const job = {

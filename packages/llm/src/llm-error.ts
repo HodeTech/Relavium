@@ -3,7 +3,13 @@ import { LlmErrorSchema, type LlmError, type LlmErrorKind, type ProviderId } fro
 /** Own validated diagnostic fields before returning control to a provider or attempt observer. */
 export function snapshotLlmError(error: unknown): LlmError {
   // Cause remains an opaque private identity; copying or freezing it would invoke host code.
-  return Object.freeze(LlmErrorSchema.parse(error));
+  const owned = LlmErrorSchema.parse(error);
+  if (owned.usage !== undefined) {
+    for (const unit of owned.usage.mediaUnits ?? []) Object.freeze(unit);
+    if (owned.usage.mediaUnits !== undefined) Object.freeze(owned.usage.mediaUnits);
+    Object.freeze(owned.usage);
+  }
+  return Object.freeze(owned);
 }
 
 /**

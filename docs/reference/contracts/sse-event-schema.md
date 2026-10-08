@@ -461,7 +461,7 @@ These four (and `run:paused` / `human_gate:paused`) are **non-terminal** — the
 
 `node:failed.error.code` and `run:failed.error.code` are a closed **`ErrorCode`** enum (not a free string), so surfaces can branch on cause and `retryable` is unambiguous:
 
-`validation` · `content_filter` · `provider_auth` · `provider_rate_limit` · `provider_unavailable` · `tool_denied` · `tool_failed` · `tool_unavailable` · `budget_exceeded` · `effect_needs_attention` · `run_timeout` · `turn_limit` · `cancelled` · `sandbox_error` · `internal`
+`validation` · `context_overflow` · `content_filter` · `provider_auth` · `provider_rate_limit` · `provider_unavailable` · `tool_denied` · `tool_failed` · `tool_unavailable` · `budget_exceeded` · `effect_needs_attention` · `run_timeout` · `turn_limit` · `cancelled` · `sandbox_error` · `internal`
 
 **`run_timeout` is carried by THREE distinct causes** — the workflow's `timeout_ms` cap, a `human_gate` node's authored `timeout_ms`, and (since [ADR-0085](../../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §2) an `agent` node's authored `timeout_ms`. `error.nodeId` distinguishes them: absent for the run cap, present and naming the node for the other two. The code was not widened for the third, on ADR-0082 §9's reasoning — a closed taxonomy every surface switches on should not gain a member for a distinction the `nodeId` already carries.
 
@@ -481,6 +481,12 @@ Removing or repurposing an existing field/type is a breaking change and is not d
 **Where the promise does NOT apply: a REPLAY.** "Ignore unknown `type`s" is addressed to consumers that RENDER the stream. A caller that reconstructs authoritative state in order to *do* something — `checkpointer.ts` seeding `engine.resumeFromCheckpoint` — cannot safely ignore a row it does not understand: it has no way to know whether that row was a node terminal, an async job submission, a gate decision or a cost commitment, so tolerating the hole means re-running completed work or re-submitting an already-billed job, silently. [ADR-0075](../../decisions/0075-fail-closed-resume-on-an-unreadable-event-log.md) narrows ADR-0074 §5 accordingly: the replay read (`loadRunEventLogForReplay`) **refuses** when any row was skipped, and every display read stays tolerant. There is no session counterpart because no session resume reads a stored event log — a session's durable state is typed rows, not events.
 
 **`cost:attempt_settled` is the first event to exercise that carve-out, and it is why ADR-0075 landed first.** Adding it is additive and v1.0-legal for every RENDERING consumer — an older `relavium logs` drops the row and shows the rest of the run. It is deliberately **not** additive for a REPLAY: an older binary resuming a log that contains it would re-run paid work against a cap missing the very charges the event exists to record, which is the failure that makes the fix self-defeating on a downgrade. The refusal is the correct behaviour, and the remedy is an upgrade. Read the two halves together before adding the next durable type — "adding a new event `type` is never a breaking change" is true of the stream and false of the resume.
+
+**A new `ErrorCode` member is not additive for stored events.** `context_overflow` in a
+persisted `node:failed` or `run:failed` is an unknown value inside a known event type to an
+older binary. Its strict read rejects that row as corruption for display as well as replay;
+unknown-type skipping does not apply. Upgrade the reader before opening such history. This
+is the accepted ADR-0096 compatibility rule, also applicable to `effect_needs_attention`.
 
 ## Transport notes
 

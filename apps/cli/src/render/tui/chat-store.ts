@@ -1,6 +1,6 @@
 import type { SessionStreamHandleEvent, ToolApprovalRequest } from '@relavium/core';
 
-import type { ReasoningEffort } from '@relavium/shared';
+import type { Memory, ReasoningEffort } from '@relavium/shared';
 
 import {
   DEFAULT_CHAT_MODE,
@@ -72,6 +72,8 @@ export interface ChatStore {
 
 /** The store plus the control surface the renderer's frame loop + REPL drive. */
 export interface ChatStoreController extends ChatStore {
+  /** Bind the frozen instance policy before the session receives input. */
+  setMemoryPolicy: (memory: Readonly<Memory> | undefined) => void;
   /** Reduce a session event; flush immediately for a lifecycle event, else mark dirty (coalesced). */
   apply: (event: SessionStreamHandleEvent) => void;
   /** Add the user's typed text as a transcript entry (REPL submit) — flushes immediately. */
@@ -168,6 +170,12 @@ export function createChatStore(
   };
 
   return {
+    setMemoryPolicy: (memory) => {
+      const rest = { ...state };
+      delete rest.memoryPolicy;
+      state = memory === undefined ? rest : { ...rest, memoryPolicy: Object.freeze({ ...memory }) };
+      flush();
+    },
     subscribe: (onStoreChange) => {
       listeners.add(onStoreChange);
       return () => {

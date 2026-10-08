@@ -101,6 +101,8 @@ export type SessionEventType = (typeof SESSION_EVENT_TYPES)[number];
  */
 export const ERROR_CODES = [
   'validation',
+  // ADR-0096: a classified context-window refusal is fatal; only a session may recover explicitly.
+  'context_overflow',
   // A provider content-policy rejection (text or media-generation) — a FATAL cause distinct from
   // `validation` (an authoring/shape error), so a surface shows the right reason/remediation. The
   // `content_filter` LlmErrorKind maps here (1.AG/ADR-0045 §6); not in RETRYABLE_ERROR_CODES.

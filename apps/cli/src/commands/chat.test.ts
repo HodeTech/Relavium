@@ -32,6 +32,7 @@ import type { GlobalOptions } from '../process/options.js';
 import { selectChatDriver } from '../render/tui/chat-ink.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
+import { formatTurnSummary, errorRecoveryHint } from '../render/tui/chat-projection.js';
 import { captureIo, parseNdjson } from '../test-support.js';
 import {
   DISABLE_MOUSE,
@@ -505,6 +506,63 @@ describe('chatCommand', () => {
       ).toHaveLength(2);
     },
   );
+
+  for (const policy of ['none', 'window', 'summary'] as const) {
+    for (const code of ['context_overflow', 'validation'] as const) {
+      it(`${code} chat display receives frozen ${policy} policy through the actual session binding`, async () => {
+        const path = join(cwd, 'overflow-memory.agent.yaml');
+        writeFileSync(
+          path,
+          `id: memory\nprovider: anthropic\nmodel: claude-sonnet-4-6\nsystem_prompt: Be concise.\nmemory:\n  type: ${policy}\n${policy === 'window' ? '  window_size: 1\n' : ''}`,
+        );
+        let rendered = '';
+        const { d } = deps(
+          [],
+          [
+            [
+              {
+                type: 'error',
+                error: {
+                  kind: code === 'context_overflow' ? 'context_overflow' : 'bad_request',
+                  provider: 'anthropic',
+                  retryable: false,
+                  message: 'maximum context length PRIVATE_SENTINEL',
+                },
+              },
+            ],
+          ],
+          {
+            drive: async (ctx) => {
+              const unsubscribe = ctx.handle.subscribe((event) => ctx.store.apply(event));
+              try {
+                ctx.startSession();
+                await ctx.processLine('overflow please');
+                const entry = ctx.store.getSnapshot().state.transcript.at(-1);
+                if (entry?.role !== 'assistant') throw new Error('missing failed-turn display');
+                rendered =
+                  formatTurnSummary(entry.summary) +
+                  (errorRecoveryHint(
+                    entry.summary.errorCode,
+                    entry.summary.errorMessage,
+                    entry.summary,
+                  ) ?? '');
+                await ctx.processLine('/exit');
+                return { kind: 'exit' };
+              } finally {
+                unsubscribe();
+              }
+            },
+          },
+        );
+        expect(await chatCommand({ agent: path }, d)).toBe(4);
+        expect(rendered).toContain(code);
+        expect(rendered).not.toContain('PRIVATE_SENTINEL');
+        expect(rendered.includes('/compact')).toBe(policy === 'summary');
+        expect(rendered.includes('/trim')).toBe(policy !== 'none');
+        if (code === 'context_overflow') expect(rendered).toContain('No tools ran');
+      });
+    }
+  }
 
   it('window refuses /compact but permits message-count /trim', async () => {
     const path = join(cwd, 'memory.agent.yaml');
@@ -2243,6 +2301,36 @@ describe('makePlainPrinter', () => {
     });
     expect(out()).toContain('/compact'); // the context-overflow heuristic matched the message
     expect(out()).not.toContain('sk-LEAK'); // …but the raw message (secret-ish substring) is NOT echoed
+  });
+
+  it('plain classified overflow displays the safe fact once and respects none after tool dispatch', () => {
+    const { io, out } = captureIo();
+    const print = makePlainPrinter(io, true, { type: 'none' });
+    print({
+      type: 'agent:tool_call',
+      ...STAMP,
+      model: 'actual',
+      nodeId: 'n',
+      toolId: 'write_file',
+      toolInput: {},
+    });
+    print({
+      type: 'session:turn_completed',
+      ...STAMP,
+      stopReason: 'error',
+      tokensUsed: { input: 0, output: 0 },
+      error: {
+        code: 'context_overflow',
+        message:
+          'The request exceeded its context window for model actual. Tools already ran in this turn.',
+        retryable: false,
+      },
+    });
+    expect(out()).toContain('model actual');
+    expect(out()).toContain('Check the effects');
+    expect(out()).not.toContain('/compact');
+    expect(out()).not.toContain('/trim');
+    expect(out().split('session is still active')).toHaveLength(2);
   });
 
   it('emits ONLY the bare code line for a code with no hint (no stray hint text/newline)', () => {

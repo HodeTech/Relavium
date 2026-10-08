@@ -3571,3 +3571,228 @@ describe('generated usage inspection is recorded without losing validated quanti
     expect(Number.isNaN(usage.outputTokens)).toBe(true);
   });
 });
+
+describe('context overflow classification, endpoint authority and money evidence (ADR-0096)', () => {
+  for (const path of ['generate', 'stream'] as const) {
+    for (const status of [undefined, 200]) {
+      for (const customEndpoint of [false, true]) {
+        it(`${path}, status=${status}: customEndpoint=${customEndpoint} changes kind before record and never retries/fails over`, async () => {
+          const error = makeLlmError({
+            provider: 'openai',
+            kind: 'context_overflow',
+            message: 'context full',
+            ...(status === undefined ? {} : { status }),
+          });
+          const first = makeProvider({
+            id: 'openai',
+            generate: () => Promise.reject(new LlmProviderError(error)),
+            stream: () => streamFrom([{ type: 'error', error }]),
+          });
+          const fallback = makeProvider({
+            id: 'anthropic',
+            generate: resolves('unexpected'),
+            stream: () => streamFrom([{ type: 'stop', stopReason: 'stop', usage: USAGE }]),
+          });
+          const records: AttemptRecord[] = [];
+          const chain = new FallbackChain(
+            [
+              {
+                ...entry(first, 'gpt-4o-mini', 3),
+                provider: { ...first.provider, customEndpoint },
+              },
+              entry(fallback, 'claude-opus-4-8'),
+            ],
+            {
+              keyFor: () => 'test-key',
+              sleep: () => Promise.resolve(),
+              onAttempt: (record) => records.push(record),
+            },
+          );
+          const request: LlmRequest = { model: 'gpt-4o-mini', messages: [] };
+          const kind = customEndpoint ? 'bad_request' : 'context_overflow';
+          if (path === 'generate')
+            await expect(chain.generate(request)).rejects.toMatchObject({
+              llmError: { kind, retryable: false },
+            });
+          else {
+            const out: StreamChunk[] = [];
+            for await (const chunk of chain.stream(request)) out.push(chunk);
+            expect(out).toEqual([{ type: 'error', error: { ...error, kind } }]);
+          }
+          expect(first.calls).toHaveLength(1);
+          expect(fallback.calls).toHaveLength(0);
+          expect(records).toMatchObject([
+            { outcome: 'failed', customEndpoint, contentReceived: false, error: { kind } },
+          ]);
+        });
+      }
+    }
+    for (const outcome of [
+      'ordinary',
+      'custom',
+      'cancel',
+      'cleanup',
+      'fold-failure',
+      'invalid-usage',
+    ] as const) {
+      it(`${path}: ${outcome} preserves owned failure usage or retains an uncertain reservation`, async () => {
+        const controller = new AbortController();
+        const usage = { ...USAGE, ...(outcome === 'invalid-usage' ? { outputTokens: -1 } : {}) };
+        const error = {
+          ...makeLlmError({
+            provider: 'anthropic',
+            kind: 'context_overflow',
+            message: 'native overflow',
+          }),
+          usage,
+        };
+        const fail = (): LlmProviderError => {
+          if (outcome === 'cancel') controller.abort();
+          return new LlmProviderError(error);
+        };
+        const first = makeProvider({
+          id: 'anthropic',
+          generate: () => Promise.reject(fail()),
+          stream: () =>
+            streamFrom([
+              { type: 'text_delta', text: 'visible' },
+              { type: 'error', error: fail().llmError },
+            ]),
+        });
+        // Abort when the provider is pulled, after the pre-attempt cancellation check.
+        first.provider.stream = async function* () {
+          await Promise.resolve();
+          yield { type: 'text_delta', text: 'visible' };
+          yield { type: 'error', error: fail().llmError };
+        };
+        const records: AttemptRecord[] = [];
+        let priced = 0;
+        const chain = new FallbackChain(
+          [
+            {
+              ...entry(first, 'claude-opus-4-8', 3),
+              provider: { ...first.provider, customEndpoint: outcome === 'custom' },
+            },
+          ],
+          {
+            keyFor: () => 'test-key',
+            sleep: () => Promise.resolve(),
+            ...(outcome === 'cleanup'
+              ? {
+                  newAbortController: () => new AbortController(),
+                  setTimer: () => () => {
+                    throw new Error('synthetic cleanup');
+                  },
+                }
+              : {}),
+            onAttempt: (record) => records.push(record),
+            costTracker: {
+              record: (_model, captured) => {
+                priced++;
+                expect(Object.isFrozen(captured)).toBe(true);
+                if (outcome === 'fold-failure') throw new Error('synthetic accountant failure');
+                return {
+                  inputTokens: captured.inputTokens,
+                  outputTokens: captured.outputTokens,
+                  costMicrocents: 17,
+                  cumulativeCostMicrocents: 17,
+                };
+              },
+            },
+          },
+        );
+        const request: LlmRequest = {
+          model: 'claude-opus-4-8',
+          messages: [],
+          signal: controller.signal,
+        };
+        if (path === 'generate')
+          await expect(chain.generate(request)).rejects.toBeInstanceOf(LlmProviderError);
+        else
+          for await (const chunk of chain.stream(request)) {
+            expect(chunk.type).not.toBe('stop');
+          }
+        expect(records).toHaveLength(1);
+        expect(records[0]?.error?.kind).toBe(
+          outcome === 'custom'
+            ? 'bad_request'
+            : outcome === 'ordinary' || outcome === 'cleanup'
+              ? 'context_overflow'
+              : outcome === 'cancel'
+                ? 'cancelled'
+                : 'unknown',
+        );
+        expect(records[0]?.usage).toEqual(outcome === 'invalid-usage' ? undefined : USAGE);
+        expect(priced).toBe(outcome === 'invalid-usage' ? 0 : 1);
+        if (outcome === 'fold-failure') expect(records[0]?.priced).toBe(false);
+      });
+    }
+  }
+});
+
+describe('failed-response usage is independent of diagnostics and observers', () => {
+  it('a generated paid transport failure cannot advance to another provider', async () => {
+    const error = {
+      ...makeLlmError({ provider: 'anthropic', kind: 'transport', message: 'teardown failed' }),
+      usage: USAGE,
+    };
+    const paid = makeProvider({
+      id: 'anthropic',
+      generate: () => Promise.reject(new LlmProviderError(error)),
+    });
+    const fallback = makeProvider({ id: 'openai', generate: resolves('unexpected') });
+    const { options, trace } = makeOptions();
+    const chain = new FallbackChain(
+      [entry(paid, 'claude-opus-4-8', 3), entry(fallback, 'gpt-4o-mini')],
+      options,
+    );
+    await expect(chain.generate(userReq)).rejects.toMatchObject({
+      llmError: { kind: 'transport', contentCommitted: true },
+    });
+    expect(paid.calls).toHaveLength(1);
+    expect(fallback.calls).toHaveLength(0);
+    expect(trace).toMatchObject([{ outcome: 'failed', contentReceived: true, usage: USAGE }]);
+  });
+
+  for (const path of ['generate', 'stream'] as const) {
+    it(`${path}: a failure observer's exact exception escapes once after actual usage was folded`, async () => {
+      const marker = new Error('private observer fault');
+      const error = {
+        ...makeLlmError({ provider: 'anthropic', kind: 'context_overflow', message: 'overflow' }),
+        usage: USAGE,
+      };
+      const provider = makeProvider({
+        id: 'anthropic',
+        generate: () => Promise.reject(new LlmProviderError(error)),
+        stream: () =>
+          streamFrom([
+            { type: 'text_delta', text: 'observed' },
+            { type: 'error', error },
+          ]),
+      });
+      let observations = 0;
+      let folds = 0;
+      const chain = new FallbackChain([entry(provider, 'claude-opus-4-8', 3)], {
+        keyFor: () => 'offline-key',
+        sleep: () => Promise.resolve(),
+        costTracker: {
+          record: () => {
+            folds++;
+            return { ...USAGE, costMicrocents: 1, cumulativeCostMicrocents: 1 };
+          },
+        },
+        onAttempt: (record) => {
+          observations++;
+          expect(record.usage).toEqual(USAGE);
+          throw marker;
+        },
+      });
+      await expect(
+        path === 'generate' ? chain.generate(userReq) : collect(chain.stream(userReq)),
+      ).rejects.toBe(marker);
+      expect(observations).toBe(1);
+      expect(folds).toBe(1);
+      expect(provider.calls).toHaveLength(1);
+    });
+  }
+});

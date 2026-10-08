@@ -1,6 +1,6 @@
 import type { SessionStreamHandleEvent } from '@relavium/core';
 import { contextWindowForModel } from '@relavium/llm';
-import type { SessionStopReason } from '@relavium/shared';
+import type { Memory, SessionStopReason } from '@relavium/shared';
 
 /**
  * The pure, framework-free view model for the `relavium chat` ink REPL (workstream **2.M**) — the session
@@ -31,6 +31,9 @@ export interface ToolCallView {
 
 /** The per-turn summary shown after a completed assistant turn. */
 export interface TurnSummary {
+  readonly memoryPolicy?: Readonly<Memory>;
+  /** Observed tool-call events; absent legacy summaries use a cautious remedy. */
+  readonly toolsRan?: boolean;
   // The SESSION stop-reason superset — the five LLM `StopReason`s plus `'aborted'` (the EA7 mid-turn abort,
   // ADR-0057); a `session:turn_completed` can carry `'aborted'`, so this mirrors the event field exactly.
   readonly stopReason: SessionStopReason;
@@ -55,6 +58,7 @@ export type TranscriptEntry =
   | { readonly role: 'notice'; readonly text: string };
 
 export interface SessionViewState {
+  readonly memoryPolicy?: Readonly<Memory>;
   readonly agentRef?: string;
   readonly model?: string;
   readonly status: SessionViewStatus;
@@ -613,6 +617,8 @@ function reduceTurnCompleted(base: SessionViewState, event: TurnCompletedEvent):
       ? base.activeTurnModel
       : undefined;
   const summary: TurnSummary = {
+    ...(base.memoryPolicy === undefined ? {} : { memoryPolicy: base.memoryPolicy }),
+    toolsRan: base.liveToolCalls.length > 0,
     stopReason: event.stopReason,
     tokensUsed: { input: event.tokensUsed.input, output: event.tokensUsed.output },
     ...(durationMs === undefined ? {} : { durationMs }),

@@ -230,8 +230,12 @@ function mapAnthropicApiError(err: {
   // Prefer the provider's own error `type` (set even on a mid-stream `error` event that carries no
   // HTTP status), then fall back to the status, then `unknown`.
   const kind =
-    (code === undefined ? undefined : kindFromErrorType(code)) ??
-    (status === undefined ? 'unknown' : kindFromHttpStatus(status));
+    status === 400 &&
+    code === 'invalid_request_error' &&
+    /prompt is too long: \d+ tokens > \d+ maximum/u.test(err.message)
+      ? 'context_overflow'
+      : ((code === undefined ? undefined : kindFromErrorType(code)) ??
+        (status === undefined ? 'unknown' : kindFromHttpStatus(status)));
   // #279: carry the provider's OWN requested wait when it sent one. A mid-stream `error` event has no
   // headers, so this is genuinely optional — absent means "no instruction", never "wait zero".
   const retryAfterMs = readRetryAfter(err.headers);
@@ -796,6 +800,24 @@ function contentBlockToChunk(
   return handleContentBlockStop(event, toolIdByIndex, reasoningByIndex);
 }
 
+// The live API has added this value ahead of the pinned SDK's closed StopReason union.
+function isNativeContextOverflow(reason: string | null): boolean {
+  return reason === 'model_context_window_exceeded';
+}
+
+/** The live-captured native stop is a failed generation with real, billable usage (ADR-0096). */
+function nativeContextOverflow(usage: Usage): LlmError {
+  return {
+    ...makeLlmError({
+      provider: PROVIDER,
+      kind: 'context_overflow',
+      code: 'model_context_window_exceeded',
+      message: 'generation exceeded the model context window',
+    }),
+    usage,
+  };
+}
+
 /** Fold the Anthropic SSE event stream into the canonical `StreamChunk` sequence. */
 async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<StreamChunk> {
   const toolIdByIndex = new Map<number, string>();
@@ -805,6 +827,7 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
   // The message_delta event carries the authoritative stop_reason + final usage; a stream that ends
   // without it was truncated and must not be reported as a successful stop.
   let sawStop = false;
+  let contextOverflow = false;
   let sdkStream: AsyncIterable<Anthropic.RawMessageStreamEvent>;
   try {
     sdkStream = await client.messages.create(
@@ -825,7 +848,8 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
       if (event.type === 'message_start') {
         usage = mapUsage(event.message.usage);
       } else if (event.type === 'message_delta') {
-        stopReason = mapStopReason(event.delta.stop_reason);
+        contextOverflow = isNativeContextOverflow(event.delta.stop_reason);
+        if (!contextOverflow) stopReason = mapStopReason(event.delta.stop_reason);
         usage = mergeDeltaUsage(usage, event.usage);
         sawStop = true;
       } else if (
@@ -841,7 +865,8 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
       // message_stop (and any other event) emits nothing.
     }
   } catch (err) {
-    yield { type: 'error', error: anthropicErrorToLlmError(err) };
+    const error = anthropicErrorToLlmError(err);
+    yield { type: 'error', error: contextOverflow ? { ...error, usage } : error };
     return;
   }
   // No message_delta arrived → the SSE stream was cut before completion. Surface a retryable
@@ -855,6 +880,10 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
         message: 'stream ended before message_delta (truncated response)',
       }),
     };
+    return;
+  }
+  if (contextOverflow) {
+    yield { type: 'error', error: nativeContextOverflow(usage) };
     return;
   }
   yield { type: 'stop', stopReason, usage };
@@ -904,6 +933,10 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
       } catch (err) {
         if (err instanceof LlmProviderError) throw err; // a pre-egress guard error — keep its classification
         throw new LlmProviderError(anthropicErrorToLlmError(err));
+      }
+      if (isNativeContextOverflow(message.stop_reason)) {
+        // HTTP 200 is a processed, billed response even if its text happens to be empty.
+        throw new LlmProviderError(nativeContextOverflow(mapUsage(message.usage)));
       }
       return {
         content: mapContent(message.content),

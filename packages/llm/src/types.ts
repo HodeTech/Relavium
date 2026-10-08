@@ -249,6 +249,7 @@ export const LlmErrorKindSchema = z.enum([
   'protocol',
   'auth',
   'bad_request',
+  'context_overflow',
   'content_filter',
   'cancelled',
   'unknown',
@@ -277,7 +278,7 @@ export const LlmErrorSchema = z.object({
   // `cause` first (the run-event error shape `{ code, message, retryable }` already excludes it).
   cause: z.unknown().optional(), // original error for debugging — never re-thrown across the seam
   /**
-   * The attempt had already yielded a non-terminal chunk when it failed
+   * The attempt had already yielded a non-terminal chunk, or a rejected generation carried actual usage
    * ([ADR-0082](../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
    * §4). Set by `FallbackChain` when it SURFACES a failure past that point; absent otherwise.
    *
@@ -292,6 +293,9 @@ export const LlmErrorSchema = z.object({
    * for a call the user already saw output from.
    */
   contentCommitted: z.literal(true).optional(),
+  /** Actual canonical usage supplied with a failed response (e.g. a native context-window stop).
+   * Never inferred from a reservation; consumers account it even when the diagnostic changes. */
+  usage: UsageSchema.optional(),
 });
 export type LlmError = z.infer<typeof LlmErrorSchema>;
 

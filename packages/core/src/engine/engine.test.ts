@@ -6357,3 +6357,61 @@ describe('ordinary gate media lifecycle cutoff (ADR-0085)', () => {
     });
   }
 });
+
+it('a media poll overflow emits fixed model facts without provider text', async () => {
+  const host = createInMemoryHost();
+  const engine = engineWith(
+    { gen: () => mediaJobOutcome({ units: 12 }) },
+    host,
+    {
+      resolvePrice: new Map([
+        [
+          'sora-2',
+          {
+            provider: 'openai',
+            nativeId: 'sora-2',
+            displayName: 'synthetic poll',
+            contextWindowTokens: 100,
+            maxOutputTokens: 10,
+            inputPerMtokMicrocents: 0,
+            outputPerMtokMicrocents: 0,
+            cachedInputPerMtokMicrocents: 0,
+            mediaOutputRates: { video: 2 },
+          },
+        ],
+      ]),
+    },
+    () =>
+      Promise.resolve({
+        state: 'failed',
+        error: {
+          provider: 'openai',
+          kind: 'context_overflow',
+          retryable: false,
+          message: 'PRIVATE_PROVIDER_TEXT',
+        },
+      }),
+  );
+  const handle = engine.start({
+    workflow: workflow(`  id: overflow-poll
+  nodes:
+    - { id: gen, type: transform, transform: 'g' }
+    - { id: out, type: output }
+  edges:
+    - { from: gen, to: out }`),
+  });
+  const events: RunEvent[] = [];
+  for await (const event of handle.events) {
+    events.push(event);
+    if (event.type === 'run:paused') host.fireTimers();
+  }
+  const failure = events.find((event) => event.type === 'node:failed');
+  expect(failure).toMatchObject({
+    error: {
+      code: 'context_overflow',
+      message:
+        'The request exceeded its context window (size unknown) for model sora-2. No tools ran in this turn.',
+    },
+  });
+  expect(JSON.stringify(events)).not.toContain('PRIVATE_PROVIDER_TEXT');
+});
