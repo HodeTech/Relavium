@@ -447,3 +447,11 @@ Use `Code + Security` when one complete review explicitly covers both discipline
 - [2026-10-08 — W7 Step 7, round 1](2026-10-08T21-35-00-w7-step-7-round-1-review.md):
   held-terminal usage, first native-stop authority and fractional native-volume accounting
   independently reproduced and corrected; fresh complete cumulative review required.
+
+- [2026-10-08 — W7 Step 7, round 2](2026-10-08T21-48-00-w7-step-7-round-2-review.md):
+  two complete reviews reproduce a cold DB typecheck blocker in integration-test placement;
+  five SQLite controls move to CLI composition, with fresh cumulative review required.
+
+- [2026-10-08 — W7 Sonar raw-observer disposition](2026-10-08T21-49-00-w7-sonar-observer-disposition-review.md):
+  one scoped Promise-observer false positive independently read back; eleven new labels
+  individually checked and Sonar green, while required CI and whole-wave acceptance remain open.
