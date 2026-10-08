@@ -402,3 +402,7 @@ Record its model, effort and review scope in the coverage section where availabl
 - [2026-10-08 — W7 capture v3, round 1](2026-10-08T19-49-00-w7-capture-v3-round-1-review.md):
   fixed smaller continuation/prefix is clean in 54 tests and 144 runtime boundary cases;
   fresh second review precedes the live probe.
+
+- [2026-10-08 — W7 capture v3, round 2](2026-10-08T20-01-42-w7-capture-v3-round-2-review.md):
+  bounded probe accepted after 54 tests, 432 module cases and 80 actual-command controls;
+  the genuine Anthropic native-stop record and Steps 7–8 remain required.
