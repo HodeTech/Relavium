@@ -3649,3 +3649,7 @@ pass their intended positive/negative outcomes. Forced full CI passes 23 tasks, 
 8,397 passing tests / 12 skips and six builds after an initial retained DB-timeout failure and a
 clean isolated 522-test DB run. This is an implementation correction; fresh Group 5 round 2,
 Group 6, ADR approvals, provider captures and final whole-wave acceptance remain open.
+
+### W7 systematic group 5, round 2 — 2026-10-08
+
+[Two fresh complete reviews](../../reviews/2026-10-08T11-44-55-w7-systematic-group-5-round-2-review.md) and independent Parent audits accept all 22 Group 5 paths / 47 textual hunks and the immutable archive at `ab8c5138`. The actual harness closes all three workers and passes twelve predecessor refusals / two positive controls; fourteen caller controls, five grouped causal removals with exact restoration, 33 independent writer cases, six preparation cases and the real 45-second watchdog pass. Both full reports, physical inventories, source/Git pins and command/read/native evidence are verified before the Root freeze is released. Retirement compares directory identity and complete parsed records by semantic equality; it does not attest exact raw record bytes or record inodes. Application-isolation, transport/read-capture, historical release-date and initial CI-failure qualifications remain in the review record. **Group 5 is accepted within scope. Group 6, Group 3's High, Proposed ADR-0102, unapproved ADR-0103, provider captures, Steps 7–8/12, final CI/coverage/Sonar, W7 and draft PR #90 remain open.**

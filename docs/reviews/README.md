@@ -268,6 +268,9 @@ added.
 - [2026-10-08 — W7 systematic group 5, round 1](2026-10-08T04-58-12-w7-systematic-group-5-round-1-review.md):
   four verified failure/retirement mechanisms and marker-readiness wording corrected; fresh acceptance pending.
 
+- [2026-10-08 — W7 systematic group 5, round 2](2026-10-08T11-44-55-w7-systematic-group-5-round-2-review.md):
+  two complete fresh reviews and full Parent audits accept replay tooling within scope; lifecycle ADRs, captures and final W7 gates remain open.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and
