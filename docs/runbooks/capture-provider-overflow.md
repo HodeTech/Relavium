@@ -44,9 +44,12 @@ and the same stdin boundary; the command does not read keys from environment var
 ## Probe Anthropic's context stop reason separately
 
 ADR-0096 also requires evidence for the near-window truncation path. Run a separate
-Anthropic capture with `--purpose context-stop-probe --max-output 4096`, a new destination,
+Anthropic capture with `--purpose context-stop-probe --max-output 16384`, a new destination,
 and input close enough to the model's window that the requested continuation reaches it.
-The fixed instruction asks for ascending integers rather than an immediate short answer.
+Version `w7-overflow-capture-v2` asks for integers from 1 through 1,000,000 and continues until
+the server stops generation, rather than suggesting a short continuation. Its explicit larger
+output bound is available only for this Anthropic purpose; ordinary overflow captures retain
+their 4,096-token maximum. Previously captured v1 artifacts keep their exact recorded bytes.
 Choose the model and input size using its documented window; the tool does not count tokens,
 calibrate automatically or retry. An ordinary `400` overflow response does not establish the
 streaming stop-reason path. An accepted response with a different stop reason does not prove
@@ -76,7 +79,11 @@ was captured when only an offline test ran.
 The tool accepts only the four fixed official HTTPS endpoints and synthetic ASCII input;
 it accepts no custom URL, file input, user prompt or tools. It makes one non-streaming request,
 with redirects and retries disabled. The input limit is 8,388,608 characters and the requested
-output cap is 1–4,096 tokens (default 64). Stdin must finish within 60 seconds and contain one
+output cap is 1–4,096 tokens (default 64), or up to 16,384 only for an explicitly selected
+Anthropic `context-stop-probe`. Choose that larger cap against the approved call budget;
+an accepted near-200K Haiku 4.5 probe with 16,384 output tokens has an approximately 0.282 USD
+maximum token charge at the [published 1 USD input / 5 USD output per million-token rates](https://platform.claude.com/docs/en/about-claude/pricing).
+This is a bounded request estimate, not a provider invoice or tax cap. Stdin must finish within 60 seconds and contain one
 printable key of 8–512 characters, with surrounding whitespace allowed and a 1,024-character
 pipe limit. Headers and response reads share a separate absolute 60-second deadline. Responses
 must be JSON, at most 1 MiB and at most 16,384 chunks, including empty chunks.

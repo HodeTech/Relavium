@@ -17,6 +17,7 @@ const HELP = `Usage: node tools/overflow-capture/capture.mjs --provider <anthrop
 
 Pipe one API key on stdin (never an argument). One synthetic request; no retries or redirects.
 Default output cap: 64. context-stop-probe is Anthropic-only; choose near-window input and output cap.
+Only an explicit Anthropic context-stop-probe permits --max-output up to 16384.
 The capture can be billed if accepted. A captured response is evidence to review, not an overflow verdict.
 See tools/overflow-capture/README.md for capture and fixture acceptance.\n`;
 

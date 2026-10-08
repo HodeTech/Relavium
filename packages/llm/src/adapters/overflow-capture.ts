@@ -7,6 +7,9 @@ import { scrubSecrets } from '../llm-error.js';
 export const CAPTURE_TIMEOUT_MS = 60_000;
 export const CAPTURE_MAX_RESPONSE_BYTES = 1_048_576;
 export const CAPTURE_MAX_INPUT_CHARACTERS = 8_388_608;
+export const CAPTURE_TOOL_VERSION = 'w7-overflow-capture-v2';
+const MAX_OVERFLOW_OUTPUT_TOKENS = 4096;
+const MAX_CONTEXT_STOP_OUTPUT_TOKENS = 16_384;
 const MAX_RESPONSE_CHUNKS = 16_384;
 
 const CaptureOptionsSchema = z
@@ -14,7 +17,7 @@ const CaptureOptionsSchema = z
     provider: z.enum(['anthropic', 'openai', 'deepseek', 'gemini']),
     model: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
     inputCharacters: z.number().int().min(1024).max(CAPTURE_MAX_INPUT_CHARACTERS),
-    maxOutputTokens: z.number().int().min(1).max(4096),
+    maxOutputTokens: z.number().int().min(1).max(MAX_CONTEXT_STOP_OUTPUT_TOKENS),
     purpose: z.enum(['overflow', 'context-stop-probe']),
     out: z
       .string()
@@ -24,7 +27,11 @@ const CaptureOptionsSchema = z
       .regex(/^[^\u0000-\u001f\u007f]+$/),
   })
   .strict()
-  .refine((value) => value.purpose !== 'context-stop-probe' || value.provider === 'anthropic');
+  .refine((value) => value.purpose !== 'context-stop-probe' || value.provider === 'anthropic')
+  .refine(
+    (value) =>
+      value.purpose === 'context-stop-probe' || value.maxOutputTokens <= MAX_OVERFLOW_OUTPUT_TOKENS,
+  );
 
 export type CaptureOptions = z.infer<typeof CaptureOptionsSchema>;
 export type CaptureFailureCode =
@@ -110,7 +117,7 @@ export function captureRequest(
   const filler = pattern.repeat(Math.ceil(options.inputCharacters / pattern.length));
   const instruction =
     options.purpose === 'context-stop-probe'
-      ? '\nContinue with ascending integers separated by spaces until the output limit. Do not summarize.'
+      ? '\nIgnore the filler above. Print all integers from 1 through 1000000, in order, separated by spaces. Do not summarize, abbreviate, add commentary or stop at a smaller number. Continue until the server stops generation.'
       : '\nReturn only OK.';
   const text = filler.slice(0, options.inputCharacters) + instruction;
   const headers: Record<string, string> = { 'content-type': 'application/json' };
@@ -156,7 +163,7 @@ export function captureRequest(
 }
 
 export interface CaptureArtifact {
-  readonly captureTool: 'w7-overflow-capture-v1';
+  readonly captureTool: typeof CAPTURE_TOOL_VERSION;
   readonly capturedAt: string;
   readonly provider: CaptureOptions['provider'];
   readonly model: string;
@@ -247,7 +254,7 @@ export async function captureResponse(
     const capturedAt = z.string().datetime({ offset: true }).safeParse(deps.now());
     if (!capturedAt.success) throw new CaptureError('invalid_arguments');
     const artifact: CaptureArtifact = {
-      captureTool: 'w7-overflow-capture-v1',
+      captureTool: CAPTURE_TOOL_VERSION,
       capturedAt: capturedAt.data,
       provider: options.provider,
       model: options.model,

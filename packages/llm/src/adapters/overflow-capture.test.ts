@@ -4,6 +4,7 @@ import {
   CAPTURE_MAX_INPUT_CHARACTERS,
   CAPTURE_MAX_RESPONSE_BYTES,
   CAPTURE_TIMEOUT_MS,
+  CAPTURE_TOOL_VERSION,
   captureRequest,
   captureResponse,
   parseCaptureArguments,
@@ -52,6 +53,7 @@ describe('maintainer overflow capture admission', () => {
       [...args.slice(0, 5), '0x1000', ...args.slice(6)],
       [...args.slice(0, 5), String(CAPTURE_MAX_INPUT_CHARACTERS + 1), ...args.slice(6)],
       [...args, '--max-output', '4097'],
+      [...args, '--purpose', 'context-stop-probe', '--max-output', '16385'],
       ['--provider', 'openai', ...args.slice(2), '--purpose', 'context-stop-probe'],
       [...args.slice(0, -1), 'file\nwith-control.json'],
       [...args.slice(0, 3), 'sk-ant-abcdefghijklmnopqrstuv', ...args.slice(4)],
@@ -103,6 +105,29 @@ describe('maintainer overflow capture admission', () => {
       'invalid_arguments',
     );
   });
+
+  it('permits an explicit larger Anthropic stop probe while preserving all other output bounds', () => {
+    const probe = parseCaptureArguments([
+      ...args,
+      '--purpose',
+      'context-stop-probe',
+      '--max-output',
+      '16384',
+    ]);
+    const request = captureRequest(probe, KEY);
+    expect(request.init.body).toContain('"max_tokens":16384');
+    expect(request.init.body).toContain('Print all integers from 1 through 1000000');
+    expect(request.init.body).toContain('Continue until the server stops generation');
+    expect(() => captureRequest({ ...probe, purpose: 'overflow' }, KEY)).toThrow(
+      'invalid_arguments',
+    );
+    expect(() => captureRequest({ ...probe, provider: 'gemini' }, KEY)).toThrow(
+      'invalid_arguments',
+    );
+    expect(() => captureRequest({ ...probe, maxOutputTokens: 16385 }, KEY)).toThrow(
+      'invalid_arguments',
+    );
+  });
 });
 
 describe('bounded, secret-free live response capture', () => {
@@ -151,7 +176,7 @@ describe('bounded, secret-free live response capture', () => {
   it.each([
     'anthropic',
     'overflow',
-    'w7-overflow-capture-v1',
+    CAPTURE_TOOL_VERSION,
     '2026-10-02',
     'application/json',
     'capturedAt',
