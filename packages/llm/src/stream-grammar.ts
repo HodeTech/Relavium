@@ -19,7 +19,7 @@
 
 import { snapshotAccountableUsage } from './cost-tracker.js';
 import { makeLlmError, snapshotLlmError } from './llm-error.js';
-import type { LlmError, ProviderId, StreamChunk } from './types.js';
+import type { LlmError, ProviderId, StreamChunk, Usage } from './types.js';
 
 /** `stop` and `error` are the two terminal arms; everything else commits the stream (ADR-0082 §1). */
 function isTerminal(chunk: StreamChunk): chunk is Extract<StreamChunk, { type: 'stop' | 'error' }> {
@@ -75,6 +75,8 @@ export async function* verifyStreamGrammar(
   source: AsyncIterable<StreamChunk>,
   provider: ProviderId,
   model: string = provider,
+  /** Assignment-only internal observation; retaining usage does not confirm a clean terminal or settle it. */
+  onTerminalUsage?: (usage: Usage) => void,
 ): AsyncGenerator<StreamChunk, void> {
   let held: StreamChunk | undefined;
   let sawAnyChunk = false;
@@ -131,6 +133,11 @@ export async function* verifyStreamGrammar(
                 usage: snapshotAccountableUsage(model, chunk.usage),
               })
             : Object.freeze({ type: 'error', error: snapshotLlmError(chunk.error) });
+        const usage = held.type === 'stop' ? held.usage : held.error.usage;
+        // The chain's deadline can win the next read while this generator is suspended. Pass only
+        // already validated, owned quantities to its call-local state before resuming provider code.
+        // Accounting and the terminal verdict remain the caller's existing single settlement path.
+        if (usage !== undefined) onTerminalUsage?.(usage);
         continue;
       }
       yield chunk;

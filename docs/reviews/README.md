@@ -443,3 +443,7 @@ Use `Code + Security` when one complete review explicitly covers both discipline
 - [2026-10-08 — W7 delivery/receipt foundation, round 2](2026-10-08T21-12-58-w7-delivery-foundation-round-2-review.md):
   corrected internal foundation accepted after two fresh complete reviews, 75 tests each
   and independent causal controls; engine lifecycle and host closure integration remain open.
+
+- [2026-10-08 — W7 Step 7, round 1](2026-10-08T21-35-00-w7-step-7-round-1-review.md):
+  held-terminal usage, first native-stop authority and fractional native-volume accounting
+  independently reproduced and corrected; fresh complete cumulative review required.

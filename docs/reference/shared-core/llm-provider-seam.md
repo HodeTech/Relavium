@@ -261,6 +261,12 @@ Missing, negative and non-finite media rates follow
 the existing named-gap policy; a requested zero volume still exposes a gap, while an explicit zero
 rate is a real price. Realized tier selection retains its strict-threshold and first-equal-tier rules.
 
+Native separate-endpoint media completion also uses the rate-only kernel through `estimateMediaCost`
+to price its known authored volume. It does not fabricate a provider-reported `Usage` record:
+audio/video duration may be fractional, while image counts and canonical `Usage` quantities retain
+their integer guards. The rounded charge must be a non-negative safe integer before accounting;
+missing pricing remains an explicit gap under the existing settlement policy.
+
 The output-only `estimateMaxNextCost` remains a compatibility helper for canonical authored caps;
 native caps must never pass through it. Gemini's uncapped thinking control keeps its existing catalog
 fallback; a native output envelope is a reservation and cannot become an invented thinking budget.
@@ -431,6 +437,15 @@ violation after the held terminal preserve already observed usage. Stream `conte
 is set only by chunks the chain observed; a failed generate carrying validated usage proves a
 processed response, even when its text is empty. A provider-supplied `contentCommitted` never
 owns that fact. No usage-bearing failure receives a proven-refusal refund.
+
+Anthropic hands off the first native streamed stop and its final usage immediately, then closes
+its SDK iterator; later vendor deltas, content or teardown errors cannot replace that observation.
+The grammar verifier retains valid terminal usage in attempt-local state before its confirming
+read. If cancellation or the attempt deadline wins that read, the existing grammar/deadline
+verdict still applies and the owned usage is settled once. An unconfirmed pre-content terminal
+can therefore time out and retry under ADR-0082, with each fresh response accounted separately;
+usage alone does not invent streamed content commitment. Iterator cleanup remains best effort
+under that deadline and does not certify host-safe resource release.
 
 `customEndpoint === true` downgrades `context_overflow` to fatal `bad_request` in the chain
 **before** recording or surfacing it, including an adapter spread that retains an official host

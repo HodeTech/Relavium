@@ -152,7 +152,11 @@ const native = () =>
     '0f8ed2eb3b5b1f6dc6419e16e25d97ea5ce42b05d06e9f75ef85426a21dabc9e',
   );
 /** Re-express the exact captured message as SDK SSE events; this is derived replay, not a live SSE capture. */
-function nativeStream(response: RecordedResponse): RecordedResponse {
+function nativeStream(
+  response: RecordedResponse,
+  tail: readonly { type: string; [key: string]: unknown }[] = [],
+  includeContent = true,
+): RecordedResponse {
   const message = nativeSchema.parse(JSON.parse(response.body));
   const events: { type: string; [key: string]: unknown }[] = [
     {
@@ -165,7 +169,7 @@ function nativeStream(response: RecordedResponse): RecordedResponse {
       },
     },
   ];
-  message.content.forEach((block, index) =>
+  (includeContent ? message.content : []).forEach((block, index) =>
     events.push(
       { type: 'content_block_start', index, content_block: { ...block, text: '' } },
       { type: 'content_block_delta', index, delta: { type: 'text_delta', text: block.text } },
@@ -178,6 +182,7 @@ function nativeStream(response: RecordedResponse): RecordedResponse {
       delta: { stop_reason: message.stop_reason, stop_sequence: message.stop_sequence },
       usage: message.usage,
     },
+    ...tail,
     { type: 'message_stop' },
   );
   return {
@@ -265,6 +270,317 @@ describe('Anthropic native HTTP 200 context stop is paid failure, never clean st
       });
     });
   }
+});
+
+describe('first native overflow owns its final evidence before another SDK read', () => {
+  const tails = [
+    {
+      name: 'overloaded error',
+      event: { type: 'error', error: { type: 'overloaded_error', message: 'PRIVATE_TAIL' } },
+    },
+    {
+      name: 'null second stop',
+      event: {
+        type: 'message_delta',
+        delta: { stop_reason: null, stop_sequence: null },
+        usage: { input_tokens: 1, output_tokens: 2 },
+      },
+    },
+    {
+      name: 'clean second stop',
+      event: {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn', stop_sequence: null },
+        usage: { input_tokens: 1, output_tokens: 2 },
+      },
+    },
+    {
+      name: 'second native stop',
+      event: {
+        type: 'message_delta',
+        delta: { stop_reason: 'model_context_window_exceeded', stop_sequence: null },
+        usage: { input_tokens: 1, output_tokens: 2 },
+      },
+    },
+    {
+      name: 'post-stop content',
+      event: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'PRIVATE_TAIL' },
+      },
+    },
+  ];
+  for (const includeContent of [true, false]) {
+    for (const tail of tails) {
+      it(`${tail.name}, content=${includeContent}: no success, rewritten usage or failover`, async () => {
+        const capture = native();
+        const message = nativeSchema.parse(JSON.parse(capture.response.body));
+        const provider = adapter(
+          'anthropic',
+          nativeStream(capture.response, [tail.event], includeContent),
+        );
+        let fallbackCalls = 0;
+        const fallback: LlmProvider = {
+          ...provider,
+          stream: () => {
+            fallbackCalls++;
+            throw new Error('native overflow must not advance');
+          },
+        };
+        const records: AttemptRecord[] = [];
+        const chain = new FallbackChain(
+          [
+            { provider, model: capture.model, maxAttempts: 3 },
+            { provider: fallback, model: capture.model, maxAttempts: 1 },
+          ],
+          {
+            keyFor: () => 'offline-key',
+            sleep: () => Promise.resolve(),
+            onAttempt: (record) => records.push(record),
+          },
+        );
+        const out = await chunks(chain.stream(request(capture.model)));
+        expect(out.some((chunk) => chunk.type === 'stop')).toBe(false);
+        expect(out.at(-1)).toMatchObject({
+          type: 'error',
+          error: {
+            kind: 'context_overflow',
+            usage: { inputTokens: 199885, outputTokens: 12792 },
+            message: 'generation exceeded the model context window',
+          },
+        });
+        expect(
+          out
+            .filter((chunk) => chunk.type === 'text_delta')
+            .map((chunk) => chunk.text)
+            .join(''),
+        ).toBe(includeContent ? message.content.map((block) => block.text).join('') : '');
+        expect(fallbackCalls).toBe(0);
+        expect(records).toHaveLength(1);
+        expect(records[0]).toMatchObject({
+          outcome: 'failed',
+          contentReceived: includeContent,
+          error: { kind: 'context_overflow' },
+          usage: { inputTokens: 199885, outputTokens: 12792 },
+        });
+      });
+    }
+  }
+
+  for (const cleanup of ['immediate', 'held', 'throws'] as const) {
+    for (const ending of ['ordinary', 'cancel', 'deadline'] as const) {
+      it(`open SDK body, ${cleanup}/${ending}: retains paid evidence during source cancellation`, async () => {
+        const capture = native();
+        // Explicit derived no-content control; the actual native usage and stop are unchanged.
+        const derived = nativeStream(capture.response, [], false);
+        const sse = derived.body.slice(0, derived.body.indexOf('event: message_stop'));
+        const caller = new AbortController();
+        let fire: (() => void) | undefined;
+        let release: () => void = () => undefined;
+        const cleanupWait = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        let entered: () => void = () => undefined;
+        const enteredCleanup = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        let acknowledgeCleanup: () => void = () => undefined;
+        const cleanupSettled = new Promise<void>((resolve) => {
+          acknowledgeCleanup = resolve;
+        });
+        let acknowledgeAbort: () => void = () => undefined;
+        const abortAcknowledged = new Promise<void>((resolve) => {
+          acknowledgeAbort = resolve;
+        });
+        let cancellations = 0;
+        let requestAborts = 0;
+        let timers = 0;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(sse));
+          },
+          cancel() {
+            cancellations++;
+            entered();
+            if (ending === 'cancel') caller.abort();
+            if (ending === 'deadline') {
+              if (fire === undefined) throw new Error('attempt deadline not armed');
+              fire();
+            }
+            if (cleanup === 'held') return cleanupWait.finally(acknowledgeCleanup);
+            try {
+              if (cleanup === 'throws') throw new Error('PRIVATE_CANCEL_CAUSE');
+              return undefined;
+            } finally {
+              acknowledgeCleanup();
+            }
+          },
+        });
+        const fetch: typeof globalThis.fetch = (_input, options) => {
+          options?.signal?.addEventListener(
+            'abort',
+            () => {
+              requestAborts++;
+              acknowledgeAbort();
+            },
+            { once: true },
+          );
+          return Promise.resolve(
+            new Response(body, {
+              status: 200,
+              headers: { 'content-type': 'text/event-stream' },
+            }),
+          );
+        };
+        const provider = createAnthropicAdapter({ fetch });
+        const records: AttemptRecord[] = [];
+        let folds = 0;
+        // One attempt isolates the accounting race. A genuine pre-content timeout may retry;
+        // the separate fresh-response control below verifies that preserved ADR-0082 rule.
+        const chain = new FallbackChain([{ provider, model: capture.model, maxAttempts: 1 }], {
+          keyFor: () => 'offline-key',
+          sleep: () => Promise.resolve(),
+          newAbortController: () => new AbortController(),
+          setTimer: (_ms, callback) => {
+            fire = callback;
+            timers++;
+            return () => {
+              timers--;
+            };
+          },
+          onAttempt: (record) => records.push(record),
+          costTracker: {
+            record: (_model, usage) => {
+              folds++;
+              return { ...usage, costMicrocents: 212677, cumulativeCostMicrocents: 212677 };
+            },
+          },
+        });
+        const collecting = chunks(
+          chain.stream({ ...request(capture.model), signal: caller.signal }),
+        );
+        await enteredCleanup;
+        if (ending === 'ordinary') release();
+        const out = await collecting;
+        const kind =
+          ending === 'cancel'
+            ? 'cancelled'
+            : ending === 'deadline'
+              ? 'timeout'
+              : 'context_overflow';
+        expect(out).toMatchObject([{ type: 'error', error: { kind } }]);
+        expect(out).toHaveLength(1);
+        expect(records).toHaveLength(1);
+        expect(records[0]).toMatchObject({
+          outcome: 'failed',
+          usage: { inputTokens: 199885, outputTokens: 12792 },
+          cost: { costMicrocents: 212677 },
+          error: { kind },
+        });
+        expect(folds).toBe(1);
+        expect(cancellations).toBe(1);
+        expect(timers).toBe(0);
+        expect(records[0]?.error?.message).not.toContain('PRIVATE_CANCEL_CAUSE');
+        release();
+        await cleanupSettled;
+        await abortAcknowledged;
+        expect(requestAborts).toBe(1);
+        expect(records).toHaveLength(1);
+        expect(folds).toBe(1);
+      });
+    }
+  }
+
+  it('an unconfirmed pre-content native terminal may time out, accounting both fresh attempts once', async () => {
+    const capture = native();
+    const first = nativeStream(capture.response, [], false);
+    const prefix = first.body.slice(0, first.body.indexOf('event: message_stop'));
+    let fire: (() => void) | undefined;
+    let release: () => void = () => undefined;
+    const pendingCleanup = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let acknowledgeCleanup: () => void = () => undefined;
+    const cleanupSettled = new Promise<void>((resolve) => {
+      acknowledgeCleanup = resolve;
+    });
+    let fetches = 0;
+    let cancellations = 0;
+    const fetch: typeof globalThis.fetch = () => {
+      fetches++;
+      if (fetches > 1) {
+        // Fresh response: never reuse the consumed first body to manufacture a later failure.
+        return Promise.resolve(
+          new Response(
+            'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":1,"output_tokens":0}}}\n\n' +
+              'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n' +
+              'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+            { status: 200, headers: { 'content-type': 'text/event-stream' } },
+          ),
+        );
+      }
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(prefix));
+        },
+        cancel() {
+          cancellations++;
+          if (fire === undefined) throw new Error('attempt deadline not armed');
+          fire();
+          return pendingCleanup.finally(acknowledgeCleanup);
+        },
+      });
+      return Promise.resolve(
+        new Response(body, {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      );
+    };
+    const provider = createAnthropicAdapter({ fetch });
+    const records: AttemptRecord[] = [];
+    const quantities: { inputTokens: number; outputTokens: number }[] = [];
+    const chain = new FallbackChain([{ provider, model: capture.model, maxAttempts: 2 }], {
+      keyFor: () => 'offline-key',
+      sleep: () => Promise.resolve(),
+      newAbortController: () => new AbortController(),
+      setTimer: (_ms, callback) => {
+        fire = callback;
+        return () => undefined;
+      },
+      onAttempt: (record) => records.push(record),
+      costTracker: {
+        record: (_model, usage) => {
+          quantities.push({ inputTokens: usage.inputTokens, outputTokens: usage.outputTokens });
+          const costMicrocents = usage.inputTokens + usage.outputTokens;
+          return { ...usage, costMicrocents, cumulativeCostMicrocents: costMicrocents };
+        },
+      },
+    });
+    const out = await chunks(chain.stream(request(capture.model)));
+    expect(out).toMatchObject([{ type: 'stop', usage: { inputTokens: 1, outputTokens: 1 } }]);
+    expect(fetches).toBe(2);
+    expect(cancellations).toBe(1);
+    expect(records).toMatchObject([
+      {
+        outcome: 'failed',
+        contentReceived: false,
+        error: { kind: 'timeout' },
+        usage: { inputTokens: 199885, outputTokens: 12792 },
+      },
+      { outcome: 'succeeded', contentReceived: false, usage: { inputTokens: 1, outputTokens: 1 } },
+    ]);
+    expect(records).toHaveLength(2);
+    expect(quantities).toEqual([
+      { inputTokens: 199885, outputTokens: 12792 },
+      { inputTokens: 1, outputTokens: 1 },
+    ]);
+    release();
+    await cleanupSettled;
+    expect(records).toHaveLength(2);
+    expect(quantities).toHaveLength(2);
+  });
 });
 
 it('native generate with no text still retains the captured paid usage as processed evidence', async () => {

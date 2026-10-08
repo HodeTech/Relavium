@@ -940,7 +940,14 @@ export class FallbackChain {
         throw new LlmProviderError(this.#cancelledError(entry.provider.id));
       }
       record = { ...record, providerInvoked: true };
-      const verified = verifyStreamGrammar(stream(request, key), entry.provider.id, entry.model);
+      const verified = verifyStreamGrammar(
+        stream(request, key),
+        entry.provider.id,
+        entry.model,
+        (observed) => {
+          usage = observed;
+        },
+      );
       // Manual iteration, not `for await`: every `next()` is raced against the ABSOLUTE deadline. A
       // `for await` can only be bounded by a signal, and a signal is a request the provider may ignore.
       iterator = verified[Symbol.asyncIterator]();
@@ -969,6 +976,9 @@ export class FallbackChain {
         entryReq,
         entry.provider.id,
       );
+      // A raced confirming read can replace the diagnostic while the verifier still owns a
+      // valid first terminal. Retain that observation; do not account here or invent a clean stop.
+      if (usage !== undefined) failure = Object.freeze({ ...failure, usage });
     } finally {
       // Every exit path — success, pre-content failure, surfaced failure, an early consumer `break` that
       // calls this generator's `return()`. Idempotent, so the success path below can be reached having

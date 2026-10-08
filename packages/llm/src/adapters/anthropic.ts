@@ -827,7 +827,7 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
   // The message_delta event carries the authoritative stop_reason + final usage; a stream that ends
   // without it was truncated and must not be reported as a successful stop.
   let sawStop = false;
-  let contextOverflow = false;
+  let emittedNativeOverflow = false;
   let sdkStream: AsyncIterable<Anthropic.RawMessageStreamEvent>;
   try {
     sdkStream = await client.messages.create(
@@ -848,9 +848,17 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
       if (event.type === 'message_start') {
         usage = mapUsage(event.message.usage);
       } else if (event.type === 'message_delta') {
-        contextOverflow = isNativeContextOverflow(event.delta.stop_reason);
-        if (!contextOverflow) stopReason = mapStopReason(event.delta.stop_reason);
         usage = mergeDeltaUsage(usage, event.usage);
+        if (isNativeContextOverflow(event.delta.stop_reason)) {
+          // Native overflow is already a processed, paid failure. Hand its first final usage to
+          // the seam before another SDK read: later deltas, errors or a body that stays open have
+          // no authority to turn it into success or replace its quantities. Early return joins
+          // the SDK iterator's existing cleanup; the chain still confirms canonical grammar.
+          emittedNativeOverflow = true;
+          yield { type: 'error', error: nativeContextOverflow(usage) };
+          return;
+        }
+        stopReason = mapStopReason(event.delta.stop_reason);
         sawStop = true;
       } else if (
         event.type === 'content_block_start' ||
@@ -865,8 +873,10 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
       // message_stop (and any other event) emits nothing.
     }
   } catch (err) {
-    const error = anthropicErrorToLlmError(err);
-    yield { type: 'error', error: contextOverflow ? { ...error, usage } : error };
+    // A cleanup throw after the authoritative failure is secondary. Emitting again would
+    // manufacture a second canonical terminal and allow protocol failover before content.
+    if (emittedNativeOverflow) return;
+    yield { type: 'error', error: anthropicErrorToLlmError(err) };
     return;
   }
   // No message_delta arrived → the SSE stream was cut before completion. Surface a retryable
@@ -880,10 +890,6 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
         message: 'stream ended before message_delta (truncated response)',
       }),
     };
-    return;
-  }
-  if (contextOverflow) {
-    yield { type: 'error', error: nativeContextOverflow(usage) };
     return;
   }
   yield { type: 'stop', stopReason, usage };
