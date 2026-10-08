@@ -426,3 +426,7 @@ Record its model, effort and review scope in the coverage section where availabl
 - [2026-10-08 — W7 factory stress allowance, round 1](2026-10-08T20-45-08-w7-factory-stress-round-1-review.md):
   shared-CI timeout correction retains structural coverage; one verified formatter defect
   is corrected, with fresh round 2 and exact-head remote checks required.
+
+- [2026-10-08 — W7 factory stress allowance, round 2](2026-10-08T20-50-11-w7-factory-stress-round-2-review.md):
+  narrow correction accepted after 110 independent tests and stable pinned-formatter
+  verification; production ownership and exact-head remote CI remain open.
