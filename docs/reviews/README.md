@@ -375,3 +375,6 @@ Record its model, effort and review scope in the coverage section where availabl
 
 - [2026-10-08 — W7 ADR-0102/0103 maintainer follow-up, round 2](2026-10-08T18-25-00-w7-adr-0102-0103-maintainer-round-2-review.md):
   two fresh complete static reviews clear the clarified proposals at decision level; maintainer approval and implementation evidence remain required, with the supplied Gemini quota recorded separately.
+
+- [2026-10-08 — W7 inert graph foundation, round 1](2026-10-08T19-25-00-w7-inert-graph-round-1-review.md):
+  two descriptor/native-brand Highs and one mutable-alias test gap corrected with separate causal controls; fresh review pending.

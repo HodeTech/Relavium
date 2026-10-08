@@ -14,6 +14,11 @@ function parsedData(json: string): unknown {
   return value;
 }
 
+function boxedData(value: unknown): unknown {
+  const boxed: unknown = Object(value);
+  return boxed;
+}
+
 describe('inert request graph ownership (ADR-0102)', () => {
   it('owns mutable caller data, preserves cross-field aliases and isolates mutable working copies', () => {
     const schema = { type: 'object', properties: { text: { type: 'string' } } };
@@ -32,7 +37,12 @@ describe('inert request graph ownership (ADR-0102)', () => {
     const other = copyInertData(owned, false);
     const workingOptions = field(working, 'providerOptions');
     const workingSchema = field(workingOptions, 'responseJsonSchema');
+    const workingTools = field(working, 'tools');
+    if (!Array.isArray(workingTools)) throw new Error('expected working tools');
+    expect(field(workingTools[0], 'schema')).toBe(workingSchema);
+    expect(workingSchema).not.toBe(captured);
     Object.defineProperty(workingSchema, 'converted', { value: true });
+    expect(field(field(workingTools[0], 'schema'), 'converted')).toBe(true);
     expect(field(captured, 'converted')).toBeUndefined();
     expect(
       field(field(field(other, 'providerOptions'), 'responseJsonSchema'), 'converted'),
@@ -181,6 +191,37 @@ describe('inert request graph ownership (ADR-0102)', () => {
     };
     expect(() => copyInertData(caller)).toThrow(UnsupportedRequestDataError);
     expect(invoked).toBe(false);
+  });
+
+  it.each([{ values: [] }, { values: [1, undefined, { value: 'retained' }] }])(
+    'captures array length from descriptors without ordinary reads: $values',
+    ({ values }) => {
+      let reads = 0;
+      const caller = new Proxy(values, {
+        get() {
+          reads += 1;
+          throw new Error('private ordinary read');
+        },
+      });
+      expect(JSON.stringify(copyInertData(caller))).toBe(JSON.stringify(values));
+      expect(reads).toBe(0);
+    },
+  );
+
+  it.each([
+    { make: () => boxedData(true) },
+    { make: () => boxedData(1) },
+    { make: () => boxedData('value') },
+    { make: () => boxedData(1n) },
+    { make: () => boxedData(Symbol('value')) },
+    { make: () => new Date(0) },
+  ])('refuses opaque native brands even when their prototype is changed', ({ make }) => {
+    for (const prototype of [null, Object.prototype]) {
+      const value: unknown = make();
+      if (typeof value !== 'object' || value === null) throw new Error('expected branded object');
+      Object.setPrototypeOf(value, prototype);
+      expect(() => copyInertData({ nested: value })).toThrow(UnsupportedRequestDataError);
+    }
   });
 
   it('refuses inherited serializers, while generated array shadows survive later prototype mutation', () => {

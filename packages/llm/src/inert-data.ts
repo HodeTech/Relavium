@@ -2,6 +2,15 @@ import { UnsupportedRequestDataError } from './errors.js';
 
 // Only our own array serializer shadows are exempt from caller metadata refusal.
 const generatedArrays = new WeakSet<object>();
+// Intrinsic brand probes do not consult caller prototypes, getters or conversion hooks.
+const unsupportedBrands: readonly unknown[] = [
+  Object.getOwnPropertyDescriptor(Boolean.prototype, 'valueOf')?.value,
+  Object.getOwnPropertyDescriptor(Number.prototype, 'valueOf')?.value,
+  Object.getOwnPropertyDescriptor(String.prototype, 'valueOf')?.value,
+  Object.getOwnPropertyDescriptor(BigInt.prototype, 'valueOf')?.value,
+  Object.getOwnPropertyDescriptor(Symbol.prototype, 'valueOf')?.value,
+  Object.getOwnPropertyDescriptor(Date.prototype, 'getTime')?.value,
+];
 
 interface Property {
   readonly key: string;
@@ -44,8 +53,29 @@ function properties(source: object): readonly Property[] {
         prototype !== Set.prototype
   )
     refuse();
+  if (!array) {
+    for (const probe of unsupportedBrands) {
+      if (typeof probe !== 'function') refuse();
+      let branded = false;
+      try {
+        Reflect.apply(probe, source, []);
+        branded = true;
+      } catch {
+        // An incompatible receiver is the expected negative result of an intrinsic brand check.
+      }
+      if (branded) refuse();
+    }
+  }
   const ownSerializer = Object.getOwnPropertyDescriptor(source, 'toJSON');
   if (ownSerializer === undefined) inheritedSerializer(source);
+  const length: unknown = array
+    ? Object.getOwnPropertyDescriptor(source, 'length')?.value
+    : undefined;
+  if (
+    array &&
+    (typeof length !== 'number' || !Number.isInteger(length) || length < 0 || length > 0xffff_ffff)
+  )
+    refuse();
   const result: Property[] = [];
   let indices = 0;
   for (const key of Reflect.ownKeys(source)) {
@@ -69,14 +99,15 @@ function properties(source: object): readonly Property[] {
         !Number.isSafeInteger(index) ||
         index < 0 ||
         String(index) !== key ||
-        index >= source.length
+        typeof length !== 'number' ||
+        index >= length
       )
         refuse();
       indices += 1;
     }
     result.push({ key, value });
   }
-  if (array && indices !== source.length) refuse();
+  if (array && indices !== length) refuse();
   return result;
 }
 
