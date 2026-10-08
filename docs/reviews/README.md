@@ -455,3 +455,7 @@ Use `Code + Security` when one complete review explicitly covers both discipline
 - [2026-10-08 — W7 Sonar raw-observer disposition](2026-10-08T21-49-00-w7-sonar-observer-disposition-review.md):
   one scoped Promise-observer false positive independently read back; eleven new labels
   individually checked and Sonar green, while required CI and whole-wave acceptance remain open.
+
+- [2026-10-08 — W7 Step 7, round 3](2026-10-08T22-07-23-w7-step-7-round-3-review.md):
+  cold-package correction independently verified; one High in uninvoked-attempt usage and
+  generated commitment reproduced by both reviewers; correction and fresh review required.

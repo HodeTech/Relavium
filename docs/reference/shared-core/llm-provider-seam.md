@@ -1014,6 +1014,11 @@ followed by each authored `fallback_chain` entry:
   hooks, credential resolution, cancellation before invocation, deadline setup and method lookup
   failures keep it false. Core uses
   this boundary with or without a budget governor; a failed record alone does not prove invocation.
+  An uninvoked attempt cannot report or price diagnostic usage: quantities attached to a typed
+  host-hook, credential or setup exception are removed before pricing, observation and surfacing.
+  They cannot establish generated-response processing or content commitment. Valid failed-response
+  usage after actual invocation remains accountable, including native stops and cancellation/deadline
+  races; this distinction does not alter the classified diagnosis or private cause identity.
   Untyped preparation/provider exceptions use a fixed `unknown provider failure` diagnostic and
   retain the original only as a non-public cause. Typed provider errors and engine control-flow
   identities keep their existing handling. Any streamed content chunk, including an empty delta or

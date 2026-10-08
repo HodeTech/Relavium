@@ -735,9 +735,12 @@ export class FallbackChain {
       // A cleanup fault is secondary to an existing provider/admission failure. Preserve its
       // original diagnosis, refusal proof and attempt observation instead of replacing them.
       // A failed generated response may carry real usage (native context-window stop).
-      // Usage is processed-response evidence; a provider-supplied commitment flag is still disowned.
+      // Only usage from an invoked provider is processed-response evidence. A typed host-hook
+      // exception cannot establish response processing; provider-supplied commitment is disowned.
       const received =
-        outcome.error.usage === undefined ? record : { ...record, contentReceived: true };
+        record.providerInvoked && outcome.error.usage !== undefined
+          ? { ...record, contentReceived: true }
+          : record;
       const error = this.#emitFailure(received, outcome.error);
       return { status: 'error', error: received.contentReceived ? committed(error) : error };
     }
@@ -856,8 +859,16 @@ export class FallbackChain {
     return error;
   }
 
-  /** Own and account failure evidence before calling an observer; diagnostic rewrites never erase usage. */
+  /** Account invoked-provider evidence before observation; local diagnostics cannot invent usage. */
   #emitFailure(record: AttemptRecord, diagnostic: LlmError): LlmError {
+    if (!record.providerInvoked) {
+      // This catch also handles admission, credentials and host setup. Even a genuine provider
+      // error class thrown there is not evidence of usage from this attempt. Strip its quantities
+      // before pricing, observation and surfacing, while retaining diagnosis and private cause.
+      const localDiagnostic = { ...diagnostic };
+      delete localDiagnostic.usage;
+      diagnostic = Object.freeze(localDiagnostic);
+    }
     let error =
       record.customEndpoint && diagnostic.kind === 'context_overflow'
         ? Object.freeze({ ...diagnostic, kind: 'bad_request' as const, retryable: false })
