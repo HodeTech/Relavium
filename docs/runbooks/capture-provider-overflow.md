@@ -46,10 +46,13 @@ and the same stdin boundary; the command does not read keys from environment var
 ADR-0096 also requires evidence for the near-window truncation path. Run a separate
 Anthropic capture with `--purpose context-stop-probe --max-output 16384`, a new destination,
 and input close enough to the model's window that the requested continuation reaches it.
-Version `w7-overflow-capture-v2` asks for integers from 1 through 1,000,000 and continues until
-the server stops generation, rather than suggesting a short continuation. Its explicit larger
+Version `w7-overflow-capture-v3` asks for a parser-test integer sequence through 6,000 and supplies
+the fixed synthetic assistant prefix `1 2 3 4 5`. Unlike v2's million-integer request, this gives
+the model a started, smaller continuation; it still does not guarantee a native stop. Use a model
+that supports [assistant prefilling](https://platform.claude.com/docs/en/build-with-claude/working-with-messages),
+such as Haiku 4.5; Claude 4.6 and later do not support it. Its explicit larger
 output bound is available only for this Anthropic purpose; ordinary overflow captures retain
-their 4,096-token maximum. Previously captured v1 artifacts keep their exact recorded bytes.
+their 4,096-token maximum. Previously captured v1/v2 artifacts keep their exact recorded bytes.
 Choose the model and input size using its documented window; the tool does not count tokens,
 calibrate automatically or retry. An ordinary `400` overflow response does not establish the
 streaming stop-reason path. An accepted response with a different stop reason does not prove

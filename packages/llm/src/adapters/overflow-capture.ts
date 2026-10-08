@@ -7,7 +7,7 @@ import { scrubSecrets } from '../llm-error.js';
 export const CAPTURE_TIMEOUT_MS = 60_000;
 export const CAPTURE_MAX_RESPONSE_BYTES = 1_048_576;
 export const CAPTURE_MAX_INPUT_CHARACTERS = 8_388_608;
-export const CAPTURE_TOOL_VERSION = 'w7-overflow-capture-v2';
+export const CAPTURE_TOOL_VERSION = 'w7-overflow-capture-v3';
 const MAX_OVERFLOW_OUTPUT_TOKENS = 4096;
 const MAX_CONTEXT_STOP_OUTPUT_TOKENS = 16_384;
 const MAX_RESPONSE_CHUNKS = 16_384;
@@ -117,7 +117,7 @@ export function captureRequest(
   const filler = pattern.repeat(Math.ceil(options.inputCharacters / pattern.length));
   const instruction =
     options.purpose === 'context-stop-probe'
-      ? '\nIgnore the filler above. Print all integers from 1 through 1000000, in order, separated by spaces. Do not summarize, abbreviate, add commentary or stop at a smaller number. Continue until the server stops generation.'
+      ? '\nIgnore the filler above. For a parser test, continue the started space-separated integer sequence through 6000. Output only the integers, without abbreviations, commentary, code or ellipses.'
       : '\nReturn only OK.';
   const text = filler.slice(0, options.inputCharacters) + instruction;
   const headers: Record<string, string> = { 'content-type': 'application/json' };
@@ -132,7 +132,12 @@ export function captureRequest(
         model: options.model,
         max_tokens: options.maxOutputTokens,
         stream: false,
-        messages: [{ role: 'user', content: text }],
+        messages: [
+          { role: 'user', content: text },
+          ...(options.purpose === 'context-stop-probe'
+            ? [{ role: 'assistant', content: '1 2 3 4 5' }]
+            : []),
+        ],
       };
       break;
     case 'openai':

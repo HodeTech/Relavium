@@ -20,3 +20,9 @@ but ended with `end_turn`, not `model_context_window_exceeded`. That diagnostic 
 as do the two earlier unsuitable probes. A separate Anthropic response carrying the native
 context-window stop is still required before W7 Step 7 classification is committed. These four
 artifacts alone do not accept Steps 7–8 or alter the current classifier.
+
+Two subsequent v2 probes are also unsuitable and remain private: one returned input-overflow
+400 (`200002 > 200000`) despite a 199,986 token-count estimate; the next accepted 199,884 input
+tokens but declined the million-integer continuation and ended with `end_turn` / 173 output
+tokens. Neither is native context-stop evidence. The new v3 fixed assistant-prefill probe is
+subject to independent review and the same approved budget before execution.

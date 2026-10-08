@@ -116,8 +116,11 @@ describe('maintainer overflow capture admission', () => {
     ]);
     const request = captureRequest(probe, KEY);
     expect(request.init.body).toContain('"max_tokens":16384');
-    expect(request.init.body).toContain('Print all integers from 1 through 1000000');
-    expect(request.init.body).toContain('Continue until the server stops generation');
+    expect(request.init.body).toContain(
+      'continue the started space-separated integer sequence through 6000',
+    );
+    expect(request.init.body).toContain('"role":"assistant","content":"1 2 3 4 5"');
+    expect(captureRequest(options, KEY).init.body).not.toContain('"role":"assistant"');
     expect(() => captureRequest({ ...probe, purpose: 'overflow' }, KEY)).toThrow(
       'invalid_arguments',
     );
