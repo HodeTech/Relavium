@@ -1,6 +1,7 @@
 import './force-color.js';
 import { Box, Text } from 'ink';
 import { cleanup, render } from 'ink-testing-library';
+import { useLayoutEffect } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { settleFrames } from './harness-util.js';
@@ -61,6 +62,63 @@ const firstViewportRow = (frame: string): number =>
   frame.split('\n').findIndex((line) => /^L\d+/.test(line.trimEnd()));
 
 describe('TranscriptViewport — the reported frame offset', () => {
+  it('publishes current geometry during a keyed remount layout commit', async () => {
+    let geometry: ViewportGeometry | undefined;
+    let displayed: { firstRow: number; endRow: number; width: number } | undefined;
+    const commits: { rows: number; geometry: ViewportGeometry | undefined }[] = [];
+    function Owner({ rows, identity }: { rows: number; identity: number }) {
+      // Observe the commit itself, without yielding for passive effects. Home replaces its chat subtree
+      // on reseat; bounded render acknowledgements cannot depend on when React schedules passive work.
+      useLayoutEffect(() => {
+        commits.push({ rows, geometry });
+      });
+      return (
+        <Box flexDirection="column" height={rows}>
+          <Text>HDR0</Text>
+          <TranscriptViewport
+            key={identity}
+            lines={lines(40)}
+            color={false}
+            scroll={INITIAL_SCROLL}
+            terminalRows={rows}
+            onMeasure={(value) => {
+              geometry = value;
+            }}
+            onDisplay={(firstRow, endRow, width) => {
+              displayed = { firstRow, endRow, width };
+            }}
+          />
+          <Text>FTR0</Text>
+        </Box>
+      );
+    }
+    const h = render(<Owner rows={30} identity={0} />);
+    const windows = [displayed];
+    await settleFrames();
+    h.rerender(<Owner rows={1} identity={1} />);
+    windows.push(displayed);
+    await settleFrames();
+    // A committed footer cannot acknowledge any transcript row while the terminal is clipped.
+    expect(displayed?.endRow).toBe(displayed?.firstRow);
+    h.rerender(<Owner rows={30} identity={2} />);
+    windows.push(displayed);
+    await settleFrames();
+    // No passive-effect yield between rerender and these observations: the measured follow-up commit
+    // must already include the complete usable window, and the clipped mount must still report none.
+    expect(windows).toEqual([
+      { firstRow: 12, endRow: 40, width: 100 },
+      { firstRow: 40, endRow: 40, width: 100 },
+      { firstRow: 12, endRow: 40, width: 100 },
+    ]);
+    expect(commits.map(({ rows, geometry: value }) => [rows, value?.height, value?.top])).toEqual([
+      [30, 28, 1],
+      [1, 0, 1],
+      [30, 28, 1],
+    ]);
+    expect(displayed).toEqual({ firstRow: 12, endRow: 40, width: 100 });
+    expect(h.lastFrame()).toContain('L39');
+  });
+
   it('top === 0 when the viewport is the first child (the `relavium chat` shape)', async () => {
     const { frame, geometry } = mountAt(0, 2, 12);
     await settleFrames();

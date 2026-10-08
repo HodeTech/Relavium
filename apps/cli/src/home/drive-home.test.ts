@@ -608,7 +608,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     [true, { CI: '' }, true, false, 1],
     [true, { CI: '' }, true, false, 24],
   ] as const)(
-    'the REAL Home reseat displays disclosure before sweeping (actual Ink: %s, env=%j, default mount=%s, no-alt=%s)',
+    'the REAL Home reseat displays disclosure before sweeping (actual Ink: %s, env=%j, default mount=%s, no-alt=%s, resizeRows=%s)',
     async (mode, env, defaultMount, noAltScreen, resizeRows?: number) => {
       const actualInk = mode !== false;
       let captured: RootAppProps | undefined;
