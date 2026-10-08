@@ -414,3 +414,7 @@ Record its model, effort and review scope in the coverage section where availabl
 - [2026-10-08 — W7 capture v4, round 2](2026-10-08T20-23-20-w7-capture-v4-round-2-review.md):
   bounded tool accepted after 67 tests and 36 additional native controls; one explicit
   budgeted probe may proceed, while the fifth genuine record remains required.
+
+- [2026-10-08 — W7 internal request factory, round 1](2026-10-08T20-28-00-w7-request-factory-round-1-review.md):
+  two complete reviews find no defect in the internal factory; 110 focused tests and
+  independent graph/binding controls pass, with fresh round 2 and production integration required.
