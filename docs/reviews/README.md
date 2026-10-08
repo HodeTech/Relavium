@@ -438,3 +438,7 @@ Record its model, effort and review scope in the coverage section where availabl
 - [2026-10-08 — W7 delivery/receipt foundation, round 1](2026-10-08T21-01-09-w7-delivery-foundation-round-1-review.md):
   both complete reviews reproduce false raw completion through Promise observer setup;
   corrected with seven permanent observer cases and 62 tests, fresh complete review required.
+
+- [2026-10-08 — W7 delivery/receipt foundation, round 2](2026-10-08T21-12-58-w7-delivery-foundation-round-2-review.md):
+  corrected internal foundation accepted after two fresh complete reviews, 75 tests each
+  and independent causal controls; engine lifecycle and host closure integration remain open.
