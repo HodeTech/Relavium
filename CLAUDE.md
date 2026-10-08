@@ -128,7 +128,8 @@ number.
 - [ADR-0096](docs/decisions/0096-a-request-is-measured-before-it-is-sent.md) decides that a request is measured
   before it is sent, that a context overflow is classified and recovered only before any tool runs, and that input
   is priced. Step 6 implements per-request input/output admission under the accepted shared reservation
-  rules; live-captured overflow classification and measured/recovery compaction remain Steps 7–8.
+  rules. Step 7's fixture-pinned overflow classification is accepted after four cumulative review
+  rounds; production request ownership and Step 8's measured/recovery compaction remain open.
 - [ADR-0097](docs/decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) decides that a budget
   approval grants a dispatch-owned, shown, durable allowance. Steps 9–10 implement and accept the
   governor/debit and strict replay barrier; Step 11's CLI surface is accepted after three independent review rounds.
@@ -141,7 +142,14 @@ Supplemental [ADR-0099](docs/decisions/0099-compaction-has-an-idle-budget-outcom
 [ADR-0100](docs/decisions/0100-budget-authorization-is-durable-state-with-a-replay-barrier.md) and
 [ADR-0101](docs/decisions/0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md)
 were accepted on 2026-10-02 after maintainer review. Acceptance of completed steps does not close the
-six W7 register items or replace the live provider evidence required for Steps 7–8.
+six W7 register items. All five required live provider records are complete as of 2026-10-08;
+[Step 7 round 4](docs/reviews/2026-10-08T22-30-10-w7-step-7-round-4-review.md) accepts its complete
+46-path scope. The maintainer approved the latest
+[ADR-0102](docs/decisions/0102-a-measured-request-owns-its-inert-data-through-egress.md) and
+[ADR-0103](docs/decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md)
+clarifications on 2026-10-08. Their internal foundations are accepted; production integration,
+Step 8 and final Step 12 remain open. Systematic review's ownership/lifecycle obligations remain
+open until that integration is independently verified.
 
 The first six review rounds shaped these ADRs, and they surfaced two shipping defects, opened as `CR-96` and
 `CR-97`, both open, non-deferrable and scheduled into `W7`.

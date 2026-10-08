@@ -1989,7 +1989,7 @@ correction inside its own ADR rather than a rewrite, so the wrong reasoning stay
 
 ### W7 pre-implementation review and proposed execution plan — 2026-10-02
 
-**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–6 and 9–11 obtained scoped independent acceptance, but the 2026-10-04 systematic PR review reopens Step 6 request ownership and adjacent session/CLI, replay-tool and document obligations. Previous acceptance records remain historical. Step 6's configured-output-estimate precedence follows ADR-0101, approved on 2026-10-02. All five live captures exist as of 2026-10-08, including Anthropic's separate native context-stop response. Steps 7–8 and whole Step 12 remain open. All systematic corrections require fresh independent acceptance.**
+**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–6 and 9–11 obtained scoped independent acceptance, but the 2026-10-04 systematic PR review reopens Step 6 request ownership and adjacent session/CLI, replay-tool and document obligations. Previous acceptance records remain historical. Step 6's configured-output-estimate precedence follows ADR-0101, approved on 2026-10-02. All five live captures exist as of 2026-10-08, including Anthropic's separate native context-stop response. Step 7 obtained fresh complete acceptance on 2026-10-08 after four cumulative rounds. Approved ADR-0102/0103 production integration, Step 8 and whole Step 12 remain open. All remaining systematic corrections require fresh independent acceptance.**
 The four Accepted ADRs retain their decisions. Three verified gaps were explicitly resolved before code:
 manual compaction with an unknown window and the budget outcome of idle compaction
 ([ADR-0099](../../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md)),
@@ -2010,7 +2010,7 @@ behaviour it actually implements; the final pass reconciles the complete wave an
 | 4 | Session effect privacy, no replay, legacy clear, secure deletion/WAL checkpoint, disclosure and retention across chat/Home/one-shot (`db`, `core` reference store, `cli`) | No result in session rows or post-checkpoint bytes; run replay unchanged; read failure prevents sweep; disclose then sweep once; errored/aborted/crashed turns; negative `!` slots; `agent run` teardown; history.db security sitting; depends on steps 2–3 |
 | 5 | One request projection for omitted/none/window/summary memory; same-role folding; policy refusals in engine and CLI (`core`, `cli`) | Current message plus N completed turns, empty finals counted, restored summary excluded under none/window, `/trim` message units preserved, frozen snapshots, workflow-node no-op documented; later automatic entry points consume the same policy |
 | 6 | Shared request estimator and output reservation; per-round input pricing, required hook forwarding, attempt evidence and proven pre-content HTTP refusal release (`llm`, `core`, `cli`) | Media encoding does not inflate tokens, conservative serialization fallback, sourced media constants, highest-tier non-cached input/user overlays, every forwarding site, generative input estimate 0, growing tool-round input, 4xx versus uncertain 5xx/timeout, cap and custom-endpoint identity. Configured-estimate/native-cap precedence and transport/pricing follow [Accepted ADR-0101](../../decisions/0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md), approved 2026-10-02; runtime acceptance remains required |
-| 7 | Fixture-pinned overflow normalization per dialect, chain custom-endpoint downgrade, recoverability evidence, engine code and policy-aware CLI remedy (`llm`, `shared`, `core`, `cli`) | Four live-captured fixtures, Gemini replay body/message, no failover on overflow, content/tool-round flags, no provider text in engine messages, release conditions and stored-code upgrade behaviour; captured fixtures are required |
+| 7 | Fixture-pinned overflow normalization per dialect, chain custom-endpoint downgrade, recoverability evidence, engine code and policy-aware CLI remedy (`llm`, `shared`, `core`, `cli`) | Five live-captured forms across four dialects, including Anthropic HTTP refusal and native context stop; Gemini replay body/message, no failover on overflow, content/tool-round flags, no provider text in engine messages, release conditions and stored-code upgrade behaviour; captured fixtures are required |
 | 8 | Capped atomic multi-pass compaction primitive, terminal balance, pre-send measurement and single overflow recovery (`core`, `cli`) | All ADR-0096 and approved ADR-0099 paths: differing fallback windows, four-pass exhaustion, pending versus completed empty-final user row, budget refusal with an after-turn first-pass notice, failure/skip, abort/cancel, turn cap, one-shot no after-turn call; depends on steps 5–7 |
 | 9 | Pure frozen allowance/provenance computation and synchronous dispatch-owned governor debit/reconciliation (`core`, `llm`) | calls × attempts × E at paused input size, lowered tool list, generative route, exclusions, zero/unrepresentable amounts, under-cap debit, refund/overrun, strict refusal and sibling/straggler isolation; depends on input pricing |
 | 10 | Durable authorization protocol, checkpoint correction and live/cross-process budget resume (`shared`, `core`, `db`/CLI checkpointer) | Approved amount never uncaps, exhaustion never re-pauses/retries, pre-claim refusal/timer intact, no ownership leak, legacy/no-allowance reset, companion-write crashes, identified/legacy joins and stale-gate duplicates, absolute deadlines, absorbed-fault acknowledgement, frozen-predecessor downgrade replay refusal, sibling human-gate crash matrix, effect preflight precedence; depends on step 9 and approved ADR-0100 |
@@ -3770,3 +3770,23 @@ not establish full SDK compatibility, measured-round reuse, call-time stream own
 of the ownership High. Those integrations and ADR-0103, Steps 7–8/12, final CI/coverage/Sonar and
 all six W7 register items remain open. Step 7 now proceeds using all five genuine live records;
 no further paid call is required.
+
+### W7 Step 7 accepted within scope — 2026-10-08
+
+Both fresh [round-4 complete reviews](../../reviews/2026-10-08T22-30-10-w7-step-7-round-4-review.md)
+accept all 46 cumulative paths at `68cf2a68`, including original classification, every runtime
+correction, cold-package test placement and uninvoked-usage provenance. Their independent scoped
+selections pass 1,243 and 1,329 tests respectively, with one existing Gemini live skip each;
+selections overlap and are not added together. Separate causal removals fail the expected usage,
+commitment, first-terminal, fractional-media and custom-authority controls. Exact restoration,
+cold DB/CLI graph checks, seam/purity and changed-source checks pass.
+
+Parent full CI passes 383 suites / 8,714 tests / 12 skips. Exact-head required PR/push CI,
+coverage, Node 22 floor, Windows, strict peers and Sonar all pass. Step 7 is accepted within its
+scope. These results do not establish forced final whole-wave validation, invoice correctness,
+live SSE capture or termination of hostile raw provider work.
+
+The next increment integrates the already accepted ADR-0102 factory into adapters, chain/media
+handoffs and exact core measured rounds. Approved ADR-0103 host departure, Step 8 atomic
+compaction/recovery and Step 12 remain open; all six W7 register items retain their open status.
+No new ADR approval, credential or paid provider call is required for these approved increments.

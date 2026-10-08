@@ -39,6 +39,15 @@ temporary section, deleted when both phases close. Its baseline step is discharg
 and Wave 0 is merged (PR #82), as is Wave 1 (PR #83). The interlude's `W2` (core reliability, six items) is
 merged too (PR #85, 2026-08-28).
 
+> **W7 live status, 2026-10-08:** all five immutable provider records are complete. Two fresh
+> [round-4 reviews](../reviews/2026-10-08T22-30-10-w7-step-7-round-4-review.md) independently accept
+> the complete 46-path Step 7 scope at `68cf2a68`; exact-head required CI, coverage, Node 22,
+> Windows, strict peers and Sonar all pass. Step 7 is closed within that scope. Next is production
+> integration of the approved ADR-0102 owned-request factory, followed by ADR-0103 host departure
+> and Step 8 measured atomic compaction/recovery. Step 12, final whole-wave CI/coverage/Sonar and
+> all six W7 register items remain open. Draft PR #90 is unmerged; no further paid call is needed.
+> Earlier progress statements below describe their publication checkpoints.
+
 > **W7 implementation, 2026-10-02:** the documentation review is closed. The maintainer approved
 > [ADR-0099](../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md),
 > [ADR-0100](../decisions/0100-budget-authorization-is-durable-state-with-a-replay-barrier.md) and the

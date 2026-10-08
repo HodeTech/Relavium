@@ -459,3 +459,7 @@ Use `Code + Security` when one complete review explicitly covers both discipline
 - [2026-10-08 — W7 Step 7, round 3](2026-10-08T22-07-23-w7-step-7-round-3-review.md):
   cold-package correction independently verified; one High in uninvoked-attempt usage and
   generated commitment reproduced by both reviewers; correction and fresh review required.
+
+- [2026-10-08 — W7 Step 7, round 4](2026-10-08T22-30-10-w7-step-7-round-4-review.md):
+  both fresh complete 46-path reviews return zero findings; corrected-head CI and coverage pass,
+  accepting Step 7 while production ownership/lifecycle, Step 8 and whole-wave acceptance remain open.
