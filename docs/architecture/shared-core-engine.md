@@ -148,12 +148,22 @@ no replay, replacement spool or public acknowledgement, and does not repair the 
 
 The internal `HostWorkRegistry` registers an invocation before calling its factory and observes the
 exact raw returned Promise, separately from any abort/grace race. Settlement or a synchronous throw
-ends that scope's future-entry authority; already entered operations and independently registered
+ends that scope's future-entry authority when observed by the registry; already entered operations and independently registered
 children remain joined. An ended scope refuses entry or child transfer through the nondurable
 `EngineStateError` code `receipt_scope_ended`. The scope itself grants no host capabilities.
 Joining waits for actual completion notifications and rechecks quiescence; idle work resolves
 immediately, while a never-settling raw invocation or child intentionally keeps the join pending.
 Joining does not seal new root admission, certify persistence or delay terminal publication.
+
+Settlement observation uses the captured native Promise intrinsic rather than a caller-overridden
+`then`. A constructor/species failure while attaching that observer is not settlement: the exact raw
+Promise and its slot/authority remain retained, with a sticky content-free `observationFailed`
+diagnosis. Without a trustworthy settlement observation, the registry cannot certify host release
+even if another observer later sees that Promise finish; graceful joining remains pending. An
+operation factory's synchronous throw still ends its scope through the ordinary rejection path.
+The boundary is observable native settlement, not synchronous introspection of Promise state:
+an earlier attached reaction may enter work before the registry's completion reaction, and that
+entered work remains joined. This cannot detect dishonest untransferred background intent.
 
 This increment does not close the paused-finalization lifecycle finding. Integration still owes
 producer registration and retirement, the final pause/cursor claim, retained exact-fence ownership,

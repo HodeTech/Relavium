@@ -5,6 +5,9 @@
  */
 import { EngineStateError } from './errors.js';
 
+// Observe actual Promise settlement, never a caller-overridden `raw.then` callback protocol.
+const observePromise: unknown = Object.getOwnPropertyDescriptor(Promise.prototype, 'then')?.value;
+
 /** A lifetime guard supplied only to a registered factory; no public NodeExecContext API yet. */
 export interface HostWorkScope {
   /** Guard a synchronous port entry. Throws EngineStateError('receipt_scope_ended') after settlement. */
@@ -28,6 +31,7 @@ export class HostWorkRegistry {
   readonly #runId: string;
   #pending = 0;
   #idleWaiters: (() => void)[] = [];
+  #observationFailed = false;
 
   constructor(runId: string) {
     this.#runId = runId;
@@ -35,6 +39,11 @@ export class HostWorkRegistry {
 
   get isIdle(): boolean {
     return this.#pending === 0;
+  }
+
+  /** Sticky, content-free diagnosis: unobservable raw work cannot certify safe host release. */
+  get observationFailed(): boolean {
+    return this.#observationFailed;
   }
 
   /**
@@ -85,12 +94,9 @@ export class HostWorkRegistry {
   }
 
   #observe<T>(operation: () => Promise<T>, onSettled: () => void): Promise<T> {
+    let raw: Promise<T>;
     try {
-      const raw = operation();
-      // Both reactions end authority; neither consumes the rejection returned to its owner. These
-      // internal callbacks cannot throw and attach before the caller can await the returned promise.
-      void raw.then(onSettled, onSettled);
-      return raw;
+      raw = operation();
     } catch (error) {
       onSettled();
       // Preserve even an unknown thrown value for the existing executor/port error boundary.
@@ -98,6 +104,20 @@ export class HostWorkRegistry {
         throw error;
       });
     }
+    try {
+      // Both reactions end authority; neither consumes the rejection returned to its owner. These
+      // internal callbacks cannot throw and attach before the caller can await the returned promise.
+      if (typeof observePromise !== 'function')
+        throw new Error('native Promise observer unavailable');
+      Reflect.apply(observePromise, raw, [onSettled, onSettled]);
+    } catch {
+      // A native Promise's constructor/species may throw during observer setup. That is not raw
+      // settlement. Keep its exact promise, slot and authority; no safe completion was observed.
+      // The sticky diagnosis lets integration explain why graceful joining remains pending without
+      // retaining a caller's private cause. It must never turn an observation fault into a close ACK.
+      this.#observationFailed = true;
+    }
+    return raw;
   }
 
   #finish(): void {

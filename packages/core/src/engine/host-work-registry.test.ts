@@ -384,4 +384,98 @@ describe('HostWorkRegistry — structured receipt lifetimes (ADR-0103 foundation
     await join.promise;
     expect(registry.isIdle).toBe(true);
   });
+
+  it('observes actual native settlement without reading or calling an overridden then', async () => {
+    for (const override of ['getter', 'premature', 'attach-and-throw']) {
+      const registry = new HostWorkRegistry('run-1');
+      const raw = deferred<void>();
+      let overrideCalls = 0;
+      const honestObserver = raw.promise.then(() => undefined);
+      if (override === 'getter') {
+        void Object.defineProperty(raw.promise, 'then', {
+          get: () => {
+            overrideCalls += 1;
+            throw new Error('private observer getter');
+          },
+        });
+      } else {
+        void Object.defineProperty(raw.promise, 'then', {
+          value: (fulfilled: () => void) => {
+            overrideCalls += 1;
+            if (override === 'premature') fulfilled();
+            else {
+              void Promise.prototype.then.call(raw.promise, fulfilled);
+              throw new Error('private observer setup failure');
+            }
+            return Promise.resolve();
+          },
+        });
+      }
+      const invocation = capture(registry, raw.promise);
+      expect(invocation.promise).toBe(raw.promise);
+      const join = watchJoin(registry);
+      await Promise.resolve();
+      expect(overrideCalls).toBe(0);
+      expect(registry.observationFailed).toBe(false);
+      expect(registry.isIdle).toBe(false);
+      expect(join.joined).toBe(false);
+      invocation.scope.assertActive();
+      raw.resolve();
+      await honestObserver;
+      await join.promise;
+      expectEnded(invocation.scope);
+      expect(registry.isIdle).toBe(true);
+      expect(overrideCalls).toBe(0);
+    }
+  });
+
+  it('retains unobservable native raw work after constructor/species setup failure instead of certifying settlement', async () => {
+    for (const rejected of [false, true]) {
+      for (const failingProperty of ['constructor', 'species']) {
+        const registry = new HostWorkRegistry('run-1');
+        const raw = deferred<void>();
+        let actuallySettled = false;
+        const honestObserver = raw.promise.then(
+          () => {
+            actuallySettled = true;
+          },
+          () => {
+            actuallySettled = true;
+          },
+        );
+        const fail = () => {
+          throw new Error('private promise constructor/species');
+        };
+        if (failingProperty === 'constructor')
+          void Object.defineProperty(raw.promise, 'constructor', { get: fail });
+        else {
+          const constructor = {};
+          Object.defineProperty(constructor, Symbol.species, { get: fail });
+          void Object.defineProperty(raw.promise, 'constructor', { value: constructor });
+        }
+        const invocation = capture(registry, raw.promise);
+        expect(invocation.promise).toBe(raw.promise);
+        expect(registry.observationFailed).toBe(true);
+        const join = watchJoin(registry);
+        await Promise.resolve();
+        expect(actuallySettled).toBe(false);
+        expect(join.joined).toBe(false);
+        expect(registry.isIdle).toBe(false);
+        invocation.scope.assertActive();
+        await invocation.scope.enter(() => Promise.resolve());
+        const child = invocation.scope.continue(() => Promise.resolve());
+        await child;
+        expect(registry.isIdle).toBe(false);
+        if (rejected) raw.reject(new Error('actual raw rejection'));
+        else raw.resolve();
+        await honestObserver;
+        await Promise.resolve();
+        expect(actuallySettled).toBe(true);
+        // Honest external observation cannot confer an ACK on this registry's failed observer.
+        expect(registry.observationFailed).toBe(true);
+        expect(registry.isIdle).toBe(false);
+        expect(join.joined).toBe(false);
+      }
+    }
+  });
 });

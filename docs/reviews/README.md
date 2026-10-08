@@ -434,3 +434,7 @@ Record its model, effort and review scope in the coverage section where availabl
 - [2026-10-08 — W7 reviewed Sonar dispositions applied](2026-10-08T20-54-08-w7-sonar-disposition-application-review.md):
   three caller-scoped false positives verified by UI and API; current gate is green,
   eight new factory labels checked, with source integration and whole-wave gates still open.
+
+- [2026-10-08 — W7 delivery/receipt foundation, round 1](2026-10-08T21-01-09-w7-delivery-foundation-round-1-review.md):
+  both complete reviews reproduce false raw completion through Promise observer setup;
+  corrected with seven permanent observer cases and 62 tests, fresh complete review required.
