@@ -358,3 +358,6 @@ Record its model, effort and review scope in the coverage section where availabl
 
 - [2026-10-07 — W7 systematic group 4, round 4](2026-10-07T09-10-29-w7-systematic-group-4-round-4-review.md):
   two fresh full-scope reviews and Parent audits accept data-integrity corrections; one literal-newline Low fixed, 753 independent tests and 43/31 causal controls; other W7 gates remain open.
+
+- [2026-10-08 — W7 systematic group 6, round 1](2026-10-08T13-20-40-w7-systematic-group-6-round-1-review.md):
+  three verified documentation/native-smoke findings corrected after complete qualified Parent audits; fresh round 2 required.

@@ -21,7 +21,8 @@ const main = fileURLToPath(new URL('./capture.mjs', import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), 'relavium-capture-check-'));
 const loader = join(dir, 'fake-fetch.mjs');
 const key = 'capture-probe-key-12345'; // Explicitly synthetic; never a live capture fixture.
-const duplicateSecret = `{"duplicate":"${key.replace('capture-', String.raw`\u0063apture-`)}","duplicate":"safe"}`;
+const escapedKey = key.replace('capture-', String.raw`\u0063apture-`);
+const duplicateSecret = `{"duplicate":"${escapedKey}","duplicate":"safe"}`;
 const out = join(dir, 'capture.json');
 const marker = join(dir, 'calls');
 const raceReady = join(dir, 'cleanup-stat-ready');
@@ -99,24 +100,28 @@ async function run(argv = args, mode = 'safe', input = key, interrupt = false) {
   });
   let stdout = '';
   let stderr = '';
-  child.stdout.setEncoding('utf8').on('data', (chunk) => {
-    stdout += chunk;
-  });
-  child.stderr.setEncoding('utf8').on('data', (chunk) => {
-    stderr += chunk;
-  });
-  child.stdin.on('error', () => {}); // Early argument refusal may close the pipe before our synthetic write.
-  child.stdin.end(input);
-  const timer = setTimeout(() => child.kill('SIGKILL'), 10_000);
-  try {
-    let hasClosed = false;
-    const closed = new Promise((resolve, reject) => {
-      child.once('error', reject);
-      child.once('close', (code, signal) => {
-        hasClosed = true;
-        resolve({ code, signal });
-      });
+  let spawnError;
+  let hasClosed = false;
+  const closed = new Promise((resolve) => {
+    child.once('error', (error) => {
+      spawnError = error;
     });
+    child.once('close', (code, signal) => {
+      hasClosed = true;
+      resolve({ code, signal });
+    });
+  });
+  let timer;
+  try {
+    child.stdout.setEncoding('utf8').on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.setEncoding('utf8').on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.stdin.on('error', () => {}); // Early argument refusal may close the pipe before our synthetic write.
+    child.stdin.end(input);
+    timer = setTimeout(() => child.kill('SIGKILL'), 10_000);
     if (mode === 'cleanup-race') {
       for (let i = 0; i < 400; i += 1) {
         if (hasClosed || existsSync(raceReady)) break;
@@ -138,6 +143,7 @@ async function run(argv = args, mode = 'safe', input = key, interrupt = false) {
       child.kill('SIGTERM');
     }
     const result = await closed;
+    if (spawnError !== undefined) throw spawnError;
     assert.ok(!(stdout + stderr).includes(key), 'key escaped to command output');
     assert.equal(result.signal, null, 'command hung or terminated without its cleanup');
     return {
@@ -148,7 +154,8 @@ async function run(argv = args, mode = 'safe', input = key, interrupt = false) {
     };
   } finally {
     clearTimeout(timer);
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    if (!hasClosed) child.kill('SIGKILL');
+    await closed;
   }
 }
 
