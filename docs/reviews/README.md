@@ -394,3 +394,11 @@ Record its model, effort and review scope in the coverage section where availabl
 - [2026-10-08 — W7 viewport layout, round 1](2026-10-08T19-42-00-w7-viewport-layout-round-1-review.md):
   deterministic scheduling correction is clean in 146/73 independent CI-environment tests;
   fresh second review and exact-head GitHub CI remain required.
+
+- [2026-10-08 — W7 viewport layout, round 2](2026-10-08T19-49-00-w7-viewport-layout-round-2-review.md):
+  narrow timing correction accepted after 178/73 tests, 100 resize controls and held-write ACK
+  controls; exact-head remote CI remains required.
+
+- [2026-10-08 — W7 capture v3, round 1](2026-10-08T19-49-00-w7-capture-v3-round-1-review.md):
+  fixed smaller continuation/prefix is clean in 54 tests and 144 runtime boundary cases;
+  fresh second review precedes the live probe.
