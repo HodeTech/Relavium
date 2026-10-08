@@ -378,3 +378,7 @@ Record its model, effort and review scope in the coverage section where availabl
 
 - [2026-10-08 — W7 inert graph foundation, round 1](2026-10-08T19-25-00-w7-inert-graph-round-1-review.md):
   two descriptor/native-brand Highs and one mutable-alias test gap corrected with separate causal controls; fresh review pending.
+
+- [2026-10-08 — W7 inert graph foundation, round 2](2026-10-08T19-29-00-w7-inert-graph-round-2-review.md):
+  corrected internal helper accepted after 36 committed and 55 additional independent controls;
+  production request ownership and SDK acceptance remain open.
