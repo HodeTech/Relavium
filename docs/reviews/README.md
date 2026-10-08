@@ -306,7 +306,7 @@ Each record starts with a single H1 and a bold metadata block, then the findings
 ```markdown
 # Review: <what was reviewed>
 
-- **Type**: Business | Code | Security | Performance
+- **Type**: Business | Code | Security | Performance | Code + Security
 - **Date**: YYYY-MM-DD
 - **Reviewer(s)**: <@handle or stable agent identity>
 - **Subject**: <PR / milestone / release / file under review>
@@ -322,6 +322,7 @@ touches rather than restating it.
 
 An automated reviewer uses its stable task identity rather than an invented account handle.
 Record its model, effort and review scope in the coverage section where available.
+Use `Code + Security` when one complete review explicitly covers both disciplines.
 
 ## Conventions
 
