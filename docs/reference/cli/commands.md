@@ -489,8 +489,9 @@ relavium run pipeline.relavium.yaml --allow-mcp-stdio v1:9f2c… --allow-mcp-std
 `--allow-mcp-stdio` is repeatable, authorizes **only that invocation**, and **writes no grant** — a CI runner
 does not accumulate standing trust. It exists on `relavium run`, `relavium agent run`, `relavium gate`
 and `relavium budget resume`, including their non-interactive execution-resume paths.
-`relavium budget abort` does not start MCP servers. Human-gate decisions resume workflow execution and
-use the same MCP consent rules; the interactive chat family answers at the prompt instead.
+`relavium budget resume <runId> --abort` does not start MCP servers. Human-gate decisions resume
+workflow execution and use the same MCP consent rules; the interactive chat family answers at the
+prompt instead.
 
 ## Exit codes
 
