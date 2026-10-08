@@ -281,3 +281,40 @@ assertion or the small cap-JSON suite is insufficient. If an installed SDK path 
 obligation, revise the proposal before acceptance; silently dropping supported keys or restoring
 caller prototypes is not an approved workaround. This is scoped merge safety, not a hostile-host
 JavaScript sandbox claim.
+
+### Reviewed SDK boundary and narrower supported-key proposal
+
+The first independent clarification review traces a concrete conflict with the literal-key promise.
+The existing Gemini adapter's transport-option copy uses setter-based assignment. Preserving an own
+`__proto__` there with data-property creation would pass it through the config spread into the
+installed SDK. With ordinary canonical tools present, the SDK's parameter preparation then uses
+`Object.assign` into an ordinary destination on both generate and stream paths, before converter
+filtering. Null-prototype source records cannot prevent that destination's inherited setter from
+reinterpreting the key. This is independently verified source reachability and JavaScript assignment
+semantics, not an executed SDK HTTP control or a claim of an exploited runtime vulnerability.
+
+**Qualify the earlier supported-key promise: reject an own string key exactly `__proto__` anywhere
+in the traversed non-cap request-data graph, before admission/key resolution or SDK entry.** This
+includes ordinary and null-prototype records, inert Map/Set properties, schemas, arguments/results
+and non-cap provider options. Use the same fixed, content-free `UnsupportedRequestDataError`; do not
+echo the offending name, value or path. Do not silently delete or rename data. Inherited ordinary
+prototype members are not owned input properties; the existing descriptor/prototype rules remain.
+Native cap controls retain their separately governed exception and do not gain a generic-data
+serializer privilege. This changes the proposal's retained data domain, not input pricing, output
+precedence, output-cap field identification or durable payloads.
+
+Considered patching/replacing the SDK merge or adding a prepared-send path. Retain the existing
+no-SDK-patch/no-new-provider-interface decision and choose explicit unsupported-key refusal because
+it provides a single enforceable common boundary without another SDK field/filter authority. This
+is an additional compatibility narrowing requiring maintainer approval. A caller needing that literal
+data key must revise its data contract or request a separately reviewed compatibility decision;
+calling the value inert does not make the installed downstream merge safe.
+
+The previous literal-key preservation test requirement is replaced, for non-cap data, by refusal
+controls across each of those positions on all controlled generate/stream entry points. Use actual
+SDK-entry/HTTP spies to prove zero SDK entry, admission, key access and egress, with fixed normalized
+errors. Pair them with retained-domain wire parity and a local unsafe-copy control demonstrating
+why source prototype detachment is insufficient. Removing only the key refusal must break the
+corresponding control. Other supported-data destination/prototype observations remain required;
+neither this key restriction nor static inspection proves full SDK compatibility. No implementation
+acceptance is claimed, and this Proposed qualification authorises no dependent code.
