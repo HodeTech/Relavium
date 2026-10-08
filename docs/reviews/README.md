@@ -386,3 +386,7 @@ Record its model, effort and review scope in the coverage section where availabl
 - [2026-10-08 — W7 capture v2, round 1](2026-10-08T19-40-00-w7-capture-v2-round-1-review.md):
   one stale roadmap evidence Medium corrected; 54 focused tests, 72 runtime boundary cases and
   predecessor control pass, with fresh cumulative review required before the larger probe.
+
+- [2026-10-08 — W7 capture v2, round 2](2026-10-08T19-36-20-w7-capture-v2-round-2-review.md):
+  scoped capture tool accepted after 54 tests and 112 independent runtime cases; the genuine
+  Anthropic native-stop record remains required.
