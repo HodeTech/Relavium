@@ -265,6 +265,9 @@ added.
   verified discriminator-corruption High corrected before tolerant parsing; 8,329 passing tests,
   complete sealed evidence audit and causal native engine controls; fresh complete round 3 required.
 
+- [2026-10-08 — W7 systematic group 5, round 1](2026-10-08T04-58-12-w7-systematic-group-5-round-1-review.md):
+  four verified failure/retirement mechanisms and marker-readiness wording corrected; fresh acceptance pending.
+
 ## File naming convention
 
 Review records use a **full ISO-8601 timestamp slug**, so they sort chronologically and

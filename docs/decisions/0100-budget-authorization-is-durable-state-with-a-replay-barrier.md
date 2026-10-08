@@ -189,3 +189,22 @@ cannot mask a prior check failure. These repairs complete the existing immutable
 obligations. They introduce no replay policy, dependency authority or execution network call. The
 canonical [harness description](../../tools/budget-replay-compat/README.md) documents provenance,
 portable/native boundaries and retention.
+
+## 2026-10-08 — Group 5 review correction: joined workers and claimed retirement
+
+The initial Group 5 tooling pass left secondary per-stage/retention evidence writes capable of
+masking a real worker/readiness failure, asynchronous stderr errors outside the synchronous
+warning guard, and a failed-spawn error path that published completion before observing close.
+The production callers now join actual close, record a missing PID honestly, retain the first
+failure while attempting each evidence writer, and contain fixed diagnostics through synchronous
+descriptor writes. Permanent actual-caller controls exercise these paths, including a real closed
+pipe and primitive thrown values.
+
+The retention scan also previously deleted a pathname after its ownership check had gone stale.
+It now atomically claims retirement in a fresh private directory outside the completed namespace
+and verifies the claimed directory identity and exact owner/completion records. An unexpected
+claim is preserved for inspection and finalization fails. Such a claim may move a changed
+namespace object; it never deletes it or restores over a successor. This is a same-user namespace
+mutation check, not a kernel boundary against a process that can mutate the private claim too.
+See the [harness contract](../../tools/budget-replay-compat/README.md). These are implementation
+corrections; independent corrective review and whole-W7 acceptance remain required.

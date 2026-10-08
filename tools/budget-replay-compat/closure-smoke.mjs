@@ -258,11 +258,7 @@ assert.equal((await import('fixture-esm')).default, 'one');
   tampered[dependencyArchiveMagic.length] ^= 1;
   for (const [label, bytes, message] of [
     ['archive-byte-drift', tampered, /fixture-shared\/index.js/],
-    [
-      'archive-truncated',
-      portableBytes.subarray(0, portableBytes.length - 1),
-      /truncated portable archive/,
-    ],
+    ['archive-truncated', portableBytes.subarray(0, -1), /truncated portable archive/],
     [
       'archive-trailing-byte',
       Buffer.concat([portableBytes, Buffer.from('x')]),

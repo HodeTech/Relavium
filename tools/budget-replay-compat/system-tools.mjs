@@ -4,12 +4,12 @@ import { existsSync, realpathSync } from 'node:fs';
 
 export function systemTool(name) {
   assert.ok(name === 'git' || name === 'tar');
-  const paths =
-    process.platform === 'win32'
-      ? name === 'git'
-        ? ['C:/Program Files/Git/cmd/git.exe', 'C:/Program Files/Git/bin/git.exe']
-        : ['C:/Windows/System32/tar.exe']
-      : [`/usr/bin/${name}`, `/bin/${name}`];
+  let paths = [`/usr/bin/${name}`, `/bin/${name}`];
+  if (process.platform === 'win32') {
+    paths = ['C:/Windows/System32/tar.exe'];
+    if (name === 'git')
+      paths = ['C:/Program Files/Git/cmd/git.exe', 'C:/Program Files/Git/bin/git.exe'];
+  }
   const path = paths.find((candidate) => existsSync(candidate));
   assert.ok(path, `${name} is required at a standard OS installation path`);
   return realpathSync(path);

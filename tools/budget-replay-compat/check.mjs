@@ -1,12 +1,19 @@
 /** ADR-0100: actual current engine writes, actual frozen predecessor refuses. Offline only. */
 import assert from 'node:assert/strict';
-import { spawn, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, mkdirSync, readFileSync, realpathSync, readdirSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  readdirSync,
+  writeFileSync,
+  writeSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { setTimeout, clearTimeout } from 'node:timers';
 import { gunzipSync } from 'node:zlib';
 import { createRequire } from 'node:module';
 import { snapshotDependencyClosure } from './dependency-closure.mjs';
@@ -17,8 +24,11 @@ import {
   allocateEvidence,
   finishEvidence,
   captureEvidenceFinalization,
+  warnEvidenceFailure,
 } from './evidence-retention.mjs';
 import { checkRetentionGuards } from './evidence-retention-smoke.mjs';
+import { runReplayStage } from './worker-stage.mjs';
+import { checkLifecycleGuards } from './lifecycle-smoke.mjs';
 
 const tooling = realpathSync(fileURLToPath(new URL('.', import.meta.url)));
 const repository = realpathSync(join(tooling, '../..'));
@@ -81,6 +91,7 @@ try {
   };
   writeFileSync(join(owned, 'package.json'), '{"type":"module"}\n');
   await checkRetentionGuards(owned, environment);
+  await checkLifecycleGuards(owned, environment);
   writeFileSync(join(owned, 'frozen-pre-w7-source.tar.gz'), archive);
   execFileSync(
     systemTool('tar'),
@@ -167,7 +178,7 @@ try {
   ];
   for (const file of workerFiles) cpSync(join(tooling, file), join(owned, file));
 
-  console.log(`Budget replay evidence: ${owned}`);
+  writeSync(1, `Budget replay evidence: ${owned}\n`);
   const dependencyRuntime = snapshotDependencyClosure(repository, owned, pins, portableBytes);
   for (const file of workerFiles) {
     const bytes = readFileSync(join(owned, file));
@@ -198,56 +209,7 @@ try {
       ['producer', 'producer', 'producer.mjs'],
       ['predecessor', 'frozen', 'predecessor.mjs'],
     ]) {
-      const args = ['--import', join(owned, 'register.mjs'), join(owned, script)];
-      const child = spawn(process.execPath, args, {
-        cwd: owned,
-        env: { ...environment, COMPAT_SOURCE: mode, COMPAT_LABEL: stage },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      let stdout = '';
-      let stderr = '';
-      let timedOut = false;
-      child.stdout.setEncoding('utf8').on('data', (chunk) => {
-        stdout += chunk;
-      });
-      child.stderr.setEncoding('utf8').on('data', (chunk) => {
-        stderr += chunk;
-      });
-      const timer = setTimeout(() => {
-        timedOut = true;
-        child.kill('SIGKILL');
-      }, 45000);
-      let result;
-      try {
-        result = await new Promise((done, reject) => {
-          child.once('error', reject);
-          child.once('close', (code, signal) => done({ code, signal }));
-        });
-      } finally {
-        clearTimeout(timer);
-        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-      }
-      const record = {
-        stage,
-        source: mode,
-        command: [process.execPath, ...args],
-        cwd: owned,
-        pid: child.pid,
-        timedOut,
-        ...result,
-        workerClosed: true,
-      };
-      processes.push(record);
-      writeFileSync(
-        join(owned, `logs/${stage}.process.json`),
-        `${JSON.stringify(record, null, 2)}\n`,
-      );
-      writeFileSync(join(owned, `logs/${stage}.stdout.log`), stdout);
-      writeFileSync(join(owned, `logs/${stage}.stderr.log`), stderr);
-      process.stdout.write(stdout);
-      if (stderr) process.stderr.write(stderr);
-      assert.equal(result.code, 0, `${stage} failed; evidence ${owned}`);
-      assert.equal(result.signal, null);
+      await runReplayStage({ owned, stage, source: mode, script, environment, processes });
     }
   } catch (error) {
     workerFailure = true;
@@ -261,7 +223,7 @@ try {
         ),
       workerFailure,
       () =>
-        process.stderr.write(
+        warnEvidenceFailure(
           `Replay worker evidence finalization failed; primary worker failure retained. Evidence: ${owned}\n`,
         ),
     );
@@ -276,7 +238,7 @@ try {
     () => finishEvidence(allocation, completion),
     primaryFailure,
     () =>
-      process.stderr.write(
+      warnEvidenceFailure(
         `Replay evidence finalization failed; primary check failure retained. Evidence: ${owned}\n`,
       ),
   );

@@ -82,11 +82,21 @@ PID. Each invocation atomically acquires its own directory; no shared initializa
 leave concurrent or interrupted runs stuck. On success or failure, `completion.json` publishes the
 completed state after workers close. The current invocation plus the newest two other completed
 invocations for that exact repository are retained; older completed owned evidence is pruned.
-Active/interrupted evidence, foreign owners, redirected paths and malformed records are untouched.
-Interrupted evidence is intentionally not automatically reclaimed. A finalization error fails a
+Active/interrupted evidence, foreign owners, redirected paths and malformed records are excluded
+from the completed scan. Retirement atomically moves an older candidate into a fresh private
+`relavium-budget-replay-retirement-*` directory outside the completed namespace, then verifies
+the claimed directory identity and exact owner/completion records before deleting it. A changed
+claim is preserved in that private directory and finalization fails; it is never restored over a
+successor or recursively deleted. These checks cover post-scan pathname/owner changes. They are
+not a kernel security boundary against a same-user process that can also mutate a private claim.
+Interrupted and unexpectedly claimed evidence is intentionally not automatically reclaimed.
+A finalization error fails a
 successful check; when the check already failed, it reports a separate fixed diagnostic and preserves
-that primary failure. The worker-closure evidence writer follows the same rule, so a secondary log
-write cannot replace the original worker failure. No old source or
+that primary failure. Every stage/retention evidence writer is attempted without replacing the
+first worker/readiness failure; evidence-only failures remain observable. Fixed secondary diagnostics
+use synchronous descriptor writes, so a closed pipe cannot emit an asynchronous error later.
+The worker-close promise observes `close` even after native spawn failure. Failed spawns retain
+an honest null PID and never publish completion before that observation. No old source or
 test is extracted into the repository or normal Vitest collection. Dependencies are
 physical owned copies with individual links inside physical `node_modules` directories.
 Seventeen permanent graph/runtime controls distinguish installed portable drift from immutable
@@ -98,7 +108,12 @@ they never modify the extracted predecessor, whose archived files can be read-on
 ten concurrent completions, future timestamps, active/interrupted/foreign/redirected records,
 current-owner refusal and direct-child ownership. Seven additional finalization cases, grouped into
 three results, preserve Error/primitive primary failures and a failed diagnostic sink while surfacing
-finalization-only failures. The ESM control uses the actual production loader
+finalization-only failures. Fourteen additional production-caller controls cover six stage write
+faults, ten genuinely failed retention children, a native failed spawn, three real closed-stderr
+pipes retaining `Error`/`undefined`/`null`, and three post-scan owner/physical replacement claims.
+The completed replacement deliberately reuses the same owner/completion bytes and proves that
+directory identity is required. These controls execute the actual helpers/callers; they do not
+mirror their implementations. The ESM control uses the actual production loader
 with an inert, pinned TypeScript stand-in; it loads no TS source and is separate from the
 real predecessor/source/dependency acceptance workers.
 Their probe code cannot run its inert marker on a rejected load. Workers have

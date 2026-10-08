@@ -16,6 +16,7 @@ import {
   allocateEvidence,
   finishEvidence,
   captureEvidenceFinalization,
+  warnEvidenceFailure,
 } from './evidence-retention.mjs';
 
 if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === '--retention-child') {
@@ -174,6 +175,8 @@ export async function checkRetentionGuards(owned, environment) {
   record('non-direct-child allocation is refused before completion');
 
   const workers = [];
+  let primaryFailed = false;
+  let finalization = { failed: false };
   try {
     for (let index = 0; index < 10; index += 1) {
       const child = spawn(
@@ -217,6 +220,9 @@ export async function checkRetentionGuards(owned, environment) {
       assert.ok(existsSync(path));
     assert.equal(readFileSync(join(external, 'sentinel'), 'utf8'), 'untouched');
     record('concurrent pruning preserves every active foreign and redirected sentinel');
+  } catch (error) {
+    primaryFailed = true;
+    throw error;
   } finally {
     for (const worker of workers) {
       clearTimeout(worker.timer);
@@ -224,13 +230,24 @@ export async function checkRetentionGuards(owned, environment) {
         worker.child.kill('SIGKILL');
     }
     const ended = await Promise.all(workers.map((worker) => worker.closed));
-    for (const [index, worker] of workers.entries()) {
-      writeFileSync(
-        join(root, `worker-${index}.json`),
-        `${JSON.stringify({ pid: worker.child.pid, ...ended[index], ...worker.output() }, null, 2)}\n`,
-      );
-    }
-    writeFileSync(join(root, 'results.json'), `${JSON.stringify(results, null, 2)}\n`);
+    finalization = captureEvidenceFinalization(
+      [
+        ...workers.map(
+          (worker, index) => () =>
+            writeFileSync(
+              join(root, `worker-${index}.json`),
+              `${JSON.stringify({ pid: worker.child.pid ?? null, ...ended[index], ...worker.output() }, null, 2)}\n`,
+            ),
+        ),
+        () => writeFileSync(join(root, 'results.json'), `${JSON.stringify(results, null, 2)}\n`),
+      ],
+      primaryFailed,
+      () =>
+        warnEvidenceFailure(
+          'Replay retention evidence failed; primary readiness or worker failure retained.\n',
+        ),
+    );
   }
+  if (finalization.failed) throw finalization.error;
   return results;
 }

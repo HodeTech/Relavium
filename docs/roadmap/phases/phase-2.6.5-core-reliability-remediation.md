@@ -3625,7 +3625,7 @@ are checked against the actual pinned Git baseline. Native SQLite remains the do
 invocation-hashed ABI exception. Completed evidence is bounded to three invocations; active,
 interrupted, foreign and redirected evidence is preserved. Seven provenance, 17 closure and eight
 retention controls pass, with seven additional finalization cases in three result groups. The
-isolation probe uses explicit IPC readiness instead of elapsed-time assumptions. Turbo is pinned
+isolation probe uses explicit file-marker readiness raced against child closure instead of elapsed-time assumptions. Turbo is pinned
 exactly to the cooled 2.11.4 release, with its installed local schema and unchanged task definitions.
 
 Forced Original `pnpm run ci` passes: 23 lint/typecheck/test tasks, 373 test files, 8,397 passing
@@ -3636,3 +3636,16 @@ CI run. `typecheck:tools` covers its configured TypeScript programme, not every 
 High, Proposed ADR-0102, unapproved ADR-0103, Group 6, Steps 7–8/12, final coverage/Sonar, W7
 and draft PR #90 remain open. No additional paid capture or ADR-dependent implementation is
 authorised.**
+
+### W7 Group 5 — review corrections implemented, fresh acceptance pending — 2026-10-08
+
+The [first independent systematic Group 5 review](../../reviews/2026-10-08T04-58-12-w7-systematic-group-5-round-1-review.md) corroborates
+secondary-evidence failure masking, asynchronous closed-stderr errors, native failed-spawn
+completion before close, a same-user stale retirement pathname, and two IPC wording mistakes.
+Actual callers now preserve failure precedence, join real close and write fixed diagnostics
+synchronously. Retirement claims and validates physical identity plus exact records, preserving
+unexpected claims for inspection. Fourteen permanent caller controls and five causal removals
+pass their intended positive/negative outcomes. Forced full CI passes 23 tasks, 373 files /
+8,397 passing tests / 12 skips and six builds after an initial retained DB-timeout failure and a
+clean isolated 522-test DB run. This is an implementation correction; fresh Group 5 round 2,
+Group 6, ADR approvals, provider captures and final whole-wave acceptance remain open.
