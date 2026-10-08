@@ -128,6 +128,39 @@ nodes and joins them at aggregator/merge points. Each node type maps to a handle
 How a single run progresses node-by-node — including streaming and the human gate
 — is covered in [execution-model.md](execution-model.md).
 
+### Internal departure foundations (ADR-0103)
+
+The first internal increment of
+[ADR-0103](../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md)
+adds primary-delivery observation and a platform-free host-work lifetime registry. These are
+foundations for subsequent `RunExecution` integration; `RunHandle.depart()` and
+`NodeExecContext.continueReceipt()` are not implemented yet.
+
+Each run handle's existing primary queue privately counts actual publications before offering them
+to a waiting pull or buffer. Delivery advances synchronously only when a buffered pull or waiting
+handoff returns an event. Internal construction wiring supplies a read-only snapshot reader; passive
+subscribers, empty `next()` calls, closure and iterator return cannot acknowledge delivery. Queue
+refusal is a sticky gap, and early consumer return is a distinct sticky abandonment observation.
+Draining the remaining buffer clears neither condition. Counts cover only this execution's actual
+publications, including when durable sequence numbering starts above zero. This observation adds
+no replay, replacement spool or public acknowledgement, and does not repair the existing
+[never-pulled overflow defect](../decisions/0087-consumed-streams-size-bounds-and-run-retention.md).
+
+The internal `HostWorkRegistry` registers an invocation before calling its factory and observes the
+exact raw returned Promise, separately from any abort/grace race. Settlement or a synchronous throw
+ends that scope's future-entry authority; already entered operations and independently registered
+children remain joined. An ended scope refuses entry or child transfer through the nondurable
+`EngineStateError` code `receipt_scope_ended`. The scope itself grants no host capabilities.
+Joining waits for actual completion notifications and rechecks quiescence; idle work resolves
+immediately, while a never-settling raw invocation or child intentionally keeps the join pending.
+Joining does not seal new root admission, certify persistence or delay terminal publication.
+
+This increment does not close the paused-finalization lifecycle finding. Integration still owes
+producer registration and retirement, the final pause/cursor claim, retained exact-fence ownership,
+ordered late-receipt writer rules, final money/effect disposition, parked-node timing, and CLI
+input-release/primary-reader/host-close acceptance. Existing queue and session lifecycle behavior
+is unchanged.
+
 ## Inbound MCP connection lifecycle
 
 The engine consumes external MCP servers' tools, but it never owns the connection — the

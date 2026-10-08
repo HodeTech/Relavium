@@ -37,6 +37,18 @@ import { RunLoopInvariantError } from './invariant-error.js';
 /** Default per-consumer high-water mark — beyond this, the producer is asked to await a drain. */
 export const DEFAULT_STREAM_CAPACITY = 256;
 
+/**
+ * Internal primary-delivery observation (ADR-0103). Counts belong to this queue's publications,
+ * not the durable sequence source. A gap or abandonment permanently prevents consumption from
+ * certifying a paused departure, even when the remaining buffer has been drained.
+ */
+export interface EventStreamDeliveryState {
+  readonly publishedCount: number;
+  readonly deliveredCount: number;
+  readonly hasGap: boolean;
+  readonly abandoned: boolean;
+}
+
 export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
   readonly #buffer: E[] = [];
   readonly #capacity: number;
@@ -56,6 +68,10 @@ export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
   #everPulled = false;
   /** Events declined because nobody had pulled and the buffer was full — see {@link push}. */
   #unpulledOverflow = 0;
+  #publishedCount = 0;
+  #deliveredCount = 0;
+  #hasGap = false;
+  #abandoned = false;
 
   constructor(capacity: number, onClose?: () => void) {
     this.#capacity = capacity;
@@ -79,6 +95,16 @@ export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
     return this.#buffer.length;
   }
 
+  /** Read-only, content-free snapshot for internal handle construction; never an acknowledgement API. */
+  get deliveryState(): EventStreamDeliveryState {
+    return Object.freeze({
+      publishedCount: this.#publishedCount,
+      deliveredCount: this.#deliveredCount,
+      hasGap: this.#hasGap,
+      abandoned: this.#abandoned,
+    });
+  }
+
   /**
    * Offer an event to the consumer: hand it to a waiting `next()`, else buffer it.
    *
@@ -98,17 +124,23 @@ export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
    * holding them for it.
    */
   push(event: E): void {
+    // Observe publication before offering it to a waiting pull or the buffer, including refusal.
+    // No observer callback runs here: arbitrary code cannot acknowledge or interfere with delivery.
+    this.#publishedCount += 1;
     if (this.#closed) {
+      this.#hasGap = true;
       return;
     }
     if (this.#waitingPull !== undefined) {
       const resolve = this.#waitingPull;
       this.#waitingPull = undefined;
+      this.#deliveredCount += 1;
       resolve({ value: event, done: false });
       return;
     }
     if (!this.#everPulled && this.#buffer.length >= this.#capacity) {
       this.#unpulledOverflow += 1;
+      this.#hasGap = true;
       return;
     }
     this.#buffer.push(event);
@@ -184,6 +216,7 @@ export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
     this.#everPulled = true; // from here on, a full buffer means a SLOW consumer rather than none
     const buffered = this.#buffer.shift();
     if (buffered !== undefined) {
+      this.#deliveredCount += 1;
       this.#wakeDrainWaiters();
       return Promise.resolve({ value: buffered, done: false });
     }
@@ -205,6 +238,11 @@ export class BoundedEventStream<E> implements AsyncIterableIterator<E> {
 
   /** Consumer abandoned the loop (`break` / `return`) — release the stream. */
   return(): Promise<IteratorResult<E>> {
+    // A normal, fully drained close is not abandonment. Returning an open stream or throwing away
+    // closed-but-undelivered events is. Neither case acknowledges an event or clears a prior gap.
+    if (!this.#closed || this.#buffer.length > 0) {
+      this.#abandoned = true;
+    }
     this.close(); // settles any parked next() deterministically (don't duplicate that logic here)
     this.#buffer.length = 0; // discard anything still buffered on an early abandon
     return Promise.resolve({ value: undefined, done: true });

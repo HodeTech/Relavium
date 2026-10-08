@@ -82,3 +82,42 @@ describe('BoundedEventStream — one freed slot wakes one producer (CR-30)', () 
     await Promise.all(producers);
   });
 });
+
+describe('BoundedEventStream — actual delivery observation (ADR-0103)', () => {
+  it('marks an offer refused by a closed queue as a gap, without changing actual delivery', async () => {
+    const stream = new BoundedEventStream<number>(2);
+    stream.push(1);
+    stream.close();
+    stream.push(2);
+    expect(stream.deliveryState).toEqual({
+      publishedCount: 2,
+      deliveredCount: 0,
+      hasGap: true,
+      abandoned: false,
+    });
+    expect(await stream.next()).toEqual({ value: 1, done: false });
+    expect(await stream.next()).toEqual({ value: undefined, done: true });
+    expect(stream.deliveryState).toEqual({
+      publishedCount: 2,
+      deliveredCount: 1,
+      hasGap: true,
+      abandoned: false,
+    });
+  });
+
+  it('does not count rejected concurrent next, close or return as delivery', async () => {
+    const stream = new BoundedEventStream<number>(2);
+    const waiting = stream.next();
+    await expect(stream.next()).rejects.toBeInstanceOf(RunLoopInvariantError);
+    expect(stream.deliveryState.deliveredCount).toBe(0);
+    await stream.return();
+    expect(await waiting).toEqual({ done: true, value: undefined });
+    stream.close();
+    expect(stream.deliveryState).toEqual({
+      publishedCount: 0,
+      deliveredCount: 0,
+      hasGap: false,
+      abandoned: true,
+    });
+  });
+});

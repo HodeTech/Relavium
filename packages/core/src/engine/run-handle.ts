@@ -17,7 +17,11 @@
 import type { ErrorCode, RunDurability, RunEvent, RunOrSessionEvent } from '@relavium/shared';
 
 import type { RunEventBus, RunEventListener } from './event-bus.js';
-import { BoundedEventStream, DEFAULT_STREAM_CAPACITY } from './event-stream.js';
+import {
+  BoundedEventStream,
+  DEFAULT_STREAM_CAPACITY,
+  type EventStreamDeliveryState,
+} from './event-stream.js';
 
 const TERMINAL_TYPES: ReadonlySet<RunEvent['type']> = new Set([
   'run:completed',
@@ -108,6 +112,12 @@ export function createRunHandle(
    * close is terminal-driven, which is why this is a deliberate escape hatch rather than a general API.
    */
   onCloser: (close: () => void) => void = () => undefined,
+  /**
+   * Internal ADR-0103 construction wiring: receive a reader for this handle's actual primary
+   * publication/delivery record. Only the queue can change it; passive observers get no authority.
+   * This is not exposed on RunHandle and does not itself certify safe host closure.
+   */
+  onPrimaryDelivery: (read: () => EventStreamDeliveryState) => void = () => undefined,
 ): RunHandle {
   // `onClose: unsubscribe` detaches the bus subscription on ANY close — the terminal event below OR an early
   // consumer abandon (`break`/`return` → BoundedEventStream.return() → close()) — not only on a terminal.
@@ -134,6 +144,7 @@ export function createRunHandle(
   onCloser(() => {
     primary.close();
   });
+  onPrimaryDelivery(() => primary.deliveryState);
   return {
     runId,
     events: primary,

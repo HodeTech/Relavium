@@ -21,6 +21,7 @@ export type EngineStateErrorCode =
   | 'run_already_active' // `resumeFromCheckpoint` named a run THIS engine already holds in memory — use `resume` instead
   | 'run_already_terminal' // the run already settled (completed / failed / cancelled) — no resume/cancel
   | 'run_not_paused' // `resume` was called while the run has no pending gate to resolve
+  | 'receipt_scope_ended' // ADR-0103: an ended invocation/receipt scope cannot enter or transfer more host work
   | 'unknown_gate' // the `gateId` does not match any gate currently pending on the run
   | 'invalid_decision' // the supplied `GateDecision` failed schema validation at the boundary
   | 'pending_gate_requires_decision' // a media-only `resumeFromCheckpoint` hit a run also parked on a gate (pass gateId + decision)
