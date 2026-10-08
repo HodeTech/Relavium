@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CAPTURE_MAX_INPUT_CHARACTERS,
   CAPTURE_MAX_RESPONSE_BYTES,
-  CAPTURE_TIMEOUT_MS,
   CAPTURE_TOOL_VERSION,
   captureRequest,
   captureResponse,
@@ -25,6 +24,22 @@ const args = [
   'capture.json',
 ];
 const options = parseCaptureArguments(args);
+const probeOptions = parseCaptureArguments([
+  ...args,
+  '--purpose',
+  'context-stop-probe',
+  '--max-output',
+  '16384',
+]);
+// Literal durations pin the operational contract independently of the implementation's constants.
+const deadlineCases = [
+  ...['anthropic', 'openai', 'deepseek', 'gemini'].map((provider) => ({
+    label: `${provider} ordinary overflow`,
+    selected: parseCaptureArguments(['--provider', provider, ...args.slice(2)]),
+    timeoutMs: 60_000,
+  })),
+  { label: 'Anthropic context-stop probe', selected: probeOptions, timeoutMs: 180_000 },
+];
 const jsonResponse = (
   body = '{"error":{"message":"synthetic overflow"}}',
   status = 400,
@@ -249,51 +264,186 @@ describe('bounded, secret-free live response capture', () => {
     ).rejects.toMatchObject({ code: 'response_limit' });
   });
 
-  it('hard-races a transport that ignores the signal and never retries', async () => {
-    const fetch = vi.fn(() => new Promise<Response>(() => {}));
-    const result = captureResponse(options, KEY, dependencies(fetch));
-    const refused = expect(result).rejects.toMatchObject({ code: 'timeout' });
-    await vi.advanceTimersByTimeAsync(CAPTURE_TIMEOUT_MS);
-    await refused;
+  it.each(deadlineCases)(
+    'hard-races $label at its explicit $timeoutMs ms bound without retries',
+    async ({ selected, timeoutMs }) => {
+      const fetch = vi.fn(() => new Promise<Response>(() => {}));
+      const transport = new AbortController();
+      const caller = new AbortController();
+      const removeListener = vi.spyOn(caller.signal, 'removeEventListener');
+      const base = dependencies(fetch);
+      const setTimer = vi.fn(base.setTimer);
+      const result = captureResponse(selected, KEY, {
+        ...base,
+        newAbortController: () => transport,
+        setTimer,
+        signal: caller.signal,
+      });
+      const settled = vi.fn();
+      void result.then(settled, settled);
+      const refused = expect(result).rejects.toMatchObject({ code: 'timeout' });
+      expect(setTimer).toHaveBeenCalledExactlyOnceWith(timeoutMs, expect.any(Function));
+      await vi.advanceTimersByTimeAsync(timeoutMs - 1);
+      expect(settled).not.toHaveBeenCalled();
+      expect(transport.signal.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await refused;
+      expect(transport.signal.aborted).toBe(true);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(removeListener).toHaveBeenCalledExactlyOnceWith('abort', expect.any(Function));
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it.each(deadlineCases)(
+    'keeps the absolute $timeoutMs ms deadline across delayed $label headers and body reads',
+    async ({ selected, timeoutMs }) => {
+      const cancel = vi.fn(() => new Promise<void>(() => {}));
+      let source: ReadableStreamDefaultController<Uint8Array> | undefined;
+      const response = new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            source = controller;
+            controller.enqueue(new TextEncoder().encode('{'));
+          },
+          cancel,
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+      const fetch = vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            setTimeout(() => resolve(response), timeoutMs / 2);
+          }),
+      );
+      const base = dependencies(fetch);
+      const setTimer = vi.fn(base.setTimer);
+      const transport = new AbortController();
+      const caller = new AbortController();
+      const removeListener = vi.spyOn(caller.signal, 'removeEventListener');
+      const result = captureResponse(selected, KEY, {
+        ...base,
+        newAbortController: () => transport,
+        setTimer,
+        signal: caller.signal,
+      });
+      const settled = vi.fn();
+      void result.then(settled, settled);
+      const refused = expect(result).rejects.toMatchObject({ code: 'timeout' });
+      await vi.advanceTimersByTimeAsync(timeoutMs / 2);
+      expect(settled).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(timeoutMs / 4);
+      expect(source).toBeDefined();
+      source?.enqueue(new TextEncoder().encode(' '));
+      await vi.advanceTimersByTimeAsync(timeoutMs / 4 - 1);
+      expect(settled).not.toHaveBeenCalled();
+      expect(transport.signal.aborted).toBe(false);
+      expect(setTimer).toHaveBeenCalledExactlyOnceWith(timeoutMs, expect.any(Function));
+      await vi.advanceTimersByTimeAsync(1);
+      await refused; // Also proves cleanup does not await an uncooperative cancel.
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(transport.signal.aborted).toBe(true);
+      expect(removeListener).toHaveBeenCalledExactlyOnceWith('abort', expect.any(Function));
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it('saves a probe response arriving after 60 seconds and disarms its longer deadline', async () => {
+    const body = '{"stop_reason":"model_context_window_exceeded"}';
+    const fetch = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          setTimeout(() => resolve(jsonResponse(body, 200)), 90_000);
+        }),
+    );
+    const result = captureResponse(probeOptions, KEY, dependencies(fetch));
+    const saved = result.then(
+      (artifact) => ({ artifact }),
+      (error: unknown) => ({ error }),
+    );
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(await saved).toMatchObject({
+      artifact: {
+        captureTool: 'w7-overflow-capture-v4',
+        purpose: 'context-stop-probe',
+        response: { status: 200, body },
+      },
+    });
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('uses the same absolute deadline for a body that stalls after headers', async () => {
-    const response = new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode('{'));
-        },
-        cancel() {
-          return new Promise<void>(() => {});
-        },
-      }),
-      { headers: { 'content-type': 'application/json' } },
-    );
-    const result = captureResponse(
-      options,
-      KEY,
-      dependencies(() => Promise.resolve(response)),
-    );
-    const refused = expect(result).rejects.toMatchObject({ code: 'timeout' });
-    await vi.advanceTimersByTimeAsync(CAPTURE_TIMEOUT_MS);
-    await refused; // Also proves cleanup does not await an uncooperative cancel.
-  });
+  it.each([options, probeOptions])(
+    'pre-abort prevents $purpose egress, and mid-flight abort wins',
+    async (selected) => {
+      const caller = new AbortController();
+      const fetch = vi.fn(() => new Promise<Response>(() => {}));
+      caller.abort();
+      await expect(
+        captureResponse(selected, KEY, { ...dependencies(fetch), signal: caller.signal }),
+      ).rejects.toMatchObject({ code: 'cancelled' });
+      expect(fetch).not.toHaveBeenCalled();
+      const fresh = new AbortController();
+      const transport = new AbortController();
+      const removeListener = vi.spyOn(fresh.signal, 'removeEventListener');
+      const result = captureResponse(selected, KEY, {
+        ...dependencies(fetch),
+        newAbortController: () => transport,
+        signal: fresh.signal,
+      });
+      const refused = expect(result).rejects.toMatchObject({ code: 'cancelled' });
+      fresh.abort();
+      await refused;
+      expect(transport.signal.aborted).toBe(true);
+      expect(removeListener).toHaveBeenCalledExactlyOnceWith('abort', expect.any(Function));
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
 
-  it('pre-abort prevents egress, and mid-flight abort wins over deadline classification', async () => {
-    const caller = new AbortController();
-    const fetch = vi.fn(() => new Promise<Response>(() => {}));
-    caller.abort();
+  it.each([options, probeOptions])(
+    'cancels a stalled $purpose body before its deadline and clears the timer',
+    async (selected) => {
+      const cancel = vi.fn(() => new Promise<void>(() => {}));
+      const response = new Response(new ReadableStream<Uint8Array>({ cancel }), {
+        headers: { 'content-type': 'application/json' },
+      });
+      const fetch = vi.fn(() => Promise.resolve(response));
+      const caller = new AbortController();
+      const transport = new AbortController();
+      const removeListener = vi.spyOn(caller.signal, 'removeEventListener');
+      const result = captureResponse(selected, KEY, {
+        ...dependencies(fetch),
+        newAbortController: () => transport,
+        signal: caller.signal,
+      });
+      const refused = expect(result).rejects.toMatchObject({ code: 'cancelled' });
+      await vi.advanceTimersByTimeAsync(1); // Drain the actual response/getReader path before cancellation.
+      caller.abort();
+      await refused;
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(transport.signal.aborted).toBe(true);
+      expect(removeListener).toHaveBeenCalledExactlyOnceWith('abort', expect.any(Function));
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it('refuses a forged non-Anthropic stop purpose before arming a longer timer or egress', async () => {
+    const fetch = vi.fn(() => Promise.resolve(jsonResponse()));
+    const newAbortController = vi.fn(() => new AbortController());
+    const base = dependencies(fetch);
+    const setTimer = vi.fn(base.setTimer);
     await expect(
-      captureResponse(options, KEY, { ...dependencies(fetch), signal: caller.signal }),
-    ).rejects.toMatchObject({ code: 'cancelled' });
+      captureResponse({ ...probeOptions, provider: 'gemini' }, KEY, {
+        ...base,
+        newAbortController,
+        setTimer,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_arguments' });
     expect(fetch).not.toHaveBeenCalled();
-    const fresh = new AbortController();
-    const result = captureResponse(options, KEY, { ...dependencies(fetch), signal: fresh.signal });
-    const refused = expect(result).rejects.toMatchObject({ code: 'cancelled' });
-    fresh.abort();
-    await refused;
+    expect(newAbortController).not.toHaveBeenCalled();
+    expect(setTimer).not.toHaveBeenCalled();
   });
 
   it('drops arbitrary transport errors/causes and refuses invalid capture provenance', async () => {

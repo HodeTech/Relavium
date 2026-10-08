@@ -7,7 +7,8 @@ import { scrubSecrets } from '../llm-error.js';
 export const CAPTURE_TIMEOUT_MS = 60_000;
 export const CAPTURE_MAX_RESPONSE_BYTES = 1_048_576;
 export const CAPTURE_MAX_INPUT_CHARACTERS = 8_388_608;
-export const CAPTURE_TOOL_VERSION = 'w7-overflow-capture-v3';
+export const CAPTURE_TOOL_VERSION = 'w7-overflow-capture-v4';
+const CONTEXT_STOP_TIMEOUT_MS = 180_000;
 const MAX_OVERFLOW_OUTPUT_TOKENS = 4096;
 const MAX_CONTEXT_STOP_OUTPUT_TOKENS = 16_384;
 const MAX_RESPONSE_CHUNKS = 16_384;
@@ -219,7 +220,12 @@ export async function captureResponse(
 ): Promise<CaptureArtifact> {
   const request = captureRequest(options, key);
   const controller = deps.newAbortController();
-  const deadline = openDeadline(CAPTURE_TIMEOUT_MS, () => controller, deps.setTimer, deps.signal);
+  // captureRequest has validated the explicit Anthropic-only purpose before selecting its longer bound.
+  const timeoutMs =
+    options.provider === 'anthropic' && options.purpose === 'context-stop-probe'
+      ? CONTEXT_STOP_TIMEOUT_MS
+      : CAPTURE_TIMEOUT_MS;
+  const deadline = openDeadline(timeoutMs, () => controller, deps.setTimer, deps.signal);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
     if (deps.signal?.aborted) throw new CaptureError('cancelled');

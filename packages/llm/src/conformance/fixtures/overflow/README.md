@@ -24,5 +24,10 @@ artifacts alone do not accept Steps 7–8 or alter the current classifier.
 Two subsequent v2 probes are also unsuitable and remain private: one returned input-overflow
 400 (`200002 > 200000`) despite a 199,986 token-count estimate; the next accepted 199,884 input
 tokens but declined the million-integer continuation and ended with `end_turn` / 173 output
-tokens. Neither is native context-stop evidence. The new v3 fixed assistant-prefill probe is
-subject to independent review and the same approved budget before execution.
+tokens. Neither is native context-stop evidence. The reviewed v3 fixed assistant-prefill probe
+then reached its absolute 60-second response deadline and left an empty private artifact; it
+captured no response and is unsuitable evidence. The v4 probe retains the same synthetic request
+and gives only the explicitly validated Anthropic context-stop purpose a 180-second response
+deadline. It still requires independent review and an explicit attempt within the same approved
+budget; the longer wait guarantees neither completion nor the native stop. Earlier v1–v3
+artifacts remain byte-for-byte unchanged. The native context-stop fixture is still missing.
