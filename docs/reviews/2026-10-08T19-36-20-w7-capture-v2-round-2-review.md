@@ -9,7 +9,7 @@
 ## Summary
 
 The fresh cumulative Code/Security review accepts this scoped capture increment. The stale
-roadmap finding from [round 1](2026-10-08T19-40-00-w7-capture-v2-round-1-review.md) is resolved.
+roadmap finding from [round 1](2026-10-08T19-35-00-w7-capture-v2-round-1-review.md) is resolved.
 This permits the explicitly selected bounded probe under the existing maintainer authorisation;
 it does not accept missing provider evidence or Steps 7–8.
 
