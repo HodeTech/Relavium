@@ -550,8 +550,8 @@ stdout summary. Cosmetic failure never selects or fabricates an outcome.
    effect flag must survive even when `terminalError()` stays unchanged; no second terminal or DB query.
    Pair committed/proven-discard successes, unwired/prepare-only/generic-error/media-retention controls
    and genuine unchanged pause with late receipt failure followed by `detached`. Require exit 8 only for
-   sticky money uncertainty, otherwise7 only for retained unresolved effect, otherwise existing3/5/6
-   and terminal controls. For combined5/6+effect or money+effect, assert exact diagnostic priorities,
+   sticky money uncertainty, otherwise 7 only for retained unresolved effect, otherwise existing 3/5/6
+   and terminal controls. For combined 5/6+effect or money+effect, assert exact diagnostic priorities,
    terminal-durability/attention fields, fixed nonretry advice, actual terminal/pause/absence and no false
    takeover claim. Consume-once joins/caught errors cannot erase either final observation; earlier ACKed
    money is not charged again. Each assertion-removing effect-port observer or final-disposition forwarding
@@ -589,3 +589,69 @@ before maintainer approval.
   A terminal without persistence ACK refuses later run-event receipts so ordinary terminal-outbox
   recovery retains its ordering; graceful joining does not guarantee those faulted receipts landed.
   No provider cancellation, runtime dependency, platform import or daemon.
+
+## Maintainer-review clarification — 2026-10-08
+
+This dated clarification supplies the missing primary-consumption mechanism and qualifies the
+proposal above. **Status remains Proposed; no dependent lifecycle implementation is authorised.**
+
+### The handle owns the observable primary cursor
+
+Implement a private, engine-readable publication/delivery record owned by this execution's
+`RunHandle`, wired at construction to its one `BoundedEventStream`. The record observes each real
+primary publication before offering it to the queue. A separate delivery marker advances only
+when that queue actually returns an event with `done: false`: both a buffered pull and a direct
+handoff to an already waiting `next()` update it synchronously before resolving the pull. Calling
+`next()` without receiving an event, passive `subscribe` delivery, iterator `return()` and queue
+closure do not acknowledge consumption. This records delivery to the primary reader, not completion
+of its renderer or arbitrary asynchronous work; surface input/presentation ACKs retain their separate
+obligations. No caller-supplied cursor, second iterator, public acknowledgement method or durable
+event/field is added. The API details land once in the canonical lifecycle home on implementation.
+
+The acknowledged pause episode binds to that same publication record. A verified checkpoint pause
+initialises a new execution's episode without pretending that prior history was delivered to its
+primary. Final paused claim requires the real primary delivery to cover all this execution's
+published progress, including its pause when one was emitted. Available but undelivered events
+return `continue` for that same reader to consume. Accepted actors/registered work still veto the
+claim independently of these markers; consumption cannot certify an unpublished writer or an
+unfinished receipt. Check the markers and actor/deadline conditions together in the final synchronous
+claim, and re-evaluate after every asynchronous join.
+
+Track queue refusal/gaps and early consumer abandonment explicitly. In particular, the existing
+never-pulled overflow path can decline an event while `bufferedCount` stays bounded: do not infer
+consumption from emitted minus buffered, from a latest delivered sequence alone, or from an empty
+queue. A gapped/abandoned primary cannot certify paused detachment; refuse that invocation through
+the existing engine-state boundary rather than return `continue` for an event the queue cannot
+deliver. Such refusal certifies no safe host close and retains the existing cancellation/join
+obligations. Actual terminal/fenced closure keeps its separate host-safe `closed` join. This does not
+implement replay, manufacture a resync ACK, add a replacement event spool or close ADR-0087 §1's
+separately scheduled never-pulled-stream defect.
+
+Add causal controls for buffered and waiting pulls, passive-only observers, invocation before the
+first pull, a never-pulled overflow, early iterator return, verified media-only checkpoint pause,
+progress during a held join and stable pause with a pending `next()`. A refusal/gap must never look
+consumed; a pending pull without an event must not advance the marker; checkpoint admission must not
+invent publication. Removing the delivery observation or gap/abandonment observation independently
+must break the corresponding claim/refusal control. These are required implementation tests, not
+tests executed by this documentation revision.
+
+### Local detachment is an explicit terminal-invariant qualification
+
+This decision would extend [ADR-0036's exactly-one-terminal and terminal-driven iterable invariant](0036-run-loop-substrate-event-bus-and-execution-host.md),
+following [ADR-0079 §5's fenced terminal-free close](0079-cross-process-run-ownership-lease-and-fencing-token.md#5-a-fenced-out-in-flight-run-stops-without-claiming-an-outcome).
+Acknowledged `detached` closes only the old execution's local primary stream at its verified pause.
+It does not terminate the logical run, publish a durable terminal, or change the terminal invariant
+for an actual run outcome; a legitimate successor may resume that paused run. `closed` continues to
+describe the actual terminal/fenced branch. Consumer abandonment alone is neither departure nor
+this carve-out. On approved implementation, append a dated qualification to ADR-0036 and ADR-0079
+and document the distinction in the canonical lifecycle home; the Accepted bodies remain intact.
+
+### One future CLI contract, no second schema owner
+
+The proposed diagnostic envelope above is decision-review detail, not an already active wire
+contract. [CLI commands](../reference/cli/commands.md) will own its one normative envelope, exit
+priority and remedy definition when the approved implementation lands. The stdout RunEvent union
+keeps its existing separate home. Lifecycle and runner contracts link to the CLI definition rather
+than reproduce the stderr envelope; this clarification adds no schema copy or new durable event.
+The acceptance text's spacing/line-wrap corrections are editorial only and do not change the
+specified money-before-effect priority or any 0–7 meaning.

@@ -233,3 +233,51 @@ review only; no dependent ownership implementation is authorized before maintain
   existing authority and pin multi-dialect, unused-fallback, SDK mutation and cancellation regressions.
 - Arbitrary hostile host code can still modify global built-ins or execute proxy traps. This seam
   owns data within the existing trusted host process; it does not add a JavaScript security sandbox.
+
+## Maintainer-review clarification — 2026-10-08
+
+This dated clarification qualifies the proposal above. **Status remains Proposed; these are
+implementation obligations for approval, not implemented guarantees or permission to begin code.**
+
+### Ownership is broader than input measurement
+
+"Measure that owned construction" means passing the owned values of the existing
+`EstimateTokensInput` subset to the existing estimator: `system`, `messages`, `tools` and
+`responseFormat`. Ownership covers the wider request-data graph described above, including non-cap
+`providerOptions`; it does not add those other fields to input token measurement, guarantee an exact
+provider tokenizer count, or change ADR-0096's pricing/measurement policy. Output reservation continues
+to use the separately governed cap plan. Shared ownership closes mutation between these existing
+consumers and transmission; it does not imply that every owned field is an input-price contribution.
+
+### Previously serialized inputs and the cap exception
+
+The earlier "previously ignored" examples are not a universal description. Standard Date values
+were serialized through `toJSON`, and custom serializers could determine actual transmitted data;
+refusing them is an intentional compatibility narrowing. Other inputs, such as an unknown cyclic
+Gemini option, could be discarded by the SDK. The new inert-data boundary refuses both categories
+and must document migration to inert values without presenting formerly serialized inputs as ignored.
+
+Cap serialization remains exceptional because the existing cap authority captures the native
+serialized control at its real property key once, then retains that captured value and binding
+evidence. Generic non-cap ownership cannot retain executable serializers whose later invocation
+could change the owned data. No serializer privilege is transferred from a cap value to surrounding
+payload/options, and no second cap field list or generic cap traversal is introduced.
+
+### Literal prototype keys need downstream merge proof
+
+Null-prototype ownership alone does not prove that a subsequent lowerer/SDK merge is safe. Literal
+`__proto__` must remain an own inert data key through every applicable capture, working-copy and
+lowering boundary. Use data-property creation for Relavium-owned record copies; a merge must not
+reinterpret that key through an inherited setter or alter a destination record's prototype.
+
+Extend acceptance item 4 with actual installed-SDK generate **and** stream controls for OpenAI,
+the DeepSeek-compatible route, Anthropic and Gemini. Place literal prototype keys in applicable
+messages, tool/schema/argument/result graphs, response formats and native non-cap options. Inspect
+the actual working/converter destinations as well as captured HTTP bodies: their original
+prototypes stay unchanged, no inherited caller property is introduced, and retained/discarded data
+matches the existing lowerer's independently established behaviour. Include a deliberately unsafe
+setter-based copy control so the observation would detect prototype reinterpretation. A wire-only
+assertion or the small cap-JSON suite is insufficient. If an installed SDK path cannot meet this
+obligation, revise the proposal before acceptance; silently dropping supported keys or restoring
+caller prototypes is not an approved workaround. This is scoped merge safety, not a hostile-host
+JavaScript sandbox claim.
