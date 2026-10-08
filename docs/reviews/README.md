@@ -422,3 +422,7 @@ Record its model, effort and review scope in the coverage section where availabl
 - [2026-10-08 — W7 internal request factory, round 2](2026-10-08T20-36-55-w7-request-factory-round-2-review.md):
   two fresh reviews accept the internal factory; 110 tests, sixty authority groups and 620
   graph assertions pass, while production/SDK ownership acceptance remains open.
+
+- [2026-10-08 — W7 factory stress allowance, round 1](2026-10-08T20-45-08-w7-factory-stress-round-1-review.md):
+  shared-CI timeout correction retains structural coverage; one verified formatter defect
+  is corrected, with fresh round 2 and exact-head remote checks required.
