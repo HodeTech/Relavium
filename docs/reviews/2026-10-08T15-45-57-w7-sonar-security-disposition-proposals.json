@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "review": "2026-10-08T15-45-57-w7-systematic-group-6-round-3-review.md",
+  "registry": "2026-10-08T15-45-57-w7-current-sonar-adjudication.json",
+  "sourceHead": "82acfcac5ab8495353bd23529e9361bb9ca1525f",
+  "remoteChangesApplied": 0,
+  "purpose": "Reviewable caller-scoped FALSE-POSITIVE text proposals only; the remote quality gate remains failed until an authorised Sonar account adjudicates it.",
+  "proposals": {
+    "AaEF8m6AQEO5fzLFYNCw": {
+      "comment": "Static adjudication at 82acfcac5ab8495353bd23529e9361bb9ca1525f. historyDir is home/.relavium where actual smoke caller creates a 0700 fixture home beneath an atomic mkdtemp sandbox and passes that literal as argv. No workflow/model pathname reaches this mkdir. Direct arbitrary argv use is outside this trusted harness path. Static source/caller adjudication only. No source/package runtime, compiler, reproduction, provider, keychain or network was executed. The analyzer label does not independently prove a product defect. Caller-scoped security judgment: arbitrary direct argv invocation can choose a different root. realpath/canonicalization is not a jail. A hostile process with the same UID can mutate parent directories, records or symlinks/race this filesystem; this is not a kernel boundary or generic untrusted-path API.",
+      "proposedDisposition": "false-positive-proposal"
+    },
+    "AaEF8m6AQEO5fzLFYNCx": {
+      "comment": "Static adjudication at 82acfcac5ab8495353bd23529e9361bb9ca1525f. chmod applies 0700 to that same private fixture historyDir before native fixture DB setup. The actual caller supplies an owned path; this is not a generic validator against a hostile same-UID symlink race. Static source/caller adjudication only. No source/package runtime, compiler, reproduction, provider, keychain or network was executed. The analyzer label does not independently prove a product defect. Caller-scoped security judgment: arbitrary direct argv invocation can choose a different root. realpath/canonicalization is not a jail. A hostile process with the same UID can mutate parent directories, records or symlinks/race this filesystem; this is not a kernel boundary or generic untrusted-path API.",
+      "proposedDisposition": "false-positive-proposal"
+    },
+    "AaEVwgb4jwSJsM-Q-8VC": {
+      "comment": "Static adjudication at 82acfcac5ab8495353bd23529e9361bb9ca1525f. allocateEvidence canonicalizes trusted caller repository/tmp roots, derives a fixed SHA-based prefix, and atomically allocates a same-UID directory before exclusive owner metadata. No model/user-controlled relative path reaches this call in the actual offline callers. This is not a generic jailed path API. Static source/caller adjudication only. No source/package runtime, compiler, reproduction, provider, keychain or network was executed. The analyzer label does not independently prove a product defect. Caller-scoped security judgment: arbitrary direct argv invocation can choose a different root. realpath/canonicalization is not a jail. A hostile process with the same UID can mutate parent directories, records or symlinks/race this filesystem; this is not a kernel boundary or generic untrusted-path API.",
+      "proposedDisposition": "false-positive-proposal"
+    }
+  }
+}

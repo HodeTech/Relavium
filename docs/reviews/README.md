@@ -365,3 +365,7 @@ Record its model, effort and review scope in the coverage section where availabl
 - [2026-10-08 — W7 systematic group 6, recovered round 2](2026-10-08T14-50-57-w7-systematic-group-6-round-2-review.md):
   two fresh reviewed/audited findings corrected with permanent discriminating native smoke checks and
   the registered budget abort syntax; fresh round 3 required, continuity and evidence limits retained.
+
+- [2026-10-08 — W7 systematic Group 6, round 3](2026-10-08T15-45-57-w7-systematic-group-6-round-3-review.md):
+  two complete cumulative reviews plus all 175 current Sonar keys audited; Group 6 accepted within scope,
+  three remote security disposition proposals and whole-wave gates remain open.

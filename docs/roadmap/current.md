@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-10-04
+> Last updated: 2026-10-08
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -1748,3 +1748,7 @@ Two complete independent reviews of `c6c55b3b..bbe01091` verify one new MCP-cons
 ### W7 systematic Group 6, recovered round 2 — 2026-10-08
 
 [Two fresh independent reviews and complete qualified Parent audits](../reviews/2026-10-08T14-50-57-w7-systematic-group-6-round-2-review.md) verify missing permanent native failure regressions and the unregistered `budget abort` spelling. The actual smoke now shares its private runner with five native failure controls; separately reverting error observation or final close joining fails the mandatory smoke, and exact restoration passes. The canonical command is corrected to `budget resume <runId> --abort`. Interrupted prior evidence is not counted as a completed round. Tools lint, configured typecheck and offline smoke pass; required CI at `7c29c462` passes separately. **Fresh round 3 is required. Group 6, Proposed ADR-0102/0103 approval and dependent implementation, Group 3's High, provider evidence, Steps 7–8/12, Sonar and final W7/PR acceptance remain open.**
+
+### W7 systematic Group 6, round 3 — 2026-10-08
+
+[Two complete cumulative reviews and a fresh current Sonar adjudication](../reviews/2026-10-08T15-45-57-w7-systematic-group-6-round-3-review.md) cover all 17 paths / 27 hunks through `82acfcac` and all 175 current keys. Parent verifies all three complete reports, physical self bindings and source/native evidence before releasing the freeze. The actual mandatory smoke passes at head/restoration and under `CI=true`; separate error-observation and close-join removals fail its permanent controls. Generated loader/body bytes are unchanged. Root full CI passes 373 files / 8,398 tests / eleven skips; exact-head GitHub required CI and coverage pass separately. No new material implementation finding remains. **Group 6 is accepted within scope. Sonar remains failed pending three caller-scoped security dispositions; the complete keyed registry and proposed texts are linked from the review. Proposed ADR-0102/0103 approval and dependent implementation, Group 3's lifecycle High, Gemini/Anthropic missing provider evidence, Steps 7–8/12 and final W7/PR acceptance remain open. No additional paid call or ADR-dependent implementation occurred.**
