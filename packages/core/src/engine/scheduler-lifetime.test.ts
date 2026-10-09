@@ -97,41 +97,45 @@ for (const completion of ['fulfilled', 'rejected'] as const)
     }
   });
 
-it('dispatches a live scheduler after its readiness port acknowledges', async () => {
-  const ready = latch<void>();
-  const entered = latch<void>();
-  const host = createInMemoryHost();
-  let executions = 0;
-  const handle = new WorkflowEngine({
-    host,
-    executor: {
-      execute: () => {
-        executions += 1;
-        return Promise.resolve({ kind: 'completed', output: '' });
+for (const access of ['direct', 'getter'] as const)
+  it(`dispatches a live scheduler after ${access} readiness acknowledges with its receiver`, async () => {
+    const ready = latch<void>();
+    const entered = latch<void>();
+    const host = createInMemoryHost();
+    let executions = 0;
+    const handle = new WorkflowEngine({
+      host,
+      executor: {
+        execute: () => {
+          executions += 1;
+          return Promise.resolve({ kind: 'completed', output: '' });
+        },
       },
-    },
-  }).start({ workflow: workflow() });
-  handle.whenConsumersReady = () => {
-    entered.resolve();
-    return ready.promise;
-  };
-  const events: RunEvent[] = [];
-  const drained = (async () => {
-    for await (const event of handle.events) events.push(event);
-  })();
-  try {
-    await entered.promise;
-    expect(executions).toBe(0);
-    ready.resolve();
-    await drained;
-    expect(events.at(-1)?.type).toBe('run:completed');
-    expect(executions).toBe(1);
-    await until(async () => (await host.runLeases.read(handle.runId)) === undefined);
-  } finally {
-    ready.resolve();
-    await drained;
-  }
-});
+    }).start({ workflow: workflow() });
+    const readiness = function (this: typeof handle) {
+      entered.resolve();
+      expect(this).toBe(handle);
+      return ready.promise;
+    };
+    if (access === 'direct') handle.whenConsumersReady = readiness;
+    else Object.defineProperty(handle, 'whenConsumersReady', { get: () => readiness });
+    const events: RunEvent[] = [];
+    const drained = (async () => {
+      for await (const event of handle.events) events.push(event);
+    })();
+    try {
+      await entered.promise;
+      expect(executions).toBe(0);
+      ready.resolve();
+      await drained;
+      expect(events.at(-1)?.type).toBe('run:completed');
+      expect(executions).toBe(1);
+      await until(async () => (await host.runLeases.read(handle.runId)) === undefined);
+    } finally {
+      ready.resolve();
+      await drained;
+    }
+  });
 
 for (const fault of ['throw', 'reject'] as const)
   it(`normalizes a live readiness ${fault} without entering an executor`, async () => {
@@ -214,3 +218,46 @@ for (const width of [1, 3, 64])
       await drained;
     }
   });
+
+it('does not invoke readiness acquired from a getter that cancelled the execution', async () => {
+  const host = createInMemoryHost();
+  let executions = 0;
+  const handle = new WorkflowEngine({
+    host,
+    executor: {
+      execute: () => {
+        executions += 1;
+        return Promise.resolve({ kind: 'completed', output: '' });
+      },
+    },
+  }).start({ workflow: workflow() });
+  let acquisitions = 0;
+  let entries = 0;
+  Object.defineProperty(handle, 'whenConsumersReady', {
+    get: () => {
+      acquisitions += 1;
+      handle.cancel();
+      return () => {
+        entries += 1;
+        return Promise.resolve();
+      };
+    },
+  });
+  const events: RunEvent[] = [];
+  const drained = (async () => {
+    for await (const event of handle.events) events.push(event);
+  })();
+  try {
+    await until(() => events.some((event) => event.type === 'run:cancelled'));
+    await drained;
+    expect(acquisitions).toBe(1);
+    expect(entries).toBe(0);
+    expect(executions).toBe(0);
+    expect(events.filter((event) => event.type.startsWith('node:'))).toEqual([]);
+    await until(async () => (await host.runLeases.read(handle.runId)) === undefined);
+  } finally {
+    handle.cancel();
+    host.fireDeadlines();
+    await drained;
+  }
+});

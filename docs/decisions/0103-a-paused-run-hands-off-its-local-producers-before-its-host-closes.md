@@ -921,3 +921,16 @@ the abort race and claim unwind fails two/two/five cases; exact restoration pass
 These are finite public-port controls, not native backpressure/process proof. Two fresh
 complete independent review rounds are required. Complete scheduler/dispatch and other
 actor roots, public departure and the remaining W7 obligations are unchanged and open.
+
+### 2026-10-09 — Parent pre-review readiness getter correction
+
+Before independent reviewers start, Parent confirms that readiness method acquisition
+can synchronously cancel the execution: the returned function is still invoked by
+`f4e4b980`. The boundary now captures the method, rechecks stopped state and invokes
+only a live method with its original handle receiver. Two additional permanent cases
+bring the scoped readiness increment to ten. Expanded before-fix production fails
+eight cases with two original unhandled errors; raw-owner/abort-race/claim-unwind/
+getter-guard/receiver removals fail two/two/six/one/two, and restoration passes ten.
+The earlier eight-case evidence remains historical. Initial review preparation is
+superseded before agent dispatch, without claiming completed review or an after-snapshot
+audit. Both independent rounds must review the entire corrected cumulative scope.

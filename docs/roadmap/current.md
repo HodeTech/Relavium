@@ -82,8 +82,8 @@ merged too (PR #85, 2026-08-28).
 > cover the correction. [Two NEW complete cumulative round-2 reviews](../reviews/2026-10-09T14-55-12-w7-startup-lifetime-round-2-review.md)
 > and Parent's exact-source/physical-artifact/647,041-entry freeze audits accept all ten
 > paths/sixteen hunks through `5d44b13b`, with zero new confirmed findings and 2,850 core cases per reviewer.
-> The next scheduler readiness increment has eight causal regressions and 2,858 passing
-> private core cases; complete independent review rounds are pending. Complete scheduler/
+> The next scheduler readiness increment has ten causal regressions, including the
+> pre-review getter/receiver correction, and 2,860 passing private core cases; complete independent review rounds are pending. Complete scheduler/
 > dispatch roots remain open alongside the other lifecycle obligations.
 > Complete MCP startup/all-actor retirement, custom-provider descendants and remaining host departure work
 > and Step 8 atomic compaction/recovery remain open. The ownership/lifecycle

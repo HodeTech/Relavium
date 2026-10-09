@@ -4325,3 +4325,23 @@ resume outcomes are investigated. Complete actor roots remain required within W7
 Only the independently validated readiness slice is staged here, with two fresh
 complete independent review rounds still required. All six W7 register items remain
 OPEN (41/51 closed); public departure, Step 8 and final Step 12 remain open.
+
+### W7 scheduler readiness — pre-review getter correction, 2026-10-09
+
+Parent's additional private control finds that a readiness getter can cancel during
+method acquisition yet its returned function is still called by `f4e4b980`. The
+boundary now rechecks stopped state after method acquisition and preserves the handle
+receiver on live invocation. A cancelled-getter case and a live getter/receiver case
+bring the readiness scope to ten permanent additions. The private complete core suite
+passes 109 files / 2,860 cases. Expanded baseline fails eight cases with two unhandled
+readiness errors; separate raw-owner/abort-race/claim-unwind/getter-guard/receiver
+removals fail two/two/six/one/two before exact restoration passes ten.
+
+The initial receiver fixture violates the lint rule against aliasing `this`; Parent
+replaces that alias with an assertion inside the callback and repeats the complete
+causal matrix. The original failed lint and earlier fixture/control summaries remain
+preserved. Initial review preparation at `f4e4b980` is superseded before any reviewer
+starts; its archive/before snapshot remain evidence, without an invented after audit
+or review verdict. Two fresh complete independent rounds will review the entire
+corrected cumulative readiness increment. Other actor/host obligations, Step 8, Step 12
+and all six W7 register items remain open; no additional maintainer action is pending.

@@ -2250,7 +2250,11 @@ class RunExecution {
   async #waitForConsumer(): Promise<boolean> {
     const signal = this.#abort.signal;
     if (this.#settled || this.#retiringHost || signal.aborted) return false;
-    const raw = this.#hostWork.invoke(() => this.handle.whenConsumersReady());
+    const raw = this.#hostWork.invoke(() => {
+      const ready = this.handle.whenConsumersReady;
+      if (this.#settled || this.#retiringHost || signal.aborted) return Promise.resolve();
+      return Reflect.apply(ready, this.handle, []);
+    });
     let onAbort!: () => void;
     const cancelled = new Promise<false>((resolve) => {
       onAbort = () => resolve(false);
