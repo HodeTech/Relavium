@@ -4015,3 +4015,27 @@ complete independent review rounds still precede scoped acceptance. Official Gem
 MCP, all actors/generations, sticky final
 health, parked clocks, public departure and acknowledged CLI teardown remain open. Step 8,
 Step 12 and all six W7 register items remain open; 41/51 is unchanged and PR #90 stays draft.
+
+### W7 invocation-local provider round 1 corrected — 2026-10-09
+
+[Both complete independent reviews](../../reviews/2026-10-09T05-43-00-w7-provider-invocation-round-1-review.md)
+cover all 23 paths / 62 hunks through `da10cd12`. Parent finds and authority independently
+reproduces one Medium method-receiver defect in validated fetch; preserving the receiver and
+adding a permanent raw-descendant case correct it. Separate Sonar triage identifies a genuine
+weak detached-Promise test, now asserting exact identity, pending retention and actual settlement.
+Two strictly rebuilt semantic removals verify its assertions. Root required CI passes 404 files /
+9,027 cases / 12 existing skips, with eight of 23 lint/type/test and five of seven build/format
+tasks cached. The increment now adds 54 permanent cases.
+
+Parent verifies the complete authority/lifecycle artifacts and its own 645,668-entry zero-difference
+shared freeze before releasing it. The interrupted authority report stays unchanged; a separately
+sealed late custody completion binds its preserved runtime evidence and explicitly qualifies its
+missing original seal, placeholders and late reconstructed earlier fixture. A historical overwritten
+lifecycle lint log receives no proof credit. [Six individually audited Sonar source labels](../../reviews/2026-10-09T05-43-10-w7-provider-invocation-sonar-disposition-review.md)
+are read back as false positives; the genuine weak-test label awaits corrected-code analysis.
+
+A NEW complete cumulative round 2 follows these corrections. MCP, hidden official Gemini/
+foreign-stream producers, remaining actors/generations, sticky final health, parked clocks,
+public departure, acknowledged CLI teardown, Step 8 and final Step 12 remain open. All six W7
+register items stay OPEN (41/51 closed), and PR #90 stays draft and unmerged. No further paid
+call, credential or maintainer approval is needed.

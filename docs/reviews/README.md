@@ -11,6 +11,14 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 invocation-local provider lifetimes, round 1](2026-10-09T05-43-00-w7-provider-invocation-round-1-review.md):
+  complete 23-path/62-hunk reviews confirm a method-receiver defect; correction and strengthened
+  Promise regression pass root CI, with a NEW complete second round required.
+
+- [2026-10-09 — W7 invocation-local producer Sonar dispositions](2026-10-09T05-43-10-w7-provider-invocation-sonar-disposition-review.md):
+  six individual source-contract false positives read back; one genuine weak test corrected,
+  with older quality candidates and whole-wave work still open.
+
 - [2026-10-09 — W7 HTTP descendant lifetimes, round 2](2026-10-09T04-55-00-w7-http-descendants-round-2-review.md):
   two fresh complete 24-path/40-hunk reviews and Parent source/output/freeze audits accept the scoped HTTP increment;
   preserved fixture/custody limits, transitive host work, Step 8 and W7 remain open.
