@@ -435,3 +435,15 @@ exists to catch.
 - This ADR owns the hostile-MCP *boundary*; the client's structure stays with
   [ADR-0052](0052-inbound-mcp-client-package-lifecycle-registration.md) and the local-spawn decision with
   [ADR-0084](0084-consent-before-a-local-mcp-spawn.md).
+
+## 2026-10-09 — bounded rejection and actual transport cleanup
+
+Accepted [ADR-0103](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md)
+qualifies §1's cleanup timing: a connect/call deadline still bounds the caller, while exact raw
+work and actual native-close acknowledgement remain owed independently. Starting SDK teardown,
+fulfilling its close Promise, emitting an error or exhausting a kill grace period is not proof
+of native completion. A stdio PID stays latched until positive close acknowledgement and is then
+removed from current reap views, even while another connection is still closing. No stale PID
+snapshot authorises killing a later process. Cancellation continues to preserve sibling calls;
+cleanup does not replay tool execution. The canonical contract and remaining host-wide obligations
+are in [MCP integration](../reference/shared-core/mcp-integration.md#invocation-and-transport-lifetimes).

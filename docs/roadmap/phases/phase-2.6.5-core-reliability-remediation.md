@@ -4083,3 +4083,35 @@ clocks, public departure and acknowledged CLI teardown remain open. Step 8 and f
 all six W7 register items and whole-wave acceptance remain open (41/51); PR #90 stays draft
 and unmerged. All five live records are complete; no further paid call, credential or ADR approval
 is needed.
+
+### W7 MCP transport and protocol descendants implemented — 2026-10-09
+
+Accepted ADR-0103's trusted tool-host lifetime rail now reaches both discovered tools and
+`mcp_call`, the lifecycle manager, and installed SDK transports. Request-local HTTP lanes reuse
+one initialized session; legacy SSE POSTs use root SDK envelope identities. Independently owned
+cancellation, queued peer handlers/replies, raw body work and native close remain owed after
+bounded caller rejection. Reentrant close publishes its join before callbacks, partial lane
+failure retains cleanup, and positively acknowledged PIDs leave current reap views independently.
+The detailed contract has one home in [MCP integration](../../reference/shared-core/mcp-integration.md#invocation-and-transport-lifetimes).
+
+Forty-eight new permanent cases cover installed SDK boundaries and twelve public workflow
+combinations across reference/native SQLite stores, discovered/built-in tools and held DNS/body/
+native-close descendants. Private focused validation passes 239 cases; broad validation passes
+410 files / 9,078 cases / 12 existing skips. Seven distinct one-mechanism removals pass strict
+checks and actual affected builds before semantic failure, then restore exact source/test/generated
+goldens and pass again. Earlier fixture and tooling failures remain preserved and receive no
+unsupported proof credit. The private causal golden precedes the final package-local test-import
+correction; fresh committed-head reviews must validate the final fixture bytes independently.
+
+Actual root `CI=true pnpm run ci` now passes all required checks, actual CLI build and three offline
+smokes: 410 files / 9,078 cases / 12 existing skips. Thirteen of 23 lint/type/test and five of seven
+build/format tasks are cached; this is not forced whole-wave validation. Its first attempt exposed
+three package-local tests importing stale self-package `dist` before the package's own build.
+They now import the source export entry; the public CLI controls still exercise the compiled MCP
+dependency. The failed attempt and original inputs remain preserved; no preparatory self-build
+or task-order change conceals that failure.
+
+Two NEW complete cumulative independent review rounds precede scoped acceptance. Complete manager
+startup/all-actor retirement, sticky final effect/money disposition, original parked clocks, public
+departure and acknowledged CLI teardown remain open, followed by Step 8 compaction/recovery and
+final Step 12. All six W7 register items remain OPEN (41/51); PR #90 remains draft and unmerged.

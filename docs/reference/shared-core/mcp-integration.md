@@ -97,6 +97,57 @@ connections down on `SIGINT`/`SIGTERM`/`SIGHUP`/`SIGQUIT`, and a synchronous las
 paths that cannot await a teardown. `run` keeps its documented cancel contract — the run still drains to
 `run:cancelled` and exits `1`; the teardown does not take the exit code from it.
 
+### Invocation and transport lifetimes
+
+[ADR-0103](../../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md)
+separates bounded caller completion from acknowledgement that the host's actual work has ended.
+`McpCapability.call` accepts optional trusted `ToolHostCallOptions` as its third argument;
+`McpConnection.callTool` forwards them fourth, after the existing signal. Discovered tools and
+`mcp_call` use the same [tool-host capability](tool-registry.md#the-toolhost-capability-seam).
+Existing fewer-argument connections remain compatible. No callback or lifetime identity belongs
+in tool arguments, `RequestInit`, server data, an event or history.
+
+The SDK adapter transfers a call's aggregate before SDK entry. It owns the actual SDK request,
+transport sends, independently transferred fetch/body work and protocol continuations. A trusted
+retainer is selected once with its original receiver; refusal preserves its opaque identity
+without inspecting its properties or prototype. Native Promise settlement observes the exact
+raw operation. Cancellation or a public deadline retires ordinary entry immediately; it cannot
+acknowledge an independently pending producer. Cancellation notifications keep separate cleanup
+authority after ordinary retirement, without cancelling a sibling's scope.
+
+One initialized SDK Client/session is retained. Streamable HTTP uses request-local transport
+lanes with that same endpoint, negotiated protocol and session identity; it does not initialize
+another Client, replay a tool or issue a per-call session DELETE. Legacy SSE binds POST work by
+the SDK envelope's root ID, never a nested tool argument, while its long-lived GET belongs to
+manager infrastructure. Retired lanes refuse late sends, pulls and reconnect entry. All HTTP/SSE
+requests still use the required validated fetch, existing pinned-IP/TLS policy, redirect refusal
+and message bounds.
+
+Incoming peer request IDs have a separate ownership map from outgoing SDK request IDs. A handler
+is admitted before delivery to the SDK's queued callback; its actual handler and response send
+remain owed independently. The response ID stays claimed until that exact work finishes, so a
+duplicate peer ID cannot replace a pending reply. Close vetoes a queued handler before its
+factory enters without pretending an already-entered handler has settled.
+
+Concurrent or reentrant transport close returns the same published join. SDK close fulfilment,
+`onerror`, a kill request and an elapsed grace period are not native-close acknowledgements.
+Created stdio/WebSocket resources require the actual native close callback; a proved-empty
+constructor/start refusal needs no fictional callback. Raw operations and admitted cleanup
+remain independently joined, including partial lane-construction failure. A hung producer can
+therefore keep graceful close pending beyond bounded caller rejection. Connect failure starts
+cleanup without extending the caller's connect deadline.
+
+`liveMcpChildPids()` includes pre-initialize stdio children; a connection's `childPid` remains
+latched until positive native-close acknowledgement. `McpClient.childPids` is a current view of
+retained initialized connections. Each acknowledged PID disappears independently while another
+cleanup may still be pending; forced-exit callers must read the current view rather than cache
+an old PID. The manager retains failed connection handles and reports each stored fault once
+per supplied reporter; its default remains best-effort reporting, not semantic receipt health.
+
+This transport increment does not certify complete manager startup/all-actor retirement,
+sticky final receipt health, public `RunHandle` departure or acknowledged CLI input/host teardown.
+Those remaining ADR-0103 obligations are tracked in [the W7 plan](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md).
+
 ### Discovery and result ingress bounds
 
 A server's own output is untrusted input, and it is bounded

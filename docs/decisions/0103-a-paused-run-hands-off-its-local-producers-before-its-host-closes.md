@@ -770,3 +770,29 @@ Implementation, strictly built causal checks and two NEW complete independent re
 must precede scoped acceptance. MCP, all scheduling/accounting actors and generations, sticky
 final health, original parked clocks, public departure and acknowledged CLI teardown remain
 open. Step 8, Step 12 and all six W7 register items remain open; no whole-wave acceptance follows.
+
+### 2026-10-09 — scoped MCP transport and protocol descendants
+
+The approved lifetime rail now reaches discovered tools and `mcp_call` through the optional
+trusted tool-host argument, preserving existing fewer-argument implementations. One initialized
+SDK Client/session owns request-local HTTP lanes, identity-bound legacy SSE POSTs, infrastructure
+GETs, independent cancellation sends and queued peer handlers/replies. Native Promises and raw
+fetch/body/native-close descendants remain independently owed after bounded caller completion.
+Retirement vetoes new ordinary entry and reconnects without suppressing already incurred cleanup.
+Incoming peer IDs cannot replace a still-pending response or mint outgoing request authority.
+
+Concurrent/reentrant close publishes one exact join before transport callbacks. Partial lane
+failure retains cleanup and its opaque first fault. Stdio/WebSocket cleanup requires positive
+native-close acknowledgement; acknowledged child PIDs disappear from current reap views instead
+of remaining available as stale kill targets. The unchanged SSRF, TLS, redirect, ingress bounds
+and fail-loud discovery policies retain their existing owners. No new dependency, durable field
+or shared ErrorCode is introduced. [MCP integration](../reference/shared-core/mcp-integration.md#invocation-and-transport-lifetimes)
+owns the detailed contract; [tool registry](../reference/shared-core/tool-registry.md#the-toolhost-capability-seam)
+owns the platform-free capability shape.
+
+Permanent controls cross installed SDK HTTP/SSE/stdio/WebSocket paths and public Core/reference/
+native SQLite workflow paths. Synthetic held tails are distinguished from actual native close.
+The implementation still requires its own committed full checks and two NEW complete cumulative
+independent review rounds. Complete manager startup/all-actor retirement, sticky final receipt
+health, parked clocks, public departure and acknowledged CLI teardown remain open, followed by
+Step 8 and final Step 12. This scoped checkpoint does not close W7.

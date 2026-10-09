@@ -134,6 +134,10 @@ interface ToolHostCallOptions {
   readonly retainWork?: <T>(factory: () => Promise<T>) => Promise<T>;
 }
 
+interface McpCapability {
+  call(input: McpCallInput, signal?: AbortSignalLike, options?: ToolHostCallOptions): Promise<unknown>;
+}
+
 interface EgressCapability {
   /**
    * Perform an outbound HTTPS request the engine has ALREADY policy-checked (per egress kind, below).
@@ -160,6 +164,11 @@ interface ToolOutputStore {
 ```
 
 > **Sibling seams, one host.** `ToolHost` is a distinct seam from [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s `ExecutionHost` (persistence / clock / transport) and from 1.L2's `ResolverCapabilities` (the `read_file` filter). The host wires all of them; in Phase-2 cloud the relocated `ExecutionHost` provides the `ToolHost`. None is folded into another — each stays minimal and auditable.
+
+Both discovered MCP tools and `mcp_call` forward `ctx.hostCallOptions` separately from their
+validated arguments. The trusted optional capability registers transitive transport work before
+entry; it is never authored or serialized. The [MCP lifetime contract](mcp-integration.md#invocation-and-transport-lifetimes)
+owns SDK request/handler custody and native-close acknowledgement.
 
 ### Native process completion
 

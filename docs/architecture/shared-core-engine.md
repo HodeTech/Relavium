@@ -214,6 +214,9 @@ The lifecycle, as shipped in 2.R:
 - **Teardown (at the terminal).** The host closes the connections after the session/run's
   sole terminal — idempotent, best-effort, and never allowed to mask the run outcome (the
   CLI's force-quit path also tears them down so a spawned stdio child is never orphaned).
+  The manager joins retained transport work and removes each PID only after positive native-close
+  acknowledgement; bounded caller rejection is separate from that join. Complete acknowledged
+  host departure remains an open ADR-0103 integration obligation.
 
 The full contract (the `McpServerRef` shape, the SSRF floor, named secrets, the transport
 vocabulary) lives in its canonical home,
