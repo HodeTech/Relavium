@@ -1153,3 +1153,15 @@ the separately required shipping ToolRegistry quiet-failure/mapping/bounding acc
 The canonical engine and CLI contracts above own these mechanisms. This rejected frozen review
 does not accept the later fix; fresh complete independent review remains required. Step 8 and
 final Step 12 remain open, with no new provider capture or approval pending.
+
+## 2026-10-10 — Due-action and invocation-entry corrections
+
+[Complete host-closure round 2](../reviews/2026-10-09T23-34-00-w7-host-closure-round-2-review.md)
+confirms that asynchronous budget timeout preparation needs a synchronous per-gate in-flight
+claim shared with direct departure deadline service, and that provider entry needs a final
+cancellation guard after transferring invocation ownership. Parent implements both under the
+existing policy, including unused-admission release, with nineteen permanent paired cases.
+Refused timeout approval still terminates through the existing `run_timeout` path; no new
+approval, timeout or wire policy is introduced. Adjacent canonical references now link the
+current final-health priority and public departure. Fresh complete review, Step 8 and final
+Step 12 remain required; no provider capture or maintainer decision is pending.

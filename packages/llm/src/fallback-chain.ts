@@ -832,8 +832,12 @@ export class FallbackChain {
         throw new LlmProviderError(this.#cancelledError(entry.provider.id));
       }
       const call = this.#retainWork(() => {
-        record = { ...record, providerInvoked: true };
         invocation = this.#openInvocation(request);
+        // Registration is a synchronous host boundary and may cancel or expire this attempt.
+        this.#throwIfAborted(entryReq, entry.provider.id);
+        if (this.#aborted(request))
+          throw new LlmProviderError(this.#classifyDeadline(deadline, entry.provider.id));
+        record = { ...record, providerInvoked: true };
         return invocation === undefined
           ? generate(request, key)
           : generate(request, key, invocation);
@@ -1086,9 +1090,12 @@ export class FallbackChain {
       // work synchronously in stream(), so a refused lifetime entry must still prove no invocation.
       const openIterator = (): AsyncIterator<StreamChunk> => {
         if (iterator !== undefined) return iterator;
-        record = { ...record, providerInvoked: true };
         invocation = this.#openInvocation(request);
         if (invocation !== undefined) setWork(invocation);
+        this.#throwIfAborted(entryReq, entry.provider.id);
+        if (this.#aborted(request))
+          throw new LlmProviderError(this.#classifyDeadline(deadline, entry.provider.id));
+        record = { ...record, providerInvoked: true };
         const source =
           invocation === undefined ? stream(request, key) : stream(request, key, invocation);
         const verified = verifyStreamGrammar(

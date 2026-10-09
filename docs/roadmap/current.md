@@ -49,6 +49,11 @@ merged too (PR #85, 2026-08-28).
 > final Step 12 remain open. All six W7 register items remain OPEN (41/51 closed), PR #90 remains
 > draft/unmerged, and no paid call, credential or maintainer approval is pending.
 
+> **Latest complete composition review:** [host-closure round 2](../reviews/2026-10-09T23-34-00-w7-host-closure-round-2-review.md)
+> confirms due-budget departure starvation and provider entry after synchronous cancellation.
+> Parent corrections add nineteen permanent cases and fix adjacent canonical-documentation drift.
+> Fresh complete review is required; Step 8/12 remain open. No user/provider blocker exists.
+>
 > **Complete composition review:** [host-closure round 1](../reviews/2026-10-09T23-05-00-w7-host-closure-round-1-review.md)
 > confirms three lifecycle High findings (post-pause receipt cursor, rejected activation joining,
 > post-unmount Ink visibility) and a required shipping-registry acceptance gap. Parent corrections

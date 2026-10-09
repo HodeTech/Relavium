@@ -149,7 +149,9 @@ subscription or terminal delivery alone supplies no host-close certificate.
 Departure stops fresh media polling provisionally, without resetting authored deadlines. It
 subscribes before observing idle and rechecks the pause episode, actual publication/delivery
 cursor, accepted actors and absolute run/node/gate/media deadlines after every asynchronous
-barrier, including exact lease release. A due action follows its existing outcome path. A changed
+barrier, including exact lease release. A due action follows its existing outcome path. An
+in-flight gate timeout owns its asynchronous preparation once, across real-timer and direct
+departure entry; departure waits actual activity instead of restarting that same action. A changed
 episode returns `continue` and restores the original timers. The final synchronous local claim
 revokes callbacks and removes this execution without claiming that a successor remains paused.
 Successful receipt publications after the original pause do not invalidate that episode: the

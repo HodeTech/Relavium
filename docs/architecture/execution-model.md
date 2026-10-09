@@ -208,8 +208,8 @@ A terminal whose persistence is uncertain latches refusal before any subsequent 
 head change or store entry. Later run-event receipts cannot displace its original terminal-outbox
 cause or ordering. A post-acknowledgement cosmetic callback cannot revoke persistence truth.
 The distinction between bounded terminal publication and retained receipt/fence lifetime lives in
-[shared-core-engine.md](shared-core-engine.md#internal-departure-foundations-adr-0103); it does not
-yet provide a public host-safe departure result.
+[shared-core-engine.md](shared-core-engine.md#internal-departure-foundations-adr-0103), which also
+defines the public `RunHandle.depart()` result and its independent host acknowledgement.
 
 ### 6. Finish
 

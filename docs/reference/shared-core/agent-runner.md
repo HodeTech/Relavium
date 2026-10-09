@@ -40,6 +40,9 @@ the settled submission context. Poll status and binary-download transport childr
 through that invocation's independent aggregate. Existing bounded outcomes and once-only media
 accounting are preserved. Custom providers also receive invocation-local authority that retires
 before bounded completion, fallback or consumer return, while admitted descendants remain joined.
+Invocation transfer is itself a synchronous host boundary. The runner/chain recheck caller and
+merged-deadline cancellation after it, before marking an attempt invoked or calling the captured
+provider method. Proven pre-egress refusal retires the aggregate and refunds unused admission.
 The engine's [departure contract](../../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
 owns the complete actor and final-health barrier; the runner does not certify host closure itself.
 

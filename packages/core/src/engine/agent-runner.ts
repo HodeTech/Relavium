@@ -294,7 +294,8 @@ async function pollMediaJobThroughDeps(
   options?: LlmInvocationOptions,
 ): Promise<MediaJobStatus> {
   const provider = deps.resolveProvider(job.provider);
-  if (provider === undefined || provider.pollMediaJob === undefined) {
+  const poll = provider?.pollMediaJob?.bind(provider);
+  if (provider === undefined || poll === undefined) {
     return {
       state: 'failed',
       error: makeLlmError({
@@ -333,9 +334,20 @@ async function pollMediaJobThroughDeps(
   const work = options === undefined ? undefined : new ProviderInvocationWork(options, signal);
   let status: MediaJobStatus;
   try {
+    // Aggregate transfer can synchronously cancel; the captured provider has not been entered yet.
+    if (signal.aborted) {
+      return {
+        state: 'failed',
+        error: makeLlmError({
+          provider: job.provider,
+          kind: 'cancelled',
+          message: `media job poll cancelled for provider ${job.provider}`,
+        }),
+      };
+    }
     status = await (work === undefined
-      ? provider.pollMediaJob(job.jobId, key, signal)
-      : provider.pollMediaJob(job.jobId, key, signal, work));
+      ? poll(job.jobId, key, signal)
+      : poll(job.jobId, key, signal, work));
   } finally {
     work?.retire();
   }
@@ -849,7 +861,7 @@ async function executeGenerativeMedia(
         },
       );
       if (submitted.kind === 'refused') {
-        admission?.settleAtReservedEstimate({ nodeId: node.id });
+        if (egressStarted) admission?.settleAtReservedEstimate({ nodeId: node.id });
         return submitted.outcome;
       }
       result = submitted.result;
@@ -1354,13 +1366,32 @@ async function submitGenerativeMedia(
     }
   };
   let invocation: ProviderInvocationWork | undefined;
+  let stopped: { readonly error: Error; readonly outcome: NodeOutcome } | undefined;
   const invoke = (): Promise<MediaGenResult> => {
     invocation =
       retainWork === undefined
         ? undefined
         : new ProviderInvocationWork({ retainWork: retain }, deadline?.signal ?? req.signal);
-    onInvoke();
     const request = deadline === undefined ? req : { ...req, signal: deadline.signal };
+    if (request.signal?.aborted === true) {
+      stopped = {
+        error: new Error('media submission stopped before provider entry'),
+        outcome:
+          req.signal?.aborted === true || deadline?.classify() === 'caller'
+            ? failed(
+                'cancelled',
+                `agent node '${nodeId}': run cancelled before media generation`,
+                false,
+              )
+            : failed(
+                'provider_unavailable',
+                `agent node '${nodeId}': the provider did not respond within the ${String(MEDIA_GEN_SUBMIT_TIMEOUT_MS)}ms media-submission deadline`,
+                true,
+              ),
+      };
+      throw stopped.error;
+    }
+    onInvoke();
     return invocation === undefined
       ? generateMedia(request, key)
       : generateMedia(request, key, invocation);
@@ -1391,6 +1422,10 @@ async function submitGenerativeMedia(
               true,
             ),
     };
+  } catch (error) {
+    if (stopped !== undefined && Object.is(error, stopped.error))
+      return { kind: 'refused', outcome: stopped.outcome };
+    throw error;
   } finally {
     invocation?.retire();
   }

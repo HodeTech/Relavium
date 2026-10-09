@@ -2,12 +2,13 @@ import { expect, it } from 'vitest';
 import { unwiredEffectJournal, type ContentPart, type RunEvent } from '@relavium/shared';
 import type { LlmInvocationOptions, LlmProvider, LlmResult, MediaGenResult } from '@relavium/llm';
 import { createOpenAiAdapter } from '@relavium/llm/adapters';
+import { LlmProviderError, makeLlmError } from '@relavium/llm';
 import { parseWorkflow } from '../parser.js';
 import { createAgentNodeExecutor, type AgentRunnerDeps } from './agent-runner.js';
 import { captureAgentTurnOutcome, type AgentTurnParams } from './agent-turn.js';
 import { WorkflowEngine } from './engine.js';
 import { createInMemoryHost } from './execution-host.js';
-import type { NodeExecContext, NodeStreamEvent } from './node-executor.js';
+import type { NodeExecContext, NodeStreamEvent, NodeReceiptContext } from './node-executor.js';
 import type { BudgetAdmission } from './budget-governor.js';
 
 function latch<T>() {
@@ -452,3 +453,111 @@ for (const held of ['raw poll', 'transferred child'] as const)
       await until(async () => (await host.runLeases.read(handle.runId)) === undefined);
     }
   });
+
+for (const mode of ['generateMedia', 'pollMediaJob'] as const)
+  for (const cancel of [false, true])
+    it(`${mode} rechecks cancellation after invocation transfer and refunds unused admission: ${cancel}`, async () => {
+      const abort = new AbortController();
+      const captured: Promise<unknown>[] = [];
+      let entries = 0,
+        calls = 0,
+        releases = 0,
+        conservative = 0;
+      const admission: BudgetAdmission = {
+        settle: () => undefined,
+        settleAtReservedEstimate: () => {
+          conservative++;
+        },
+        release: () => {
+          releases++;
+        },
+      };
+      const p = provider({
+        generateMedia: () => {
+          calls++;
+          throw new LlmProviderError(
+            makeLlmError({ provider: 'openai', kind: 'auth', message: 'offline refused provider' }),
+          );
+        },
+        pollMediaJob: () => {
+          calls++;
+          return Promise.resolve({ state: 'pending' });
+        },
+      });
+      const runner = createAgentNodeExecutor({
+        resolveProvider: () => p,
+        keyFor: () => 'offline-placeholder',
+        sleep: () => Promise.resolve(),
+        tools: [],
+        registry,
+        resolveMediaSurface: () => 'generative',
+      });
+      if (mode === 'pollMediaJob') {
+        if (runner.pollMediaJob === undefined) throw new Error('missing actual poll');
+        const outcome = await runner.pollMediaJob(
+          {
+            jobId: 'offline-job',
+            provider: 'openai',
+            model: 'gpt-4o',
+            modality: 'image',
+            units: 1,
+          },
+          abort.signal,
+          {
+            retainWork: <T>(factory: () => Promise<T>): Promise<T> => {
+              entries++;
+              if (cancel) abort.abort();
+              const raw = factory();
+              captured.push(raw);
+              return raw;
+            },
+          },
+        );
+        expect(outcome).toMatchObject(
+          cancel ? { state: 'failed', error: { kind: 'cancelled' } } : { state: 'pending' },
+        );
+      } else {
+        const host = createInMemoryHost();
+        const handle = new WorkflowEngine({
+          host,
+          executor: {
+            execute: async (ctx) => {
+              const retain = ctx.continueReceipt;
+              if (retain === undefined) throw new Error('missing actual receipt owner');
+              const outcome = await runner.execute({
+                ...ctx,
+                signal: abort.signal,
+                preEgress: () => admission,
+                continueReceipt: <T>(
+                  factory: (receipt: NodeReceiptContext) => Promise<T>,
+                ): Promise<T> => {
+                  entries++;
+                  if (entries === 2 && cancel) abort.abort();
+                  const raw = retain(factory);
+                  captured.push(raw);
+                  return raw;
+                },
+              });
+              expect(outcome).toMatchObject({
+                kind: 'failed',
+                error: { code: cancel ? 'cancelled' : 'provider_auth' },
+              });
+              return outcome;
+            },
+          },
+        }).start({ workflow: workflow(true) });
+        const events: RunEvent[] = [];
+        for await (const event of handle.events) events.push(event);
+        expect((await handle.depart()).kind).toBe('closed');
+        expect(events.at(-1)).toMatchObject({
+          type: 'run:failed',
+          error: { code: cancel ? 'cancelled' : 'provider_auth' },
+        });
+        expect(releases).toBe(cancel ? 1 : 0);
+        expect(conservative > 0).toBe(!cancel);
+        expect(host.armedCount() + host.deadlineCount() + host.livenessCount()).toBe(0);
+        expect(await host.runLeases.read(handle.runId)).toBeUndefined();
+      }
+      await Promise.allSettled(captured);
+      expect(calls).toBe(cancel ? 0 : 1);
+    });

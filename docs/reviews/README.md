@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 consolidated host closure, cumulative round 2](2026-10-09T23-34-00-w7-host-closure-round-2-review.md):
+  two confirmed High findings and one adjacent documentation issue; nineteen permanent corrections
+  require fresh complete review.
+
 - [2026-10-09 — W7 consolidated host closure, cumulative round 1](2026-10-09T23-05-00-w7-host-closure-round-1-review.md):
   three confirmed lifecycle High findings and one shipping-registry acceptance gap; Parent corrections
   and eighteen permanent additions require fresh complete review.

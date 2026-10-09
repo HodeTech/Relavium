@@ -680,3 +680,68 @@ describe('custom provider invocation authority (ADR-0103)', () => {
     }
   });
 });
+
+for (const mode of ['generate', 'stream'] as const)
+  for (const stopAt of ['live', 'outer-cancel', 'aggregate-cancel', 'aggregate-deadline'] as const)
+    it(`${mode} rechecks cancellation after invocation transfer: ${stopAt}`, async () => {
+      const abort = new AbortController();
+      const clock = timer();
+      const attempts: AttemptRecord[] = [];
+      const captured: Promise<unknown>[] = [];
+      let entries = 0;
+      let calls = 0;
+      const p = source({
+        generate: () => {
+          calls++;
+          return Promise.resolve(result);
+        },
+        stream: () => {
+          calls++;
+          return {
+            async *[Symbol.asyncIterator]() {
+              await Promise.resolve();
+              yield stop;
+            },
+          };
+        },
+      });
+      const c = chain(p, {
+        newAbortController: () => new AbortController(),
+        setTimer: clock.set,
+        onAttempt: (attempt) => {
+          attempts.push(attempt);
+        },
+        retainWork: <T>(factory: () => Promise<T>): Promise<T> => {
+          entries++;
+          if (
+            (stopAt === 'outer-cancel' && entries === 1) ||
+            (stopAt === 'aggregate-cancel' && entries === 2)
+          )
+            abort.abort();
+          if (stopAt === 'aggregate-deadline' && entries === 2) clock.fire();
+          const raw = factory();
+          captured.push(raw);
+          return raw;
+        },
+      });
+      let errorKind: string | undefined;
+      if (mode === 'generate') {
+        try {
+          await c.generate({ ...request, signal: abort.signal });
+        } catch (error) {
+          if (!(error instanceof LlmProviderError)) throw error;
+          errorKind = error.llmError.kind;
+        }
+      } else {
+        for await (const chunk of c.stream({ ...request, signal: abort.signal }))
+          if (chunk.type === 'error') errorKind = chunk.error.kind;
+      }
+      await Promise.allSettled(captured);
+      expect(calls).toBe(stopAt === 'live' ? 1 : 0);
+      expect(errorKind).toBe(
+        stopAt === 'live' ? undefined : stopAt === 'aggregate-deadline' ? 'timeout' : 'cancelled',
+      );
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]?.providerInvoked).toBe(stopAt === 'live');
+      if (stopAt !== 'live') expect(attempts[0]?.usage).toBeUndefined();
+    });

@@ -233,19 +233,24 @@ shapes were weighed and two rejected:
   already switches on, and `run:failed` is honest: the run did not complete.
 
 **It does NOT report `durability: 'uncertain'`, and that is a correction to an earlier draft of this
-section.** (The converse also holds: when a run's terminal write IS uncertain, that disposition outranks
-this code — exit `5` or `6`. A caller who cannot trust the record cannot act on the reason the record
-gives.) The disposition means exactly one thing
+section.** Terminal durability and final local effect health are independent. After all admitted
+work has joined, the CLI selects the final disposition and remedy according to
+[commands.md](../cli/commands.md#exit-codes); an unchanged completion/cancellation terminal can still
+have an effect that needs attention. The disposition means exactly one thing
 ([ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §5): did this run's
 terminal reach the durable log. Here it did — the run recorded its failure correctly, and the only thing in
 doubt is what a target did. Overloading the disposition would route the run to exit `5`, whose documented
 remedy is "held in the outbox and retried on the next start"; nothing is pending, nothing will drain, and a
-script following that advice waits forever instead of looking at the target. The discriminator is the
-terminal's `ErrorCode`.
+script following that advice waits forever instead of looking at the target. For this recorded
+failure, the discriminator is the terminal's `ErrorCode`; final admitted-effect health is also
+observed independently when the terminal has a different outcome.
 
-The CLI maps that code to exit **`7`**, recorded in [commands.md](../cli/commands.md), for the reason
+The CLI maps that code or final effect attention to exit **`7`** unless required-money uncertainty
+takes priority, recorded in [commands.md](../cli/commands.md), for the reason
 ADR-0079 took one — a caller must be able to tell "a human must look at this" from an ordinary failure, and
-from the transient "another process owns this" of exit 6. It is the one code whose remedy is *do not retry*.
+from the transient "another process owns this" of exit 6. Required-money uncertainty has its own
+final disposition and also forbids blind retry; the canonical priority and remedies live in
+[commands.md](../cli/commands.md#exit-codes).
 The run is **not** resumable past the unresolved effect; resuming it re-enters the gate in §4 and stops
 again.
 

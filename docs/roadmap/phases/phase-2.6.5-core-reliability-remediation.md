@@ -4576,3 +4576,14 @@ additions include native quiet settlement/discard and mapping/bounding final-hea
 existing native input/receipt controls now assert visible output. Fresh complete review of the
 corrected composition remains required. Step 8 and Step 12 remain open; no required work is
 deferred and no provider call or further approval is pending.
+
+### W7 host closure — round 2 corrections, 2026-10-10
+
+[Complete round 2](../../reviews/2026-10-09T23-34-00-w7-host-closure-round-2-review.md)
+confirms two High findings: an already-due budget autoapproval repeatedly enters asynchronous
+preparation without yielding, and invocation-ownership transfer can synchronously cancel yet
+still allow provider entry. Parent confirms and corrects both, adding nineteen permanent
+paired cases and repairing adjacent canonical-documentation drift. Accepted ADR-0103 policy
+is unchanged; fresh complete review is required. Step 8 and final Step 12 remain open, all six
+W7 items remain open (41/51 closed), and PR #90 remains draft/unmerged. No provider capture,
+paid call or user approval is pending.

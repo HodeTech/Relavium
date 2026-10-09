@@ -184,7 +184,9 @@ The consolidated ADR-0103 host/actor/MCP/custom-provider/final-health/clock/CLI 
 is implemented on 2026-10-10 and awaiting two fresh complete independent review rounds.
 Dispatch round 9's first-start publication High is corrected with six paired cases.
 Complete host-closure round 1 verifies three further lifecycle High findings and a shipping
-acceptance gap; Parent corrections add eighteen permanent cases and require fresh complete review.
+acceptance gap; Parent corrections add eighteen permanent cases. Complete round 2 confirms
+due-budget departure starvation and provider entry after synchronous cancellation. Nineteen
+additional permanent cases cover the corrections, which require fresh complete review.
 Step 8 and final Step 12 remain open; no user approval or provider capture is pending.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical

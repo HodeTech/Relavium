@@ -565,6 +565,8 @@ class RunExecution {
   readonly #abort: AbortControllerLike;
   readonly #states = new Map<string, VertexState>();
   readonly #pendingGates = new Map<string, PendingGate>();
+  /** A due decision owns its asynchronous preparation until completion, across timer/departure entry. */
+  readonly #timingOutGates = new Set<string>();
   /** Gate ids whose decision was already applied — a re-delivery is an idempotent no-op (1.R). */
   readonly #resolvedGates = new Set<string>();
   /** Disarm callbacks for armed gate-timeout timers, by gateId — disarmed on resume / settle (1.Q). */
@@ -3862,32 +3864,44 @@ class RunExecution {
     vertexId: string,
     action: 'approve' | 'reject',
   ): Promise<void> {
-    this.#disarmTimer(gateId);
-    if (this.#settled || !this.#pendingGates.has(gateId)) {
+    if (
+      this.#settled ||
+      this.#retiringHost ||
+      this.#resolvedGates.has(gateId) ||
+      !this.#pendingGates.has(gateId) ||
+      this.#timingOutGates.has(gateId)
+    ) {
       return; // already resolved or terminal
     }
-    if (action === 'approve') {
-      const allowance = this.#pendingGates.get(gateId)?.allowance;
-      const quote = allowance?.kind === 'frozen' ? allowance.quote : undefined;
-      const amount =
-        quote?.kind === 'quoted' && quote.quote.amount.kind === 'representable'
-          ? quote.quote.amount.microcents
-          : undefined;
-      try {
-        await this.resume(gateId, {
-          decision: 'approved',
-          decidedBy: 'timeout',
-          ...(amount === undefined ? {} : { approvedAmountMicrocents: amount }),
-        });
-      } catch (error) {
-        // A deadline cannot authorize a stale/reject-only quote or leave a timerless gate parked.
-        // Preserve the refusal and terminate through the existing timeout failure path.
-        if (!(error instanceof EngineStateError && error.code === 'invalid_decision')) throw error;
-        await this.#failGateOnTimeout(gateId, vertexId);
+    this.#timingOutGates.add(gateId);
+    try {
+      this.#disarmTimer(gateId);
+      if (action === 'approve') {
+        const allowance = this.#pendingGates.get(gateId)?.allowance;
+        const quote = allowance?.kind === 'frozen' ? allowance.quote : undefined;
+        const amount =
+          quote?.kind === 'quoted' && quote.quote.amount.kind === 'representable'
+            ? quote.quote.amount.microcents
+            : undefined;
+        try {
+          await this.resume(gateId, {
+            decision: 'approved',
+            decidedBy: 'timeout',
+            ...(amount === undefined ? {} : { approvedAmountMicrocents: amount }),
+          });
+        } catch (error) {
+          // A deadline cannot authorize a stale/reject-only quote or leave a timerless gate parked.
+          // Preserve the refusal and terminate through the existing timeout failure path.
+          if (!(error instanceof EngineStateError && error.code === 'invalid_decision'))
+            throw error;
+          await this.#failGateOnTimeout(gateId, vertexId);
+        }
+        return;
       }
-      return;
+      await this.#failGateOnTimeout(gateId, vertexId);
+    } finally {
+      this.#timingOutGates.delete(gateId);
     }
-    await this.#failGateOnTimeout(gateId, vertexId);
   }
 
   /** Rejection or refused auto-approval at the deadline fails with `run_timeout` (execution-model.md). */
@@ -4440,6 +4454,7 @@ class RunExecution {
     for (const [id, gate] of this.#pendingGates) {
       if (
         !this.#resolvedGates.has(id) &&
+        !this.#timingOutGates.has(id) &&
         gate.expiresAt !== undefined &&
         gate.timeoutAction !== undefined &&
         now >= Date.parse(gate.expiresAt)
@@ -4530,7 +4545,11 @@ class RunExecution {
     if (this.#settled || this.#retiringHost || this.#abort.signal.aborted) return;
     if (this.#runTimeoutDisarm === undefined) this.#armRunTimeout();
     for (const [id, gate] of this.#pendingGates) {
-      if (!this.#gateTimers.has(id) && !this.#resolvedGates.has(id)) {
+      if (
+        !this.#gateTimers.has(id) &&
+        !this.#resolvedGates.has(id) &&
+        !this.#timingOutGates.has(id)
+      ) {
         this.#reArmGateDeadline({
           gateId: id,
           nodeId: gate.vertexId,
