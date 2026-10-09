@@ -442,3 +442,46 @@ for (const path of ['generate', 'stream'] as const)
     expect(reflection).toBe(0);
     expect(calls).toBe(0); // Synchronous stream construction requires accepted lifetime entry.
   });
+
+for (const afterStop of [false, true])
+  it(`public iterator return preserves cleanup admission refusal after ${afterStop ? 'confirmed stop' : 'text'}`, async () => {
+    const refusal = Object.freeze({ marker: 'return-cleanup-entry' });
+    const records: AttemptRecord[] = [];
+    let entries = 0;
+    let nexts = 0;
+    let providerCalls = 0;
+    const yielded: StreamChunk = afterStop ? stop : { type: 'text_delta', text: 'partial' };
+    const p = source({
+      stream: () => {
+        providerCalls++;
+        return {
+          [Symbol.asyncIterator]: () => ({
+            next: () =>
+              Promise.resolve(
+                ++nexts === 1 ? { done: false, value: yielded } : { done: true, value: undefined },
+              ),
+            return: () => Promise.resolve({ done: true, value: undefined }),
+          }),
+        };
+      },
+    });
+    const iterator = chain(p, {
+      retainWork: <T>(factory: () => Promise<T>): Promise<T> => {
+        if (++entries === 2) throwHostFailure(refusal);
+        return factory();
+      },
+      onAttempt: (record) => records.push(record),
+    })
+      .stream(request)
+      [Symbol.asyncIterator]();
+    const first = await iterator.next();
+    if (first.done !== false) throw new Error('missing first stream chunk');
+    expect(first.value.type).toBe(yielded.type);
+    if (iterator.return === undefined) throw new Error('missing public iterator return');
+    await expect(iterator.return()).rejects.toBe(refusal);
+    expect(providerCalls).toBe(1);
+    expect(entries).toBe(2);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.providerInvoked).toBe(true);
+    expect(records[0]?.usage).toEqual(afterStop ? result.usage : undefined);
+  });

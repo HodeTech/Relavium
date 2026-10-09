@@ -11,6 +11,12 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 raw provider/native lifetime, round 1](2026-10-09T02-36-10-w7-raw-producer-round-1-review.md):
+  two complete 17-path/38-hunk reviews verify a public-return High; confirmed correction adds two regressions, fresh cumulative round 2 required.
+
+- [2026-10-09 — W7 Sonar producer-entry dispositions](2026-10-09T02-36-20-w7-sonar-producer-disposition-review.md):
+  four independently examined synchronous-entry false positives applied and read back; genuine return defect remains separate.
+
 - [2026-10-09 — W7 append/receipt integration, round 2](2026-10-09T02-00-00-w7-append-receipt-round-2-review.md):
   two fresh complete 23-path/63-hunk reviews and Parent evidence audits accept the scoped increment;
   historical setup-custody correction remains explicit; shipping host integration and W7 gates stay open.

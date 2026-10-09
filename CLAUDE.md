@@ -150,8 +150,8 @@ six W7 register items. All five required live provider records are complete as o
 clarifications on 2026-10-08. Their internal foundations and controlled adapter/chain increment
 are accepted; exact core measured rounds are accepted after two fresh cumulative review rounds.
 ADR-0103 append/receipt integration is accepted after two fresh cumulative review rounds.
-Shipping provider/native integration is implemented with 26 permanent cases and awaits
-its own two fresh complete review rounds. Host departure, Step 8 and final Step 12 remain open. Systematic review's
+Shipping provider/native integration has 28 permanent cases after the first complete review's
+confirmed public-return correction; a NEW complete cumulative round 2 remains required. Host departure, Step 8 and final Step 12 remain open. Systematic review's
 ownership/lifecycle obligations remain
 open until that integration is independently verified.
 

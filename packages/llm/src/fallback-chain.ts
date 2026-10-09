@@ -1138,14 +1138,18 @@ export class FallbackChain {
       // Actual provider/deadline diagnosis stays primary. A standalone host-entry fault escapes only
       // after the attempt observer has accounted any terminal usage already observed by the verifier.
       if (failure === undefined && returnFailure !== undefined) retentionFailure = returnFailure;
-    }
-    if (retentionFailure !== undefined) {
-      const error = failure ?? this.#retentionError(entry.provider.id, retentionFailure.error);
-      this.#emitFailure(
-        { ...record, contentReceived: state.committed },
-        usage === undefined ? error : Object.freeze({ ...error, usage }),
-      );
-      throw retentionFailure.error;
+      // A public consumer return completes the generator abruptly, bypassing code after finally.
+      // Observe the attempt here so that path preserves known usage and the exact host refusal too.
+      if (retentionFailure !== undefined) {
+        const error = failure ?? this.#retentionError(entry.provider.id, retentionFailure.error);
+        this.#emitFailure(
+          { ...record, contentReceived: state.committed },
+          usage === undefined ? error : Object.freeze({ ...error, usage }),
+        );
+        // Consumer return must reject this entry refusal; overriding its abrupt completion is intentional.
+        // eslint-disable-next-line no-unsafe-finally -- Preserve the exact host refusal after accounting.
+        throw retentionFailure.error;
+      }
     }
     // An existing provider failure keeps its diagnosis and financial evidence; cleanup cannot
     // replace it with an unrelated host exception or prevent its attempt record.

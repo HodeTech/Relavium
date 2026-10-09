@@ -3894,3 +3894,24 @@ It does not close transitive SDK/HTTP/MCP work, raw poll/media accounting, all e
 sticky final money/effects, original parked clocks, public cursor/departure or CLI input/exit
 ACK. Step 8 and final Step 12, all six W7 register items and systematic ownership/lifecycle
 Highs remain open; 41/51 is unchanged. No further paid call or ADR approval is needed.
+
+
+### W7 raw provider/native round 1 correction — 2026-10-09
+
+[Both complete reviews](../../reviews/2026-10-09T02-36-10-w7-raw-producer-round-1-review.md) independently verify the same public iterator
+return defect: abrupt generator completion skips the post-finally host-refusal handler and known
+usage observation. Parent reads both complete reports and verifies all 5,015 authority / 2,207
+lifecycle sealed entries, source/export restoration and the true unchanged 645,495-entry shared
+snapshot before releasing the freeze. Missing or superseded historical receipts remain qualified.
+
+The correction handles this refusal inside finally and adds two identity/accounting regressions,
+for 28 permanent cases. A compiled handler-removal makes both unchanged tests fail; exact restore,
+rebuild and rerun pass. Private strict/lint/format and 341-file affected checks pass 7,465 cases
+with 12 existing skips. Four independently adjudicated Sonar false positives are separately
+applied and read back; the original-head required CI and advisory checks are successful.
+
+This is a confirmed correction, not increment acceptance. A NEW complete cumulative round 2
+follows this commit. Transitive work, actor retirement, final money/effects, parked clocks, public
+departure, acknowledged CLI input, Step 8 and final Step 12 remain open. All six W7 register items
+and systematic ownership/lifecycle Highs remain open; 41/51 is unchanged. No further paid call,
+keychain input or approval is needed.

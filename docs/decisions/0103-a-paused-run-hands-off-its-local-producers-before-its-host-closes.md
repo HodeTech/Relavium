@@ -708,3 +708,14 @@ cleanup and pre-egress host refusal. This increment requires committed checks an
 independent review rounds. It does not certify transitive SDK/HTTP/MCP transport work, complete
 engine actor retirement, final receipt health, parked clocks, public departure, acknowledged CLI
 input/host teardown, Step 8 or W7.
+
+
+## Raw stream consumer-return correction — 2026-10-09
+
+The first complete raw-provider review independently reproduces a cleanup-only lifetime-entry
+refusal swallowed by explicit public iterator `return()` after text or confirmed stop.
+The post-`finally` handler is bypassed by that abrupt generator completion. The correction
+handles the refusal inside `finally`, emits exactly one attempt observation with any already
+confirmed usage, and propagates the original host cause. Existing provider/deadline failures
+retain precedence. Two permanent public-return regressions fail before this correction;
+scoped independent acceptance and the full host-departure decision remain separate gates.

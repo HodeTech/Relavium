@@ -612,7 +612,10 @@ raw `generateMedia` Promise in the same way.
 Registration failure retains its original process-local identity and host provenance, outside
 provider retry/failover classification. A synchronous provider throw retains provider
 classification. An established provider/deadline failure stays primary over best-effort
-iterator cleanup; a cleanup-only host-entry failure accounts known usage once before escaping.
+iterator cleanup; a cleanup-only host-entry failure accounts known usage once before escaping,
+including an explicit public stream-iterator `return()`. Its handler runs in generator `finally`:
+consumer return bypasses subsequent statements, so those statements cannot observe the attempt
+or propagate the original refusal. The observer runs once, with already confirmed terminal usage.
 Identity recognition does not inspect an arbitrary throwable's prototype. Raw completion after
 a bounded failure adds no second attempt observation, late charge, refund or terminal. This
 boundary does not certify all transitive SDK/network/MCP work or safe host departure; those
