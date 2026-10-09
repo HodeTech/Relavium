@@ -425,3 +425,40 @@ describe('validated provider fetch descendant lifetime', () => {
     expect(request?.body).toContain('synthetic-video-prompt');
   });
 });
+
+describe('validated fetch trusted retainer receiver', () => {
+  it('preserves a method-style lifetime owner and retains its native descendant', async () => {
+    const native = deferred<void>();
+    const admitted: Promise<unknown>[] = [];
+    const authority = {
+      admitted,
+      retainWork<T>(factory: () => Promise<T>): Promise<T> {
+        const raw = factory();
+        this.admitted.push(raw);
+        return raw;
+      },
+    };
+    const fetch = createValidatedFetch({
+      resolveHost: () => Promise.resolve(['93.184.216.34']),
+      openConnection: (_request, _signal, work) => {
+        void work?.retainWork?.(() => native.promise);
+        return Promise.resolve(response());
+      },
+    });
+    try {
+      expect((await fetch('https://fixture.example', undefined, authority)).status).toBe(204);
+      expect(authority.admitted).toHaveLength(1);
+      let complete = false;
+      const joined = Promise.all(authority.admitted).then(() => {
+        complete = true;
+      });
+      await tick();
+      expect(complete).toBe(false);
+      native.resolve();
+      await joined;
+      expect(complete).toBe(true);
+    } finally {
+      native.resolve();
+    }
+  });
+});

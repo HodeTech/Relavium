@@ -40,7 +40,7 @@ export class EgressWorkScope {
     try {
       // The only parent transfer is synchronous and precedes producer entry. Descendants then
       // use their own retained scope; the old executor context need not remain open for pulls.
-      void retain(() => this.#done);
+      void retain.call(parent, () => this.#done);
     } catch (error) {
       // No producer has entered yet. A parent which invoked this factory and then refused still
       // receives an honest completion of the empty transferred lifetime, with its fault intact.
