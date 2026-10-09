@@ -837,3 +837,16 @@ records this correction. Two new local controls plus a strengthened installed in
 control, root CI and enforced private coverage pass. A NEW complete cumulative round 4 remains
 required; complete manager startup/all-actor retirement, final receipt health, parked clocks,
 public departure, acknowledged CLI teardown, Step 8 and whole W7 remain open.
+
+## 2026-10-09 — Fourth MCP review: release completed child references
+
+The [complete cumulative fourth round](../reviews/2026-10-09T12-58-01-w7-mcp-lifetime-round-4-review.md) confirms that HTTP control/reply
+lanes remain in their parent request's controls set after all child work completes. Sequential
+valid replies therefore retain finished transports/scopes until the outer request ends. The
+owner now removes each exact lane only on its full work acknowledgement, preserving pending
+body/native-close custody. Seven permanent local cardinality regressions include before-fix
+and premature-pruning negative controls; root CI and unchanged enforced coverage pass. These
+are reference/lifetime controls, not native heap or GC measurements. The [canonical MCP contract](../reference/shared-core/mcp-integration.md#invocation-and-transport-lifetimes)
+owns the rule. A NEW complete cumulative round 5 remains required. Complete manager startup,
+all-actor/custom-provider retirement, final receipt health, parked clocks, public departure,
+acknowledged CLI teardown, Step 8 and whole W7 remain open.

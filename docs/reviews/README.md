@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 MCP transport and protocol lifetimes, round 4](2026-10-09T12-58-01-w7-mcp-lifetime-round-4-review.md):
+  complete 36-path/68-hunk reviews confirm completed control-lane retention; corrected
+  reference release passes CI/coverage and seven causal regressions, with fresh round 5 required.
+
 - [2026-10-09 — W7 MCP transport and protocol lifetimes, round 3](2026-10-09T10-51-01-w7-mcp-lifetime-round-3-review.md):
   complete 35-path/67-hunk reviews and Parent audits verify incoming callback refusal escaping;
   correction passes root CI and enforced coverage, with a NEW complete round 4 required.

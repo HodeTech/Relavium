@@ -67,12 +67,13 @@ merged too (PR #85, 2026-08-28).
 > [both NEW complete cumulative round-3 reviews](../reviews/2026-10-09T07-06-28-w7-provider-invocation-round-3-review.md)
 > and Parent's complete artifact/645,743-entry freeze audits accept all 28 paths/67 hunks through
 > `f9a8ff37`, with no new confirmed finding. Exact-head required CI, coverage and Sonar pass.
-> MCP transport/handler descendants now have 70 new permanent cases. Rounds 1–2 corrected
-> queued-reservation, deadline, disposer, required-coverage and empty-start stdio failures.
-> [Complete round-3 reviews and Parent artifact/freeze audits](../reviews/2026-10-09T10-51-01-w7-mcp-lifetime-round-3-review.md)
-> verify an incoming callback error-boundary defect; correction `23310428` passes root CI.
-> Fresh enforced private coverage passes 411 files / 9,100 cases / 12 existing skips, MCP branches
-> at 90.41%. A NEW complete cumulative independent round 4 is required before acceptance. Complete MCP startup/all-actor
+> MCP transport/handler descendants now have 77 new permanent cases. Rounds 1–3 corrected
+> queued-reservation, deadline, disposer, coverage, empty-start stdio and callback failures.
+> [Complete round-4 reviews and Parent evidence/freeze audits](../reviews/2026-10-09T12-58-01-w7-mcp-lifetime-round-4-review.md) verify
+> completed control-lane reference retention. Correction `37220a95` releases only fully
+> acknowledged lanes and passes actual root CI; seven new causal regressions and fresh enforced
+> private coverage pass (412 files / 9,107 cases / 12 skips; MCP branches 90.68%).
+> A NEW complete cumulative independent round 5 is required before acceptance. Complete MCP startup/all-actor
 > retirement, custom-provider descendants and remaining host departure work
 > and Step 8 atomic compaction/recovery remain open. The ownership/lifecycle
 > Highs, Step 12, final whole-wave CI/coverage/Sonar and all six W7 register items remain open.

@@ -4180,3 +4180,26 @@ startup/all-actor retirement, custom-provider descendants, sticky final receipt 
 clocks, public departure, acknowledged CLI teardown, Step 8 and final Step 12 remain open.
 All six W7 register items remain OPEN (41/51 closed); PR #90 remains draft and unmerged.
 No further paid call, credential or new ADR approval is needed.
+
+### W7 MCP transport/handler lifetimes — complete round 4 correction, 2026-10-09
+
+[Both complete cumulative reviews and Parent audits](../../reviews/2026-10-09T12-58-01-w7-mcp-lifetime-round-4-review.md) cover all
+36 paths/68 textual hunks through `2a4a0069`. Authority finds one Medium, independently
+confirmed by Parent and source-verified by Lifecycle after cross-review: completed HTTP
+control/reply lanes remain retained while their enclosing request stays live. `37220a95`
+releases only the exact lane whose full work has completed. Pending raw/body/native-close
+descendants remain owned; no heap/native leak experiment is claimed.
+
+Seven new permanent local controls bring this increment to 77 cases. All seven fail without
+the repair; prematurely releasing on send settlement fails the two pending-descendant cases.
+Fixed focused checks/build/strict/lint/format and actual root CI pass. Fresh enforced private
+coverage passes 412 files / 9,107 cases / 12 existing skips, MCP lines 96.43% / branches 90.68%,
+with unchanged thresholds. Parent reads complete reports/maps, physically checks all evidence,
+records a separately sealed metadata-only correction of Authority's initially unsupported
+read-only claim, and verifies all 646,710 shared entries unchanged before explicit release.
+
+A NEW complete cumulative round 5 is required before scoped acceptance. Complete manager
+startup/all-actor retirement, custom-provider descendants, final receipt health, parked clocks,
+public departure, acknowledged CLI teardown, Step 8 and final Step 12 remain open. All six W7
+register items remain OPEN (41/51); PR #90 remains draft and unmerged. No paid call or user
+approval is pending.

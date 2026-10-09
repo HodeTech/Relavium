@@ -123,6 +123,10 @@ manager infrastructure. Retired lanes refuse late sends, pulls and reconnect ent
 requests still use the required validated fetch, existing pinned-IP/TLS policy, redirect refusal
 and message bounds.
 
+A request releases a completed control/reply lane registration only after that exact lane
+acknowledges all raw/body/native-close work. Pending descendants remain retained; completed
+control lanes do not accumulate while their enclosing request remains live.
+
 Incoming peer request IDs have a separate ownership map from outgoing SDK request IDs. A handler
 is admitted before delivery to the SDK's queued callback; its actual handler and response send
 remain owed independently. The response ID stays claimed until that exact work finishes, so a
