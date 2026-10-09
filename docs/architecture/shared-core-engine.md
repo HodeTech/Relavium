@@ -175,7 +175,8 @@ Only its wait is raced against execution abort, so cancellation can progress whi
 uncooperative readiness Promise still retains host retirement. A claimed vertex that has
 not entered `node:started` returns to pending when the scheduler leaves that batch; it
 must not masquerade as an in-flight executor and force the run to wait for grace. A live
-readiness fault uses a fixed internal error. Method acquisition is followed by another
+readiness fault uses a fixed internal error; if creating that diagnostic faults, an
+in-memory backstop preserves failure and scheduler reevaluation. Method acquisition is followed by another
 stopped-state check before invocation; a live call preserves the handle as its receiver.
 Controlled public-port tests establish these
 mechanics; complete scheduler/dispatch roots and public departure are still open.

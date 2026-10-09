@@ -934,3 +934,21 @@ getter-guard/receiver removals fail two/two/six/one/two, and restoration passes 
 The earlier eight-case evidence remains historical. Initial review preparation is
 superseded before agent dispatch, without claiming completed review or an after-snapshot
 audit. Both independent rounds must review the entire corrected cumulative scope.
+
+### Scheduler readiness diagnostic backstop — 2026-10-09
+
+The [first complete cumulative readiness review](../reviews/2026-10-09T15-44-15-w7-scheduler-readiness-round-1-review.md)
+verifies a secondary ID/event-clock fault while reporting a readiness rejection.
+It escaped the serialized scheduler and stranded its queued reevaluation; a terminal
+then depended on grace. The readiness branch now uses the established in-memory
+failure backstop when diagnostic publication faults, preserving fixed content-free
+error text and cancellation/first-failure precedence before reevaluation.
+
+Two permanent one-shot regressions fail at the frozen reviewed source and pass with
+the correction; both require terminal delivery without firing grace, no node execution,
+no private error text and eventual exact lease/timer cleanup. The full twelve-case
+readiness suite passes, as do 110 private core files / 2,862 cases. Removing the complete
+nested fallback reproduces the same original two failures and unhandled rejections;
+the individual backstop call is not separately proven load-bearing. Permanently broken
+host clocks, native host departure and complete actor closure are outside this proof.
+A NEW complete cumulative round 2 remains required; the accepted decision is unchanged.

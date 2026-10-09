@@ -4345,3 +4345,29 @@ starts; its archive/before snapshot remain evidence, without an invented after a
 or review verdict. Two fresh complete independent rounds will review the entire
 corrected cumulative readiness increment. Other actor/host obligations, Step 8, Step 12
 and all six W7 register items remain open; no additional maintainer action is pending.
+
+### W7 scheduler readiness round 1 and diagnostic correction — 2026-10-09
+
+[Both complete first-round reviews](../../reviews/2026-10-09T15-44-15-w7-scheduler-readiness-round-1-review.md)
+cover all six paths / seven literal hunks through `a20f43a4` and verify one High:
+a secondary ID/event-clock fault during readiness-failure publication rejects the
+scheduler and strands its rerun. Parent corroborates both fault ports against the exact
+reviewed source. A nested publication backstop now retains the fixed internal failure
+and returns control to scheduler reevaluation without depending on grace.
+
+Two new permanent cases join the existing ten. The exact-before and removed-fallback
+controls each fail those two cases and produce two original unhandled rejections;
+fixed/restored twelve-case runs pass. Strict core, engine purity, scoped lint and the
+full private suite pass: 110 files / 2,862 cases. These one-shot reference-host controls
+do not prove a permanently unavailable clock, native departure or every backstop
+statement independently. Reviewers still assess the frozen ten-case source, not this
+later Parent correction; round 1 remains changes required.
+
+Parent reads both complete reports/maps, physically audits and seals 57 original captures
+and 71,136 copied eligible inputs, and checks exact Git/archive/head/hunk identity.
+The 647,179-entry shared-tree comparison has zero file/link changes and one qualified
+`.git` directory mtime change; HEAD and clean status stay unchanged. Explicit freeze
+release precedes the correction. A NEW complete cumulative round 2 is required.
+Complete scheduler/dispatch/timer/resume/pre-handle roots, MCP startup, custom-provider
+descendants, final sticky health, parked clocks, public departure/CLI teardown, Step 8
+and final Step 12 remain required and open; all six W7 register items stay OPEN (41/51).

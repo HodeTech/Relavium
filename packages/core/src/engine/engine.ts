@@ -2193,11 +2193,13 @@ class RunExecution {
           if (!(await this.#waitForConsumer())) return;
         } catch {
           if (this.#settled || this.#abort.signal.aborted) return;
-          await this.#settleFailed(vertex, {
-            code: 'internal',
-            message: 'the event consumer readiness check failed',
-            retryable: false,
-          });
+          const message = 'the event consumer readiness check failed';
+          try {
+            await this.#settleFailed(vertex, { code: 'internal', message, retryable: false });
+          } catch {
+            // ID/clock/timer faults while publishing the failure must not escape the scheduler.
+            this.#failNodeInternal(vertex.id, message);
+          }
           this.#schedule();
           return;
         }

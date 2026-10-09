@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 scheduler readiness, round 1](2026-10-09T15-44-15-w7-scheduler-readiness-round-1-review.md):
+  complete six-path/seven-hunk reviews verify a secondary diagnostic failure; two causal
+  regressions cover the correction, with a NEW complete cumulative round 2 required.
+
 - [2026-10-09 — W7 fresh-start lifetime, round 2](2026-10-09T14-55-12-w7-startup-lifetime-round-2-review.md):
   two NEW complete ten-path/sixteen-hunk reviews and Parent artifact/freeze audits accept
   the scoped increment; remaining actors, public departure and Steps 8/12 stay open.
