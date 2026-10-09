@@ -3970,3 +3970,23 @@ restoration, actual five-library/CLI outputs, direct commands, declared links an
 nonadditive causal counts and command/environment limitations. A second fresh complete round
 is required before scoped acceptance. Transitive MCP/custom-provider, host departure, Step 8,
 Step 12 and all six W7 register items remain open; PR #90 remains draft and unmerged.
+
+### W7 HTTP descendant round 2 accepted — 2026-10-09
+
+[Two NEW complete cumulative reviews](../../reviews/2026-10-09T04-55-00-w7-http-descendants-round-2-review.md)
+accept all 24 paths / 40 hunks through `6e620556` without a verified product finding.
+Parent reads both full reports, actual controls and source, then independently verifies
+all 4,821 authority and 13,103 lifecycle evidence entries, 427 command/log receipts, 1,248
+Git-bound files per archive, actual source/test/library/CLI restoration and the entire
+645,606-entry true-before shared freeze with zero differences. Fourteen authority and
+eighteen lifecycle strictly built semantic causal mechanisms pass after restoration;
+overlapping selections and supplemental repeats are nonadditive. Historical missing fixture
+bytes, failed native fixture latches, procedural HOME override and helper receipt limits
+remain explicit and earn no unsupported credit.
+
+Exact-head PR/push required checks, coverage jobs, Node 22 floor, Windows, peers, Sonar and
+CodeRabbit pass. This is scoped HTTP acceptance, not forced final whole-wave validation.
+Transitive MCP/custom-provider/media polling, all actors/generations, sticky final health,
+parked clocks, public departure and acknowledged CLI teardown remain open. Step 8 and Step 12,
+all six W7 register items and systematic ownership/lifecycle obligations remain open;
+41/51 is unchanged and PR #90 stays draft. Work proceeds with provider/poll lifetime integration.

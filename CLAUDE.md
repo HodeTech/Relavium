@@ -152,8 +152,8 @@ are accepted; exact core measured rounds are accepted after two fresh cumulative
 ADR-0103 append/receipt integration is accepted after two fresh cumulative review rounds.
 Shipping provider/native integration is accepted after two fresh cumulative review rounds,
 including the confirmed public-return correction and 28 permanent cases. HTTP descendants
-are implemented with 23 new permanent cases and passing root CI; both complete round-1 reviews
-pass and a fresh round 2 remains required. Transitive MCP/custom-provider, host departure, Step 8 and final Step 12 remain open. Systematic review's
+are accepted with 23 new permanent cases, passing root CI, two fresh complete cumulative review
+rounds and Parent artifact/freeze audits. Transitive MCP/custom-provider, host departure, Step 8 and final Step 12 remain open. Systematic review's
 ownership/lifecycle obligations remain
 open until that integration is independently verified.
 

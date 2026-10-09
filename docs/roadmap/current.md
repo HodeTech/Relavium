@@ -58,7 +58,8 @@ merged too (PR #85, 2026-08-28).
 > cases, 16 compiled negative controls and a passing cache-qualified root CI;
 > [both complete round-1 reviews](../reviews/2026-10-09T04-16-24-w7-http-descendants-round-1-review.md)
 > clear all 22 paths/38 hunks through `db02b83c` after Parent's complete artifact/freeze audits.
-> A second fresh cumulative round is required before scoped acceptance. Transitive MCP/custom-provider, remaining host departure work
+> [Two fresh cumulative round-2 reviews](../reviews/2026-10-09T04-55-00-w7-http-descendants-round-2-review.md)
+> accept all 24 paths/40 hunks through `6e620556` after Parent's complete evidence and 645,606-entry freeze audits. Transitive MCP/custom-provider, remaining host departure work
 > and Step 8 atomic compaction/recovery remain open. The ownership/lifecycle
 > Highs, Step 12, final whole-wave CI/coverage/Sonar and all six W7 register items remain open.
 > Draft PR #90 is unmerged; no further paid call, credential or ADR approval is needed.

@@ -38,8 +38,8 @@ measured-round reuse is accepted after two fresh cumulative review rounds. ADR-0
 append/receipt integration is accepted after two fresh cumulative review rounds; shipping
 provider/native integration is accepted after two fresh cumulative review rounds, including
 the confirmed public-return correction and 28 permanent cases. HTTP descendants are implemented
-with 23 new permanent cases and passing root CI; both complete round-1 reviews pass and a fresh
-round 2 remains required. Transitive MCP/custom-provider and
+with 23 new permanent cases and passing root CI; two fresh complete cumulative review rounds
+and Parent artifact/freeze audits accept this scoped HTTP increment. Transitive MCP/custom-provider and
 host departure remain open, as do Step 8 compaction/recovery
 and final whole-wave Step 12. Supplemental ADR-0099–ADR-0103 are Accepted.
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.

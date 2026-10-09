@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 HTTP descendant lifetimes, round 2](2026-10-09T04-55-00-w7-http-descendants-round-2-review.md):
+  two fresh complete 24-path/40-hunk reviews and Parent source/output/freeze audits accept the scoped HTTP increment;
+  preserved fixture/custody limits, transitive host work, Step 8 and W7 remain open.
+
 - [2026-10-09 — W7 HTTP producer-entry Sonar dispositions](2026-10-09T04-20-30-w7-http-sonar-disposition-review.md):
   five current-head labels individually verified and read back as false positives; gate API passes,
   broader source-quality correction candidates and W7 remain open.
