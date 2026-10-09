@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 MCP transport and protocol lifetimes, round 2](2026-10-09T09-07-17-w7-mcp-lifetime-round-2-review.md):
+  both complete 33-path/61-hunk reviews verify a pre-entry stdio sampler leak; corrected code
+  passes root CI and enforced coverage, with a NEW complete cumulative round 3 required.
+
 - [2026-10-09 — W7 MCP transport and protocol lifetimes, round 1](2026-10-09T08-33-00-w7-mcp-lifetime-round-1-review.md):
   complete 27-path/55-hunk static reviews and Parent runtime/artifact/freeze audits confirm
   queued-reservation, deadline, disposer and coverage failures; corrections need fresh round 2.

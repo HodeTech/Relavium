@@ -4133,3 +4133,23 @@ pass. Private enforced coverage passes 411 files / 9,097 cases / 12 existing ski
 environment setup and unavailable earlier scratch artifacts without granting them fresh proof
 credit. A NEW complete cumulative second round remains required. Complete host obligations,
 Step 8, final Step 12 and all six W7 register items stay open; no paid call or user approval is pending.
+
+
+### W7 MCP transport/handler lifetimes — complete round 2 correction, 2026-10-09
+
+[Both independent complete cumulative reviews](../../reviews/2026-10-09T09-07-17-w7-mcp-lifetime-round-2-review.md)
+cover all 33 paths/61 textual hunks at `e296ea4d`. They verify one new High: a pre-aborted
+public stdio connection never attaches its SDK transport, so client-only cleanup leaves
+its unused PID sampler/registration retained. `e901141f` independently closes the idempotent
+native owner, preserving bounded caller refusal and actual native-close obligations.
+
+One new permanent no-start/no-sampler regression brings this increment to 68 cases. Root
+CI passes; fresh private enforced coverage passes 411 files / 9,098 cases / 12 existing skips,
+MCP lines 96.17% / branches 90.42%, with unchanged thresholds. Parent reads both complete
+reports/maps, physically audits all 19,076 and 26,831 inventory entries and every reviewed
+head/hunk, then verifies 646,589 shared-tree entries unchanged before explicit freeze release.
+Source-transformed and compiled MCP controls are distinguished in the record.
+
+A NEW complete cumulative round 3 remains required before scoped acceptance. Complete
+MCP startup/all-actor retirement, custom-provider descendants, final receipt health, parked
+clocks, public departure, acknowledged CLI teardown, Step 8 and final Step 12 remain open.

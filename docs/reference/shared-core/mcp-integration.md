@@ -146,7 +146,11 @@ Created stdio/WebSocket resources require the actual native close callback; a pr
 constructor/start refusal needs no fictional callback. Raw operations and admitted cleanup
 remain independently joined, including partial lane-construction failure. A hung producer can
 therefore keep graceful close pending beyond bounded caller rejection. Connect failure starts
-cleanup without extending the caller's connect deadline.
+cleanup without extending the caller's connect deadline. It closes the idempotent owner
+independently of the SDK client: a pre-entry refusal can leave the client without an attached
+transport, but must still retire the unused native owner, child registration and PID sampler.
+When SDK entry occurred, both cleanup paths join the same owner close; actual native-close
+acknowledgement and admitted descendants remain owed.
 
 `liveMcpChildPids()` includes pre-initialize stdio children; a connection's `childPid` remains
 latched until positive native-close acknowledgement. `McpClient.childPids` is a current view of

@@ -810,3 +810,16 @@ body-disposal refusal must settle the waiting reader. The canonical
 records these refinements. Nineteen regressions and stronger existing controls restore the
 unchanged mandatory coverage floor. A NEW complete cumulative second round is required;
 remaining host obligations, Step 8, Step 12 and W7 stay open.
+
+
+## 2026-10-09 — Second MCP review: retire even a refused empty start
+
+Both complete cumulative round-2 reviews reproduce a pre-aborted public stdio open that
+never enters SDK connect. Client-only cleanup has no attached transport, leaving the unused
+PID sampler and child registration retained. Failed-connect cleanup now independently starts
+the idempotent native owner close. This applies the existing proved-empty-start rule;
+entered resources still require actual native acknowledgement and admitted-work completion.
+A new permanent regression and root CI/enforced coverage pass. A NEW complete cumulative
+round 3 remains required; this correction does not accept manager startup, all-actor host
+retirement, public departure, Step 8 or whole W7. Evidence and native/source distinctions are
+in [round 2](../reviews/2026-10-09T09-07-17-w7-mcp-lifetime-round-2-review.md).
