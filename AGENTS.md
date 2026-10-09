@@ -39,7 +39,10 @@ append/receipt integration is accepted after two fresh cumulative review rounds;
 provider/native integration is accepted after two fresh cumulative review rounds, including
 the confirmed public-return correction and 28 permanent cases. HTTP descendants are implemented
 with 23 new permanent cases and passing root CI; two fresh complete cumulative review rounds
-and Parent artifact/freeze audits accept this scoped HTTP increment. Transitive MCP/custom-provider and
+and Parent artifact/freeze audits accept this scoped HTTP increment. Invocation-local provider/raw-poll
+lifetimes are accepted after three cumulative rounds, including getter/receiver corrections and 57
+permanent cases; [round 3](docs/reviews/2026-10-09T07-06-28-w7-provider-invocation-round-3-review.md)
+includes Parent's artifact and whole-shared-tree audits. Transitive MCP/custom-provider and
 host departure remain open, as do Step 8 compaction/recovery
 and final whole-wave Step 12. Supplemental ADR-0099–ADR-0103 are Accepted.
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.

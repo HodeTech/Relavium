@@ -153,7 +153,11 @@ ADR-0103 append/receipt integration is accepted after two fresh cumulative revie
 Shipping provider/native integration is accepted after two fresh cumulative review rounds,
 including the confirmed public-return correction and 28 permanent cases. HTTP descendants
 are accepted with 23 new permanent cases, passing root CI, two fresh complete cumulative review
-rounds and Parent artifact/freeze audits. Transitive MCP/custom-provider, host departure, Step 8 and final Step 12 remain open. Systematic review's
+rounds and Parent artifact/freeze audits. Invocation-local provider/raw-poll lifetimes are accepted
+after three cumulative rounds, including getter/receiver corrections and 57 permanent cases;
+[the complete round-3 record](docs/reviews/2026-10-09T07-06-28-w7-provider-invocation-round-3-review.md)
+includes Parent's artifact and whole-shared-tree audits. Transitive MCP/custom-provider,
+host departure, Step 8 and final Step 12 remain open. Systematic review's
 ownership/lifecycle obligations remain
 open until that integration is independently verified.
 

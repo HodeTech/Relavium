@@ -4065,3 +4065,21 @@ MCP, hidden Gemini/foreign-stream producers, remaining actors/generations, stick
 parked clocks, public departure, acknowledged CLI teardown, Step 8 and final Step 12 remain open.
 All six W7 register items stay OPEN (41/51 closed), and PR #90 stays draft and unmerged.
 No further paid call, credential or maintainer approval is needed.
+
+### W7 invocation-local provider round 3 accepted — 2026-10-09
+
+[Both NEW complete cumulative reviews](../../reviews/2026-10-09T07-06-28-w7-provider-invocation-round-3-review.md)
+cover all 28 paths / 67 hunks through `f9a8ff37`, with no new confirmed finding. Parent reads the
+full reports, maps, source/controls and runners, verifies all 6,630 physical entries, 213 qualified
+receipts and 30 archives, and confirms exact 1,623/1,618-file goldens. Its true-before/final
+645,743-entry shared comparison has zero differences before freeze release. Twelve/thirteen
+fresh controls and five/eight strictly built semantic removals are nonadditive; fixture timing,
+failed helper, compact archive-receipt, private-XDG and native-close qualifications remain explicit.
+Exact-head required GitHub CI, coverage and Sonar pass separately.
+
+**This provider/raw-poll increment is accepted within scope.** MCP transport/handler descendants,
+remaining actor/generation retirement, sticky final effect/money disposition, original parked
+clocks, public departure and acknowledged CLI teardown remain open. Step 8 and final Step 12,
+all six W7 register items and whole-wave acceptance remain open (41/51); PR #90 stays draft
+and unmerged. All five live records are complete; no further paid call, credential or ADR approval
+is needed.

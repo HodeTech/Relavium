@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 invocation-local provider lifetimes, round 3](2026-10-09T07-06-28-w7-provider-invocation-round-3-review.md):
+  both complete 28-path/67-hunk reviews and Parent artifact/freeze audits accept the scoped increment;
+  no new confirmed finding, with remaining host work, Step 8 and whole W7 open.
+
 - [2026-10-09 — W7 invocation-local provider lifetimes, round 2](2026-10-09T06-33-00-w7-provider-invocation-round-2-review.md):
   both complete 27-path/66-hunk reviews confirm a getter-acquisition defect; three regressions
   and root CI pass, with a NEW complete cumulative third round required.

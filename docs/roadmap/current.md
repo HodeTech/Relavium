@@ -64,7 +64,9 @@ merged too (PR #85, 2026-08-28).
 > verify a method-receiver defect and separately strengthen a weak Promise test.
 > [Both complete round-2 reviews](../reviews/2026-10-09T06-33-00-w7-provider-invocation-round-2-review.md) verify one getter-acquisition defect.
 > Its correction passes root CI (404 files / 9,030 cases / 12 existing skips);
-> a NEW complete cumulative third round is required.
+> [both NEW complete cumulative round-3 reviews](../reviews/2026-10-09T07-06-28-w7-provider-invocation-round-3-review.md)
+> and Parent's complete artifact/645,743-entry freeze audits accept all 28 paths/67 hunks through
+> `f9a8ff37`, with no new confirmed finding. Exact-head required CI, coverage and Sonar pass.
 > Transitive MCP/custom-provider, remaining host departure work
 > and Step 8 atomic compaction/recovery remain open. The ownership/lifecycle
 > Highs, Step 12, final whole-wave CI/coverage/Sonar and all six W7 register items remain open.
