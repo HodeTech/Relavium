@@ -4510,3 +4510,22 @@ The 647,505-entry shared tree is identical before explicit release at
 Full actors/public departure/CLI, final health, parked clocks, Step 8 and Step 12 remain
 required. The broader prototype's 38 original CLI failures are unaccepted. All six W7
 items stay OPEN (41/51); PR #90 remains draft/unmerged. No W7 work is deferred.
+
+### 2026-10-09 — Approved redispatch readiness preserves the entered retry
+
+[Complete cumulative round-5 reviews](../../reviews/2026-10-09T19-41-03-w7-dispatch-corrections-round-5-review.md)
+verify one High: after an entered retry 2 budget-pauses and is approved, readiness may
+reject before a new first start. Literal failure attempt 1 then misattributes the terminal.
+Authority independently discovers it; Lifecycle corroborates after disclosure; Parent
+owns exact-source runtime and correction. Readiness now forwards the latest entered
+attempt; the first-start reset remains at actual start entry. Two permanent paired cases
+and identical-fixture original/fixed/removal/restored controls pin that boundary.
+
+The twenty-case matrix gives 1/19, 0/20, 1/19 and 0/20 fail/pass; Parent verifies all
+5,036 physical input copies and complete logs. Corrected strict/lint/core pass at
+118 files / 2,886 cases. Both frozen-head reviewers pass seven originals and 2,884 cases;
+Parent audits exact metadata/artifacts and the shared tree before explicit release.
+NEW complete cumulative review is required; no private correction is accepted by this
+rejected round. Accepted ADR policy is unchanged. Full actors/public departure/CLI,
+final health, parked clocks, Step 8 and Step 12 remain required. All six W7 items stay
+OPEN (41/51); PR #90 remains draft/unmerged. No W7 work is deferred.

@@ -2200,7 +2200,7 @@ class RunExecution {
               message: 'the event consumer readiness check failed',
               retryable: false,
             },
-            1,
+            this.#lastAttemptByVertex.get(vertex.id) ?? 1,
           );
           return;
         }

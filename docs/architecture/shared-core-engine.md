@@ -186,8 +186,10 @@ entering fresh work. Initial dispatch checks before arming its node deadline; re
 dispatch captures its entered attempt number before awaiting persistence so grace can
 settle that same attempt. Every new first start resets its basis to 1 before that append,
 including an approved redispatch after a prior retry. All shared failed-settlement callers
-select an explicit attempt; detached failure forwards the latest entered attempt rather
-than defaulting a later retry to 1. Cancellation settles the matching entered attempt through
+select an explicit attempt. Readiness refusal and detached failure forward the latest
+entered attempt, falling back to 1 only before any start. An approved redispatch whose
+readiness fails before a fresh start still belongs to its previous entered retry.
+Cancellation settles the matching entered attempt through
 the diagnostic backstop, preserving an earlier failure; an already settled/grace-abandoned
 dispatch produces no second terminal. The shared refusal/diagnostic helper also preserves
 a vertex that is already completed, failed or skipped while its terminal append is pending.
