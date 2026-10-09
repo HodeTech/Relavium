@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 invocation-local provider lifetimes, round 2](2026-10-09T06-33-00-w7-provider-invocation-round-2-review.md):
+  both complete 27-path/66-hunk reviews confirm a getter-acquisition defect; three regressions
+  and root CI pass, with a NEW complete cumulative third round required.
+
 - [2026-10-09 — W7 invocation-local provider lifetimes, round 1](2026-10-09T05-43-00-w7-provider-invocation-round-1-review.md):
   complete 23-path/62-hunk reviews confirm a method-receiver defect; correction and strengthened
   Promise regression pass root CI, with a NEW complete second round required.

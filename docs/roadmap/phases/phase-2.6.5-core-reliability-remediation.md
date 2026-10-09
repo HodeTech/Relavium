@@ -4039,3 +4039,29 @@ foreign-stream producers, remaining actors/generations, sticky final health, par
 public departure, acknowledged CLI teardown, Step 8 and final Step 12 remain open. All six W7
 register items stay OPEN (41/51 closed), and PR #90 stays draft and unmerged. No further paid
 call, credential or maintainer approval is needed.
+
+
+### W7 invocation-local provider round 2 corrected — 2026-10-09
+
+[Both NEW complete cumulative reviews](../../reviews/2026-10-09T06-33-00-w7-provider-invocation-round-2-review.md)
+cover all 27 paths / 66 hunks through `4fb99b0e` and independently confirm one Medium:
+a trusted lifetime getter was acquired outside its refusal guard. The correction moves
+acquisition inside the existing guard while preserving the method receiver. Three new
+permanent cases verify opaque refusal, one selection with receiver/raw-descendant custody,
+and ordinary entered resolver faults. The final fixture fails against original source and
+passes after correction; strict, lint and all 40 selected CLI cases pass.
+
+Parent independently audits all 5,449 authority and 4,673 lifecycle artifacts, 447 receipts,
+source/test/generated-output restoration and the unchanged 645,721-entry whole shared freeze.
+Four early hash-only authority fixtures and Lifecycle's preparatory reconstruction/failed
+strict-run limits remain explicit and receive no unsupported proof credit. Final fixtures
+and credited causal variants retain original bytes; both seals remain unchanged.
+
+Actual root CI passes 404 files / 9,030 cases / 12 existing skips, all required checks,
+actual CLI build and three offline smokes. Twenty of 23 lint/type/test and five of seven
+build/format tasks are cached; this is not forced whole-wave validation. The increment adds
+57 permanent cases. A NEW complete cumulative third round is required before scoped acceptance.
+MCP, hidden Gemini/foreign-stream producers, remaining actors/generations, sticky final health,
+parked clocks, public departure, acknowledged CLI teardown, Step 8 and final Step 12 remain open.
+All six W7 register items stay OPEN (41/51 closed), and PR #90 stays draft and unmerged.
+No further paid call, credential or maintainer approval is needed.
