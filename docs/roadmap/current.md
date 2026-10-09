@@ -91,8 +91,11 @@ merged too (PR #85, 2026-08-28).
 > corrected in `1918690d`, with six new permanent cases and passing exact-input root CI.
 > [Both complete dispatch-correction round-1 reviews](../reviews/2026-10-09T17-28-06-w7-dispatch-corrections-round-1-review.md)
 > and Parent's artifact/647,355-entry unchanged freeze audits accept the eight-path/
-> seventeen-hunk scope with zero confirmed findings. A NEW complete cumulative second
-> round remains required; complete scheduler/dispatch roots stay open.
+> seventeen-hunk scope with zero confirmed findings. [Both complete cumulative second-round reviews](../reviews/2026-10-09T17-58-41-w7-dispatch-corrections-round-2-review.md)
+> verify an inherited retry-start cancellation High. Its correction and a subsequent
+> Parent-discovered synchronous attempt-entry correction add ten permanent cases;
+> final-source causal controls pass. NEW complete cumulative reviews are required
+> before scoped closure; complete scheduler/dispatch roots stay open.
 > A broader private actor prototype exposed CLI closure/lease-handoff failures in root CI.
 > Complete scheduler/dispatch/resume registration must land with shipping host departure;
 > original failures and assertions are retained, and that integration stays required in W7.

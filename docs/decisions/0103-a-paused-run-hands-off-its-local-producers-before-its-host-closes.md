@@ -1018,3 +1018,38 @@ actor roots must integrate with shipping departure; the broader prototype's orig
 38 CLI failures remain unaccepted evidence. Final receipt health, parked clocks,
 primary/input/host acknowledgement, Step 8 and final Step 12 remain required W7 work.
 No accepted decision is changed and no whole-wave acceptance is claimed.
+
+### 2026-10-09 — Retry and synchronous attempt-entry corrections
+
+[Both NEW complete cumulative round-2 reviews](../reviews/2026-10-09T17-58-41-w7-dispatch-corrections-round-2-review.md)
+cover ten paths/nineteen hunks through `53cccc38` and independently verify one High:
+an entered retry-start append can resume into fresh executor work after cancellation,
+sibling abort or grace. The first-start guard does not cover this inherited continuation.
+Both reviewers pass seven prescribed checks and 2,868 core cases; those green frozen-head
+results do not accept the subsequent correction.
+
+Parent corrects retry refusal and matching attempt settlement, including grace correlation
+before the awaited append. After both reports, Parent additionally confirms synchronous
+cancellation at actual attempt-entry ports and corrects method/context acquisition ordering
+while preserving the receiver and raw Promise. That later discovery is not attributed to
+the reviewers. The [canonical engine architecture](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+owns the mechanics; the accepted decision and public API are unchanged.
+
+Ten permanent live/stopped cases pass exact-final controls: old production fails six;
+fixed/restored pass ten; independent guard/receiver/correlation/settlement removals
+reproduce the relevant failures. Two matching-settlement removals actually time out.
+Parent verifies all 13,805 final causal input copies and reads the complete logs; strict
+core and scoped lint pass. Earlier fixture/summary/receiver-diagnostic qualifications
+remain explicit in the review record. This is controlled reference-host evidence, not
+native/public-departure or whole-wave acceptance.
+
+Parent reads all reports/maps and physically verifies fourteen reviewer originals /
+17,556 input copies, exact Git/archive/patch identities and protected inventories. The
+647,374-entry shared tree is unchanged before explicit release at
+`2026-10-09T17:58:41.957529+00:00`; only then are main-source corrections applied.
+NEW complete cumulative reviews are required. Complete actor roots must integrate with
+shipping departure; the broader prototype's 38 original CLI failures remain unaccepted.
+MCP startup/custom-provider descendants, sticky final health, parked clocks, primary/input/
+host ACK and CLI teardown, Step 8 and final Step 12 remain required. All six W7 items stay
+OPEN (41/51), PR #90 stays draft/unmerged, and no further maintainer action or paid call
+is pending. No work is deferred by this correction.

@@ -2669,6 +2669,8 @@ class RunExecution {
         return;
       }
       attempt += 1;
+      // Capture the entered retry before its append can yield to grace abandonment.
+      this.#lastAttemptByVertex.set(vertex.id, attempt);
       // The retry loop's own dispatch, counted by the same rule as a fresh one (ADR-0086 §4): one
       // `node:started`, one dispatch. The headroom was checked above, before anything was promised.
       this.#nodeDispatches += 1;
@@ -2679,6 +2681,21 @@ class RunExecution {
         nodeType: vertex.type,
         attemptNumber: attempt,
       });
+      // A retry's durable start has the same suspension window as the first start. Recheck before
+      // entering a fresh executor; an already-entered start still requires its matching terminal.
+      if (this.#noNewDispatch || this.#settled) return;
+      if (this.#abort.signal.aborted) {
+        await this.#settleFailedOrBackstop(
+          vertex,
+          {
+            code: 'cancelled',
+            message: 'node execution was cancelled before dispatch',
+            retryable: false,
+          },
+          attempt,
+        );
+        return;
+      }
     }
   }
 
@@ -2699,6 +2716,19 @@ class RunExecution {
     return (info) => governor.checkPreEgress(info, token);
   }
 
+  /** Refuse fresh attempt factories after synchronous host/method acquisition reentrancy. */
+  #stoppedAttemptOutcome(vertexId: string, dispatchId: number): NodeOutcome | undefined {
+    if (this.#isLive(vertexId, dispatchId) && !this.#abort.signal.aborted) return undefined;
+    return {
+      kind: 'failed',
+      error: {
+        code: 'cancelled',
+        message: 'node execution was cancelled before dispatch',
+        retryable: false,
+      },
+    };
+  }
+
   /** Run one attempt of a vertex; returns its outcome (an uncaught handler throw → a single `internal`). */
   async #runAttempt(
     vertex: PlanVertex,
@@ -2717,6 +2747,13 @@ class RunExecution {
       // Every attempt retains governance. The captured token identifies this dispatch across retries.
       const preEgress = this.#makePreEgressHook(dispatchId);
       const raw = this.#hostWork.invoke((scope) => {
+        const stoppedBeforeAcquisition = this.#stoppedAttemptOutcome(vertex.id, dispatchId);
+        if (stoppedBeforeAcquisition !== undefined)
+          return Promise.resolve(stoppedBeforeAcquisition);
+        const receiver = preparation ?? this.#executor;
+        const execute = receiver.execute;
+        const stoppedAfterAcquisition = this.#stoppedAttemptOutcome(vertex.id, dispatchId);
+        if (stoppedAfterAcquisition !== undefined) return Promise.resolve(stoppedAfterAcquisition);
         const effects = this.#effectJournal?.({
           kind: 'run',
           runId: this.runId,
@@ -2783,8 +2820,12 @@ class RunExecution {
             ? {}
             : { effects: this.#fenceEffects(effects, vertex.id, scope) }),
         };
-        // Return the EXACT raw promise to the registry before any pin/save/outcome or abort-race wrapper.
-        return preparation === undefined ? this.#executor.execute(ctx) : preparation.execute(ctx);
+        // Context factories may synchronously cancel too. Preserve the captured receiver and return
+        // the EXACT raw Promise before any pin/save/outcome or abort-race wrapper.
+        const stoppedBeforeExecute = this.#stoppedAttemptOutcome(vertex.id, dispatchId);
+        return stoppedBeforeExecute === undefined
+          ? Reflect.apply(execute, receiver, [ctx])
+          : Promise.resolve(stoppedBeforeExecute);
       });
       // PIN the produced output ONCE, here, before anything reads it (`CR-54`,
       // [ADR-0043](../../../../docs/decisions/0043-media-egress-failover-rematerialization-ssrf.md) §3).
@@ -3057,9 +3098,13 @@ class RunExecution {
   }
 
   /** Host diagnostics cannot strand scheduler reevaluation when ID/clock/timer publication faults. */
-  async #settleFailedOrBackstop(vertex: PlanVertex, error: NodeFailure): Promise<void> {
+  async #settleFailedOrBackstop(
+    vertex: PlanVertex,
+    error: NodeFailure,
+    attemptNumber = 1,
+  ): Promise<void> {
     try {
-      await this.#settleFailed(vertex, error);
+      await this.#settleFailed(vertex, error, attemptNumber);
     } catch {
       this.#failNodeInternal(vertex.id, error.message);
     }

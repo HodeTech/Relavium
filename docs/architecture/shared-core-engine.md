@@ -181,9 +181,16 @@ stopped-state check before invocation; a live call preserves the handle as its r
 Controlled public-port tests establish these readiness mechanics separately from
 complete actor and public departure acceptance.
 
-An entered `node:started` append must recheck cancellation before arming a fresh node
-deadline or executor. If cancelled, that already-entered node receives a matching failed
-settlement; unstarted siblings unwind normally. Unexpected dispatch failures use fixed
+An entered `node:started` append, including a retry's, must recheck stopped state before
+entering fresh work. Initial dispatch checks before arming its node deadline; retry
+dispatch captures its entered attempt number before awaiting persistence so grace can
+settle that same attempt. Cancellation settles the matching entered attempt through
+the diagnostic backstop, preserving an earlier failure; an already settled/grace-abandoned
+dispatch produces no second terminal. Unstarted siblings unwind normally. Actual attempt
+entry also checks after synchronous host deadline setup, captures the executor method
+once, checks again after method acquisition and after context/effect factories, and invokes
+only a live method with its captured receiver. This covers synchronous cancellation at
+those ports without replacing the exact raw executor Promise. Unexpected dispatch failures use fixed
 content-free text without reading or coercing their cause. Readiness, pre-dispatch
 cancellation and detached failure share the diagnostic-publication backstop. Complete
 scheduler/dispatch/resume actor registration must be integrated with actual host departure:

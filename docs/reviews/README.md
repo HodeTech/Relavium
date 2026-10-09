@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 inherited dispatch corrections, round 2](2026-10-09T17-58-41-w7-dispatch-corrections-round-2-review.md):
+  both complete ten-path/nineteen-hunk reviews verify a retry-start High; Parent's retry
+  and synchronous-entry corrections add ten causal cases, with fresh cumulative review required.
+
 - [2026-10-09 — W7 inherited dispatch corrections, round 1](2026-10-09T17-28-06-w7-dispatch-corrections-round-1-review.md):
   both complete eight-path/seventeen-hunk reviews and Parent artifact/freeze audits accept
   the scoped fixes; a NEW complete cumulative second round and remaining W7 work are required.
