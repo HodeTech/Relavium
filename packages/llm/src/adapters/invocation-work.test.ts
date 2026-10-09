@@ -109,11 +109,20 @@ describe('invocation-local SDK producer lifetime', () => {
 
   it('observes actual native settlement after the Promise prototype is detached', async () => {
     const work = new ProviderInvocationWork(undefined, undefined);
-    const broken = Promise.resolve();
-    Object.setPrototypeOf(broken, null);
-    // A real native Promise with detached prototype still has native settlement slots.
-    void work.retainWork(() => broken);
+    const raw = deferred<void>();
+    Object.setPrototypeOf(raw.promise, null);
+    // The raw Promise stays pending: premature ACK and a missing native observer must both fail.
+    expect(work.retainWork(() => raw.promise)).toBe(raw.promise);
+    let complete = false;
+    void work.done.then(() => {
+      complete = true;
+    });
     work.retire();
+    await tick();
+    expect(complete).toBe(false);
+    raw.resolve();
+    await tick();
+    expect(complete).toBe(true);
     await work.done;
   });
 
