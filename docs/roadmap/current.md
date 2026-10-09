@@ -39,11 +39,13 @@ temporary section, deleted when both phases close. Its baseline step is discharg
 and Wave 0 is merged (PR #82), as is Wave 1 (PR #83). The interlude's `W2` (core reliability, six items) is
 merged too (PR #85, 2026-08-28).
 
-> **W7 live status, 2026-10-08:** all five immutable provider records and Step 7's four-round
+> **W7 live status, 2026-10-09:** all five immutable provider records and Step 7's four-round
 > acceptance remain complete. [Two fresh adapter/chain round-3 reviews](../reviews/2026-10-08T23-47-31-w7-owned-adapter-chain-round-3-review.md)
 > accept all 24 cumulative paths/78 hunks through `0c3c185b`; exact-head required CI, coverage,
-> Node 22, Windows, peers and Sonar pass. Core measured-round reuse is the next approved increment,
-> followed by ADR-0103 host departure and Step 8 atomic compaction/recovery. The ownership/lifecycle
+> Node 22, Windows, peers and Sonar pass. Core measured-round reuse is implemented at `99e78e55`;
+> [both independent round-1 reviews](../reviews/2026-10-09T00-16-47-w7-owned-core-round-1-review.md)
+> clear all 13 paths/47 hunks and exact-head CI passes. Fresh round 2 remains required, followed
+> by ADR-0103 host departure and Step 8 atomic compaction/recovery. The ownership/lifecycle
 > Highs, Step 12, final whole-wave CI/coverage/Sonar and all six W7 register items remain open.
 > Draft PR #90 is unmerged; no further paid call, credential or ADR approval is needed.
 > Earlier progress statements below describe their publication checkpoints.

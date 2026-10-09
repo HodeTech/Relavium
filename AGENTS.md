@@ -34,7 +34,8 @@ independent acceptance; systematic review reopened production request ownership 
 lifecycle obligations. All five live overflow records are complete. Step 7 is accepted after
 [four cumulative review rounds](docs/reviews/2026-10-08T22-30-10-w7-step-7-round-4-review.md).
 ADR-0102 controlled adapters/chain are accepted after three cumulative rounds; exact core
-measured-round reuse and ADR-0103 host integration remain open, as do Step 8 compaction/recovery
+measured-round reuse is implemented with round 1 clear and fresh round 2 required. ADR-0103
+host integration remains open, as do Step 8 compaction/recovery
 and final whole-wave Step 12. Supplemental ADR-0099–ADR-0103 are Accepted.
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 
