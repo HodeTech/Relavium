@@ -4529,3 +4529,23 @@ NEW complete cumulative review is required; no private correction is accepted by
 rejected round. Accepted ADR policy is unchanged. Full actors/public departure/CLI,
 final health, parked clocks, Step 8 and Step 12 remain required. All six W7 items stay
 OPEN (41/51); PR #90 remains draft/unmerged. No W7 work is deferred.
+
+### 2026-10-09 — Grace distinguishes claims from entered starts
+
+[Complete cumulative round 6](../../reviews/2026-10-09T20-08-19-w7-dispatch-corrections-round-6-review.md) finds no new confirmed issue on the twenty-path/
+thirty-four-hunk frozen candidate. [The NEW complete round 7](../../reviews/2026-10-09T20-29-02-w7-dispatch-corrections-round-7-review.md) rejects the same
+candidate for one High: grace walks authored order while scheduler claims follow ready
+plan order, allowing a never-started sibling to receive a node failure. Lifecycle
+independently discovers it, Authority corroborates after disclosure, and Parent owns
+exact-source runtime confirmation and correction. The earlier flat-width hypothesis
+remains correctly disproved; the differing-order schedule is materially distinct.
+
+Explicit current unstarted claims now remain excluded from grace until actual first-start
+entry, independently of historical attempt numbers or iteration order. Three permanent
+live/cancel/grace cases pass fixed/restored controls; original and guard removal each
+fail only grace. Parent verifies 5,044 physical inputs and full logs. The canonical
+engine architecture owns the mechanics; accepted ADR policy is unchanged. Both reviewer
+artifact/Git/shared-tree audits precede correction. NEW complete cumulative reviews are
+required; round 7 does not accept the later fix. Complete actors/public departure/CLI,
+final health, parked clocks, Step 8 and Step 12 remain required. All six W7 items stay
+OPEN (41/51), and PR #90 remains draft/unmerged. No W7 work is deferred.

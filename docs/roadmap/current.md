@@ -102,6 +102,10 @@ merged too (PR #85, 2026-08-28).
 > Parent corrects explicit failure forwarding and first-start reset with five permanent cases; NEW cumulative review is required.
 > [Complete cumulative round-5 reviews](../reviews/2026-10-09T19-41-03-w7-dispatch-corrections-round-5-review.md) verify a pre-start readiness attempt-correlation High.
 > Parent corrects its latest-entered-attempt forwarding with two paired permanent cases; NEW cumulative review is required.
+> [Complete cumulative round 6](../reviews/2026-10-09T20-08-19-w7-dispatch-corrections-round-6-review.md) finds no new confirmed issue.
+> [The NEW complete round 7](../reviews/2026-10-09T20-29-02-w7-dispatch-corrections-round-7-review.md) verifies a differing-order grace High:
+> an unstarted claim can receive a failure. Parent corrects explicit claim/start tracking,
+> with three permanent causal cases; NEW complete cumulative reviews remain required.
 > A broader private actor prototype exposed CLI closure/lease-handoff failures in root CI.
 > Complete scheduler/dispatch/resume registration must land with shipping host departure;
 > original failures and assertions are retained, and that integration stays required in W7.

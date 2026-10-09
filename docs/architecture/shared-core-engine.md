@@ -193,7 +193,8 @@ Cancellation settles the matching entered attempt through
 the diagnostic backstop, preserving an earlier failure; an already settled/grace-abandoned
 dispatch produces no second terminal. The shared refusal/diagnostic helper also preserves
 a vertex that is already completed, failed or skipped while its terminal append is pending.
-Unstarted siblings unwind normally. Actual attempt
+Current unstarted claims are tracked separately from entered starts. Grace excludes them
+regardless of authored-versus-ready iteration order; scheduler unwind releases their claims. Actual attempt
 entry also checks after synchronous host deadline setup, captures the executor method
 once, checks again after method acquisition and after context/effect factories, and invokes
 only a live method with its captured receiver. This covers synchronous cancellation at

@@ -544,6 +544,8 @@ class RunExecution {
   #noNewDispatch = false;
   /** ADR-0085 §5's fence: the dispatch id currently authoritative for each vertex. */
   readonly #activeDispatchByVertex = new Map<string, number>();
+  /** Scheduler claims whose first start has not entered; authored and ready orders can differ. */
+  readonly #unstartedClaims = new Set<string>();
   /** Media parts this run has re-hosted — the run-scope half of `CR-54`'s ceiling (ADR-0086 §4). */
   #pinnedMediaParts = 0;
 
@@ -1141,7 +1143,7 @@ class RunExecution {
   /**
    * The grace window elapsed and the run has still not settled — stop waiting for the executor.
    *
-   * Every vertex still `running` is settled `node:failed` FIRST, so the durable log has no `node:started`
+   * Every entered start still `running` is settled `node:failed` FIRST, so the durable log has no `node:started`
    * without a partner (ADR-0085 §4) and `step_executions` stays consistent. The message is fixed text
    * rather than free prose because `cancelled` alone would read as "the user cancelled this node", when
    * what happened is that the engine stopped waiting.
@@ -1164,7 +1166,7 @@ class RunExecution {
     // the late arrival instead of leaking a timer past the terminal.
     for (const vertexId of this.#nodeDeadlineDisarm.keys()) this.#disarmNodeDeadline(vertexId);
     for (const [vertexId, state] of this.#states) {
-      if (state.status !== 'running') continue;
+      if (state.status !== 'running' || this.#unstartedClaims.has(vertexId)) continue;
       const vertex = this.#plan.vertices.get(vertexId);
       if (vertex === undefined) continue;
       // Through `#settleFailed`, not a hand-rolled draft. A first version wrote the event inline and it
@@ -2206,6 +2208,7 @@ class RunExecution {
         }
         if (this.#noNewDispatch || this.#settled || this.#abort.signal.aborted) return;
         unstarted.delete(vertex.id);
+        this.#unstartedClaims.delete(vertex.id);
         this.#nodeDispatches += 1;
         // An approved redispatch opens attempt 1 before its start append can yield to grace.
         this.#lastAttemptByVertex.set(vertex.id, 1);
@@ -2249,6 +2252,7 @@ class RunExecution {
       // Claims without a node:started entry are still pending work, not abandoned executors.
       // Releasing them prevents an abort while waiting for the reader from inventing running work.
       for (const vertexId of unstarted) {
+        this.#unstartedClaims.delete(vertexId);
         const state = this.#states.get(vertexId);
         if (state?.status === 'running') state.status = 'pending';
       }
@@ -2335,6 +2339,7 @@ class RunExecution {
         continue;
       }
       state.status = 'running';
+      this.#unstartedClaims.add(vertexId);
       claimed.push(vertex);
       running += 1;
     }

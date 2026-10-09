@@ -11,6 +11,14 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 differing-order grace correction, round 7](2026-10-09T20-29-02-w7-dispatch-corrections-round-7-review.md):
+  one confirmed High; explicit unstarted-claim correction and three permanent cases
+  require NEW complete cumulative reviews.
+
+- [2026-10-09 — W7 cumulative dispatch corrections, round 6](2026-10-09T20-08-19-w7-dispatch-corrections-round-6-review.md):
+  zero confirmed findings on the complete twenty-path/thirty-four-hunk scope;
+  first clean cumulative round, followed by the distinct round-7 finding.
+
 - [2026-10-09 — W7 approved redispatch readiness correlation, round 5](2026-10-09T19-41-03-w7-dispatch-corrections-round-5-review.md):
   one confirmed High; latest-entered-attempt correction and two permanent paired cases
   require NEW complete cumulative review.
