@@ -35,8 +35,8 @@ lifecycle obligations. All five live overflow records are complete. Step 7 is ac
 [four cumulative review rounds](docs/reviews/2026-10-08T22-30-10-w7-step-7-round-4-review.md).
 ADR-0102 controlled adapters/chain are accepted after three cumulative rounds; exact core
 measured-round reuse is accepted after two fresh cumulative review rounds. ADR-0103
-append/receipt integration is implemented with a clear first independent review round; fresh round 2
-follows. Host departure remains open, as do Step 8 compaction/recovery
+append/receipt integration is accepted after two fresh cumulative review rounds; shipping
+provider/native integration proceeds next. Host departure remains open, as do Step 8 compaction/recovery
 and final whole-wave Step 12. Supplemental ADR-0099–ADR-0103 are Accepted.
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 

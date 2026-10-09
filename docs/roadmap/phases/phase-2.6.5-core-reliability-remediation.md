@@ -3847,3 +3847,21 @@ Two NEW cumulative reviewers are required before scoped acceptance. Raw producer
 work, all actor retirement, final money/effects, parked clocks, public departure and CLI input
 ACK remain open, followed by Step 8 and Step 12. All six W7 register items and systematic
 ownership/lifecycle Highs remain open; 41/51 is unchanged. No new paid call or approval is needed.
+
+
+### W7 append/receipt round 2 accepted — 2026-10-09
+
+[Two NEW cumulative reviewers](../../reviews/2026-10-09T02-00-00-w7-append-receipt-round-2-review.md) clear all 23 paths/63 hunks through
+`01115050`. Parent reads both complete reports and verifies all 3,189 authority and 2,075
+lifecycle owned entries, actual originals/exports/runtime resolution and causal restoration.
+The true initial/final entire shared scan confirms 645,439 unchanged entries with Git metadata
+excluded. Missing initial mode/export/log receipts and an older external setup binding damaged
+by a failed reused-root setup remain explicit; historical records are not silently rewritten.
+
+Both independent disjoint baselines pass 7,959 cases with 12 existing skips; overlapping controls
+and reruns are not added to shipping counts. Exact-head required PR/push CI, coverage floor,
+Node 22, Windows, peers and Sonar pass. This accepts append acknowledgements and receipt
+lifetimes only. Shipping provider/native integration proceeds to its own commit and fresh
+review rounds; transitive work, actor retirement, final money/effects, parked clocks, public
+departure, CLI input ACK, Step 8 and Step 12 remain open. All six W7 register items and
+systematic ownership/lifecycle Highs remain open; 41/51 is unchanged. No further paid call or approval is needed.

@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 append/receipt integration, round 2](2026-10-09T02-00-00-w7-append-receipt-round-2-review.md):
+  two fresh complete 23-path/63-hunk reviews and Parent evidence audits accept the scoped increment;
+  historical setup-custody correction remains explicit; shipping host integration and W7 gates stay open.
+
 - [2026-10-09 — W7 append/receipt integration, round 1](2026-10-09T01-27-00-w7-append-receipt-round-1-review.md):
   both complete 17-path/57-hunk reviews return zero verified findings; Parent verifies full reports,
   source/export restoration and qualified custody evidence; fresh cumulative round 2 required.
