@@ -2095,6 +2095,7 @@ class RunExecution {
   // invariant and skip-propagation robust against the interleaving of concurrent branch settlements.
 
   #schedule(): void {
+    if (this.#settled || this.#retiringHost) return;
     if (this.#scheduling) {
       this.#rerun = true; // a settlement landed while a step was in flight — re-evaluate after it
       return;
@@ -2185,39 +2186,88 @@ class RunExecution {
     }
     // The vertices are already marked `running` (claimed synchronously above), so these awaits cannot
     // make a later step see a transient "nothing running" view.
-    for (const vertex of ready) {
-      await this.handle.whenConsumersReady(); // coarse backpressure (no-drop)
-      this.#nodeDispatches += 1;
-      await this.#emitDurable({
-        type: 'node:started',
-        runId: this.runId,
-        nodeId: vertex.id,
-        nodeType: vertex.type,
-      });
-      // Re-read the latch AFTER the durable `node:started` write above: the grace window may have elapsed
-      // while it was pending, and a dispatch started past the cutoff is exactly what the latch forbids.
-      if (this.#noNewDispatch || this.#settled) {
-        return;
-      }
-      // **A dispatch may never float its rejection (Medium 9).** `#dispatch` is `async`, so even a
-      // SYNCHRONOUS fault before its `try` — a host whose `setTimer` throws, which `#armNodeDeadline` calls
-      // outside it — surfaces as a rejected promise here. Un-caught that is an `unhandledRejection` AND a
-      // terminal-less run: the node stays `running`, `#handleIdle` sees work in flight forever, and nothing
-      // ever publishes `run:failed`. Route it to the same settle every other node failure takes.
-      void this.#dispatch(vertex, 1).catch(async (cause: unknown) => {
-        const message = `dispatch failed unexpectedly: ${cause instanceof Error ? cause.message : String(cause)}`;
+    const unstarted = new Set(ready.map((vertex) => vertex.id));
+    try {
+      for (const vertex of ready) {
         try {
-          // The FULL settle, not just the in-memory flag: `#failNodeInternal` marks the state and aborts but
-          // emits no `node:failed`, so the graph never publishes this node's terminal. Measured — with the
-          // flag alone the run still hung.
-          await this.#settleFailed(vertex, { code: 'internal', message, retryable: false });
+          if (!(await this.#waitForConsumer())) return;
         } catch {
-          // The settle itself faulted (the same broken host can fault the abort path's own timer arm).
-          // Fall back to the in-memory backstop — an aborted run still beats a hung one.
-          this.#failNodeInternal(vertex.id, message);
+          if (this.#settled || this.#abort.signal.aborted) return;
+          await this.#settleFailed(vertex, {
+            code: 'internal',
+            message: 'the event consumer readiness check failed',
+            retryable: false,
+          });
+          this.#schedule();
+          return;
         }
-        this.#schedule();
-      });
+        if (this.#noNewDispatch || this.#settled || this.#abort.signal.aborted) return;
+        unstarted.delete(vertex.id);
+        this.#nodeDispatches += 1;
+        await this.#emitDurable({
+          type: 'node:started',
+          runId: this.runId,
+          nodeId: vertex.id,
+          nodeType: vertex.type,
+        });
+        // Re-read the latch AFTER the durable `node:started` write above: the grace window may have elapsed
+        // while it was pending, and a dispatch started past the cutoff is exactly what the latch forbids.
+        if (this.#noNewDispatch || this.#settled) {
+          return;
+        }
+        // **A dispatch may never float its rejection (Medium 9).** `#dispatch` is `async`, so even a
+        // SYNCHRONOUS fault before its `try` — a host whose `setTimer` throws, which `#armNodeDeadline` calls
+        // outside it — surfaces as a rejected promise here. Un-caught that is an `unhandledRejection` AND a
+        // terminal-less run: the node stays `running`, `#handleIdle` sees work in flight forever, and nothing
+        // ever publishes `run:failed`. Route it to the same settle every other node failure takes.
+        void this.#dispatch(vertex, 1).catch(async (cause: unknown) => {
+          const message = `dispatch failed unexpectedly: ${cause instanceof Error ? cause.message : String(cause)}`;
+          try {
+            // The FULL settle, not just the in-memory flag: `#failNodeInternal` marks the state and aborts but
+            // emits no `node:failed`, so the graph never publishes this node's terminal. Measured — with the
+            // flag alone the run still hung.
+            await this.#settleFailed(vertex, { code: 'internal', message, retryable: false });
+          } catch {
+            // The settle itself faulted (the same broken host can fault the abort path's own timer arm).
+            // Fall back to the in-memory backstop — an aborted run still beats a hung one.
+            this.#failNodeInternal(vertex.id, message);
+          }
+          this.#schedule();
+        });
+      }
+    } finally {
+      // Claims without a node:started entry are still pending work, not abandoned executors.
+      // Releasing them prevents an abort while waiting for the reader from inventing running work.
+      for (const vertexId of unstarted) {
+        const state = this.#states.get(vertexId);
+        if (state?.status === 'running') state.status = 'pending';
+      }
+      if (unstarted.size > 0 && this.#abort.signal.aborted) this.#schedule();
+    }
+  }
+
+  /** Keep raw readiness joined even when abort releases the serialized scheduler's wait. */
+  async #waitForConsumer(): Promise<boolean> {
+    const signal = this.#abort.signal;
+    if (this.#settled || this.#retiringHost || signal.aborted) return false;
+    const raw = this.#hostWork.invoke(() => this.handle.whenConsumersReady());
+    let onAbort!: () => void;
+    const cancelled = new Promise<false>((resolve) => {
+      onAbort = () => resolve(false);
+    });
+    signal.addEventListener('abort', onAbort);
+    if (signal.aborted) onAbort();
+    try {
+      const ready = await Promise.race([
+        (async () => {
+          await raw;
+          return true;
+        })(),
+        cancelled,
+      ]);
+      return ready && !signal.aborted && !this.#settled && !this.#retiringHost;
+    } finally {
+      signal.removeEventListener('abort', onAbort);
     }
   }
 

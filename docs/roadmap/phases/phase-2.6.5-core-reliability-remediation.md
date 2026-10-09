@@ -4297,3 +4297,31 @@ MCP startup roots, custom-provider descendants, final receipt health, parked clo
 public departure/primary ACK/CLI teardown, Step 8 and final Step 12 remain open.
 All six W7 items remain OPEN (41/51 closed); draft PR #90 is unmerged. No additional
 paid call, credential, user decision or ADR approval is pending.
+
+### W7 scheduler readiness — staged implementation, 2026-10-09
+
+The next scoped increment registers the exact node-boundary readiness Promise before
+invoking its public port, races only the scheduler wait against abort, and returns
+never-started claims to pending when leaving a batch. Cancellation can then reach its
+terminal without waiting on a reader, while an uncooperative raw readiness operation
+still retains the exact host claim until completion. A live readiness throw/rejection
+becomes a fixed internal failure. This implements existing ADR-0103 mechanics; no new
+dependency, provider seam or public API is introduced.
+
+Eight new permanent reference-host cases cover held fulfilment/rejection across
+terminal publication, live dispatch, synchronous/asynchronous faults, and reentrant
+cancellation with one/three/64 claimed vertices. Before-fix production fails seven
+and reports two unhandled readiness rejections. Isolated raw-owner/abort-race/claim-unwind
+removals fail two/two/five cases, then exact restoration passes eight. The private full
+core suite passes 109 files / 2,858 cases; strict core, purity and scoped lint pass.
+These controls replace the public readiness port at the real scheduler boundary;
+they do not prove actual bounded-stream or native-process teardown behavior.
+
+Parent initially prototyped complete scheduler/detached-dispatch roots together.
+Its retained original full-core captures fail 143 cases, then 142 after claim unwind;
+an isolation run establishes the independent readiness/claim defect. The larger
+prototype stays private and unaccepted while retirement/park consumers and budget/
+resume outcomes are investigated. Complete actor roots remain required within W7.
+Only the independently validated readiness slice is staged here, with two fresh
+complete independent review rounds still required. All six W7 register items remain
+OPEN (41/51 closed); public departure, Step 8 and final Step 12 remain open.

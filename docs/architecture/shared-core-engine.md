@@ -170,6 +170,14 @@ checked before another filter or resolved-text delivery, including a second `rea
 the same reference. This covers fresh startup, not the still-open pre-handle resume and
 complete scheduler/timer actor integration.
 
+The scheduler's node-boundary consumer readiness has a separately registered raw lifetime.
+Only its wait is raced against execution abort, so cancellation can progress while an
+uncooperative readiness Promise still retains host retirement. A claimed vertex that has
+not entered `node:started` returns to pending when the scheduler leaves that batch; it
+must not masquerade as an in-flight executor and force the run to wait for grace. A live
+readiness fault uses a fixed internal error. Controlled public-port tests establish these
+mechanics; complete scheduler/dispatch roots and public departure are still open.
+
 Settlement observation uses the captured native Promise intrinsic rather than a caller-overridden
 `then`. A constructor/species failure while attaching that observer is not settlement: the exact raw
 Promise and its slot/authority remain retained, with a sticky content-free `observationFailed`

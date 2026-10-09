@@ -905,3 +905,19 @@ remain in the review record. The accepted decision is unchanged.
 This accepts fresh startup and interpolation only. Remaining actor/pre-handle/MCP
 startup roots, custom-provider descendants, final receipt health, parked clocks,
 public departure/CLI teardown, Step 8 and final whole-wave Step 12 remain open.
+
+### Implementation note — scheduler readiness lifetime staged, 2026-10-09
+
+The node-boundary readiness Promise is registered before its public port is invoked.
+The scheduler races its wait against abort while retaining that exact raw Promise for
+host retirement. Claims that never entered `node:started` return to pending on batch
+exit, allowing cancellation/failure to advance without inventing running executors.
+Live readiness throws/rejections become a fixed internal failure. The mechanics live
+in [shared-core-engine.md](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103).
+
+Eight controlled reference-host cases pass; before-fix production fails seven and
+reports two original unhandled readiness rejections. Separate removal of raw ownership,
+the abort race and claim unwind fails two/two/five cases; exact restoration passes eight.
+These are finite public-port controls, not native backpressure/process proof. Two fresh
+complete independent review rounds are required. Complete scheduler/dispatch and other
+actor roots, public departure and the remaining W7 obligations are unchanged and open.
