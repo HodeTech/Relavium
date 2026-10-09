@@ -3915,3 +3915,20 @@ follows this commit. Transitive work, actor retirement, final money/effects, par
 departure, acknowledged CLI input, Step 8 and final Step 12 remain open. All six W7 register items
 and systematic ownership/lifecycle Highs remain open; 41/51 is unchanged. No further paid call,
 keychain input or approval is needed.
+
+## W7 raw provider/native lifetime round-2 acceptance — 2026-10-09
+
+[Two NEW complete cumulative reviews](../../reviews/2026-10-09T03-25-00-w7-raw-producer-round-2-review.md) accept all
+20 paths / 41 hunks through `1172d247`, including the corrected explicit public-return
+refusal and 28 permanent cases. Parent reads both entire sealed reports and audits all
+7,475 authority and 7,853 lifecycle entries, actual source/export restoration and its own
+645,548-entry whole shared freeze before release. Both return zero new verified scoped
+product findings. Reviewer nested Corepack invocations violate the direct-tool rule and
+receive no DB-sync proof credit; original seals and explicit corrections remain intact.
+
+Exact-head required/advisory PR and push CI plus Sonar pass; root CI is cache-qualified,
+not final forced whole-wave validation. HTTP/MCP/custom-provider descendants, raw poll/media,
+all actors/generations, final money/effects, parked clocks, public departure and acknowledged
+CLI teardown remain open. Step 8 and Step 12, all six W7 register items and systematic
+ownership/lifecycle obligations remain open; 41/51 is unchanged and PR #90 stays draft.
+The separately prepared HTTP increment proceeds next with its own commit and fresh review rounds.

@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 raw provider/native lifetime, round 2](2026-10-09T03-25-00-w7-raw-producer-round-2-review.md):
+  two fresh complete 20-path/41-hunk reviews and Parent artifact/freeze audits accept the scoped increment;
+  nested Corepack violations are excluded from proof, transitive host work and W7 remain open.
+
 - [2026-10-09 — W7 raw provider/native lifetime, round 1](2026-10-09T02-36-10-w7-raw-producer-round-1-review.md):
   two complete 17-path/38-hunk reviews verify a public-return High; confirmed correction adds two regressions, fresh cumulative round 2 required.
 

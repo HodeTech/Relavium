@@ -52,8 +52,10 @@ merged too (PR #85, 2026-08-28).
 > through `01115050`. Raw provider/iterator/media and native child lifetime integration is
 > implemented at `fde3ca0c`; [both complete round-1 reviews](../reviews/2026-10-09T02-36-10-w7-raw-producer-round-1-review.md)
 > verify a public-return High, corrected with two regressions (28 permanent cases total).
-> A NEW complete cumulative round 2 remains required, along with the remaining
-> host departure work and Step 8 atomic compaction/recovery. The ownership/lifecycle
+> [Two fresh cumulative round-2 reviews](../reviews/2026-10-09T03-25-00-w7-raw-producer-round-2-review.md) accept all 20 paths/41 hunks
+> through `1172d247` after complete report/artifact/freeze audits; nested Corepack reviewer
+> violations get no proof credit. Transitive HTTP/MCP, remaining host departure work
+> and Step 8 atomic compaction/recovery remain open. The ownership/lifecycle
 > Highs, Step 12, final whole-wave CI/coverage/Sonar and all six W7 register items remain open.
 > Draft PR #90 is unmerged; no further paid call, credential or ADR approval is needed.
 > Earlier progress statements below describe their publication checkpoints.
