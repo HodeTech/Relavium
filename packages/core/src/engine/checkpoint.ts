@@ -31,9 +31,10 @@ import type {
 import { RunSuspensionReducer, RunSuspensionCorruptionError } from '@relavium/shared';
 
 import type { GateRequest, NodeFailure } from './node-executor.js';
+import { NodeLifeClockReducer, type NodeLifeClock } from './node-life-clock.js';
 
 /** The schema version of the *derivation* (not a stored blob) — lets a later engine refuse/migrate it. */
-export const CHECKPOINT_SCHEMA_VERSION = 2;
+export const CHECKPOINT_SCHEMA_VERSION = 3;
 
 /** The reconstructed terminal-or-paused state of one vertex (a still-running vertex is omitted — re-run). */
 export interface CheckpointNodeState {
@@ -139,6 +140,10 @@ export interface CheckpointState {
   readonly budgetRejections: readonly Pick<CheckpointPendingGate, 'nodeId' | 'gateId'>[];
   /** Async media jobs in flight at the checkpoint — the run resumes by re-polling each (re-attach, ADR-0045 §3). */
   readonly pendingMediaJobs: readonly CheckpointPendingMediaJob[];
+  /** Logical first-start bases derived from the same validated gate transitions, not a stored clock. */
+  readonly nodeLifeClocks: ReadonlyMap<string, NodeLifeClock>;
+  /** A crash after approval but before its next start must preserve that one continuation's basis. */
+  readonly pendingBudgetContinuationNodeIds: readonly string[];
   /** Gate ids ALREADY resolved (a `human_gate:resumed` was persisted) — so re-delivering a decision after a
    *  reconnect is an idempotent no-op rather than advancing the run twice (execution-model.md §gate). */
   readonly resolvedGateIds: readonly string[];
@@ -255,6 +260,7 @@ interface ReconAccumulator {
   conservativeCostMicrocents: number;
   readonly nodeStates: Map<string, CheckpointNodeState>;
   readonly suspensions: RunSuspensionReducer;
+  readonly nodeLife: NodeLifeClockReducer;
 }
 
 const RUN_STATUS_BY_EVENT: Partial<Record<RunEvent['type'], RunStatus>> = {
@@ -418,6 +424,7 @@ export function reconstructCheckpointState(
     conservativeCostMicrocents: 0,
     nodeStates: new Map(),
     suspensions: new RunSuspensionReducer(),
+    nodeLife: new NodeLifeClockReducer(),
   };
 
   for (const event of events) {
@@ -460,6 +467,7 @@ export function reconstructCheckpointState(
     applyNodeEvent(acc, event);
     applyMediaJobEvent(acc, event);
     const transition = acc.suspensions.apply(event);
+    acc.nodeLife.apply(event, transition);
     applyGateEvent(acc, transition);
     if (event.type === 'budget:paused') {
       acc.cumulativeCostMicrocents = Math.max(acc.cumulativeCostMicrocents, event.spentMicrocents);
@@ -496,6 +504,8 @@ export function reconstructCheckpointState(
       ...(gate.expiresAt === undefined ? {} : { expiresAt: gate.expiresAt }),
     })),
     budgetRejections: acc.suspensions.budgetRejections(acc.runId),
+    nodeLifeClocks: acc.nodeLife.snapshot(),
+    pendingBudgetContinuationNodeIds: acc.nodeLife.pendingBudgetContinuations(),
     pendingMediaJobs: acc.suspensions.pendingMediaJobs(acc.runId).map((job) => ({
       nodeId: job.nodeId,
       jobId: job.jobId,

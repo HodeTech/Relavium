@@ -4549,3 +4549,18 @@ artifact/Git/shared-tree audits precede correction. NEW complete cumulative revi
 required; round 7 does not accept the later fix. Complete actors/public departure/CLI,
 final health, parked clocks, Step 8 and Step 12 remain required. All six W7 items stay
 OPEN (41/51), and PR #90 remains draft/unmerged. No W7 work is deferred.
+
+### W7 consolidated host departure — implemented, review pending, 2026-10-10
+
+[Dispatch round 8](../../reviews/2026-10-09T21-05-01-w7-dispatch-corrections-round-8-review.md)
+was the first clean cumulative round after round 7; [round 9](../../reviews/2026-10-09T21-43-39-w7-dispatch-corrections-round-9-review.md)
+then verified a first-start publication High. The six-case correction lands with complete
+MCP startup/custom-provider and run-actor ownership, final money/effect health, parked clocks,
+public local departure and CLI primary/input/host acknowledgements. Canonical mechanics live in
+[shared-core-engine.md](../../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103),
+with output/remedies in [commands.md](../../reference/cli/commands.md#exit-codes).
+
+The consolidated increment requires two fresh complete independent review rounds. Earlier
+scoped reviews do not accept these new bytes or their composition. Step 8 and final Step 12
+remain open; all six W7 register items stay OPEN (41/51). No required work is deferred and
+no paid call, credential or further ADR approval is pending.

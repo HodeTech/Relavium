@@ -35,6 +35,15 @@ function isForRun(event: RunOrSessionEvent, runId: string): event is RunEvent {
   return 'runId' in event && event.runId === runId;
 }
 
+/** Final host safety is independent of terminal persistence and the visible run outcome. */
+export type RunDeparture =
+  | { readonly kind: 'continue' }
+  | {
+      readonly kind: 'detached' | 'closed';
+      readonly moneyDurability: 'durable' | 'uncertain';
+      readonly effectNeedsAttention: boolean;
+    };
+
 /** The handle `WorkflowEngine.start` returns — the run's id, its event stream, and cooperative cancel. */
 export interface RunHandle {
   /** The run id (`runId`) this handle observes — the key on every event in its stream. */
@@ -49,6 +58,8 @@ export interface RunHandle {
    * strict programmatic `engine.cancel(runId)`.
    */
   cancel: () => void;
+  /** Join this execution's host use, or retain the same primary reader when real progress is owed. */
+  depart: () => Promise<RunDeparture>;
   /**
    * Resolves when the primary consumer's buffer has room for one more event — ADR-0036's producer-await half.
    *
@@ -118,6 +129,8 @@ export function createRunHandle(
    * This is not exposed on RunHandle and does not itself certify safe host closure.
    */
   onPrimaryDelivery: (read: () => EventStreamDeliveryState) => void = () => undefined,
+  /** Internal owner operation; an unowned standalone handle cannot certify host safety. */
+  requestDeparture: () => Promise<RunDeparture> = () => Promise.resolve({ kind: 'continue' }),
 ): RunHandle {
   // `onClose: unsubscribe` detaches the bus subscription on ANY close — the terminal event below OR an early
   // consumer abandon (`break`/`return` → BoundedEventStream.return() → close()) — not only on a terminal.
@@ -145,6 +158,22 @@ export function createRunHandle(
     primary.close();
   });
   onPrimaryDelivery(() => primary.deliveryState);
+  let departure: Promise<RunDeparture> | undefined;
+  const depart = (): Promise<RunDeparture> => {
+    if (departure !== undefined) return departure;
+    // Publish the transaction before entering the owner, including a synchronous reentrant port.
+    const current = Promise.resolve().then(requestDeparture);
+    departure = current;
+    void current.then(
+      (result) => {
+        if (result.kind === 'continue' && departure === current) departure = undefined;
+      },
+      () => {
+        if (departure === current) departure = undefined;
+      },
+    );
+    return current;
+  };
   return {
     runId,
     events: primary,
@@ -155,6 +184,7 @@ export function createRunHandle(
         }
       }),
     cancel,
+    depart,
     whenConsumersReady: () => primary.whenDrained(),
     highWaterMark: primary.highWaterMark,
     get bufferedCount() {
@@ -177,11 +207,15 @@ export function createRunHandle(
 export function createClosedRunHandle(runId: string): RunHandle {
   const primary = new BoundedEventStream<RunEvent>(DEFAULT_STREAM_CAPACITY);
   primary.close();
+  const departure = Promise.resolve<RunDeparture>(
+    Object.freeze({ kind: 'closed', moneyDurability: 'durable', effectNeedsAttention: false }),
+  );
   return {
     runId,
     events: primary,
     subscribe: () => () => undefined,
     cancel: () => undefined,
+    depart: () => departure,
     whenConsumersReady: () => Promise.resolve(),
     // A closed stream buffers nothing and throttles nobody, so the ceiling is reported as the default and
     // the depth as zero. Stated rather than omitted: a producer awaiting this handle is told "go ahead",

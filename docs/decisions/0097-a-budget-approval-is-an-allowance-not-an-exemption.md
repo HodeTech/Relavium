@@ -564,3 +564,11 @@ maintainer-approved engine departure decision. No safe general pause handoff, li
 dependent implementation is accepted by this note. The cancellation regressions retain their
 tested scope. The [fifth review record](../reviews/2026-10-06T21-43-24-w7-systematic-group-3-round-5-review.md) and
 [canonical command contract](../reference/cli/commands.md#relavium-budget-resume) record the limits.
+
+## 2026-10-10 — ADR-0103 lifecycle integration
+
+Budget authorization supplies one durable continuation credit for a parked agent's logical clock; approved redispatch resets attempt numbering without granting a fresh timeout.
+See the [canonical engine lifecycle](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+and [CLI exit/remedy contract](../reference/cli/commands.md#exit-codes). Consolidated independent
+acceptance is tracked in [current.md](../roadmap/current.md); Step 8 and final whole-wave
+validation remain open. The accepted body above is preserved.

@@ -12,6 +12,7 @@ import {
   runMigrations,
 } from '@relavium/db';
 import type { LlmProvider, ModelPricing } from '@relavium/llm';
+import type { RunEvent } from '@relavium/shared';
 import { buildEngine } from '../engine/build-engine.js';
 import { createInkRenderer } from '../render/tui/ink-renderer.js';
 import { runCommand } from './run.js';
@@ -79,7 +80,9 @@ for (const mode of [
         unexpectedPromptRelease = deferred(),
         deadlineArmed = deferred(),
         cleanupEntered = deferred(),
-        cleanupRelease = deferred();
+        cleanupRelease = deferred(),
+        terminalObserved = deferred(),
+        hostReleased = deferred();
       const trace: string[] = [];
       const summaries: string[] = [];
       let runId = '',
@@ -211,6 +214,8 @@ for (const mode of [
             buildEngine: async (options) => {
               if (!options?.host) throw new Error('native host required');
               const host = options.host;
+              const leases = host.runLeases;
+              if (leases === undefined) throw new Error('native lease port required');
               const store: RunStore = {
                 ...host.store,
                 persistEvent: async (event, context) => {
@@ -237,6 +242,15 @@ for (const mode of [
                 host: {
                   ...host,
                   store,
+                  runLeases: {
+                    ...leases,
+                    release: async (...args: Parameters<typeof leases.release>) => {
+                      const result = await leases.release(...args);
+                      trace.push('host-released');
+                      hostReleased.resolve();
+                      return result;
+                    },
+                  },
                   setTimer: (...args: Parameters<typeof host.setTimer>) => {
                     const [ms, fire, kind] = args;
                     if (
@@ -254,32 +268,49 @@ for (const mode of [
                 },
               });
             },
-            selectRenderer: () =>
-              createInkRenderer({
+            selectRenderer: () => {
+              const renderer = createInkRenderer({
                 color: false,
-                mount: () => ({
-                  unmount: () => {
-                    unmounts++;
-                    trace.push('unmount-' + unmounts);
-                    if (unmounts === 1) suspendEntered.resolve();
-                  },
-                  waitUntilExit: () =>
-                    unmounts === 1 &&
-                    (signalDuringSuspend ||
-                      terminalDuringSuspend ||
-                      mode === 'finalize-error-signal')
-                      ? suspendRelease.promise.then(() => {
-                          if (mode === 'finalize-error-signal') throw stopError;
-                        })
-                      : mode === 'suspend-error' && unmounts === 1
-                        ? Promise.reject(suspendError)
-                        : Promise.resolve(),
-                }),
+                mount: () => {
+                  const unmounted = deferred();
+                  let ownUnmount = 0;
+                  return {
+                    unmount: () => {
+                      ownUnmount = ++unmounts;
+                      trace.push('unmount-' + unmounts);
+                      unmounted.resolve();
+                      if (unmounts === 1) suspendEntered.resolve();
+                    },
+                    waitUntilExit: async () => {
+                      // The ACK is obtained before unmount so actual Ink cannot leak beforeExit.
+                      // Its settlement still waits for THIS mount's real unmount and held ACK.
+                      await unmounted.promise;
+                      if (
+                        ownUnmount === 1 &&
+                        (signalDuringSuspend ||
+                          terminalDuringSuspend ||
+                          mode === 'finalize-error-signal')
+                      ) {
+                        await suspendRelease.promise;
+                        if (mode === 'finalize-error-signal') throw stopError;
+                      } else if (mode === 'suspend-error' && ownUnmount === 1) throw suspendError;
+                    },
+                  };
+                },
                 writeSummary: (text) => {
                   trace.push('summary');
                   summaries.push(text);
                 },
-              }),
+              });
+              return {
+                ...renderer,
+                onEvent: (event: RunEvent) => {
+                  renderer.onEvent(event);
+                  if (event.type === 'run:failed' || event.type === 'run:cancelled')
+                    terminalObserved.resolve();
+                },
+              };
+            },
             selectGatePrompter: () =>
               mode === 'stable-pause' || mode === 'finalize-error-signal'
                 ? undefined
@@ -334,9 +365,30 @@ for (const mode of [
           await deadlineArmed.promise;
           fireGateDeadline();
           await cancelAck.promise;
+          // The one primary pump and engine retirement continue while the raw prompt ignores abort.
+          await terminalObserved.promise;
+          await hostReleased.promise;
+          afterTerminalAck = {
+            prompts,
+            settled,
+            open: db.sqlite.open,
+            closes,
+            summaries: summaries.length,
+          };
+          expect(afterTerminalAck).toEqual({
+            prompts: 1,
+            settled: false,
+            open: true,
+            closes: 0,
+            summaries: 0,
+          });
+          expect(process.listenerCount('SIGINT')).toBe(signalBaseline + 1);
+          expect(trace).not.toContain('summary');
+          expect(trace).not.toContain('close');
+          // Only actual raw prompt settlement acknowledges input release; no abort race or timeout does.
+          unexpectedPromptRelease.resolve();
           if (heldCleanup) {
             await cleanupEntered.promise;
-            // A real async host cleanup may still own the DB after the correct summary.
             expect({ settled, open: db.sqlite.open, closes, prompts }).toEqual({
               settled: false,
               open: true,
@@ -347,27 +399,7 @@ for (const mode of [
             expect(summaries[0]).toContain('run failed');
             cleanupRelease.resolve();
           }
-          // Writer ACK precedes publication, UI dismissal and asynchronous command cleanup.
-          // Require completion with the old prompt still held, rather than count event-loop turns.
-          let watchdog: ReturnType<typeof setTimeout> | undefined;
-          try {
-            await Promise.race([
-              execution,
-              new Promise<never>((_resolve, reject) => {
-                watchdog = setTimeout(
-                  () =>
-                    reject(
-                      new Error(
-                        'acknowledged terminal did not finish command while the old prompt remained held',
-                      ),
-                    ),
-                  5000,
-                );
-              }),
-            ]);
-          } finally {
-            if (watchdog !== undefined) clearTimeout(watchdog);
-          }
+          await execution;
         } else if (terminalDuringSuspend) {
           await suspendEntered.promise;
           expect(prompts).toBe(0);
@@ -416,7 +448,7 @@ for (const mode of [
           expect(settled).toBe(false);
           cancelRelease.resolve();
         }
-        if (signalDuringSuspend || terminalExpected) {
+        if (signalDuringSuspend || terminalDuringSuspend) {
           await cancelAck.promise;
           await turn();
           afterTerminalAck = {
@@ -474,8 +506,8 @@ for (const mode of [
               if (terminalDuringPrompt)
                 expect(
                   afterTerminalAck,
-                  'acknowledged terminal must release a pending card without extra user input',
-                ).toMatchObject({ settled: true, open: false, closes: 1, summaries: 1 });
+                  'terminal and host ACKs cannot replace the held raw input ACK',
+                ).toMatchObject({ settled: false, open: true, closes: 0, summaries: 0 });
             }
           } else {
             expect(exit).toBe(1);

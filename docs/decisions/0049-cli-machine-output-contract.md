@@ -111,3 +111,11 @@ construction only ever a CLI-boundary diagnostic.
   CI=true"). Mitigation: this ADR realigns the phase-2-cli.md §2.F task to the
   `--json`-gated rule, and 2.F refines the commands.md Output-modes table to state it
   explicitly, so spec and behavior agree.
+
+## 2026-10-10 — ADR-0103 lifecycle integration
+
+CLI diagnostics remain nondurable stderr records and stdout remains the actual RunEvent stream; the final local health disposition adds exit 8 without inventing a terminal.
+See the [canonical engine lifecycle](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+and [CLI exit/remedy contract](../reference/cli/commands.md#exit-codes). Consolidated independent
+acceptance is tracked in [current.md](../roadmap/current.md); Step 8 and final whole-wave
+validation remain open. The accepted body above is preserved.

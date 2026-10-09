@@ -30,43 +30,20 @@ export const EXIT_CODES = {
    *
    * **Scoped to ADR-0078's case: a terminal was PRODUCED and its write did not land.** A run fenced out
    * mid-flight (ADR-0079 §5) shares the `uncertain` disposition but produces no terminal at all and writes
-   * nothing to the outbox, so the retry promised above would never come — that case is code `6`, and the
-   * discriminator is whether a terminal was delivered.
+   * nothing to the outbox, so the retry promised above would never come — that case is code `6` when
+   * final receipt health does not require `8` or `7`. The discriminator is actual terminal delivery.
    */
   durabilityUncertain: 5,
-  /**
-   * The run is owned by ANOTHER PROCESS — this invocation refused rather than becoming a second producer
-   * ([ADR-0079](../../../../docs/decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §7).
-   *
-   * Distinct from `invalidInvocation` because it is the only engine-state refusal that is **transient**. Every
-   * other one — unknown run, wrong workflow, already terminal — is a mistake in the call and will fail
-   * identically forever; this one resolves on its own when the other process finishes or its lease expires
-   * (at most `RUN_LEASE_TTL_MS`). An automation loop has to be able to tell "try again shortly" from "never
-   * call this again", and a single blanket code cannot express that.
-   *
-   * Reached two ways: a resume REFUSED before it started (another process already held the lease), and a run
-   * fenced out MID-FLIGHT, which closes its stream with no terminal and reports `uncertain`. Both mean the
-   * same thing to a caller — this run is somebody else's right now — and neither has anything to retry
-   * locally, which is what separates them from code `5`.
-   */
+  /** Ownership refusal or terminal-free fencing; inspect current history before resuming (ADR-0079). */
   runOwnedElsewhere: 6,
   /**
-   * An external effect from a PRIOR attempt of this run is unresolved, so a human must look at it before the
-   * run can continue ([ADR-0080](../../../../docs/decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) §2b;
-   * [effect-journal.md](../../../../docs/reference/shared-core/effect-journal.md) §4, §8).
-   *
-   * Distinct from every code above it because the remedy is different in kind. `1` says the run failed and
-   * can be re-run; `5` says a terminal may not have been recorded and to re-check after the next start; `6`
-   * says wait and retry. This one says **do not retry** — a ticket may already be filed, a payment may
-   * already have gone out — go look at the target, then resolve the row. Resuming again re-enters the same
-   * gate and stops in the same place, by design.
-   *
-   * Deliberately NOT reported through `durability()`. That reads `uncertain` for ADR-0078's case — a
-   * terminal that may not have reached the log — and its documented remedy ("held in the outbox and retried
-   * on the next start") is false here: this run's terminal DID land durably, and nothing will drain. The
-   * discriminator is the terminal's `ErrorCode`, not the durability disposition.
+   * A prior or admitted external effect needs human inspection (ADR-0080/0103). Final joined effect
+   * health can require this disposition without changing the actual terminal. Money uncertainty wins.
+   * Follow the canonical commands.md remedy; automatic repetition can duplicate an external effect.
    */
   effectNeedsAttention: 7,
+  /** Required money receipts were not durably acknowledged; never automatically repeat paid work. */
+  moneyDurabilityUncertain: 8,
 } as const;
 
 export type ExitCode = (typeof EXIT_CODES)[keyof typeof EXIT_CODES];

@@ -11,6 +11,13 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 first-start publication, cumulative round 9](2026-10-09T21-43-39-w7-dispatch-corrections-round-9-review.md):
+  one independently discovered and Parent-confirmed High; six paired regressions pass after correction,
+  with fresh consolidated review required.
+
+- [2026-10-09 — W7 cumulative dispatch corrections, round 8](2026-10-09T21-05-01-w7-dispatch-corrections-round-8-review.md):
+  zero confirmed findings; qualified artifact/shared-tree audit and a separate coverage-map amendment.
+
 - [2026-10-09 — W7 differing-order grace correction, round 7](2026-10-09T20-29-02-w7-dispatch-corrections-round-7-review.md):
   one confirmed High; explicit unstarted-claim correction and three permanent cases
   require NEW complete cumulative reviews.

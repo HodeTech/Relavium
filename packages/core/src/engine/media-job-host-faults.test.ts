@@ -214,6 +214,7 @@ async function lifecycle(fault: Fault) {
     maxTokens: 0,
     providerOptions: undefined,
   });
+  await expect.poll(() => base.livenessCount()).toBe(0);
   return {
     persisted: durableStore.eventsFor(handle.runId),
     events,

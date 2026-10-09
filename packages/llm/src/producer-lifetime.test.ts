@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { FallbackChain, type AttemptRecord, type FallbackChainOptions } from './fallback-chain.js';
 import { LlmProviderError, makeLlmError } from './llm-error.js';
-import type { LlmProvider, LlmRequest, LlmResult, StreamChunk } from './types.js';
+import type {
+  LlmProvider,
+  LlmRequest,
+  LlmResult,
+  StreamChunk,
+  LlmInvocationOptions,
+} from './types.js';
 
 // Deliberate arbitrary host throwable: its exact identity is the regression oracle.
 function throwHostFailure(original: unknown): never {
@@ -124,7 +130,8 @@ describe('exact producer lifetime before bounded wrappers (ADR-0103)', () => {
     const failed = expect(running).rejects.toMatchObject({ llmError: { kind: 'timeout' } });
     try {
       await entered.promise;
-      expect(tracked.captured).toEqual([raw.promise]);
+      expect(tracked.captured).toHaveLength(2); // Invocation aggregate plus the exact raw generation.
+      expect(tracked.captured).toContain(raw.promise);
       clock.fire();
       await failed;
       expect(tracked.pending.has(raw.promise)).toBe(true);
@@ -286,17 +293,17 @@ describe('exact producer lifetime before bounded wrappers (ADR-0103)', () => {
       }).stream(request),
     );
     try {
-      await until(() => tracked.pending.size === 1);
+      await until(() => tracked.pending.size === 2);
       clock.fire();
       const chunks = await running;
       expect(chunks.at(-1)).toMatchObject({ type: 'error', error: { kind: 'timeout' } });
-      expect(tracked.captured).toHaveLength(3);
-      expect(new Set(tracked.captured).size).toBe(3);
-      expect(tracked.pending.size).toBe(3);
+      expect(tracked.captured).toHaveLength(4);
+      expect(new Set(tracked.captured).size).toBe(4);
+      expect(tracked.pending.size).toBe(4);
       expect(records).toHaveLength(1);
       read.resolve();
       await until(() => closing);
-      expect(tracked.pending.size).toBe(3); // A begun cleanup is not a completion acknowledgement.
+      expect(tracked.pending.size).toBe(4); // A begun cleanup is not a completion acknowledgement.
       close.resolve();
       await until(() => tracked.pending.size === 0);
       expect(records).toHaveLength(1);
@@ -314,7 +321,7 @@ describe('exact producer lifetime before bounded wrappers (ADR-0103)', () => {
     expect(await collect(chain(source(), { retainWork: tracked.retain }).stream(request))).toEqual([
       stop,
     ]);
-    expect(tracked.captured).toHaveLength(3); // held terminal, EOF read, independent final return.
+    expect(tracked.captured).toHaveLength(4); // Invocation aggregate, held terminal, EOF read, independent final return.
     await until(() => tracked.pending.size === 0);
   });
 
@@ -345,7 +352,7 @@ describe('exact producer lifetime before bounded wrappers (ADR-0103)', () => {
       await running;
       expect(records).toHaveLength(1);
       expect(records[0]?.usage).toEqual(result.usage);
-      expect(tracked.pending.size).toBe(3);
+      expect(tracked.pending.size).toBe(4);
       tail.resolve();
       await until(() => tracked.pending.size === 0);
       expect(records).toHaveLength(1);
@@ -372,7 +379,7 @@ describe('exact producer lifetime before bounded wrappers (ADR-0103)', () => {
       factory: () => Promise<T>,
     ) => {
       entries++;
-      if (entries > 1) throwHostFailure(sentinel);
+      if (entries > 2) throwHostFailure(sentinel);
       return factory();
     };
     const p = source({
@@ -385,7 +392,7 @@ describe('exact producer lifetime before bounded wrappers (ADR-0103)', () => {
       type: 'error',
       error: { kind: 'bad_request', message: 'primary provider refusal' },
     });
-    expect(entries).toBe(2);
+    expect(entries).toBe(3);
     expect(records).toHaveLength(1);
   });
 
@@ -397,7 +404,7 @@ describe('exact producer lifetime before bounded wrappers (ADR-0103)', () => {
       factory: () => Promise<T>,
     ) => {
       entries++;
-      if (entries === 3) throwHostFailure(sentinel);
+      if (entries === 4) throwHostFailure(sentinel);
       return factory();
     };
     await expect(
@@ -405,7 +412,7 @@ describe('exact producer lifetime before bounded wrappers (ADR-0103)', () => {
         chain(source(), { retainWork: retain, onAttempt: (r) => records.push(r) }).stream(request),
       ),
     ).rejects.toBe(sentinel);
-    expect(entries).toBe(3);
+    expect(entries).toBe(4);
     expect(records).toHaveLength(1);
     expect(records[0]?.usage).toEqual(result.usage);
   });
@@ -467,7 +474,7 @@ for (const afterStop of [false, true])
     });
     const iterator = chain(p, {
       retainWork: <T>(factory: () => Promise<T>): Promise<T> => {
-        if (++entries === 2) throwHostFailure(refusal);
+        if (++entries === 3) throwHostFailure(refusal);
         return factory();
       },
       onAttempt: (record) => records.push(record),
@@ -480,8 +487,196 @@ for (const afterStop of [false, true])
     if (iterator.return === undefined) throw new Error('missing public iterator return');
     await expect(iterator.return()).rejects.toBe(refusal);
     expect(providerCalls).toBe(1);
-    expect(entries).toBe(2);
+    expect(entries).toBe(3);
     expect(records).toHaveLength(1);
     expect(records[0]?.providerInvoked).toBe(true);
     expect(records[0]?.usage).toEqual(afterStop ? result.usage : undefined);
   });
+
+describe('custom provider invocation authority (ADR-0103)', () => {
+  it.each(['generate', 'stream'] as const)(
+    'retires %s authority before entering a fallback and retains earlier children',
+    async (mode) => {
+      const earlier = latch<void>();
+      const fallback = latch<void>();
+      const tracked = tracking();
+      let saved: LlmInvocationOptions | undefined;
+      let enteredFallback = false;
+      let lateEntries = 0;
+      const rejected = makeLlmError({
+        provider: 'openai',
+        kind: 'protocol',
+        message: 'offline refusal',
+      });
+      const first = source({
+        generate: (_req, _key, work) => {
+          saved = work;
+          void work?.retainWork(() => earlier.promise);
+          return Promise.reject(new LlmProviderError(rejected));
+        },
+        stream: (_req, _key, work) => {
+          saved = work;
+          void work?.retainWork(() => earlier.promise);
+          return {
+            async *[Symbol.asyncIterator]() {
+              yield Promise.resolve({ type: 'error', error: rejected } satisfies StreamChunk);
+            },
+          };
+        },
+      });
+      const second = source({
+        generate: async () => {
+          enteredFallback = true;
+          await fallback.promise;
+          return result;
+        },
+        stream: () => ({
+          async *[Symbol.asyncIterator]() {
+            enteredFallback = true;
+            await fallback.promise;
+            yield stop;
+          },
+        }),
+      });
+      const owned = new FallbackChain(
+        [
+          { provider: first, model: 'gpt-4o', maxAttempts: 1 },
+          { provider: second, model: 'gpt-4o-mini', maxAttempts: 1 },
+        ],
+        {
+          keyFor: () => 'offline-placeholder',
+          sleep: () => Promise.resolve(),
+          retainWork: tracked.retain,
+        },
+      );
+      const running =
+        mode === 'generate' ? owned.generate(request) : collect(owned.stream(request));
+      try {
+        await until(() => enteredFallback);
+        expect(saved).toBeDefined();
+        expect(() =>
+          saved?.retainWork(() => {
+            lateEntries++;
+            return Promise.resolve();
+          }),
+        ).toThrow();
+        expect(lateEntries).toBe(0);
+        expect(tracked.pending.size).toBeGreaterThan(0);
+        fallback.resolve();
+        await running;
+        await Promise.resolve();
+        expect(tracked.pending.size).toBeGreaterThan(0);
+        earlier.resolve();
+        await until(() => tracked.pending.size === 0);
+      } finally {
+        fallback.resolve();
+        earlier.resolve();
+        await running.catch(() => undefined);
+      }
+    },
+  );
+
+  it.each(['generate', 'stream'] as const)(
+    'retires timed-out %s authority while its raw operation still owes ACK',
+    async (mode) => {
+      const raw = latch<void>();
+      const entered = latch<void>();
+      const clock = timer();
+      const tracked = tracking();
+      let saved: LlmInvocationOptions | undefined;
+      let lateEntries = 0;
+      const p = source({
+        generate: async (_req, _key, work) => {
+          saved = work;
+          entered.resolve();
+          await raw.promise;
+          return result;
+        },
+        stream: (_req, _key, work) => {
+          saved = work;
+          return {
+            async *[Symbol.asyncIterator]() {
+              entered.resolve();
+              await raw.promise;
+              yield stop;
+            },
+          };
+        },
+      });
+      const owned = chain(p, {
+        retainWork: tracked.retain,
+        newAbortController: () => new AbortController(),
+        setTimer: clock.set,
+      });
+      const running =
+        mode === 'generate'
+          ? owned.generate(request).catch(() => undefined)
+          : collect(owned.stream(request));
+      try {
+        await entered.promise;
+        clock.fire();
+        await running;
+        expect(() =>
+          saved?.retainWork(() => {
+            lateEntries++;
+            return Promise.resolve();
+          }),
+        ).toThrow();
+        expect(lateEntries).toBe(0);
+        expect(tracked.pending.size).toBeGreaterThan(0);
+      } finally {
+        raw.resolve();
+        clock.fire();
+        await running;
+        await until(() => tracked.pending.size === 0);
+      }
+    },
+  );
+
+  it('consumer return immediately retires a custom stream while next and actual return are held', async () => {
+    const raw = latch<IteratorResult<StreamChunk>>();
+    const close = latch<IteratorResult<StreamChunk>>();
+    const entered = latch<void>();
+    const tracked = tracking();
+    let saved: LlmInvocationOptions | undefined;
+    let lateEntries = 0;
+    const p = source({
+      stream: (_req, _key, work) => {
+        saved = work;
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              next: () => {
+                entered.resolve();
+                return raw.promise;
+              },
+              return: () => close.promise,
+            };
+          },
+        };
+      },
+    });
+    const iterator = chain(p, { retainWork: tracked.retain })
+      .stream(request)
+      [Symbol.asyncIterator]();
+    const next = iterator.next();
+    await entered.promise;
+    const returned = iterator.return?.();
+    try {
+      expect(() =>
+        saved?.retainWork(() => {
+          lateEntries++;
+          return Promise.resolve();
+        }),
+      ).toThrow();
+      expect(lateEntries).toBe(0);
+      expect(tracked.pending.size).toBeGreaterThan(0);
+    } finally {
+      raw.resolve({ done: true, value: undefined });
+      close.resolve({ done: true, value: undefined });
+      await next;
+      await returned;
+      await until(() => tracked.pending.size === 0);
+    }
+  });
+});

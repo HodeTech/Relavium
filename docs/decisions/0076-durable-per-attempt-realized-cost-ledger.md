@@ -126,3 +126,11 @@ after an acknowledged bounded terminal. It preserves per-attempt/native accounti
 already observed terminal payload; it adds no second charge or terminal. The canonical
 qualification is in [sse-event-schema.md](../reference/contracts/sse-event-schema.md#terminal-publication-and-late-ledger-receipts).
 Public host-safe departure and final money/effect disposition remain dependent implementation.
+
+## 2026-10-10 — ADR-0103 lifecycle integration
+
+Already-incurred money receipts remain joined through graceful host departure; a final required-receipt failure is distinct from the terminal outcome.
+See the [canonical engine lifecycle](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+and [CLI exit/remedy contract](../reference/cli/commands.md#exit-codes). Consolidated independent
+acceptance is tracked in [current.md](../roadmap/current.md); Step 8 and final whole-wave
+validation remain open. The accepted body above is preserved.

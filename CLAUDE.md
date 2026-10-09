@@ -180,6 +180,11 @@ with an invented output. `CR-97`: session effect rows keep tool output at rest a
 had the ADRs restated as decisions, invariants and acceptance tests, because every round's defects were in the
 previous round's fixes.
 
+The consolidated ADR-0103 host/actor/MCP/custom-provider/final-health/clock/CLI integration
+is implemented on 2026-10-10 and awaiting two fresh complete independent review rounds.
+Dispatch round 9's first-start publication High is corrected with six paired cases.
+Step 8 and final Step 12 remain open; no user approval or provider capture is pending.
+
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);
 [README.md](README.md) is the public overview;

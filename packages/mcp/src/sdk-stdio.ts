@@ -21,7 +21,7 @@ import { McpConnectError, McpError } from './errors.js';
 import { INGRESS_BOUNDS, toolDefinitionBytes } from './ingress-bounds.js';
 import { shapeToolResult } from './result.js';
 import { SdkTransportOwner, type SdkRequestInvocation } from './sdk-work.js';
-import { mcpWorkEntryFailure } from './work-scope.js';
+import { McpWorkScope, mcpWorkEntryFailure } from './work-scope.js';
 import { OwnedSdkClient } from './sdk-client.js';
 
 /**
@@ -146,46 +146,54 @@ export async function openStdioConnection(
   serverId: string,
   spec: StdioServerSpec,
   signal?: AbortSignalLike,
+  options?: ToolHostCallOptions,
 ): Promise<McpConnection> {
-  const transport = new StdioClientTransport({
-    command: spec.command,
-    // The host-constructed env (declared vars + resolved `mcp-secret:*`). The SDK force-merges its curated
-    // minimal base (`getDefaultEnvironment()` — the HOME/PATH/SHELL/TERM/USER/LOGNAME safe allowlist, never a
-    // blanket host-env copy) UNDER this, and `spec.env` wins conflicts: the ADR-0034 g5 "declared env +
-    // minimal base" end-state. (See the `env` field doc for the full rationale + the override path.)
-    env: { ...spec.env },
-    // Discard the child's stderr: 'inherit' would pollute our stderr, and 'pipe' without draining could block
-    // the child once the OS pipe buffer fills. A connect/list failure surfaces via the rejected promise.
-    stderr: 'ignore',
-    // Optional fields spread conditionally (exactOptionalPropertyTypes: never pass an explicit `undefined`).
-    ...(spec.args === undefined ? {} : { args: [...spec.args] }),
-    ...(spec.cwd === undefined ? {} : { cwd: spec.cwd }),
-  });
-  // **Registered BEFORE the connect, because the connect is when the child is spawned.** `childPid` below is
-  // read only once the connect RESOLVES, which left the whole spawn-to-`initialize` window — up to 120 s on a
-  // cold `npx` — with a live process no synchronous reaper could see. A review reproduced the consequence
-  // against a real subprocess: `agent run` signalled mid-connect exited 143 while its MCP child kept running
-  // at `ppid 1`. The registry is a THUNK list rather than a pid list for the same reason the bound's
-  // `childPid` is a thunk: the pid does not exist yet at registration time, and does by the time an exit
-  // handler evaluates it.
-  const latchedPid = latchPid(() => transport.pid ?? undefined);
-  const release = registerLiveChild(latchedPid);
-  const owner = new SdkTransportOwner(transport, undefined, undefined, {
-    onAcknowledged: release,
-    onStartEntered: () => {
-      latchedPid.read();
-    },
-  });
-  return connectSdkTransport(
-    serverId,
-    transport,
-    {
-      timeoutMs: spec.connectTimeoutMs ?? MCP_DEADLINES.stdioConnectMs,
-      ...(signal === undefined ? {} : { signal }),
-      childPid: () => transport.pid ?? undefined,
-    },
-    owner,
-  );
+  const timeoutMs = spec.connectTimeoutMs ?? MCP_DEADLINES.stdioConnectMs;
+  const work = new McpWorkScope(options);
+  try {
+    const transport = new StdioClientTransport({
+      command: spec.command,
+      // The host-constructed env (declared vars + resolved `mcp-secret:*`). The SDK force-merges its curated
+      // minimal base (`getDefaultEnvironment()` — the HOME/PATH/SHELL/TERM/USER/LOGNAME safe allowlist, never a
+      // blanket host-env copy) UNDER this, and `spec.env` wins conflicts: the ADR-0034 g5 "declared env +
+      // minimal base" end-state. (See the `env` field doc for the full rationale + the override path.)
+      env: { ...spec.env },
+      // Discard the child's stderr: 'inherit' would pollute our stderr, and 'pipe' without draining could block
+      // the child once the OS pipe buffer fills. A connect/list failure surfaces via the rejected promise.
+      stderr: 'ignore',
+      // Optional fields spread conditionally (exactOptionalPropertyTypes: never pass an explicit `undefined`).
+      ...(spec.args === undefined ? {} : { args: [...spec.args] }),
+      ...(spec.cwd === undefined ? {} : { cwd: spec.cwd }),
+    });
+    // **Registered BEFORE the connect, because the connect is when the child is spawned.** `childPid` below is
+    // read only once the connect RESOLVES, which left the whole spawn-to-`initialize` window — up to 120 s on a
+    // cold `npx` — with a live process no synchronous reaper could see. A review reproduced the consequence
+    // against a real subprocess: `agent run` signalled mid-connect exited 143 while its MCP child kept running
+    // at `ppid 1`. The registry is a THUNK list rather than a pid list for the same reason the bound's
+    // `childPid` is a thunk: the pid does not exist yet at registration time, and does by the time an exit
+    // handler evaluates it.
+    const latchedPid = latchPid(() => transport.pid ?? undefined);
+    const release = registerLiveChild(latchedPid);
+    const owner = new SdkTransportOwner(transport, work, undefined, {
+      onAcknowledged: release,
+      onStartEntered: () => {
+        latchedPid.read();
+      },
+    });
+    return connectSdkTransport(
+      serverId,
+      transport,
+      {
+        timeoutMs,
+        ...(signal === undefined ? {} : { signal }),
+        childPid: () => transport.pid ?? undefined,
+      },
+      owner,
+    );
+  } catch (error) {
+    work.seal();
+    throw error;
+  }
 }
 
 /**

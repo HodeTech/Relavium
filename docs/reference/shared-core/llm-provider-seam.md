@@ -620,6 +620,13 @@ raw `generateMedia` Promise in the same way.
 Existing implementations with fewer parameters remain assignable; ignoring this option does not
 certify a foreign implementation's hidden descendants as complete.
 
+The chain and separate generative/poll runners wrap each actual provider invocation in the shared
+pure `ProviderInvocationWork` helper, including custom implementations. A completed, timed-out,
+aborted or returned invocation retires its own future `retainWork` factories before fallback or
+public outcome delivery. Already admitted descendants remain owed independently, including when
+a stream's `next()` or `return()` is held. Each poll gets fresh authority; reusable providers and
+siblings never inherit another invocation's retainer. Standalone calls keep the optional seam.
+
 The controlled OpenAI-compatible adapter transfers one aggregate lifetime before SDK construction
 or entry. It binds that invocation's work and retirement signal into its own client fetch closure,
 including custom-endpoint validated fetch. A lazy stream captures the retainer function and receiver
@@ -638,9 +645,10 @@ The engine owns each raw media poll, including credential resolution, separately
 submission context. `NodeExecutor.pollMediaJob` receives its own optional third invocation argument;
 the runner forwards it as the provider's fourth argument after its existing post-key abort check.
 Admitted descendants transfer before the raw poll returns. A late poll after terminal cannot pin
-media, charge again or publish another event. This incremental transport contract does not close
-all poll scheduling/accounting actors, official Gemini transport, MCP, final health, parked clocks
-or public departure; their remaining ADR-0103 obligations still require implementation and review.
+media, charge again or publish another event. The engine joins poll scheduling/accounting actors
+and final receipt health through its [local departure contract](../../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103);
+independent acceptance of that consolidated integration is tracked in
+[current.md](../../roadmap/current.md).
 
 Registration failure retains its original process-local identity and host provenance, outside
 provider retry/failover classification. A synchronous provider throw retains provider

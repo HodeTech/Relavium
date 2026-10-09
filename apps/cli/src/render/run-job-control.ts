@@ -1,5 +1,6 @@
 import { HIDE_CURSOR, SHOW_CURSOR } from './alt-screen.js';
 import { defaultJobControlLifecycle, type JobControlLifecycle } from './suspend.js';
+import { CliError } from '../process/errors.js';
 
 /**
  * Minimal `SIGTSTP`/`SIGCONT` handling for the **run/gate** path (G0's residue).
@@ -39,6 +40,8 @@ export function wireRunJobControl(opts: WireRunJobControlOptions): RunJobControl
   }
 
   let disposed = false;
+  let cleanupComplete = false;
+  let continueRemoved = false;
   let removeSuspend: () => void = () => undefined;
   /**
    * Is the suspend listener currently attached?
@@ -57,10 +60,11 @@ export function wireRunJobControl(opts: WireRunJobControlOptions): RunJobControl
   };
   const detach = (): void => {
     if (!attached) return;
-    attached = false;
     removeSuspend();
+    attached = false;
   };
   const onSuspend = (): void => {
+    if (disposed) return;
     // Restore the cursor BEFORE the process stops. Once stopped we run no code, so there is no later chance —
     // and the shell the user lands in inherits whatever state we left.
     opts.write(SHOW_CURSOR);
@@ -79,23 +83,51 @@ export function wireRunJobControl(opts: WireRunJobControlOptions): RunJobControl
     }
   };
   attach();
-  const removeContinue = lifecycle.onContinue(() => {
-    // Reattach FIRST: the suspend handler detached itself before raising, so without this a second Ctrl-Z
-    // would take the default action with no cursor restore — exactly the bug this file exists to fix.
-    attach();
-    // Foregrounded: ink is drawing again, so hide the cursor as it expects. If the run already finished while
-    // we were stopped, the extra hide is harmless — the renderer's own teardown shows it again.
-    opts.write(HIDE_CURSOR);
-  });
+  let removeContinue: () => void;
+  try {
+    removeContinue = lifecycle.onContinue(() => {
+      if (disposed) return;
+      // Reattach FIRST: the suspend handler detached itself before raising, so without this a second Ctrl-Z
+      // would take the default action with no cursor restore — exactly the bug this file exists to fix.
+      attach();
+      // Foregrounded: ink is drawing again, so hide the cursor as it expects. If the run already finished while
+      // we were stopped, the extra hide is harmless — the renderer's own teardown shows it again.
+      opts.write(HIDE_CURSOR);
+    });
+  } catch (error) {
+    disposed = true;
+    try {
+      detach();
+    } catch (cleanupError) {
+      throw new CliError('internal', 'Run job-control setup failed.', {
+        cause: { registrationError: error, cleanupError },
+      });
+    }
+    throw error;
+  }
 
   return {
     dispose: () => {
-      if (disposed) return;
-      // BOTH, not just one — the leak `suspend.ts`'s own `dispose` had (see its comment) is exactly this shape.
-      // `detach()` before flipping `disposed`, since it is a no-op once the listener is already off.
-      detach();
+      if (cleanupComplete) return;
+      // Retire callbacks before either removal. A failed removal retains its capability for retry.
       disposed = true;
-      removeContinue();
+      let failure: { readonly cause: unknown } | undefined;
+      try {
+        detach();
+      } catch (cause) {
+        failure = { cause };
+      }
+      try {
+        if (!continueRemoved) {
+          removeContinue();
+          continueRemoved = true;
+        }
+      } catch (cause) {
+        failure ??= { cause };
+      }
+      if (failure !== undefined)
+        throw new CliError('internal', 'Run job-control cleanup failed.', { cause: failure.cause });
+      cleanupComplete = true;
     },
   };
 }

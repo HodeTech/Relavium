@@ -76,3 +76,11 @@ Considered alternatives:
 - The `ExecutionHost` surface is pinned only in principle + Phase-1 slices, leaving the full transport shape for Phase 2 — an intentional deferral (over-specifying the cloud boundary before cloud exists is the larger risk); a follow-on ADR refines it, and this one keeps the seam minimal and injected so that refinement is additive.
 - Producer-await (no-drop) backpressure means a pathologically slow consumer can throttle the producer rather than dropping events — accepted deliberately: a gap-free stream is the contract that makes lossless reconnect/resync possible, and a per-consumer bounded buffer plus the passive-consumer rule bounds the blast radius.
 - The `correlationId` field and the explicit `run:timeout` / `budget:*` non-terminality are additive evolutions of the event contract ([sse-event-schema.md](../reference/contracts/sse-event-schema.md) forward-compat rules): the former **reconciles** [error-handling.md](../standards/error-handling.md)'s existing correlation-id requirement with an error payload that lacks the field (recorded here, not a new invention), and the latter pins a live cross-doc ambiguity. Both land as updates to that canonical home **in the 1.N implementation PR** — decided here, applied there — so the contract and the engine never drift.
+
+## 2026-10-10 — ADR-0103 lifecycle integration
+
+RunHandle now exposes engine-owned local departure, joined separately from bounded terminal delivery and its existing single primary reader.
+See the [canonical engine lifecycle](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+and [CLI exit/remedy contract](../reference/cli/commands.md#exit-codes). Consolidated independent
+acceptance is tracked in [current.md](../roadmap/current.md); Step 8 and final whole-wave
+validation remain open. The accepted body above is preserved.

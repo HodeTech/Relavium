@@ -51,6 +51,10 @@ includes Parent's complete artifact and unchanged shared-tree audits. Complete M
 startup/all-actor ownership, custom-provider descendants and host departure remain open, as do
 Step 8 compaction/recovery
 and final whole-wave Step 12. Supplemental ADR-0099–ADR-0103 are Accepted.
+The consolidated ADR-0103 host/actor/MCP/custom-provider/final-health/clock/CLI integration
+is implemented on 2026-10-10 and awaiting two fresh complete independent review rounds.
+Dispatch round 9's first-start publication High is corrected with six paired cases.
+Step 8 and final Step 12 remain open; no user approval or provider capture is pending.
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 
 ## The non-negotiable rules

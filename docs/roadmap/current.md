@@ -39,6 +39,16 @@ temporary section, deleted when both phases close. Its baseline step is discharg
 and Wave 0 is merged (PR #82), as is Wave 1 (PR #83). The interlude's `W2` (core reliability, six items) is
 merged too (PR #85, 2026-08-28).
 
+
+> **W7 integration checkpoint, 2026-10-10:** the consolidated ADR-0103 implementation now covers
+> MCP startup/custom-provider invocation ownership, complete run actors, final receipt health,
+> parked clocks, public local departure and acknowledged CLI teardown. The first-start publication
+> High from [dispatch round 9](../reviews/2026-10-09T21-43-39-w7-dispatch-corrections-round-9-review.md)
+> is corrected with six permanent paired cases. This integration is awaiting two fresh complete
+> independent review rounds; implementation is not acceptance. Step 8 compaction/recovery and
+> final Step 12 remain open. All six W7 register items remain OPEN (41/51 closed), PR #90 remains
+> draft/unmerged, and no paid call, credential or maintainer approval is pending.
+
 > **W7 live status, 2026-10-09:** all five immutable provider records and Step 7's four-round
 > acceptance remain complete. [Two fresh adapter/chain round-3 reviews](../reviews/2026-10-08T23-47-31-w7-owned-adapter-chain-round-3-review.md)
 > accept all 24 cumulative paths/78 hunks through `0c3c185b`; exact-head required CI, coverage,

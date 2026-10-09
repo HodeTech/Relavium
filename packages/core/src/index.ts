@@ -111,7 +111,7 @@ export type {
   SessionEventDraft,
   BusEventDraft,
 } from './engine/event-bus.js';
-export type { RunHandle } from './engine/run-handle.js';
+export type { RunHandle, RunDeparture } from './engine/run-handle.js';
 export {
   InMemoryRunStore,
   createInMemoryHost,

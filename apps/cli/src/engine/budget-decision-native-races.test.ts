@@ -220,6 +220,7 @@ for (const decision of ['approved', 'rejected'] as const)
         ack.resolve();
         await manual;
         await drained;
+        expect((await handle.depart()).kind).toBe('closed');
         const native = nativeStore.loadRunEventLogForReplay(handle.runId);
         expect(native.at(-1)).toMatchObject(
           cancel

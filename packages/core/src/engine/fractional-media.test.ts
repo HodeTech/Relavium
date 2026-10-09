@@ -208,7 +208,7 @@ function startMedia(options: {
 async function expectCleanup(run: ReturnType<typeof startMedia>): Promise<void> {
   expect(run.host.armedCount()).toBe(0);
   expect(run.host.deadlineCount()).toBe(0);
-  expect(run.host.livenessCount()).toBe(0);
+  await expect.poll(() => run.host.livenessCount()).toBe(0);
   expect(await run.host.runLeases.read(run.handle.runId)).toBeUndefined();
   expect(run.handle.durability()).toBe('durable');
 }

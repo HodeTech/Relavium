@@ -88,6 +88,7 @@ import { resolveAndValidateWorkflowInputs } from './input-admission.js';
 import { verifyFrozenWorkflowContent, verifyResumeIdentity } from './resume-identity.js';
 import { EngineStateError } from './errors.js';
 import { HostWorkRegistry, type HostWorkScope } from './host-work-registry.js';
+import { EffectReceiptHealth } from './effect-receipt-health.js';
 import { RunEventBus, type RunEventDraft } from './event-bus.js';
 import { RunLoopInvariantError } from './invariant-error.js';
 import {
@@ -126,7 +127,13 @@ import {
   realizedMediaCost,
   takeMediaJobAdmission,
 } from './agent-runner.js';
-import { createClosedRunHandle, createRunHandle, type RunHandle } from './run-handle.js';
+import {
+  createClosedRunHandle,
+  createRunHandle,
+  type RunDeparture,
+  type RunHandle,
+} from './run-handle.js';
+import type { EventStreamDeliveryState } from './event-stream.js';
 
 /** A vertex's live status in one run. `paused` (at a gate) and `running` are not yet *settled*. */
 type VertexStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'paused';
@@ -285,6 +292,39 @@ function assertValidResumeInput(input: ResumeFromCheckpointInput): void {
       ...(input.gateId === undefined ? {} : { gateId: input.gateId }),
     });
   }
+}
+
+/** Validate parked-agent evidence before gate preparation, retaining only inert relative bases. */
+function restoredNodeClockBases(
+  runId: string,
+  plan: RunPlan,
+  checkpoint: CheckpointState,
+): ReadonlyMap<string, number> {
+  const parked = new Set([
+    ...checkpoint.pendingGates.filter((gate) => gate.isBudgetGate).map((gate) => gate.nodeId),
+    ...checkpoint.pendingMediaJobs.map((job) => job.nodeId),
+    ...checkpoint.pendingBudgetContinuationNodeIds,
+  ]);
+  const result = new Map<string, number>();
+  for (const nodeId of parked) {
+    const vertex = plan.vertices.get(nodeId);
+    if (vertex?.config.kind !== 'agent' || vertex.config.node.timeout_ms === undefined) continue;
+    const life = checkpoint.nodeLifeClocks.get(nodeId);
+    if (
+      life?.kind !== 'valid' ||
+      !Number.isFinite(life.startedAtMs) ||
+      !Number.isFinite(checkpoint.startedAtMs) ||
+      life.startedAtMs < checkpoint.startedAtMs
+    ) {
+      throw new EngineStateError(
+        'admission_record_unreadable',
+        'the parked agent node clock cannot be reconstructed from durable history',
+        { runId },
+      );
+    }
+    result.set(nodeId, life.startedAtMs - checkpoint.startedAtMs);
+  }
+  return result;
 }
 
 /** Construction dependencies for the engine — the injected host and node-executor seams. */
@@ -510,6 +550,7 @@ class RunExecution {
   readonly #executor: NodeExecutor;
   readonly #bus: RunEventBus;
   readonly #onSettled: (runId: string) => void;
+  readonly #onDetached: (runId: string) => void;
   readonly #resolverCapabilities: ResolverCapabilities;
   readonly #maxTokensEstimate: number;
   readonly #resolvePrice: PricingOverlay | undefined;
@@ -569,8 +610,16 @@ class RunExecution {
   /** The money-durability barrier for BOTH chains — always present, cap or no cap (ADR-0077 §5). */
   readonly #money: MoneyDurability;
   readonly #hostWork: HostWorkRegistry;
+  readonly #effectHealth = new EffectReceiptHealth();
   #hostRetirement: Promise<void> | undefined;
   #retiringHost = false;
+  #quiescing = false;
+  #pauseGeneration = 0;
+  #pausePublication = 0;
+  #readPrimary: (() => EventStreamDeliveryState) | undefined;
+  #parkingWork: Promise<void> | undefined;
+  readonly #departureWaiters = new Set<() => void>();
+  readonly #quiescingMediaDeadlines = new Map<string, () => void>();
   /** A confirmed approval is consumed once by its next dispatch, never restored from a checkpoint. */
   readonly #budgetApprovals = new Map<
     string,
@@ -689,6 +738,7 @@ class RunExecution {
     bus: RunEventBus;
     capacity: number;
     onSettled: (runId: string) => void;
+    onDetached: (runId: string) => void;
     /** The owning engine's lease identity (ADR-0079 §1). */
     ownerId: string;
     /** Builds a per-node effect journal from a run correlation (ADR-0080); absent ⇒ effects are refused. */
@@ -708,6 +758,7 @@ class RunExecution {
     onLegacyMediaJobHold?: (nodeIds: readonly string[]) => void;
     /** When present, the run is REHYDRATED from this checkpoint (resume) rather than started fresh (1.R). */
     checkpoint?: CheckpointState;
+    restoredNodeDeadlineStarts?: ReadonlyMap<string, number>;
     resumePreparation?: {
       readonly gateId: string;
       readonly preparation: BudgetDispatchPreparation;
@@ -715,7 +766,7 @@ class RunExecution {
     };
   }) {
     this.runId = params.runId;
-    this.#hostWork = new HostWorkRegistry(params.runId);
+    this.#hostWork = new HostWorkRegistry(params.runId, () => this.#wakeDeparture());
     this.#plan = params.plan;
     this.#workflow = params.workflow;
     this.#inputs = params.inputs;
@@ -725,6 +776,7 @@ class RunExecution {
     this.#resolverCapabilities = params.resolverCapabilities;
     this.#bus = params.bus;
     this.#onSettled = params.onSettled;
+    this.#onDetached = params.onDetached;
     this.#ownerId = params.ownerId;
     this.#effectJournal = params.effectJournal;
     this.#effectResume = params.effectResume;
@@ -836,6 +888,8 @@ class RunExecution {
     } else {
       this.#checkpoint = params.checkpoint;
       this.#seedFromCheckpoint(params.plan, params.checkpoint, params.bus, params.runId);
+      for (const [nodeId, started] of params.restoredNodeDeadlineStarts ?? [])
+        this.#nodeDeadlineStartMs.set(nodeId, started);
     }
     this.handle = createRunHandle(
       params.bus,
@@ -857,6 +911,10 @@ class RunExecution {
       (close) => {
         this.#closeStream = close;
       },
+      (read) => {
+        this.#readPrimary = read;
+      },
+      () => this.#depart(),
     );
   }
 
@@ -1044,7 +1102,7 @@ class RunExecution {
     const disarm = armLongTimer(
       remainingMs,
       () => {
-        void this.#onRunTimeout(timeoutMs);
+        this.#runTimerActor(() => this.#onRunTimeout(timeoutMs));
       },
       (ms, fire) => this.#host.setTimer(ms, fire, 'work'),
     );
@@ -1074,18 +1132,20 @@ class RunExecution {
         // so it must not itself become the reason there is none: an unhandled rejection here is fatal under
         // Node's default `--unhandled-rejections=throw`, and it would kill the process mid-run rather than
         // settle it.
-        void this.#onGraceElapsed().catch(() => {
-          if (!this.#settled && this.#failure === undefined && !this.#cancelling) {
-            this.#failure = {
-              error: {
-                code: 'internal',
-                message: 'the grace-window backstop failed while abandoning the run',
-                retryable: false,
-              },
-            };
-          }
-          this.#schedule();
-        });
+        this.#runTimerActor(() =>
+          this.#onGraceElapsed().catch(() => {
+            if (!this.#settled && this.#failure === undefined && !this.#cancelling) {
+              this.#failure = {
+                error: {
+                  code: 'internal',
+                  message: 'the grace-window backstop failed while abandoning the run',
+                  retryable: false,
+                },
+              };
+            }
+            this.#schedule();
+          }),
+        );
       },
       // A backstop over work already in flight, not something the run is parked ON — the same role
       // `CR-21b`/`CR-21c` gave the media bounds, and the reason `TimerKind` has a third member at all.
@@ -1126,7 +1186,7 @@ class RunExecution {
     const disarm = armLongTimer(
       remainingMs,
       () => {
-        void this.#onGateTimeout(gate.gateId, gate.nodeId, action);
+        this.#runTimerActor(() => this.#onGateTimeout(gate.gateId, gate.nodeId, action));
       },
       (ms, fire) => this.#host.setTimer(ms, fire, 'work'),
     );
@@ -1315,6 +1375,7 @@ class RunExecution {
       // A read that FAILS is not "nothing is blocking" — the same answer ADR-0075 gives for an unreadable
       // event log. Refusing on an unreadable journal is the only honest option: the alternative is resuming
       // a run whose external effects are unknown.
+      this.#effectHealth.requireAttention();
       this.#failure = {
         error: {
           code: 'effect_needs_attention',
@@ -1325,6 +1386,7 @@ class RunExecution {
       return false;
     }
     if (blocking.length === 0) return true;
+    this.#effectHealth.requireAttention();
     this.#failure = {
       error: {
         code: 'effect_needs_attention',
@@ -1481,6 +1543,7 @@ class RunExecution {
     // in `resume()`; `#clearMediaJob` resets it when a job settles — so a genuinely later pause still emits.
     if (cp.pendingMediaJobs.length > 0 && cp.runStatus === 'paused') {
       this.#pauseEpisode = true;
+      this.#pauseGeneration = 1;
     }
     for (const gateId of cp.resolvedGateIds) {
       this.#resolvedGates.add(gateId);
@@ -1500,6 +1563,7 @@ class RunExecution {
   #activateCheckpoint(excludedGateId?: string): void {
     const cp = this.#checkpoint;
     if (cp === undefined) return;
+    this.#armRestoredNodeDeadlines();
     this.#checkpoint = undefined;
     const rejected = cp.budgetRejections[0];
     if (rejected !== undefined && this.#failure === undefined && !this.#cancelling) {
@@ -1578,6 +1642,12 @@ class RunExecution {
     // an approval spend money on a run the next line refuses anyway; refusing first would report a journal
     // problem for a run whose inputs do not even resolve.
     if (!this.#resumeAdmitted && !(await this.#effectResumeGateOrFail())) {
+      await this.#settle('run:failed');
+      return;
+    }
+    this.#armRestoredNodeDeadlines();
+    if (this.#failure !== undefined) {
+      this.#activateCheckpoint(gateId);
       await this.#settle('run:failed');
       return;
     }
@@ -1685,7 +1755,7 @@ class RunExecution {
   }
 
   requestCancel(): void {
-    if (this.#settled) {
+    if (this.#settled || this.#retiringHost) {
       throw new EngineStateError('run_already_terminal', 'the run has already terminated', {
         runId: this.runId,
       });
@@ -1716,7 +1786,11 @@ class RunExecution {
     return gate;
   }
 
-  async resume(
+  resume(gateId: string, decision: GateDecision, alreadyGated = false): Promise<void> {
+    return this.#hostWork.invoke(() => this.#resume(gateId, decision, alreadyGated));
+  }
+
+  async #resume(
     gateId: string,
     decision: GateDecision,
     /** Set by `beginResume`, which already ran the effect gate — see the note at the claim below. */
@@ -1728,7 +1802,7 @@ class RunExecution {
       // completed is a no-op, not a `run_already_terminal` error.
       return;
     }
-    if (this.#settled) {
+    if (this.#settled || this.#retiringHost) {
       throw new EngineStateError('run_already_terminal', 'the run has already terminated', {
         runId: this.runId,
         gateId,
@@ -2103,7 +2177,7 @@ class RunExecution {
       return;
     }
     this.#scheduling = true;
-    void this.#loop();
+    void this.#hostWork.invoke(() => this.#loop());
   }
 
   async #loop(): Promise<void> {
@@ -2212,12 +2286,27 @@ class RunExecution {
         this.#nodeDispatches += 1;
         // An approved redispatch opens attempt 1 before its start append can yield to grace.
         this.#lastAttemptByVertex.set(vertex.id, 1);
-        await this.#emitDurable({
-          type: 'node:started',
-          runId: this.runId,
-          nodeId: vertex.id,
-          nodeType: vertex.type,
-        });
+        try {
+          await this.#emitDurable({
+            type: 'node:started',
+            runId: this.runId,
+            nodeId: vertex.id,
+            nodeType: vertex.type,
+          });
+        } catch {
+          // Stamping/host faults precede the ordered writer's own store-fault handler.
+          // This start is entered, so preserve its attempt-1 basis even without a stamped event.
+          await this.#settleFailedOrBackstop(
+            vertex,
+            {
+              code: 'internal',
+              message: 'the node start could not be published',
+              retryable: false,
+            },
+            1,
+          );
+          return;
+        }
         // Re-read the latch AFTER the durable `node:started` write above: the grace window may have elapsed
         // while it was pending. Cancellation must also refuse a fresh dispatch/deadline before grace.
         if (this.#noNewDispatch || this.#settled) return;
@@ -2234,18 +2323,22 @@ class RunExecution {
           );
           return;
         }
-        // Unexpected host causes stay private: even string conversion may run caller code and
-        // throw while reporting. Contain the failure continuation as well as the dispatch itself.
-        void this.#dispatch(vertex, 1).catch(async () => {
-          await this.#settleFailedOrBackstop(
-            vertex,
-            {
-              code: 'internal',
-              message: 'node dispatch failed unexpectedly',
-              retryable: false,
-            },
-            this.#lastAttemptByVertex.get(vertex.id) ?? 1,
-          );
+        // Own the complete detached dispatch, including its failure continuation. Unexpected host
+        // causes stay private: even string conversion may run caller code and throw while reporting.
+        void this.#hostWork.invoke(async () => {
+          try {
+            await this.#dispatch(vertex, 1);
+          } catch {
+            await this.#settleFailedOrBackstop(
+              vertex,
+              {
+                code: 'internal',
+                message: 'node dispatch failed unexpectedly',
+                retryable: false,
+              },
+              this.#lastAttemptByVertex.get(vertex.id) ?? 1,
+            );
+          }
         });
       }
     } finally {
@@ -2426,18 +2519,34 @@ class RunExecution {
     const nowMs = this.#elapsedMs();
     const startedAtMs = this.#nodeDeadlineStartMs.get(vertex.id) ?? nowMs;
     this.#nodeDeadlineStartMs.set(vertex.id, startedAtMs);
-    const remainingMs = Math.max(0, timeoutMs - (nowMs - startedAtMs));
+    const remainingMs = Math.min(timeoutMs, Math.max(0, timeoutMs - (nowMs - startedAtMs)));
     this.#nodeDeadlineDisarm.set(
       vertex.id,
       armLongTimer(
         remainingMs,
         () => {
-          void this.#onNodeDeadline(vertex, timeoutMs);
+          this.#runTimerActor(() => this.#onNodeDeadline(vertex, timeoutMs));
         },
         // A backstop over work already in flight — never something the run is parked ON.
         (ms, fire) => this.#host.setTimer(ms, fire, 'deadline'),
       ),
     );
+  }
+
+  /** A due reconstructed clock refuses paid entry synchronously, without waiting for a host timer. */
+  #armRestoredNodeDeadlines(): void {
+    if (this.#checkpoint === undefined || this.#failure !== undefined || this.#cancelling) return;
+    for (const [nodeId, started] of this.#nodeDeadlineStartMs) {
+      const vertex = this.#plan.vertices.get(nodeId);
+      const timeoutMs = vertex?.config.kind === 'agent' ? vertex.config.node.timeout_ms : undefined;
+      if (vertex === undefined || timeoutMs === undefined) continue;
+      if (this.#elapsedMs() >= started + timeoutMs) {
+        this.#disarmNodeDeadline(nodeId);
+        this.#runTimerActor(() => this.#onNodeDeadline(vertex, timeoutMs));
+        return;
+      }
+      this.#armNodeDeadline(vertex);
+    }
   }
 
   /**
@@ -2448,7 +2557,11 @@ class RunExecution {
    * dispatch N+1 — which is exactly what a budget-approved re-dispatch produces.
    */
   #isLive(vertexId: string, dispatchId: number): boolean {
-    return !this.#settled && this.#activeDispatchByVertex.get(vertexId) === dispatchId;
+    return (
+      !this.#settled &&
+      !this.#retiringHost &&
+      this.#activeDispatchByVertex.get(vertexId) === dispatchId
+    );
   }
 
   #disarmNodeDeadline(vertexId: string): void {
@@ -2582,7 +2695,11 @@ class RunExecution {
             },
           }),
       continueReceipt: <T>(operation: (receipt: NodeReceiptContext) => Promise<T>): Promise<T> =>
-        scope.continue((child) => operation(this.#receiptContext(child, vertexId, port))),
+        scope.continue((child) =>
+          this.#effectHealth.invocation(() =>
+            operation(this.#receiptContext(child, vertexId, port)),
+          ),
+        ),
     } satisfies NodeReceiptContext);
   }
 
@@ -2773,12 +2890,15 @@ class RunExecution {
         const execute = receiver.execute;
         const stoppedAfterAcquisition = this.#stoppedAttemptOutcome(vertex.id, dispatchId);
         if (stoppedAfterAcquisition !== undefined) return Promise.resolve(stoppedAfterAcquisition);
-        const effects = this.#effectJournal?.({
+        const correlation: EffectCorrelation = {
           kind: 'run',
           runId: this.runId,
           nodeId: vertex.id,
           attempt: attemptNumber,
-        });
+        };
+        const rawEffects = this.#effectJournal?.(correlation);
+        const effects =
+          rawEffects === undefined ? undefined : this.#effectHealth.bind(rawEffects, correlation);
         const receipts = this.#receiptContext(scope, vertex.id, effects);
         const ctx: NodeExecContext = {
           continueReceipt: receipts.continueReceipt,
@@ -2839,12 +2959,13 @@ class RunExecution {
             ? {}
             : { effects: this.#fenceEffects(effects, vertex.id, scope) }),
         };
-        // Context factories may synchronously cancel too. Preserve the captured receiver and return
-        // the EXACT raw Promise before any pin/save/outcome or abort-race wrapper.
+        // Context factories may synchronously cancel too. Preserve method/receiver and exact raw Promise.
         const stoppedBeforeExecute = this.#stoppedAttemptOutcome(vertex.id, dispatchId);
-        return stoppedBeforeExecute === undefined
-          ? Reflect.apply(execute, receiver, [ctx])
-          : Promise.resolve(stoppedBeforeExecute);
+        if (stoppedBeforeExecute !== undefined) return Promise.resolve(stoppedBeforeExecute);
+        return this.#effectHealth.invocation(
+          () => Reflect.apply(execute, receiver, [ctx]),
+          (outcome) => this.#effectHealth.observeOutcome(outcome),
+        );
       });
       // PIN the produced output ONCE, here, before anything reads it (`CR-54`,
       // [ADR-0043](../../../../docs/decisions/0043-media-egress-failover-rematerialization-ssrf.md) §3).
@@ -2872,6 +2993,7 @@ class RunExecution {
         return this.#applySaveTo(vertex, produced, dispatchId);
       });
     } catch (error) {
+      this.#effectHealth.observeFailure(error);
       // A money-durability failure is NOT an anonymous handler throw. Barriers B1 and B2 (ADR-0077) both sit
       // INSIDE the turn, and `throwMappedChainError` has two arms whose only job is to keep the class and its
       // owning `nodeId` intact on the way out — under a `fan_out` the broken write may be a sibling's, and
@@ -3340,13 +3462,19 @@ class RunExecution {
   /** Arm (or re-arm) the one-shot poll timer for a parked media job via the INJECTED host timer (never an
    *  ambient `setTimeout` — engine purity). Disarm-then-arm so a re-arm never leaks a prior timer. */
   #armMediaPoll(nodeId: string): void {
+    if (this.#retiringHost) return;
+    if (this.#quiescing) {
+      const job = this.#pendingMediaJobs.get(nodeId);
+      if (job !== undefined) this.#armQuiescingMediaDeadline(nodeId, job);
+      return;
+    }
     const job = this.#pendingMediaJobs.get(nodeId);
     if (job === undefined) {
       return;
     }
     this.#disarmMediaTimer(nodeId);
     const disarm = this.#host.setTimer(job.backoffMs, () => {
-      void this.#pollMediaJob(nodeId);
+      if (!this.#quiescing) this.#runTimerActor(() => this.#pollMediaJob(nodeId));
     });
     // Timer installation can synchronously re-enter cancellation or clear this job. Its handle did not
     // exist during that cleanup, so dispose it here rather than storing a post-terminal timer.
@@ -4180,6 +4308,311 @@ class RunExecution {
     this.#beginHostRetirement();
   }
 
+  /** Wake provisional departure on actual entry/completion, never on a polling microtask. */
+  #wakeDeparture(): void {
+    const waiters = [...this.#departureWaiters];
+    this.#departureWaiters.clear();
+    for (const wake of waiters) wake();
+  }
+
+  #departureActivity(): { readonly promise: Promise<void>; readonly dispose: () => void } {
+    let wake!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      wake = resolve;
+    });
+    this.#departureWaiters.add(wake);
+    return {
+      promise,
+      dispose: () => {
+        this.#departureWaiters.delete(wake);
+      },
+    };
+  }
+
+  /** A queued callback belongs to this execution, including after its timer was disarmed. */
+  #runTimerActor(operation: () => Promise<void>): void {
+    if (this.#retiringHost) return;
+    void this.#hostWork
+      .invoke(() => {
+        if (this.#retiringHost) return Promise.resolve();
+        return operation();
+      })
+      .catch((error: unknown) => {
+        this.#effectHealth.observeFailure(error);
+        if (this.#settled || this.#retiringHost) return;
+        this.#failure ??= {
+          error: {
+            code: 'internal',
+            message: 'a run-owned timer operation failed',
+            retryable: false,
+          },
+        };
+        this.#abort.abort();
+        this.#schedule();
+      });
+  }
+
+  #beginParkAfterReceipts(): void {
+    if (this.#parkingWork !== undefined || this.#retiringHost) return;
+    const current = this.#parkAfterReceipts();
+    this.#parkingWork = current;
+    void current.then(
+      () => {
+        if (this.#parkingWork === current) this.#parkingWork = undefined;
+        this.#wakeDeparture();
+      },
+      (error: unknown) => {
+        if (this.#parkingWork === current) this.#parkingWork = undefined;
+        this.#effectHealth.observeFailure(error);
+        this.#wakeDeparture();
+      },
+    );
+  }
+
+  #assertDeparturePrimary(): EventStreamDeliveryState {
+    const state = this.#readPrimary?.();
+    if (state === undefined || state.hasGap || state.abandoned) {
+      throw new EngineStateError(
+        'invalid_departure',
+        'paused departure requires an intact primary reader',
+        {
+          runId: this.runId,
+        },
+      );
+    }
+    return state;
+  }
+
+  #sameDeparturePause(generation: number, resolvedGates: number): boolean {
+    const primary = this.#assertDeparturePrimary();
+    return (
+      generation > 0 &&
+      this.#pauseGeneration === generation &&
+      this.#pauseEpisode &&
+      primary.publishedCount === this.#pausePublication &&
+      primary.deliveredCount === primary.publishedCount &&
+      this.#resolvedGates.size === resolvedGates &&
+      this.#countRunning() === 0 &&
+      !this.#cancelling &&
+      this.#failure === undefined &&
+      !this.#abort.signal.aborted
+    );
+  }
+
+  #finalDeparture(kind: 'closed' | 'detached'): RunDeparture {
+    return Object.freeze({
+      kind,
+      moneyDurability:
+        this.#money.durabilityBroken || this.#budgetGovernor?.conservativeDurabilityBroken === true
+          ? 'uncertain'
+          : 'durable',
+      effectNeedsAttention: this.#effectHealth.needsAttention,
+    });
+  }
+
+  /** Due actions keep their existing outcome paths; no fresh poll/provider call repairs departure. */
+  #serviceDepartureDeadline(): boolean {
+    const now = Date.parse(this.#host.clock.now());
+    if (this.#settled || this.#retiringHost || this.#abort.signal.aborted) return false;
+    const timeout = this.#plan.timeoutMs;
+    if (timeout !== undefined && now >= this.#startEpochMs + timeout) {
+      this.#runTimerActor(() => this.#onRunTimeout(timeout));
+      return true;
+    }
+    for (const [id, started] of this.#nodeDeadlineStartMs) {
+      const vertex = this.#plan.vertices.get(id);
+      const status = this.#states.get(id)?.status;
+      const bound = vertex?.config.kind === 'agent' ? vertex.config.node.timeout_ms : undefined;
+      if (
+        vertex !== undefined &&
+        bound !== undefined &&
+        status !== undefined &&
+        !SETTLED.has(status) &&
+        now >= this.#startEpochMs + started + bound
+      ) {
+        // This path services the clock directly; the host has not fired/removed its timer.
+        this.#disarmNodeDeadline(id);
+        this.#runTimerActor(() => this.#onNodeDeadline(vertex, bound));
+        return true;
+      }
+    }
+    for (const [id, gate] of this.#pendingGates) {
+      if (
+        !this.#resolvedGates.has(id) &&
+        gate.expiresAt !== undefined &&
+        gate.timeoutAction !== undefined &&
+        now >= Date.parse(gate.expiresAt)
+      ) {
+        const action = gate.timeoutAction;
+        this.#runTimerActor(() => this.#onGateTimeout(id, gate.vertexId, action));
+        return true;
+      }
+    }
+    for (const [id, job] of this.#pendingMediaJobs) {
+      if (now > Date.parse(job.deadlineAt)) {
+        this.#runTimerActor(() => this.#expireDepartureMedia(id, job));
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async #expireDepartureMedia(id: string, job: ParkedMediaJob): Promise<void> {
+    if (this.#settled || this.#retiringHost || this.#pendingMediaJobs.get(id) !== job) return;
+    const vertex = this.#plan.vertices.get(id);
+    if (vertex === undefined) {
+      this.#emitMediaJobCost(id, job);
+      this.#clearMediaJob(id);
+      this.#schedule();
+      return;
+    }
+    await this.#settleMediaJobFailed(vertex, job, {
+      code: 'provider_unavailable',
+      message: `media job '${job.jobId}' exceeded its deadline (${job.deadlineAt})`,
+      retryable: true,
+    });
+  }
+
+  #armQuiescingMediaDeadline(id: string, job: ParkedMediaJob): void {
+    if (!this.#quiescing || this.#retiringHost || this.#quiescingMediaDeadlines.has(id)) return;
+    // Existing media expiry is strictly past deadlineAt. Preserve it rather than polling at equality.
+    const remaining = Math.max(
+      0,
+      Date.parse(job.deadlineAt) + 1 - Date.parse(this.#host.clock.now()),
+    );
+    const disarm = armLongTimer(
+      remaining,
+      () => {
+        this.#quiescingMediaDeadlines.delete(id);
+        if (!this.#quiescing || this.#retiringHost || this.#pendingMediaJobs.get(id) !== job)
+          return;
+        this.#runTimerActor(async () => {
+          if (Date.parse(this.#host.clock.now()) > Date.parse(job.deadlineAt)) {
+            await this.#expireDepartureMedia(id, job);
+          } else this.#armQuiescingMediaDeadline(id, job);
+        });
+      },
+      (ms, fire) => this.#host.setTimer(ms, fire, 'deadline'),
+    );
+    if (!this.#quiescing || this.#retiringHost || this.#pendingMediaJobs.get(id) !== job) disarm();
+    else this.#quiescingMediaDeadlines.set(id, disarm);
+  }
+
+  #suspendMediaPolls(): void {
+    const timers = [...this.#mediaJobTimers.values()];
+    this.#mediaJobTimers.clear();
+    for (const disarm of timers) disarm();
+    for (const [id, job] of this.#pendingMediaJobs) this.#armQuiescingMediaDeadline(id, job);
+  }
+
+  #clearQuiescingMediaDeadlines(): void {
+    const timers = [...this.#quiescingMediaDeadlines.values()];
+    this.#quiescingMediaDeadlines.clear();
+    for (const disarm of timers) disarm();
+  }
+
+  #disarmPausedTimers(): void {
+    this.#stopHeartbeat();
+    this.#disarmRunTimeout();
+    this.#disarmGraceWindow();
+    for (const id of [...this.#nodeDeadlineDisarm.keys()]) this.#disarmNodeDeadline(id);
+    const gates = [...this.#gateTimers.values()];
+    this.#gateTimers.clear();
+    for (const disarm of gates) disarm();
+    const polls = [...this.#mediaJobTimers.values()];
+    this.#mediaJobTimers.clear();
+    for (const disarm of polls) disarm();
+    this.#clearQuiescingMediaDeadlines();
+  }
+
+  #restoreAttachedTimers(): void {
+    if (this.#settled || this.#retiringHost || this.#abort.signal.aborted) return;
+    if (this.#runTimeoutDisarm === undefined) this.#armRunTimeout();
+    for (const [id, gate] of this.#pendingGates) {
+      if (!this.#gateTimers.has(id) && !this.#resolvedGates.has(id)) {
+        this.#reArmGateDeadline({
+          gateId: id,
+          nodeId: gate.vertexId,
+          isBudgetGate: gate.isBudgetGate,
+          ...this.#gateDeadline(gate),
+        });
+      }
+    }
+    for (const [id, state] of this.#states) {
+      const vertex = this.#plan.vertices.get(id);
+      if (vertex !== undefined && (state.status === 'running' || state.status === 'paused'))
+        this.#armNodeDeadline(vertex);
+    }
+    for (const id of this.#pendingMediaJobs.keys()) this.#armMediaPoll(id);
+  }
+
+  /** Only this execution owns the pause episode, primary cursor and final host-safe claim. */
+  async #depart(): Promise<RunDeparture> {
+    const generation = this.#pauseGeneration;
+    const resolvedGates = this.#resolvedGates.size;
+    this.#quiescing = true;
+    this.#suspendMediaPolls();
+    try {
+      for (;;) {
+        if (this.#settled) {
+          this.#beginHostRetirement();
+          await this.#hostRetirement;
+          return this.#finalDeparture('closed');
+        }
+        if (!this.#sameDeparturePause(generation, resolvedGates)) return { kind: 'continue' };
+        if (this.#serviceDepartureDeadline()) continue;
+        // Subscribe before observing idle: a completion between the observation and await cannot vanish.
+        const activity = this.#departureActivity();
+        try {
+          if (!this.#hostWork.isIdle || this.#publishingPauses !== 0) {
+            await activity.promise;
+            continue;
+          }
+        } finally {
+          activity.dispose();
+        }
+        await this.#parkingWork;
+        await this.#money.waitForWrites();
+        await this.#deliveryTail;
+        if (this.#settled) continue;
+        if (!this.#sameDeparturePause(generation, resolvedGates)) return { kind: 'continue' };
+        if (
+          !this.#hostWork.isIdle ||
+          this.#publishingPauses !== 0 ||
+          this.#serviceDepartureDeadline()
+        )
+          continue;
+        // Relinquish the exact claim while cancellation and due deadlines are still admitted.
+        const fence = this.#park();
+        if (fence !== undefined) {
+          await this.#releaseLeaseRow(fence);
+          continue;
+        }
+        this.#disarmPausedTimers();
+        // Cleanup ports and the clock can reenter; the final synchronous claim must recheck them too.
+        if (this.#settled) continue;
+        if (!this.#sameDeparturePause(generation, resolvedGates)) return { kind: 'continue' };
+        if (
+          !this.#hostWork.isIdle ||
+          this.#publishingPauses !== 0 ||
+          this.#serviceDepartureDeadline()
+        )
+          continue;
+        if (this.#settled) continue;
+        if (!this.#sameDeparturePause(generation, resolvedGates) || !this.#hostWork.isIdle)
+          return { kind: 'continue' };
+        this.#retiringHost = true;
+        this.#onDetached(this.runId);
+        this.#closeStream?.();
+        return this.#finalDeparture('detached');
+      }
+    } finally {
+      this.#quiescing = false;
+      this.#clearQuiescingMediaDeadlines();
+      if (!this.#retiringHost && !this.#settled) this.#restoreAttachedTimers();
+    }
+  }
+
   /** Outcome publication stays bounded; raw/child/entered host work has its own unbounded join. */
   #beginHostRetirement(): void {
     if (this.#hostRetirement !== undefined) return;
@@ -4194,10 +4627,13 @@ class RunExecution {
     } while (!this.#hostWork.isIdle);
     // No raw/child authority remains. Stop future callbacks in this synchronous turn, then join the
     // exact release. An entered heartbeat was itself registered and therefore already completed.
+    this.#clearQuiescingMediaDeadlines();
     this.#retiringHost = true;
     this.#stopHeartbeat();
+    await this.#parkingWork;
     if (this.#ownership === 'held') await this.#releaseOwnership();
     this.#onSettled(this.runId);
+    this.#wakeDeparture();
   }
 
   /** An ordinary pause relinquishes its claim only after its admitted receipts become idle. */
@@ -4485,7 +4921,18 @@ class RunExecution {
     this.#abort.abort();
   }
 
-  async #emitDurable(
+  #emitDurable(
+    draft: RunEventDraft,
+    opts?: {
+      readonly handOff?: boolean;
+      /** Only an already-incurred money append can use the retained terminal claim. */
+      readonly receipt?: boolean;
+    },
+  ): Promise<DurableAppendAcknowledgement> {
+    return this.#hostWork.invoke(() => this.#writeDurable(draft, opts));
+  }
+
+  async #writeDurable(
     draft: RunEventDraft,
     opts?: {
       readonly handOff?: boolean;
@@ -4693,7 +5140,7 @@ class RunExecution {
         this.#recordProducedMedia(durable);
         if (handOff && !terminal) {
           if (this.#hostWork.isIdle) this.#park();
-          else void this.#parkAfterReceipts();
+          else this.#beginParkAfterReceipts();
         }
         if (terminal) this.#reclaimRunMedia();
       }
@@ -4702,6 +5149,11 @@ class RunExecution {
       // A fenced terminal returns above and cannot release a successor.
       if (terminal && this.#hostWork.isIdle) await this.#releaseOwnership();
       this.#bus.deliver(event); // still in seq order — `prior` is now awaited above, before the write
+      if (event.type === 'run:paused' && acknowledgement.kind === 'persisted') {
+        this.#pauseGeneration += 1;
+        this.#pausePublication = this.#readPrimary?.().publishedCount ?? 0;
+      }
+      this.#wakeDeparture();
       return acknowledgement;
     })();
     this.#deliveryTail = settled.then(
@@ -5120,7 +5572,7 @@ export class WorkflowEngine {
     }
     const runId = this.#host.ids.newId();
     const bus = new RunEventBus({ now: this.#host.clock.now, validate: this.#validateEvents });
-    const execution = new RunExecution({
+    const execution: RunExecution = new RunExecution({
       runId,
       plan,
       workflow: input.workflow,
@@ -5133,6 +5585,13 @@ export class WorkflowEngine {
       bus,
       capacity: this.#capacity,
       onSettled: (settledRunId) => this.#retainSettled(settledRunId),
+      onDetached: (detachedRunId) => {
+        if (this.#runs.get(detachedRunId) === execution) {
+          this.#runs.delete(detachedRunId);
+          const index = this.#settledOrder.indexOf(detachedRunId);
+          if (index >= 0) this.#settledOrder.splice(index, 1);
+        }
+      },
       ownerId: this.#ownerId,
       ...(this.#effectJournalFactory === undefined
         ? {}
@@ -5362,11 +5821,14 @@ export class WorkflowEngine {
     const plan = await this.#releaseFenceOnThrow(input.runId, fence, () =>
       buildRunPlan(input.workflow, input.planOptions),
     );
+    const restoredNodeDeadlineStarts = await this.#releaseFenceOnThrow(input.runId, fence, () =>
+      restoredNodeClockBases(input.runId, plan, checkpoint),
+    );
     const resumePreparation = await this.#releaseFenceOnThrow(input.runId, fence, () =>
       this.#prepareCheckpointGate(input, checkpoint, plan, identity.inputs, preparingSignal),
     );
     const bus = new RunEventBus({ now: this.#host.clock.now, validate: this.#validateEvents });
-    const execution = await this.#releaseFenceOnThrow(
+    const execution: RunExecution = await this.#releaseFenceOnThrow(
       input.runId,
       fence,
       () =>
@@ -5395,6 +5857,13 @@ export class WorkflowEngine {
           bus,
           capacity: this.#capacity,
           onSettled: (settledRunId) => this.#retainSettled(settledRunId),
+          onDetached: (detachedRunId) => {
+            if (this.#runs.get(detachedRunId) === execution) {
+              this.#runs.delete(detachedRunId);
+              const index = this.#settledOrder.indexOf(detachedRunId);
+              if (index >= 0) this.#settledOrder.splice(index, 1);
+            }
+          },
           resolverCapabilities: this.#resolverCapabilities,
           maxTokensEstimate: this.#maxTokensEstimate,
           ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
@@ -5406,6 +5875,7 @@ export class WorkflowEngine {
             ? {}
             : { onLegacyMediaJobHold: this.#onLegacyMediaJobHold }),
           checkpoint,
+          restoredNodeDeadlineStarts,
           ...(resumePreparation === undefined ? {} : { resumePreparation }),
         }),
     );
@@ -5674,7 +6144,7 @@ export class WorkflowEngine {
         // media is never GC-eligible (refcount stuck > 0). Best-effort + idempotent like the in-process
         // sweep — a retention failure must never abandon reconciliation (mirrors RunExecution's
         // #bestEffortMediaRef; reclaimRun on a run with no rows is a harmless no-op).
-        this.#bestEffortReclaim(run.runId);
+        await this.#bestEffortReclaim(run.runId);
       } catch {
         // A store fault reconciling one run must not abandon the rest: skip it (it stays interrupted
         // and is retried on the next reconcile). Reconciliation is best-effort and idempotent.
@@ -5859,7 +6329,7 @@ export class WorkflowEngine {
         // The D11 terminal sweep, exactly as `reconcile()`'s own repair arm does it (ADR-0042 §4). The
         // crashed process never ran its in-process reclaim — that is why the terminal is here — so without
         // this the run's media references survive forever and its partial media is never GC-eligible.
-        this.#bestEffortReclaim(runId);
+        await this.#bestEffortReclaim(runId);
         written.push(event);
       } catch {
         // Still unwritable, or another process moved the log first. The entry stays for the next start; the
@@ -5882,16 +6352,13 @@ export class WorkflowEngine {
 
   /** Best-effort terminal media-ref reclaim for a reconciled run — swallows a sync throw + an async
    *  rejection so retention never breaks reconciliation (ADR-0042 §3-4; retention is never run-correctness). */
-  #bestEffortReclaim(runId: string): void {
+  async #bestEffortReclaim(runId: string): Promise<void> {
     const port = this.#host.mediaReferences;
     if (port === undefined) {
       return;
     }
     try {
-      const result = port.reclaimRun(runId);
-      if (result instanceof Promise) {
-        result.catch(() => undefined);
-      }
+      await port.reclaimRun(runId);
     } catch {
       // best-effort retention; reconciliation is unaffected
     }

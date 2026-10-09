@@ -283,3 +283,5 @@ export {
   MEDIA_INPUT_TOKENS,
   UNSERIALIZABLE_INPUT_TOKENS,
 } from './request-estimator.js';
+
+export { ProviderInvocationWork } from './adapters/invocation-work.js';

@@ -357,10 +357,18 @@ relavium budget resume <runId> [--gate <gateId>] --abort
   accepted during Ink unmount is durably acknowledged before SQLite closes and before the single
   persistent summary is printed. A custom renderer that omits the summary barrier still cannot
   release the command resources before the cancellation terminal. Voluntary paused finalization
-  still has an open authored-gate race: timeout rejection or autoapproval during unmount can advance
-  the run while the command reports paused, and a held unpublished write can outlive SQLite closure.
-  The [fifth review](../../reviews/2026-10-06T21-43-24-w7-systematic-group-3-round-5-review.md) records this verified limitation;
-  its engine departure decision is pending and the broad safe-pause-handoff guarantee is not accepted.
+  releases input without printing an irreversible summary, then joins engine-owned local departure.
+  The one primary reader remains active through both acknowledgements: a gate deadline or decision
+  that advances the run keeps its real outcome. A stable pause returns exit `3` only after local
+  detachment; it makes no claim about subsequent progress by another host. Terminal and fenced
+  outcomes also join admitted work before SQLite or MCP resources close. See the
+  [canonical engine lifecycle](../../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103).
+  A join pending for 250 ms emits a fixed `cleanup_pending` diagnostic to stderr and continues
+  waiting. A failed cleanup acknowledgement emits `cleanup_failed` and retains the owner rather
+  than treating failure as completion. JSON diagnostics are nondurable objects with `type`, `code`
+  and `message`; stdout remains the run-event stream. SIGINT stays owned through input and engine
+  acknowledgement. Ink prints one persistent summary for the actual final local outcome;
+  plain/NDJSON add no synthetic terminal or summary.
   The operator can inspect or reject the pending gate through
   `budget resume`. Ordinary human-gate prompts retain
   their existing decisions.
@@ -509,14 +517,18 @@ not one of them: its Ctrl-C is a cooperative cancel that exits `1`.
 | `3` | Run paused at a human gate (CI/non-interactive mode) — resume with `relavium gate` |
 | `4` | A chat session ended — via `/exit`, `/cancel` (or Ctrl-C in TTY mode), or an input-stream EOF — a user-initiated end of a `relavium chat` REPL — see [chat-session.md](chat-session.md) |
 | `5` | The run **produced** a terminal, but whether it reached the durable log is **not known** ([ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §5). The terminal is held in the outbox and retried on the next start |
-| `6` | The run is owned by **another process** — either refused before starting, or fenced out mid-flight and stopped without claiming an outcome ([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §5, §7). The only **transient** code: retry shortly |
-| `7` | An external **effect** from a prior attempt of this run is unresolved, so the run stopped for a human ([ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) §2b; [effect-journal.md](../shared-core/effect-journal.md) §4, §8). The only code whose remedy is **do not retry** — check the target, then clear the row (the resolving command is a named follow-up; today the row is cleared out of band); resuming re-enters the same gate |
+| `6` | Ownership was refused before starting, or this host was fenced out and stopped without claiming an outcome ([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §5, §7). Inspect current history; the successor may already have finished |
+| `7` | An external **effect** needs attention, including a prior unresolved attempt or an admitted effect whose final receipt remained unresolved after host joining ([effect-journal.md](../shared-core/effect-journal.md) §4, §8). **Do not retry**: inspect the target, then resolve the row out of band |
+| `8` | Required money receipts were not durably acknowledged. **Do not repeat paid work**: inspect `relavium logs <runId>` and the ledger before recovery. This is separate from terminal-outbox uncertainty |
 
-> Codes `5` and `6` are both "the run's record is not what you might assume", and they differ in what to do next: `5` means a terminal exists and the CLI will retry writing it for you, so re-check after the next invocation; `6` means another process owns the run and is recording it, so there is nothing local to retry — read `relavium logs <runId>` for the truth (`relavium status` takes no argument and lists only ACTIVE runs, so it will not show a run another process has already finished). A run that produced no terminal at all is always `6`, never `5`.
+> Final required-money uncertainty takes priority (`8`), then effect attention (`7`), then the actual terminal/ownership disposition (`5`/`6`) and ordinary outcome. A combined `8` warning also directs the operator to inspect the effect target and resolve its row. Final health never replaces the actual terminal, its error code or durable history; it selects the command's disposition after joining admitted work.
+> The fixed final-health stderr diagnostic has `type: diagnostic`, `code`, `message`, `terminalDurability` (`durable`, `uncertain` or `none`) and `effectNeedsAttention`. It reports one highest-priority warning; a combined money/effect case includes both remedies. These fields are nondurable and never added to stdout RunEvents.
 >
-> Exit code `7` is the one code a retry can make WORSE. Every other non-zero code either fails identically forever (`2`), resolves on its own (`6`), or describes a run that can be re-run (`1`). A `7` means an external effect — a filed ticket, a sent webhook, a started payment — may already have landed and nothing recorded what the target did. Retrying it is how one effect becomes two. An automation loop must surface a `7` to a person, never re-invoke on it.
+> Codes `5` and `6` have different remedies: `5` means a terminal exists and the CLI will retry writing it, so re-check after the next invocation; `6` means this invocation cannot claim an outcome — read `relavium logs <runId>` for current truth. A terminal-free fenced close uses `6` when neither final-money nor effect attention takes priority; it never promises an outbox retry.
 >
-> Exit code `6` is the one refusal worth retrying unchanged. Every other invocation fault (`2`) is a mistake in the call and fails identically forever, while `6` means another `relavium` process holds a live lease on the run and resolves on its own when that process finishes or its lease expires. An automation loop should back off and retry on `6`, and never on `2`.
+> Exit codes `7` and `8` must be surfaced to a person, never automatically re-invoked. An external effect or paid call may already have happened without its required receipt. Repeating it can duplicate the effect or charge.
+>
+> A pre-start live-ownership refusal (`6`) can be retried after backoff. A fenced host's `6` instead requires inspecting current history before resuming: local departure does not certify a successor's present status. An invalid invocation (`2`) requires correcting the call.
 >
 > Exit code `3` lets CI distinguish a pause-for-approval (a `run:paused` event — the run's aggregate suspension, a human/approval/budget gate — in non-interactive mode) from a hard failure. This is the canonical home for the gate-paused code; other docs reference it as `3`.
 >

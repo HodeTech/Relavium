@@ -694,7 +694,7 @@ describe('durable budget authorization through the actual runner', () => {
       expect(run.requests).toEqual([]);
       expect(run.keyReads()).toBe(0);
       expect(host.armedCount()).toBe(0);
-      expect(host.livenessCount()).toBe(0);
+      await expect.poll(() => host.livenessCount()).toBe(0);
       expect(await host.runLeases.read(run.handle.runId)).toBeUndefined();
     },
   );
@@ -765,7 +765,7 @@ describe('durable budget authorization through the actual runner', () => {
       expect(run.requests).toEqual([]);
       expect(run.keyReads()).toBe(0);
       expect(host.armedCount()).toBe(0);
-      expect(host.livenessCount()).toBe(0);
+      await expect.poll(() => host.livenessCount()).toBe(0);
       expect(await host.runLeases.read(run.handle.runId)).toBeUndefined();
     },
   );
@@ -838,7 +838,7 @@ describe('durable budget authorization through the actual runner', () => {
       expect(run.events.filter((item) => item.type === 'budget:authorization')).toHaveLength(2);
       expect(run.requests).toEqual([]);
       expect(run.host.armedCount()).toBe(0);
-      expect(run.host.livenessCount()).toBe(0);
+      await expect.poll(() => run.host.livenessCount()).toBe(0);
       expect(run.host.deadlineCount()).toBe(0);
       expect(await run.host.runLeases.read(run.handle.runId)).toBeUndefined();
     },
@@ -926,7 +926,7 @@ describe('durable budget authorization through the actual runner', () => {
       if (boundary === 'decision_authority')
         expect(run.events.some((event) => event.type === 'human_gate:resumed')).toBe(false);
       expect(run.host.armedCount()).toBe(0);
-      expect(run.host.livenessCount()).toBe(0);
+      await expect.poll(() => run.host.livenessCount()).toBe(0);
       expect(await run.host.runLeases.read(run.handle.runId)).toBeUndefined();
     },
   );
@@ -1001,7 +1001,7 @@ describe('durable budget authorization through the actual runner', () => {
     expect(run.requests).toHaveLength(2);
     expect(run.keyReads()).toBe(2);
     expect(run.host.armedCount()).toBe(0);
-    expect(run.host.livenessCount()).toBe(0);
+    await expect.poll(() => run.host.livenessCount()).toBe(0);
   });
 
   it('an existing native auto-approve timeout acknowledges exact A before paid execution', async () => {
@@ -1024,7 +1024,7 @@ describe('durable budget authorization through the actual runner', () => {
     expect(run.requests).toHaveLength(1);
     expect(run.keyReads()).toBe(1);
     expect(run.host.armedCount()).toBe(0);
-    expect(run.host.livenessCount()).toBe(0);
+    await expect.poll(() => run.host.livenessCount()).toBe(0);
   });
   it.each(['stale', 'unrepresentable'] as const)(
     'an auto-approve deadline with a %s quote terminates without a fabricated approval',
@@ -1114,7 +1114,7 @@ describe('durable budget authorization through the actual runner', () => {
       { output: 'ANSWER' },
     ]);
     expect(run.host.armedCount()).toBe(0);
-    expect(run.host.livenessCount()).toBe(0);
+    await expect.poll(() => run.host.livenessCount()).toBe(0);
   });
 
   it.each([250, -60_000])(
@@ -1196,7 +1196,7 @@ describe('durable budget authorization through the actual runner', () => {
         store.eventsFor(run.handle.runId).filter((event) => event.type === 'human_gate:resumed'),
       ).toHaveLength(remaining < 0 ? 1 : 2);
       expect(base.armedCount()).toBe(0);
-      expect(base.livenessCount()).toBe(0);
+      await expect.poll(() => base.livenessCount()).toBe(0);
     },
   );
   it('above-chain retry/backoff retains the same consumed allowance and cannot mint another grant', async () => {
@@ -1232,7 +1232,7 @@ describe('durable budget authorization through the actual runner', () => {
       reconstructCheckpointState(run.store.eventsFor(run.handle.runId))?.conservativeCostMicrocents,
     ).toBe(run.amount);
     expect(run.host.armedCount()).toBe(0);
-    expect(run.host.livenessCount()).toBe(0);
+    await expect.poll(() => run.host.livenessCount()).toBe(0);
   });
   it.each([false, true])(
     'approved tool-round input remains governed (large result: %s)',
@@ -1257,7 +1257,7 @@ describe('durable budget authorization through the actual runner', () => {
           : { type: 'run:completed', totalCostMicrocents: 4 },
       );
       expect(run.host.armedCount()).toBe(0);
-      expect(run.host.livenessCount()).toBe(0);
+      await expect.poll(() => run.host.livenessCount()).toBe(0);
     },
   );
   it('an existing authored cap above the safe-grant range does not prevent an unrepresentable quote from pausing for rejection', async () => {
@@ -1381,7 +1381,7 @@ describe('durable budget authorization through the actual runner', () => {
         error: { code: 'budget_exceeded' },
       });
       expect(run.host.armedCount()).toBe(0);
-      expect(run.host.livenessCount()).toBe(0);
+      await expect.poll(() => run.host.livenessCount()).toBe(0);
       expect(run.host.deadlineCount()).toBe(0);
       expect(await run.host.runLeases.read(run.handle.runId)).toBeUndefined();
     },
@@ -1453,7 +1453,7 @@ describe('durable budget authorization through the actual runner', () => {
       expect(run.requests).toEqual([]);
       expect(run.keyReads()).toBe(0);
       expect(run.host.armedCount()).toBe(0);
-      expect(run.host.livenessCount()).toBe(0);
+      await expect.poll(() => run.host.livenessCount()).toBe(0);
       expect(await run.host.runLeases.read(run.handle.runId)).toBeUndefined();
     },
   );
@@ -1508,7 +1508,7 @@ describe('durable budget authorization through the actual runner', () => {
       expect(run.requests).toEqual([]);
       expect(run.keyReads()).toBe(0);
       expect(run.host.armedCount()).toBe(0);
-      expect(run.host.livenessCount()).toBe(0);
+      await expect.poll(() => run.host.livenessCount()).toBe(0);
       expect(run.host.deadlineCount()).toBe(0);
       expect(await run.host.runLeases.read(run.handle.runId)).toBeUndefined();
     },
@@ -1607,7 +1607,7 @@ describe('durable budget authorization through the actual runner', () => {
       if (boundary === 'decision_authority')
         expect(run.events.some((event) => event.type === 'human_gate:resumed')).toBe(false);
       expect(run.host.armedCount()).toBe(0);
-      expect(run.host.livenessCount()).toBe(0);
+      await expect.poll(() => run.host.livenessCount()).toBe(0);
     },
   );
 
@@ -1723,7 +1723,7 @@ describe('durable budget authorization through the actual runner', () => {
         error: { code: 'budget_exceeded' },
       });
       expect(host.armedCount()).toBe(0);
-      expect(host.livenessCount()).toBe(0);
+      await expect.poll(() => host.livenessCount()).toBe(0);
     },
   );
 
@@ -1811,7 +1811,7 @@ describe('durable budget authorization through the actual runner', () => {
       expect(run.requests).toEqual([]);
       expect(run.keyReads()).toBe(0);
       expect(host.armedCount()).toBe(0);
-      expect(host.livenessCount()).toBe(0);
+      await expect.poll(() => host.livenessCount()).toBe(0);
     },
   );
 
@@ -2120,7 +2120,7 @@ describe('durable budget authorization through the actual runner', () => {
       status: 'completed',
       output: 'ANSWER',
     });
-    expect(await run.host.runLeases.read(run.handle.runId)).toBeUndefined();
+    await expect.poll(() => run.host.runLeases.read(run.handle.runId)).toBeUndefined();
     expect(run.host.armedCount()).toBe(0);
   });
   it('refuses a changed price basis even when aggregate A stays exactly equal', async () => {
@@ -2284,7 +2284,9 @@ describe('terminal paid-media money barrier — ADR-0077/0097', () => {
     expect(run.keyReads()).toBe(2);
     expect(run.polls()).toBe(1);
     expect(run.mediaRequests).toHaveLength(1);
-    expect(run.host.armedCount() + run.host.deadlineCount() + run.host.livenessCount()).toBe(0);
+    await expect
+      .poll(() => run.host.armedCount() + run.host.deadlineCount() + run.host.livenessCount())
+      .toBe(0);
     expect(await run.host.runLeases.read(run.handle.runId)).toBeUndefined();
   });
 

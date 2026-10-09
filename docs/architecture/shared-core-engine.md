@@ -130,13 +130,28 @@ How a single run progresses node-by-node — including streaming and the human g
 
 ### Internal departure foundations (ADR-0103)
 
-The first internal increment of
 [ADR-0103](../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md)
-adds primary-delivery observation and a platform-free host-work lifetime registry. The subsequent
-scoped integration registers exact raw executor and prepared-executor promises, entered host
-operations and structured receipt children. `RunHandle.depart()`, complete actor retirement,
-original parked-node clocks, final receipt disposition and CLI host-close acknowledgement remain
-unimplemented; this receipt increment is not a host-safe departure certificate.
+separates a bounded run outcome from acknowledgement that its local host can close. The engine
+registers exact raw executor and prepared-executor promises, scheduler/resume continuations,
+timer callbacks, entered host operations and structured receipt children in a platform-free
+host-work registry. The consolidated integration implements public departure and final health;
+its independent acceptance is tracked in [current.md](../roadmap/current.md).
+
+`RunHandle.depart()` joins this execution's actual host use. Concurrent calls share one transaction.
+It returns `continue` when progress invalidates the candidate pause; the caller keeps consuming
+the same primary stream. A stable, fully delivered pause returns `detached` only after all
+registered work, receipts and exact lease release are acknowledged. A terminal or fenced execution
+returns `closed` after its independent host join. Both host-safe results carry final
+`moneyDurability` and `effectNeedsAttention`; neither changes or invents a terminal event.
+The primary reader must remain active while departure runs. Early iterator return, a passive
+subscription or terminal delivery alone supplies no host-close certificate.
+
+Departure stops fresh media polling provisionally, without resetting authored deadlines. It
+subscribes before observing idle and rechecks the pause episode, actual publication/delivery
+cursor, accepted actors and absolute run/node/gate/media deadlines after every asynchronous
+barrier, including exact lease release. A due action follows its existing outcome path. A changed
+episode returns `continue` and restores the original timers. The final synchronous local claim
+revokes callbacks and removes this execution without claiming that a successor remains paused.
 
 Each run handle's existing primary queue privately counts actual publications before offering them
 to a waiting pull or buffer. Delivery advances synchronously only when a buffered pull or waiting
@@ -167,8 +182,8 @@ boundaries: startup rechecks before its next entry, and timeout setup disposes a
 returned after cancellation rather than installing a timer after the terminal sweep.
 A noncooperative context read can finish, but cancellation is
 checked before another filter or resolved-text delivery, including a second `read_file` in
-the same reference. This covers fresh startup, not the still-open pre-handle resume and
-complete scheduler/timer actor integration.
+the same reference. Pre-handle resume and scheduler/timer continuations also retain their raw
+lifetimes; a public result cannot close their host while an admitted operation remains pending.
 
 The scheduler's node-boundary consumer readiness has a separately registered raw lifetime.
 Only its wait is raced against execution abort, so cancellation can progress while an
@@ -198,12 +213,13 @@ regardless of authored-versus-ready iteration order; scheduler unwind releases t
 entry also checks after synchronous host deadline setup, captures the executor method
 once, checks again after method acquisition and after context/effect factories, and invokes
 only a live method with its captured receiver. This covers synchronous cancellation at
-those ports without replacing the exact raw executor Promise. Unexpected dispatch failures use fixed
+those ports without replacing the exact raw executor Promise. A first-start publication fault
+follows the same fixed failure/backstop path, preserving the entered attempt even when the clock
+faults before an append Promise exists. Unexpected dispatch failures use fixed
 content-free text without reading or coercing their cause. Readiness, pre-dispatch
 cancellation and detached failure share the diagnostic-publication backstop. Complete
-scheduler/dispatch/resume actor registration must be integrated with actual host departure:
-terminal delivery alone cannot authorize a surface to close its database. Those roots,
-timer/pre-handle work, final semantic health and public departure remain open.
+scheduler/dispatch/resume actor registration is joined by public departure; terminal delivery
+alone cannot authorize a surface to close its database.
 
 Settlement observation uses the captured native Promise intrinsic rather than a caller-overridden
 `then`. A constructor/species failure while attaching that observer is not settlement: the exact raw
@@ -222,8 +238,9 @@ has only money record/join, effect settle/discard, quiet cost updates and furthe
 registration. It grants no provider/key access, prepare, admission, media operation or ordinary
 event publication. Raw or child settlement ends that scope's future entry; already entered
 operations and independently transferred children remain joined. There is no implicit transfer
-for fire-and-forget work. Shipping transitive provider, iterator and media-poll lifetimes still
-require subsequent complete producer integration.
+for fire-and-forget work. Provider, iterator and media-poll invocation scopes retire fresh
+entry independently while keeping their admitted descendants joined; see the
+[provider contract](../reference/shared-core/llm-provider-seam.md#the-per-attempt-deadline).
 
 After a terminal acknowledgement, the execution retains its exact fence and heartbeat while
 registered raw/child work, entered host operations or receipt writes remain. Once these are quiet,
@@ -236,10 +253,12 @@ An ended scope cannot reacquire ownership lost to a successor, including after t
 releases its own lease. A native synchronous retention callback is observed synchronously;
 Promise-returning work stays joined to its real completion.
 
-This increment does not close the paused-finalization lifecycle finding. Integration still owes
-all accepted actors and transitive producers, the final pause/cursor claim, final money/effect
-disposition, parked-node timing and CLI input-release/primary-reader/host-close acceptance.
-Primary observation still grants no public departure API. Session lifecycle remains unchanged.
+Final health is evaluated only after those joins. Required money acknowledgement failure is
+sticky. Effect health retains admitted tier-3 identities, clears only a matching acknowledged
+commit/discard, and preserves typed attention or receipt failure even when a caller catches it
+or cancellation masks the public executor outcome. It stores no tool arguments, results or
+private causes. The CLI combines this health with the actual primary outcome under its
+[exit/remedy contract](../reference/cli/commands.md#exit-codes). Session lifecycle is unchanged.
 
 ## Inbound MCP connection lifecycle
 
@@ -324,9 +343,16 @@ authoritative shape; this section does not restate it. The same derivation is wh
 layer uses for durable execution — see [cloud-phase-2.md](cloud-phase-2.md).
 
 **Reconstruction is deterministic and refuses contradictory authoritative state** (same valid events
-→ same state — the basis of idempotent resume). The derived checkpoint uses schema version 2; the
+→ same state — the basis of idempotent resume). The derived checkpoint uses schema version 3; the
 engine refuses an unsupported derivation and releases its acquired lease. This is an in-process
 checkpoint contract, not a database migration or new log-version mechanism.
+
+The pure fold also derives parked-agent logical clock bases and pending budget-continuation
+credits. Retries and approved redispatches preserve the current logical life; a genuine running
+crash restart establishes a fresh life. Canonical budget authorization supplies one credit;
+legacy companions cannot duplicate it. A timed parked agent with missing, contradictory or
+unreadable evidence is refused before gate preparation, provider entry or polling. Reattachment
+uses the original absolute deadline rather than granting a new timeout.
 
 The checkpoint and both stores' interrupted-run discovery share one ordered suspension reducer.
 Budget authority restores a frozen pending gate independently of its companions; approval makes the

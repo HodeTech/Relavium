@@ -1,3 +1,5 @@
+import { McpWorkScope } from './work-scope.js';
+import type { ToolHostCallOptions } from '@relavium/core';
 import { WebSocketClientTransport } from '@modelcontextprotocol/sdk/client/websocket.js';
 
 import type { AbortSignalLike } from '@relavium/shared';
@@ -45,6 +47,7 @@ export async function openWebSocketConnection(
   serverId: string,
   spec: WebSocketServerSpec,
   signal?: AbortSignalLike,
+  options?: ToolHostCallOptions,
 ): Promise<McpConnection> {
   if (typeof globalThis.WebSocket !== 'function') {
     throw new McpError(
@@ -58,15 +61,22 @@ export async function openWebSocketConnection(
   } catch (err) {
     throw new McpConnectError(serverId, { cause: err });
   }
-  const transport = new WebSocketClientTransport(endpoint);
-  const owner = new SdkTransportOwner(transport, undefined, undefined, {});
-  return connectSdkTransport(
-    serverId,
-    transport,
-    {
-      timeoutMs: spec.connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs,
-      ...(signal === undefined ? {} : { signal }),
-    },
-    owner,
-  );
+  const timeoutMs = spec.connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs;
+  const work = new McpWorkScope(options);
+  try {
+    const transport = new WebSocketClientTransport(endpoint);
+    const owner = new SdkTransportOwner(transport, work, undefined, {});
+    return connectSdkTransport(
+      serverId,
+      transport,
+      {
+        timeoutMs,
+        ...(signal === undefined ? {} : { signal }),
+      },
+      owner,
+    );
+  } catch (error) {
+    work.seal();
+    throw error;
+  }
 }

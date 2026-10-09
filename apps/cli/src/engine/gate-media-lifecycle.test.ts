@@ -136,6 +136,7 @@ for (const ending of [
       release();
       await resume;
       await drained;
+      expect((await handle.depart()).kind).toBe('closed');
       const rows = store.eventsFor(handle.runId);
       if (ending === 'positive') {
         expect(rows.at(-1)?.type).toBe('run:completed');

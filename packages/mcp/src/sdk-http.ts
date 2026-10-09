@@ -62,6 +62,7 @@ export async function openHttpConnection(
   serverId: string,
   spec: HttpServerSpec,
   signal?: AbortSignalLike,
+  options?: ToolHostCallOptions,
 ): Promise<McpConnection> {
   let endpoint: URL;
   try {
@@ -70,48 +71,54 @@ export async function openHttpConnection(
     // A malformed url is a typed connect failure (secret-free; the host strips the opaque cause).
     throw new McpConnectError(serverId, { cause: err });
   }
-  const work = new McpWorkScope();
-  const retries = (retired: () => boolean) => ({
-    initialReconnectionDelay: 1000,
-    maxReconnectionDelay: 30000,
-    reconnectionDelayGrowFactor: 1.5,
-    get maxRetries(): number {
-      return retired() ? 0 : 2;
-    },
-  });
-  const base = new StreamableHTTPClientTransport(endpoint, {
-    reconnectionOptions: retries(() => owner?.retired === true),
-    fetch: (url, init) => {
-      if (owner.retired) throw new McpLifetimeError('retired');
-      return work.retainWork(() => spec.fetch(url, init, { retainWork: work.retainWork }));
-    },
-  });
-  const owner: SdkTransportOwner = new SdkTransportOwner(
-    base,
-    work,
-    (lifetime: SdkLaneLifetime) => {
-      return new StreamableHTTPClientTransport(endpoint, {
-        ...(base.sessionId === undefined ? {} : { sessionId: base.sessionId }),
-        reconnectionOptions: retries(() => lifetime.retired),
-        fetch: (url, init) => {
-          lifetime.assertActive();
-          return lifetime.work.retainWork(() =>
-            spec.fetch(url, init, {
-              retainWork: lifetime.work.retainWork,
-              signal: lifetime.signal,
-            }),
-          );
-        },
-      });
-    },
-  );
-  return connectSdkTransport(
-    serverId,
-    owner.transport,
-    {
-      timeoutMs: spec.connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs,
-      ...(signal === undefined ? {} : { signal }),
-    },
-    owner,
-  );
+  const timeoutMs = spec.connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs;
+  const work = new McpWorkScope(options);
+  try {
+    const retries = (retired: () => boolean) => ({
+      initialReconnectionDelay: 1000,
+      maxReconnectionDelay: 30000,
+      reconnectionDelayGrowFactor: 1.5,
+      get maxRetries(): number {
+        return retired() ? 0 : 2;
+      },
+    });
+    const base = new StreamableHTTPClientTransport(endpoint, {
+      reconnectionOptions: retries(() => owner?.retired === true),
+      fetch: (url, init) => {
+        if (owner.retired) throw new McpLifetimeError('retired');
+        return work.retainWork(() => spec.fetch(url, init, { retainWork: work.retainWork }));
+      },
+    });
+    const owner: SdkTransportOwner = new SdkTransportOwner(
+      base,
+      work,
+      (lifetime: SdkLaneLifetime) => {
+        return new StreamableHTTPClientTransport(endpoint, {
+          ...(base.sessionId === undefined ? {} : { sessionId: base.sessionId }),
+          reconnectionOptions: retries(() => lifetime.retired),
+          fetch: (url, init) => {
+            lifetime.assertActive();
+            return lifetime.work.retainWork(() =>
+              spec.fetch(url, init, {
+                retainWork: lifetime.work.retainWork,
+                signal: lifetime.signal,
+              }),
+            );
+          },
+        });
+      },
+    );
+    return connectSdkTransport(
+      serverId,
+      owner.transport,
+      {
+        timeoutMs,
+        ...(signal === undefined ? {} : { signal }),
+      },
+      owner,
+    );
+  } catch (error) {
+    work.seal();
+    throw error;
+  }
 }

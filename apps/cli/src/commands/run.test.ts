@@ -758,8 +758,8 @@ describe('runCommand', () => {
       deps(io, globalOptions(), { selectRenderer: () => renderer }),
     );
     expect(code).toBe(EXIT_CODES.success); // the run outcome is preserved
-    expect(err()).toContain('renderer teardown failed');
-    expect(err()).toContain('unmount blew up');
+    expect(err()).toContain('The run view could not write its final summary after cleanup.');
+    expect(err()).not.toContain('unmount blew up');
   });
 
   it('renders --json stdout as a schema-valid RunEvent NDJSON stream in sequenceNumber order, ending in run:completed', async () => {

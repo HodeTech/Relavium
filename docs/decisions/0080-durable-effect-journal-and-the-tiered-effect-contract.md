@@ -324,3 +324,11 @@ all historical structural transcript rows for disclosure. That join is load-bear
 never for dedup**; run occurrence/replay semantics and `blocksResume` are unchanged. Session retention consumes
 only the exact successfully read and disclosed committed snapshot, after the surface activates, and checkpoints
 WAL after its owned transaction commits. The canonical contract is [effect-journal.md §8–§11](../reference/shared-core/effect-journal.md#8-needs_attention).
+
+## 2026-10-10 — ADR-0103 lifecycle integration
+
+Final effect health includes admitted unresolved tier-3 identities and typed/receipt failures observed before cancellation or caller catches; only matching acknowledged commit/discard clears pending identity.
+See the [canonical engine lifecycle](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+and [CLI exit/remedy contract](../reference/cli/commands.md#exit-codes). Consolidated independent
+acceptance is tracked in [current.md](../roadmap/current.md); Step 8 and final whole-wave
+validation remain open. The accepted body above is preserved.

@@ -136,4 +136,35 @@ describe('wireRunJobControl (G0, the run/gate path)', () => {
     expect(h.suspendSelf).not.toHaveBeenCalled();
     expect(() => jc.dispose()).not.toThrow();
   });
+
+  it('releases the first listener when registering the second listener fails', () => {
+    const h = harness();
+    const lifecycle = {
+      ...h.lifecycle,
+      onContinue: () => {
+        throw new Error('continue registration failed');
+      },
+    };
+    expect(() => wireRunJobControl({ write: h.write, lifecycle })).toThrow(
+      'continue registration failed',
+    );
+    expect(h.removeSuspend).toHaveBeenCalledTimes(1);
+  });
+
+  it('attempts both removals and retires callbacks when one removal fails', () => {
+    const h = harness();
+    h.removeSuspend.mockImplementationOnce(() => {
+      throw new Error('suspend removal failed');
+    });
+    const jc = wireRunJobControl({ write: h.write, lifecycle: h.lifecycle });
+    expect(() => jc.dispose()).toThrow('Run job-control cleanup failed.');
+    expect(h.removeContinue).toHaveBeenCalledTimes(1);
+    h.fireContinue();
+    h.fireSuspend();
+    expect(h.out()).toBe('');
+    expect(h.suspendSelf).not.toHaveBeenCalled();
+    expect(() => jc.dispose()).not.toThrow();
+    expect(h.removeSuspend).toHaveBeenCalledTimes(2);
+    expect(h.removeContinue).toHaveBeenCalledTimes(1);
+  });
 });

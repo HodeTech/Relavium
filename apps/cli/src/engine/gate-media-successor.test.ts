@@ -157,6 +157,7 @@ for (const ending of ['normal', 'cancel', 'successor-observed', 'successor-unobs
         });
         const winningEvents: RunEvent[] = [];
         for await (const event of winner.events) winningEvents.push(event);
+        expect((await winner.depart()).kind).toBe('closed');
         expect(winningEvents.at(-1)?.type).toBe('run:completed');
         expect(referenceStore.runReferenceRunIds()).toEqual([]);
         expect(await leases.read(handle.runId)).toBeUndefined();
@@ -172,6 +173,7 @@ for (const ending of ['normal', 'cancel', 'successor-observed', 'successor-unobs
       release();
       await resume;
       await drain;
+      expect((await handle.depart()).kind).toBe('closed');
       const result = {
         lateReferenceActions: actions.slice(before.actions),
         referenceRunIds: referenceStore.runReferenceRunIds(),

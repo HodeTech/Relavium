@@ -79,6 +79,7 @@ for (const ending of ['acknowledged', 'terminal-store-refusal', 'terminal-fenced
     const events: RunEvent[] = [];
     try {
       for await (const event of handle.events) events.push(event);
+      expect((await handle.depart()).kind).toBe('closed');
       expect(terminalAttempt).toBeGreaterThan(0);
       const terminalActions = actions.slice(terminalAttempt);
       if (ending === 'terminal-store-refusal') {

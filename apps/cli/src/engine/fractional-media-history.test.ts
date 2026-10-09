@@ -199,6 +199,11 @@ async function runMedia(finish: Finish) {
         }
       }
     }
+    expect(await handle.depart()).toEqual({
+      kind: 'closed',
+      moneyDurability: 'durable',
+      effectNeedsAttention: false,
+    });
     expect(requests).toHaveLength(1);
     expect(requests[0]?.durationSeconds).toBe(VOLUME);
     if (finish === 'sync-sdk') {

@@ -80,3 +80,11 @@ A **provider output URL** (DALL-E/CDN, async-fetch URL) is placed in a durable p
 
 - Per ADR-0009's append-only rule, ADR-0031/0036/0040 are unchanged in history; this ADR is the authoritative record for the async media-job loop, the `media_job:submitted` durable state, the `pollMediaJob` signal param, the inline-vs-generative routing, and the generate-path cost realization. **On acceptance, this lands a dated `> Amended … by [ADR-0045]` note on ADR-0031, ADR-0036, and ADR-0040** (a documentation pointer, not a status flip — [documentation-style.md](../standards/documentation-style.md) §7, the same precedent as ADR-0042's note on ADR-0036 and ADR-0040's on ADR-0038). Future readers of the seam, the run loop, or node retry should read those **and** this.
 - The canonical-home updates land with the 1.AG code (enumerated under *Land-time obligations* above) — none restated here.
+
+## 2026-10-10 — ADR-0103 lifecycle integration
+
+Media polling quiesces provisionally during departure while admitted polls/download descendants and original absolute job/node deadlines remain owed.
+See the [canonical engine lifecycle](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+and [CLI exit/remedy contract](../reference/cli/commands.md#exit-codes). Consolidated independent
+acceptance is tracked in [current.md](../roadmap/current.md); Step 8 and final whole-wave
+validation remain open. The accepted body above is preserved.

@@ -1,3 +1,4 @@
+import { EgressWorkScope } from '../engine/egress-work.js';
 import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
 
@@ -27,7 +28,7 @@ import {
   type GateDecision,
   type RunStatus,
 } from '@relavium/shared';
-import { liveMcpChildPids, type McpClient, type McpServerConfig } from '@relavium/mcp';
+import { liveMcpChildPids } from '@relavium/mcp';
 
 import { loadResolvedConfig } from '../config/load.js';
 import { openLocalDb } from '../db/open.js';
@@ -152,7 +153,7 @@ export interface GateCommandDeps {
    * never has to put a credential-shaped string anywhere but its own closure.
    */
   readonly readSecretInput?: () => Promise<string>;
-  readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  readonly startMcpClient?: typeof import('@relavium/mcp').startMcpClient;
   readonly consentGate?: StdioConsentGate;
   readonly mcpSecretResolver?: McpSecretResolver;
   /** After selection/amount refusal, production reads providers from the command's existing db. */
@@ -279,6 +280,7 @@ async function resumeGateCommand(
   }
 
   let mcpRuntime: WorkflowMcpRuntime | undefined;
+  const mcpWork = new EgressWorkScope();
   let unguardMcp = (): void => undefined;
   let unguardResume = (): void => undefined;
   let resumeEngine: WorkflowEngine | undefined;
@@ -415,6 +417,7 @@ async function resumeGateCommand(
         cwd: saveToRoot,
         preserveFrozenGrants: true,
         connectSignal: resumeCancel.signal,
+        work: mcpWork,
         registrations: config.mcpServers,
         resolveSecret:
           deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
@@ -533,23 +536,35 @@ async function resumeGateCommand(
       // stream: it either resolves its cancel sentinel (the gate goes unresolved, exit 3) or throws on raw
       // mode. Both are wrong, so the honest answer is the one this invocation actually has — no prompter,
       // and a later gate exits 3 the way every other non-interactive resume does.
-      gatePrompter:
+      makeGatePrompter: () =>
         args.secretStdin === true
           ? undefined
           : (deps.selectGatePrompter ?? selectGatePrompter)(deps.io, deps.global),
       io: deps.io,
+      json: deps.global.json,
     });
+
+    const departure = await handle.depart();
+    if (departure.kind === 'continue')
+      throw new CliError('internal', 'run departure was not acknowledged');
+    const exitCode = outcomeToExitCode(
+      outcome,
+      handle.durability(),
+      handle.terminalError(),
+      departure,
+      true,
+    );
 
     // An uncertain NONTERMINAL outcome is fenced, including a buffered stale pause. A delivered
     // terminal with uncertainty instead belongs to the outbox/exit-5 path below. A durable later
     // pause still exits 3. Neither durability nor the outcome alone makes these distinctions.
-    if (handle.durability() === 'uncertain' && !isTerminalOutcome(outcome)) {
+    if (exitCode === EXIT_CODES.runOwnedElsewhere) {
       throw new CliError(
         'run_owned_elsewhere',
         `this process could not confirm ownership of run ${args.runId} during the resume and stopped — read \`relavium logs ${args.runId}\` for its real outcome, then retry if the gate is still pending`,
       );
     }
-    if (outcome === undefined) {
+    if (outcome === undefined && exitCode === EXIT_CODES.success) {
       // **Two very different runs close with no `run:*` event, and telling them apart matters.** A closed
       // handle (the engine's own checkpoint re-read found the run terminal — a concurrent `relavium gate`
       // settled it between our pre-check and the engine's) is an idempotent no-op. A run FENCED mid-resume
@@ -587,7 +602,7 @@ async function resumeGateCommand(
     // replay — a review measured a late subscriber seeing `undefined` and this surface reporting exit 1 for
     // a run that had stopped for an unresolved external effect. `terminalError()` is captured on the
     // handle's own construction-time subscription, which no ordering can outrun.
-    return outcomeToExitCode(outcome, handle.durability(), handle.terminalError());
+    return exitCode;
   } catch (err) {
     // The pre-connect guard owns child cleanup; this command owns the run-style interruption exit.
     // Once resume has started, the handle/engine error remains authoritative.
@@ -596,12 +611,14 @@ async function resumeGateCommand(
   } finally {
     try {
       try {
-        opened.close();
-      } finally {
         // Cleanup must not replace a primary refusal or a durably completed command result.
         await mcpRuntime?.client.close().catch(() => {
           deps.io.writeErr('warning: the MCP client could not close cleanly\n');
         });
+      } finally {
+        mcpWork.seal();
+        await mcpWork.done;
+        opened.close();
       }
     } finally {
       unguardMcp();

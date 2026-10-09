@@ -294,7 +294,10 @@ for (const mode of ['prompt-cancel', 'os-signal', 'approve-all'] as const)
 for (const rendererMode of ['custom', 'custom-no-barrier', 'actual-ink'] as const)
   for (const cancel of [false, true])
     it.skipIf(process.platform === 'win32' && cancel)(
-      'native cancellation at paused renderer finalization ' + rendererMode + ' ' + cancel,
+      'native cancellation before paused input release acknowledgement ' +
+        rendererMode +
+        ' ' +
+        cancel,
       async () => {
         const root = mkdtempSync(join(tmpdir(), 'round3-finalize-'));
         const file = join(root, 'history.db');
@@ -444,9 +447,11 @@ for (const rendererMode of ['custom', 'custom-no-barrier', 'actual-ink'] as cons
                     })
                   : {
                       onEvent: (e) => order.push('delivered-' + e.type),
-                      finalize: async (beforeSummary?: () => Promise<void>) => {
+                      releaseInput: async () => {
                         finalizeEnter.release();
                         await finalizeRelease.promise;
+                      },
+                      finalize: async (beforeSummary?: () => Promise<void>) => {
                         if (rendererMode !== 'custom-no-barrier') await beforeSummary?.();
                         order.push('finalized');
                       },

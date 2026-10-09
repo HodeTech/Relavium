@@ -2494,6 +2494,7 @@ workflow:
 
     // A later start: the store is healthy again.
     refuse = false;
+    await expect.poll(() => host.runLeases.read(handle.runId)).toBeUndefined();
     const repaired = await buildEngine(host, () => scriptedProvider([])).reconcile();
 
     // THE assertion: the run's own `run:completed` was retried, NOT replaced by a reconciliation failure.

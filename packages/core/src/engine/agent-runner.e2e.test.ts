@@ -859,8 +859,8 @@ workflow:
     expect(events.some((e) => e.type === 'node:completed' && e.nodeId === 'n')).toBe(false);
     expect(providerCalls).toBe(1);
     expect(host.armedCount()).toBe(0);
-    // The durable terminal releases exact ownership before delivery; no cleanup wait is needed.
-    expect(await host.runLeases.read(handle.runId)).toBeUndefined();
+    // Terminal delivery and joined actor retirement are separate; observe exact lease release.
+    await expect.poll(() => host.runLeases.read(handle.runId)).toBeUndefined();
     expect(host.livenessCount()).toBe(0);
   });
 

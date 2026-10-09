@@ -349,7 +349,9 @@ for (const change of ['missing-rate', 'throwing', 'unsafe'] as const) {
     expect(
       test.events.filter((event) => event.type === 'cost:updated' && event.nodeId === 'other'),
     ).toMatchObject([{ costMicrocents: 21 }]);
-    expect(test.host.armedCount() + test.host.deadlineCount() + test.host.livenessCount()).toBe(0);
+    await expect
+      .poll(() => test.host.armedCount() + test.host.deadlineCount() + test.host.livenessCount())
+      .toBe(0);
     expect(await test.host.runLeases.read(test.handle.runId)).toBeUndefined();
   });
 }
@@ -377,7 +379,9 @@ for (const terminal of ['done', 'cancel'] as const) {
       { costMicrocents: 21 },
     ]);
     expect(test.events.filter((event) => event.type === 'cost:updated')).toHaveLength(1);
-    expect(test.host.armedCount() + test.host.deadlineCount() + test.host.livenessCount()).toBe(0);
+    await expect
+      .poll(() => test.host.armedCount() + test.host.deadlineCount() + test.host.livenessCount())
+      .toBe(0);
     expect(await test.host.runLeases.read(test.handle.runId)).toBeUndefined();
   });
 
@@ -393,7 +397,9 @@ for (const terminal of ['done', 'cancel'] as const) {
     expect(test.governor.conservativeCostMicrocents).toBe(0);
     expect(test.durable).toEqual([]);
     expect(test.events.filter((event) => event.type === 'cost:updated')).toEqual([]);
-    expect(test.host.armedCount() + test.host.deadlineCount() + test.host.livenessCount()).toBe(0);
+    await expect
+      .poll(() => test.host.armedCount() + test.host.deadlineCount() + test.host.livenessCount())
+      .toBe(0);
     expect(await test.host.runLeases.read(test.handle.runId)).toBeUndefined();
     expect(JSON.stringify(test.events)).not.toContain('PRIVATE-SYNTHETIC-DELIVERY-FAULT');
   });
@@ -460,7 +466,7 @@ for (const terminal of ['done', 'failed', 'cancel', 'deadline'] as const) {
       expect(costs).toHaveLength(fault ? 0 : 1);
       expect(test.host.armedCount()).toBe(0);
       expect(test.host.deadlineCount()).toBe(0);
-      expect(test.host.livenessCount()).toBe(0);
+      await expect.poll(() => test.host.livenessCount()).toBe(0);
       expect(await test.host.runLeases.read(test.handle.runId)).toBeUndefined();
       expect(test.handle.durability()).toBe('durable');
       expect(JSON.stringify(test.events)).not.toContain('PRIVATE-SYNTHETIC-PRICING-FAULT');

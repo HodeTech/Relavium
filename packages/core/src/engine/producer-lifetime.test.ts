@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { unwiredEffectJournal, type ContentPart, type RunEvent } from '@relavium/shared';
-import type { LlmProvider, LlmResult, MediaGenResult } from '@relavium/llm';
+import type { LlmInvocationOptions, LlmProvider, LlmResult, MediaGenResult } from '@relavium/llm';
 import { createOpenAiAdapter } from '@relavium/llm/adapters';
 import { parseWorkflow } from '../parser.js';
 import { createAgentNodeExecutor, type AgentRunnerDeps } from './agent-runner.js';
@@ -152,13 +152,16 @@ for (const separateEndpoint of [false, true])
     const mediaRaw = latch<MediaGenResult>();
     const entered = latch<void>();
     let calls = 0;
+    let invocation: LlmInvocationOptions | undefined;
     const p = provider({
-      generate: () => {
+      generate: (_request, _key, options) => {
+        invocation = options;
         calls++;
         entered.resolve();
         return raw.promise;
       },
-      generateMedia: () => {
+      generateMedia: (_request, _key, options) => {
+        invocation = options;
         calls++;
         entered.resolve();
         return mediaRaw.promise;
@@ -174,6 +177,15 @@ for (const separateEndpoint of [false, true])
       run.clock.fire();
       await run.drained;
       expect(run.events.at(-1)?.type).toBe('run:failed');
+      if (invocation === undefined) throw new Error('custom invocation authority required');
+      let forbiddenEntries = 0;
+      expect(() =>
+        invocation?.retainWork(() => {
+          forbiddenEntries++;
+          return Promise.resolve();
+        }),
+      ).toThrow();
+      expect(forbiddenEntries).toBe(0);
       expect(calls).toBe(1);
       expect(await run.host.runLeases.read(run.handle.runId)).toEqual(fence);
       expect(run.host.livenessCount()).toBe(1);
@@ -364,11 +376,13 @@ for (const held of ['raw poll', 'transferred child'] as const)
     const entered = latch<void>();
     let polls = 0;
     let pins = 0;
+    let invocation: LlmInvocationOptions | undefined;
     const p = provider({
       generateMedia: () => Promise.resolve({ jobId: 'local-test-job', raw: {} }),
       pollMediaJob: (_id, _key, _signal, options) => {
         polls += 1;
         if (options === undefined) throw new Error('poll lost invocation lifetime authority');
+        invocation = options;
         void options.retainWork(() => child.promise);
         entered.resolve();
         return raw.promise;
@@ -401,6 +415,15 @@ for (const held of ['raw poll', 'transferred child'] as const)
       const fence = await host.runLeases.read(handle.runId);
       expect(fence).toBeDefined();
       handle.cancel();
+      if (invocation === undefined) throw new Error('poll invocation authority required');
+      let forbiddenEntries = 0;
+      expect(() =>
+        invocation?.retainWork(() => {
+          forbiddenEntries++;
+          return Promise.resolve();
+        }),
+      ).toThrow();
+      expect(forbiddenEntries).toBe(0);
       host.fireTimers();
       await drained;
       expect(events.at(-1)?.type).toBe('run:cancelled');

@@ -1,4 +1,5 @@
 import { setImmediate } from 'node:timers/promises';
+import { createHistoryCheckpointer } from './checkpointer.js';
 import { describe, expect, it } from 'vitest';
 import type { DurableWriteContext, RunEvent, RunFence } from '@relavium/shared';
 import {
@@ -97,6 +98,7 @@ function fixture(kind: 'reference' | 'native') {
   const underlying: RunStore = native ?? reference;
   const base = createInMemoryHost({
     store: underlying,
+    ...(native === undefined ? {} : { checkpointer: createHistoryCheckpointer(native) }),
     runLeases:
       native === undefined ? createInMemoryRunLeases(() => now) : createRunLeasePort(native),
   });
@@ -109,6 +111,7 @@ function fixture(kind: 'reference' | 'native') {
     | undefined;
   let after: ((event: RunEvent) => void) | undefined;
   let heartbeatBarrier: (() => Promise<void>) | undefined;
+  let releaseBarrier: ((fence: RunFence) => Promise<void>) | undefined;
   const host = {
     ...base,
     store: {
@@ -135,6 +138,7 @@ function fixture(kind: 'reference' | 'native') {
       },
       release: async (runId: string, fence: RunFence) => {
         releases.push(fence);
+        await releaseBarrier?.(fence);
         await base.runLeases.release(runId, fence);
       },
     },
@@ -150,6 +154,9 @@ function fixture(kind: 'reference' | 'native') {
     },
     after: (hook: typeof after) => {
       after = hook;
+    },
+    holdRelease: (barrier: (fence: RunFence) => Promise<void>) => {
+      releaseBarrier = barrier;
     },
     holdHeartbeat: (barrier: () => Promise<void>) => {
       heartbeatBarrier = barrier;
@@ -395,4 +402,97 @@ for (const kind of ['reference', 'native'] as const)
           f.close();
         }
       });
+  });
+
+for (const successorCompleted of [false, true])
+  it(`native old release ACK cannot delete a reattached successor (${successorCompleted ? 'completed' : 'running'})`, async () => {
+    const f = fixture('native');
+    const enteredRelease = deferred<void>(),
+      release = deferred<void>(),
+      successorEntered = deferred<void>(),
+      successorDone = deferred<NodeOutcome>();
+    let oldFence: RunFence | undefined;
+    f.holdRelease(async (fence) => {
+      if (oldFence === undefined) {
+        oldFence = fence;
+        enteredRelease.resolve();
+        await release.promise;
+      }
+    });
+    const engine = new WorkflowEngine({
+      host: f.host,
+      executor: {
+        execute: () =>
+          Promise.resolve({ kind: 'paused', gate: { gateType: 'approval', message: 'continue?' } }),
+      },
+    });
+    const handle = engine.start({ workflow: definition });
+    const pause = deferred<Extract<RunEvent, { type: 'run:paused' }>>();
+    const oldEvents: RunEvent[] = [];
+    const oldRead = (async () => {
+      for await (const event of handle.events) {
+        oldEvents.push(event);
+        if (event.type === 'run:paused') pause.resolve(event);
+      }
+    })();
+    let successorRead: Promise<void> | undefined;
+    let departure: ReturnType<typeof handle.depart> | undefined;
+    try {
+      const paused = await pause.promise;
+      await enteredRelease.promise;
+      departure = handle.depart();
+      f.age();
+      const nextEngine = new WorkflowEngine({
+        host: f.host,
+        executor: {
+          execute: () => {
+            successorEntered.resolve();
+            return successorDone.promise;
+          },
+        },
+      });
+      const next = await nextEngine.resumeFromCheckpoint({
+        runId: handle.runId,
+        workflow: definition,
+        gateId: paused.gateIds[0] ?? '',
+        decision: { decision: 'approved', decidedBy: 'native-control' },
+      });
+      const successorEvents: RunEvent[] = [];
+      successorRead = (async () => {
+        for await (const event of next.events) successorEvents.push(event);
+      })();
+      await successorEntered.promise;
+      const successor = await f.host.runLeases.read(handle.runId);
+      if (successor === undefined || oldFence === undefined)
+        throw new Error('native successor and original fences required');
+      expect(successor.ownerId).not.toBe(oldFence.ownerId);
+      expect(successor.generation).toBeGreaterThan(oldFence.generation);
+      if (successorCompleted) {
+        successorDone.resolve({ kind: 'completed', output: 'successor completed' });
+        await successorRead;
+        expect(await next.depart()).toMatchObject({ kind: 'closed' });
+        expect(await f.host.runLeases.read(handle.runId)).toBeUndefined();
+      }
+      const asksBeforeOldRelease = f.asks.length;
+      release.resolve();
+      expect(await departure).toMatchObject({ kind: 'detached', moneyDurability: 'durable' });
+      await oldRead;
+      expect(oldEvents.at(-1)).toBe(paused);
+      expect(f.asks).toHaveLength(asksBeforeOldRelease);
+      if (successorCompleted) expect(await f.host.runLeases.read(handle.runId)).toBeUndefined();
+      else {
+        expect(await f.host.runLeases.read(handle.runId)).toEqual(successor);
+        successorDone.resolve({ kind: 'completed', output: 'successor completed' });
+        await successorRead;
+        expect(await next.depart()).toMatchObject({ kind: 'closed' });
+      }
+      expect(f.acquisitions).toHaveLength(2);
+    } finally {
+      release.resolve();
+      successorDone.resolve({ kind: 'completed', output: 'cleanup' });
+      await successorRead;
+      await departure;
+      await oldRead;
+      f.close();
+    }
   });

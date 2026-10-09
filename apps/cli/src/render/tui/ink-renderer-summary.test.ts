@@ -23,50 +23,147 @@ const cancelled: RunEvent = {
   timestamp: '2026-10-06T19:00:01.000Z',
   sequenceNumber: 2,
 };
-for (const stopFails of [false, true]) {
-  it(`writes the settled cancellation summary after unmount, including rejected stop: ${stopFails}`, async () => {
-    const entered = latch(),
-      release = latch();
+
+it('writes one latest summary only after actual input and host acknowledgements', async () => {
+  const inputEntered = latch(),
+    inputRelease = latch(),
+    hostEntered = latch(),
+    hostRelease = latch();
+  const summaries: string[] = [];
+  let unmounts = 0;
+  const renderer = createInkRenderer({
+    color: false,
+    writeSummary: (text) => summaries.push(text),
+    mount: () => ({
+      unmount: () => {
+        unmounts++;
+      },
+      waitUntilExit: () => {
+        inputEntered.release();
+        return inputRelease.promise;
+      },
+    }),
+  });
+  renderer.onEvent(paused);
+  const work = Promise.resolve(
+    renderer.finalize?.(async () => {
+      hostEntered.release();
+      await hostRelease.promise;
+    }),
+  );
+  try {
+    await inputEntered.promise;
+    expect(unmounts).toBe(1);
+    expect(summaries).toHaveLength(0);
+    inputRelease.release();
+    await hostEntered.promise;
+    expect(summaries).toHaveLength(0);
+    renderer.onEvent(cancelled);
+  } finally {
+    inputRelease.release();
+    hostRelease.release();
+    await work;
+  }
+  expect(summaries).toHaveLength(1);
+  expect(summaries[0]).toContain('run cancelled');
+  expect(summaries[0]).not.toContain('run paused');
+  await renderer.finalize?.();
+  expect(summaries).toHaveLength(1);
+});
+
+for (const fault of ['unmount', 'wait'] as const) {
+  it(`retains the input capability after ${fault} rejection until a real retry acknowledges`, async () => {
+    const secondEntered = latch(),
+      secondRelease = latch();
+    const stopError = new Error('synthetic input release fault');
     const summaries: string[] = [];
-    const stopError = new Error('held unmount failure');
-    let unmounted = false;
+    let unmounts = 0,
+      waits = 0,
+      hostJoins = 0;
     const renderer = createInkRenderer({
       color: false,
       writeSummary: (text) => summaries.push(text),
       mount: () => ({
         unmount: () => {
-          unmounted = true;
+          unmounts++;
+          if (fault === 'unmount' && unmounts === 1) throw stopError;
         },
-        waitUntilExit: () => (stopFails ? Promise.reject(stopError) : Promise.resolve()),
+        waitUntilExit: () => {
+          waits++;
+          if (fault === 'wait' && waits === 1) return Promise.reject(stopError);
+          secondEntered.release();
+          return secondRelease.promise;
+        },
       }),
     });
     renderer.onEvent(paused);
-    const work = Promise.resolve(
-      renderer.finalize?.(async () => {
-        expect(unmounted).toBe(true);
-        entered.release();
-        await release.promise;
+    await expect(
+      Promise.resolve(
+        renderer.finalize?.(() => {
+          hostJoins++;
+          return Promise.resolve();
+        }),
+      ),
+    ).rejects.toBe(stopError);
+    expect(hostJoins).toBe(0);
+    expect(summaries).toHaveLength(0);
+    const release = renderer.releaseInput;
+    if (release === undefined) throw new Error('input release capability required');
+    const acknowledged = Promise.resolve(release());
+    const final = Promise.resolve(
+      renderer.finalize?.(() => {
+        hostJoins++;
+        return Promise.resolve();
       }),
     );
-    const settled = work.then(
-      () => 'finished' as const,
-      () => 'failed' as const,
-    );
     try {
-      expect(await Promise.race([entered.promise.then(() => 'barrier' as const), settled])).toBe(
-        'barrier',
-      );
+      await secondEntered.promise;
+      expect(unmounts).toBe(2);
+      expect(hostJoins).toBe(0);
       expect(summaries).toHaveLength(0);
       renderer.onEvent(cancelled);
     } finally {
-      release.release();
+      secondRelease.release();
+      await Promise.all([acknowledged, final]);
     }
-    if (stopFails) await expect(work).rejects.toBe(stopError);
-    else await work;
+    expect(hostJoins).toBe(1);
     expect(summaries).toHaveLength(1);
     expect(summaries[0]).toContain('run cancelled');
-    expect(summaries[0]).not.toContain('run paused');
     await renderer.finalize?.();
     expect(summaries).toHaveLength(1);
   });
 }
+
+it('does not repeat an irreversible summary after a cosmetic write failure following acknowledgements', async () => {
+  const writeError = new Error('synthetic summary sink fault');
+  let inputAcks = 0,
+    hostAcks = 0,
+    writes = 0;
+  const renderer = createInkRenderer({
+    color: false,
+    mount: () => ({
+      unmount: () => {},
+      waitUntilExit: () => {
+        inputAcks++;
+        return Promise.resolve();
+      },
+    }),
+    writeSummary: () => {
+      writes++;
+      throw writeError;
+    },
+  });
+  renderer.onEvent(cancelled);
+  await expect(
+    Promise.resolve(
+      renderer.finalize?.(() => {
+        hostAcks++;
+        return Promise.resolve();
+      }),
+    ),
+  ).rejects.toBe(writeError);
+  expect({ inputAcks, hostAcks, writes }).toEqual({ inputAcks: 1, hostAcks: 1, writes: 1 });
+  await renderer.releaseInput?.();
+  await renderer.finalize?.();
+  expect({ inputAcks, hostAcks, writes }).toEqual({ inputAcks: 1, hostAcks: 1, writes: 1 });
+});

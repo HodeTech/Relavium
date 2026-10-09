@@ -29,12 +29,14 @@ export interface HostWorkScope {
  */
 export class HostWorkRegistry {
   readonly #runId: string;
+  readonly #onChange: () => void;
   #pending = 0;
   #idleWaiters: (() => void)[] = [];
   #observationFailed = false;
 
-  constructor(runId: string) {
+  constructor(runId: string, onChange: () => void = () => undefined) {
     this.#runId = runId;
+    this.#onChange = onChange;
   }
 
   get isIdle(): boolean {
@@ -53,6 +55,7 @@ export class HostWorkRegistry {
    */
   invoke<T>(operation: (scope: HostWorkScope) => Promise<T>): Promise<T> {
     this.#pending += 1;
+    this.#onChange();
     let active = true;
     const assertActive = (): void => {
       if (!active) {
@@ -66,6 +69,7 @@ export class HostWorkRegistry {
       enter: <R>(factory: () => Promise<R>): Promise<R> => {
         assertActive();
         this.#pending += 1;
+        this.#onChange();
         return this.#observe(factory, () => this.#finish());
       },
       continue: <R>(factory: (child: HostWorkScope) => Promise<R>): Promise<R> => {
@@ -89,6 +93,7 @@ export class HostWorkRegistry {
    */
   enter(operation: () => void | Promise<void>): void | Promise<void> {
     this.#pending += 1;
+    this.#onChange();
     let raw: void | Promise<void>;
     try {
       raw = operation();
@@ -146,6 +151,7 @@ export class HostWorkRegistry {
 
   #finish(): void {
     this.#pending -= 1;
+    this.#onChange();
     if (!this.isIdle) return;
     const waiters = this.#idleWaiters;
     this.#idleWaiters = [];

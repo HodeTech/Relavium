@@ -107,7 +107,7 @@ describe('ADR-0079 §6 — the heartbeat is a LIVENESS timer', () => {
     expect(host.armedCount()).toBe(0);
 
     await drain(handle);
-    expect(host.livenessCount()).toBe(0); // disarmed on settle — no beat outlives its run
+    await expect.poll(() => host.livenessCount()).toBe(0);
   });
 
   it('renews the lease when it fires, and re-arms exactly one successor', async () => {

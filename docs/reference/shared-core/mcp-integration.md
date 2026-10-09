@@ -165,9 +165,18 @@ cleanup may still be pending; forced-exit callers must read the current view rat
 an old PID. The manager retains failed connection handles and reports each stored fault once
 per supplied reporter; its default remains best-effort reporting, not semantic receipt health.
 
-This transport increment does not certify complete manager startup/all-actor retirement,
-sticky final receipt health, public `RunHandle` departure or acknowledged CLI input/host teardown.
-Those remaining ADR-0103 obligations are tracked in [the W7 plan](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md).
+Manager startup transfers an aggregate before any server open. `startMcpClient` accepts optional
+trusted work options as its third argument; `McpServerConfig.open` receives them second, and SDK
+adapter constructors fourth. Per-server open/discovery, raw DNS, transport/fetch and failed-start
+cleanup remain joined after bounded connect refusal. Synchronous construction failure seals its
+proved-empty scope. A successful client's close joins startup descendants as well as connections.
+CLI run/resume hosts retain this aggregate before connect and keep their signal guard until its
+cleanup acknowledgement, including failure before a client or engine handle exists.
+
+The engine's [departure contract](../../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+owns all run actors and final receipt health. MCP connection close supplies its own actual-work
+acknowledgement; a bounded public failure does not substitute for it. Consolidated independent
+acceptance is recorded in [current.md](../../roadmap/current.md).
 
 ### Discovery and result ingress bounds
 

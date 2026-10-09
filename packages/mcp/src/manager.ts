@@ -1,6 +1,7 @@
-import type { McpCapability, ToolDef } from '@relavium/core';
+import type { McpCapability, ToolDef, ToolHostCallOptions } from '@relavium/core';
 import type { AbortSignalLike } from '@relavium/shared';
 
+import { McpWorkScope } from './work-scope.js';
 import type { McpConnection } from './connection.js';
 import {
   McpConnectError,
@@ -36,7 +37,7 @@ export interface McpServerConfig {
    * the signal into every adapter and then never passed one here, which made the whole cancel path dead
    * surface: it type-checked and could not fire.
    */
-  open(signal?: AbortSignalLike): Promise<McpConnection>;
+  open(signal?: AbortSignalLike, options?: ToolHostCallOptions): Promise<McpConnection>;
 }
 
 /** A tool dropped at discovery, tagged with its server (allowlist / unsupported schema / collision / unsafe id). */
@@ -83,6 +84,7 @@ export async function startMcpClient(
   servers: readonly McpServerConfig[],
   /** Cancels the connect AND the discovery walk — see {@link McpServerConfig.open}. */
   signal?: AbortSignalLike,
+  options?: ToolHostCallOptions,
 ): Promise<McpClient> {
   const connections = new Map<string, McpConnection>();
   const closeFailures = new Map<string, unknown>();
@@ -118,18 +120,22 @@ export async function startMcpClient(
   // — total startup is now bounded by the SLOWEST single server, not their sum. Each task registers its
   // connection as soon as `open()` resolves, so a later `listTools()` failure still has it in `connections` for
   // the fail-loud teardown; and each wraps its own failure into a typed, secret-free error carrying the server id.
+  const startup = new McpWorkScope(options);
   const settled = await Promise.allSettled(
     servers.map(async (server) => {
+      const work = startup.fork();
       try {
-        const connection = await server.open(signal);
+        const connection = await server.open(signal, work);
         connections.set(server.id, connection);
         const tools = await connection.listTools(signal);
         return { server, tools };
       } catch (err) {
         throw err instanceof McpError ? err : new McpConnectError(server.id, { cause: err });
+      } finally {
+        work.seal();
       }
     }),
-  );
+  ).finally(() => startup.seal());
   const failure = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
   if (failure !== undefined) {
     // Fail-loud: tear down everything opened, then surface the (already typed + secret-free) first failure.
@@ -186,7 +192,10 @@ export async function startMcpClient(
         .map((connection) => connection.childPid)
         .filter((pid): pid is number => pid !== undefined);
     },
-    close,
+    close: async (onCloseError) => {
+      await close(onCloseError);
+      await startup.done;
+    },
   };
 }
 

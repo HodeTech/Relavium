@@ -586,3 +586,11 @@ contains that cleanup fault through truthful accounting as recorded in the dated
 [ADR-0082](0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md).
 This restores the existing liveness contract without changing deadlines, grace windows or the
 resource-termination guarantee.
+
+## 2026-10-10 — ADR-0103 lifecycle integration
+
+Bounded executor/terminal liveness remains separate from raw actor/child/host acknowledgement. Parked timed-agent restoration preserves its derived logical-life deadline and refuses ambiguous evidence before preparation.
+See the [canonical engine lifecycle](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+and [CLI exit/remedy contract](../reference/cli/commands.md#exit-codes). Consolidated independent
+acceptance is tracked in [current.md](../roadmap/current.md); Step 8 and final whole-wave
+validation remain open. The accepted body above is preserved.

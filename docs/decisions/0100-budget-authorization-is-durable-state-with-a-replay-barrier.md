@@ -208,3 +208,11 @@ namespace object; it never deletes it or restores over a successor. This is a sa
 mutation check, not a kernel boundary against a process that can mutate the private claim too.
 See the [harness contract](../../tools/budget-replay-compat/README.md). These are implementation
 corrections; independent corrective review and whole-W7 acceptance remain required.
+
+## 2026-10-10 — ADR-0103 lifecycle integration
+
+Checkpoint derivation version 3 adds parked logical clock/continuation evidence from the same authoritative ordered fold; this is not a new persisted log version or database migration.
+See the [canonical engine lifecycle](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+and [CLI exit/remedy contract](../reference/cli/commands.md#exit-codes). Consolidated independent
+acceptance is tracked in [current.md](../roadmap/current.md); Step 8 and final whole-wave
+validation remain open. The accepted body above is preserved.

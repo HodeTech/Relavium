@@ -1,3 +1,4 @@
+import { ProviderInvocationWork, retiringStream } from './adapters/invocation-work.js';
 import { ContentPartSchema, StopReasonSchema } from '@relavium/shared';
 import type { AbortSignalLike, BackoffStrategy, ContentPart, MediaSource } from '@relavium/shared';
 
@@ -683,10 +684,14 @@ export class FallbackChain {
    */
   stream(request: LlmRequest): AsyncIterable<StreamChunk> {
     // Async-generator bodies start on first next(). Own caller data now, before that handoff.
-    return this.#streamOwned(this.#captureRequest(request));
+    const captured = this.#captureRequest(request);
+    return retiringStream((setWork) => this.#streamOwned(captured, setWork));
   }
 
-  async *#streamOwned(captured: CapturedChainRequest): AsyncIterable<StreamChunk> {
+  async *#streamOwned(
+    captured: CapturedChainRequest,
+    setWork: (work: ProviderInvocationWork) => void,
+  ): AsyncGenerator<StreamChunk, void, unknown> {
     if (!captured.ok) {
       yield {
         type: 'error',
@@ -719,7 +724,7 @@ export class FallbackChain {
         if (materialized === undefined) {
           continue; // a failed media re-materialization advances to the next provider (retryable-advance)
         }
-        const action = yield* this.#runEntryStream(entry, materialized, req, run);
+        const action = yield* this.#runEntryStream(entry, materialized, req, run, setWork);
         if (action === 'done') {
           return;
         }
@@ -740,6 +745,7 @@ export class FallbackChain {
     entryReq: LlmRequest,
     req: OwnedLlmRequest,
     run: ChainRun,
+    setWork: (work: ProviderInvocationWork) => void,
   ): AsyncGenerator<StreamChunk, 'done' | 'advance'> {
     const budget = entry.maxAttempts;
     let bonus = 0; // one extra attempt granted by a successful auth refresh (never the retry loop)
@@ -750,7 +756,7 @@ export class FallbackChain {
       }
       const record = run.next(entry);
       const attemptState: StreamAttemptState = { committed: false };
-      const failure = yield* this.#runStreamAttempt(entry, entryReq, record, attemptState);
+      const failure = yield* this.#runStreamAttempt(entry, entryReq, record, attemptState, setWork);
       if (attemptState.committed) {
         return 'done'; // content forwarded — any later failure was surfaced inside the attempt
       }
@@ -799,6 +805,7 @@ export class FallbackChain {
         cleanupFailure = { error };
       }
     };
+    let invocation: ProviderInvocationWork | undefined;
     let providerSucceeded = false;
     let retentionFailure: { readonly error: unknown } | undefined;
     let outcome: GenerateAttempt;
@@ -826,8 +833,10 @@ export class FallbackChain {
       }
       const call = this.#retainWork(() => {
         record = { ...record, providerInvoked: true };
-        const options = this.#invocationOptions();
-        return options === undefined ? generate(request, key) : generate(request, key, options);
+        invocation = this.#openInvocation(request);
+        return invocation === undefined
+          ? generate(request, key)
+          : generate(request, key, invocation);
       });
       // A `generate()` has no chunks, so there is nothing to commit: a deadline here is always pre-content
       // and may fail over, which is rule 7's other half rather than an exception to it.
@@ -847,6 +856,7 @@ export class FallbackChain {
     } finally {
       // A successful response must be owned before another custom host callback can mutate it.
       // Failed provider/admission paths still dispose even if diagnostic normalization throws.
+      invocation?.retire();
       if (!providerSucceeded) disposeDeadline();
     }
     // All observers run outside the provider catch, including abort/deadline/failure observations.
@@ -1032,6 +1042,7 @@ export class FallbackChain {
     entryReq: LlmRequest,
     record: AttemptRecord,
     state: StreamAttemptState,
+    setWork: (work: ProviderInvocationWork) => void,
   ): AsyncGenerator<StreamChunk, LlmError | undefined> {
     let usage: Usage | undefined;
     let failure: LlmError | undefined;
@@ -1044,6 +1055,7 @@ export class FallbackChain {
     // Declared beside `deadline`, and for the same reason: the `finally` has to be able to close it on
     // EVERY exit, and a `let` inside the `try` would not be in scope there.
     let iterator: AsyncIterator<StreamChunk> | undefined;
+    let invocation: ProviderInvocationWork | undefined;
     try {
       const plan = outputCapPlanForRequest(
         entryReq,
@@ -1075,9 +1087,12 @@ export class FallbackChain {
       const openIterator = (): AsyncIterator<StreamChunk> => {
         if (iterator !== undefined) return iterator;
         record = { ...record, providerInvoked: true };
-        const options = this.#invocationOptions();
+        invocation = this.#openInvocation(request);
+        if (invocation !== undefined) setWork(invocation);
+        const source =
+          invocation === undefined ? stream(request, key) : stream(request, key, invocation);
         const verified = verifyStreamGrammar(
-          options === undefined ? stream(request, key) : stream(request, key, options),
+          invocation === undefined ? source : invocation.ownIterator(source),
           entry.provider.id,
           entry.model,
           (observed) => {
@@ -1136,6 +1151,7 @@ export class FallbackChain {
       // In the `finally` rather than per branch so a future exit cannot miss it, and best-effort without an
       // unbounded await for the same reason `#raceStep`'s teardown is: caller liveness, not resource
       // termination (ADR-0082 §5). `return()` on an already-completed iterator is a no-op.
+      invocation?.retire();
       const returnFailure = this.#closeIterator(iterator);
       // Actual provider/deadline diagnosis stays primary. A standalone host-entry fault escapes only
       // after the attempt observer has accounted any terminal usage already observed by the verifier.
@@ -1461,10 +1477,13 @@ export class FallbackChain {
       : { kind: 'chunk', chunk: raced.value.value };
   }
 
-  #invocationOptions(): import('./types.js').LlmInvocationOptions | undefined {
+  #openInvocation(request: LlmRequest): ProviderInvocationWork | undefined {
     return this.#options.retainWork === undefined
       ? undefined
-      : { retainWork: <T>(factory: () => Promise<T>) => this.#retainWork(factory) };
+      : new ProviderInvocationWork(
+          { retainWork: <T>(factory: () => Promise<T>) => this.#retainWork(factory) },
+          request.signal,
+        );
   }
 
   /** Register exact producer Promise before invoking it; host-entry failure cannot become failover. */

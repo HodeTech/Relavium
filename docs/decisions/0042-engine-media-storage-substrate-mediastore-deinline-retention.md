@@ -73,3 +73,11 @@ A run reaching `run:completed | failed | cancelled` triggers a **deterministic t
 ### Neutral
 
 - Per ADR-0009's append-only rule, ADR-0036 is unchanged in history; this ADR is the authoritative record for the `ExecutionHost.mediaStore` slot and the async-de-inline ordering. Future run-loop readers should read ADR-0036 **and** this.
+
+## 2026-10-10 — ADR-0103 lifecycle integration
+
+Terminal media reclaim in reconciliation/outbox drain is awaited through its actual acknowledgement before exact ownership release; retention faults remain best effort.
+See the [canonical engine lifecycle](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+and [CLI exit/remedy contract](../reference/cli/commands.md#exit-codes). Consolidated independent
+acceptance is tracked in [current.md](../roadmap/current.md); Step 8 and final whole-wave
+validation remain open. The accepted body above is preserved.

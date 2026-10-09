@@ -222,7 +222,7 @@ describe('ADR-0103 private append acknowledgement', () => {
     expect(store.asks).toHaveLength(count);
     expect(h.handle.durability()).toBe('durable');
     expect(h.events.at(-1)).toMatchObject({ type: 'run:completed', totalCostMicrocents: 0 });
-    expect(await h.host.runLeases.read(h.handle.runId)).toBeUndefined();
+    await expect.poll(() => h.host.runLeases.read(h.handle.runId)).toBeUndefined();
   });
 
   it('keeps genuine pre-terminal ownership loss terminal-free and rejects an incurred receipt', async () => {

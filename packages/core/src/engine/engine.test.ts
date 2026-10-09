@@ -5587,6 +5587,53 @@ describe('WorkflowEngine — crash reconciliation', () => {
     expect(await engine.reconcile()).toHaveLength(0);
   });
 
+  for (const method of ['reconcile', 'drainTerminalOutbox'] as const) {
+    for (const rejected of [false, true]) {
+      it(`${method} joins a held asynchronous reference reclaim (reject=${rejected})`, async () => {
+        const store = new InMemoryRunStore();
+        await seedStarted(store, 'maintenance-held');
+        let release: () => void = () => {};
+        const held = new Promise<void>((resolve, reject) => {
+          release = () => (rejected ? reject(new Error('private retention fault')) : resolve());
+        });
+        let entered = false;
+        const host = createInMemoryHost({
+          store,
+          mediaReferences: {
+            recordRunMedia: () => undefined,
+            reclaimRun: () => {
+              entered = true;
+              return held;
+            },
+          },
+        });
+        if (method === 'drainTerminalOutbox') {
+          await host.terminalOutbox.put({
+            type: 'run:cancelled',
+            runId: 'maintenance-held',
+            timestamp: host.clock.now(),
+            sequenceNumber: 1,
+          });
+        }
+        const engine = engineWith(undefined, host);
+        let settled = false;
+        const draining = engine[method]().then((events) => {
+          settled = true;
+          return events;
+        });
+        try {
+          await expect.poll(() => entered).toBe(true);
+          expect(settled).toBe(false);
+          expect(await host.runLeases.read('maintenance-held')).toBeDefined();
+        } finally {
+          release();
+        }
+        expect(await draining).toHaveLength(1);
+        expect(await host.runLeases.read('maintenance-held')).toBeUndefined();
+      });
+    }
+  }
+
   it('reclaims a crashed run’s media references at reconciliation (1.AF/D11 — no orphaned partial media)', async () => {
     // A crashed non-resumable run never ran its in-process terminal sweep; reconcile() must reclaim its
     // `run`-kind refs, else the partial media stays refcount>0 forever and is never GC-eligible (ADR-0042 §4).
@@ -6381,7 +6428,7 @@ describe('ordinary gate media lifecycle cutoff (ADR-0085)', () => {
             );
         }
         expect(host.deadlineCount()).toBe(0);
-        expect(host.livenessCount()).toBe(0);
+        await expect.poll(() => host.livenessCount()).toBe(0);
         expect(JSON.stringify(subscribers)).not.toContain('aGVsbG8=');
       } finally {
         release();

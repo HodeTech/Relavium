@@ -138,8 +138,18 @@ for (const mode of ['approve', 'reject', 'stale', 'missing_amount', 'input'] as 
         ).toEqual([]);
       }
     } finally {
+      const final = await handle.depart();
+      expect(final.kind).toBe(
+        ['stale', 'missing_amount', 'input'].includes(mode) ? 'detached' : 'closed',
+      );
+      const before = events.length;
       handle.cancel();
-      await settled;
+      if (final.kind !== 'detached') await settled;
+      else {
+        await Promise.resolve();
+        expect(events).toHaveLength(before);
+        expect(events.some((e) => e.type === 'run:cancelled')).toBe(false);
+      }
       unsubscribe();
       expect(host.armedCount()).toBe(0);
       expect(host.livenessCount()).toBe(0);

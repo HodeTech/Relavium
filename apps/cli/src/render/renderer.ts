@@ -32,6 +32,8 @@ export interface RunRenderer {
   suspend?: () => Promise<void> | void;
   /** Re-mount the live view after a {@link suspend} (no-op once {@link finalize} has run). See `suspend`. */
   resume?: () => Promise<void> | void;
+  /** Positive input-release ACK, independent of final summary. Absent means no owned input. */
+  releaseInput?: () => Promise<void> | void;
   /**
    * Optional teardown, awaited by the run core after the event loop ends (even on a throw). The `ink` TUI
    * (2.E) uses it to unmount the live view — restoring the terminal — and write its persistent final

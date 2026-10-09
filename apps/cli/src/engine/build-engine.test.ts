@@ -3,7 +3,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createInMemoryHost, parseWorkflow, type McpCapability } from '@relavium/core';
+import {
+  createInMemoryHost,
+  parseWorkflow,
+  type McpCapability,
+  type RunHandle,
+} from '@relavium/core';
 import { estimateResolvedNextCost, type LlmRequest } from '@relavium/llm';
 import type { RunEvent } from '@relavium/shared';
 import {
@@ -223,9 +228,14 @@ ${ordinary ? '    - {from: ordinary, to: out}\n' : ''}`);
         providers,
       });
       const handle = original.start({ workflow });
-      try {
-        let gateId: string | undefined;
-        let companions = 0;
+      let resumed: RunHandle | undefined;
+      let gateId: string | undefined;
+      let companions = 0;
+      let reachedPause = () => {};
+      const paused = new Promise<void>((resolve) => {
+        reachedPause = resolve;
+      });
+      const drained = (async () => {
         for await (const event of handle.events) {
           if (
             event.type === 'budget:authorization' &&
@@ -234,12 +244,20 @@ ${ordinary ? '    - {from: ordinary, to: out}\n' : ''}`);
           )
             gateId = event.gateId;
           if (event.type === 'human_gate:paused') companions++;
-          if (companions === (ordinary ? 3 : 2)) break;
+          if (event.type === 'run:paused') reachedPause();
         }
+      })();
+      try {
+        await paused;
+        expect(companions).toBe(ordinary ? 3 : 2);
         if (gateId === undefined) throw new Error('missing actual frozen gate');
-        await expect
-          .poll(() => leases.read(handle.runId), { timeout: 300, interval: 10 })
-          .toBeUndefined();
+        expect(await handle.depart()).toEqual({
+          kind: 'detached',
+          moneyDurability: 'durable',
+          effectNeedsAttention: false,
+        });
+        await drained;
+        expect(await leases.read(handle.runId)).toBeUndefined();
         const fresh = await buildEngine({
           host: createCliHost(store, {
             runLeases: leases,
@@ -247,7 +265,7 @@ ${ordinary ? '    - {from: ordinary, to: out}\n' : ''}`);
           }),
           providers,
         });
-        const resumed = await fresh.resumeFromCheckpoint({
+        resumed = await fresh.resumeFromCheckpoint({
           runId: handle.runId,
           workflow,
           gateId,
@@ -255,6 +273,7 @@ ${ordinary ? '    - {from: ordinary, to: out}\n' : ''}`);
         });
         const events: RunEvent[] = [];
         for await (const event of resumed.events) events.push(event);
+        expect((await resumed.depart()).kind).toBe('closed');
         expect(events.at(-1)).toMatchObject({
           type: 'run:failed',
           error: { code: 'budget_exceeded' },
@@ -264,24 +283,12 @@ ${ordinary ? '    - {from: ordinary, to: out}\n' : ''}`);
         expect(calls).toBe(0);
         expect(await leases.read(handle.runId)).toBeUndefined();
       } finally {
-        if ((await leases.read(handle.runId)) !== undefined) {
-          let unsubscribe = () => {};
-          const stopped = new Promise<void>((resolve) => {
-            unsubscribe = handle.subscribe((event) => {
-              if (
-                event.type === 'run:cancelled' ||
-                event.type === 'run:failed' ||
-                event.type === 'run:completed'
-              )
-                resolve();
-            });
-          });
-          handle.cancel();
-          await stopped;
-          unsubscribe();
-          await expect
-            .poll(() => leases.read(handle.runId), { timeout: 300, interval: 10 })
-            .toBeUndefined();
+        handle.cancel();
+        await drained;
+        await handle.depart();
+        if (resumed !== undefined) {
+          resumed.cancel();
+          await resumed.depart();
         }
         client.sqlite.close();
       }

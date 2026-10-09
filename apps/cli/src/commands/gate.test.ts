@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import {
   EngineStateError,
+  CHECKPOINT_SCHEMA_VERSION,
   parseWorkflow,
   type CheckpointState,
   type RunHandle,
@@ -66,6 +67,8 @@ function emptyHandle(runId: string): RunHandle {
     events: (async function* (): AsyncGenerator<RunEvent> {})(),
     subscribe: () => () => {},
     cancel: () => {},
+    depart: () =>
+      Promise.resolve({ kind: 'closed', moneyDurability: 'durable', effectNeedsAttention: false }),
     whenConsumersReady: () => Promise.resolve(),
     // A closed stream buffers nothing and throttles nobody (mirrors `createClosedRunHandle`).
     highWaterMark: 256,
@@ -900,7 +903,9 @@ workflow:
 
 describe('selectGate', () => {
   const checkpoint = (over: Partial<CheckpointState> = {}): CheckpointState => ({
-    schemaVersion: 2,
+    schemaVersion: CHECKPOINT_SCHEMA_VERSION,
+    nodeLifeClocks: new Map(),
+    pendingBudgetContinuationNodeIds: [],
     runStatus: 'paused',
     workflowId: 'wf',
     startedAtMs: 0,

@@ -343,3 +343,11 @@ The [actual workflow/session controls](../../packages/core/src/engine/accounting
 and unchanged [unsafe settlement tests](../../packages/core/src/engine/agent-runner-allowance-settlement.test.ts)
 pin these distinctions. Canonical behaviour remains in [the LLM seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter).
 No financial policy changes; historical text is preserved.
+
+## 2026-10-10 — ADR-0103 lifecycle integration
+
+Consumed or caught money-barrier failures remain sticky in final host health; graceful joining does not certify a missing receipt.
+See the [canonical engine lifecycle](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+and [CLI exit/remedy contract](../reference/cli/commands.md#exit-codes). Consolidated independent
+acceptance is tracked in [current.md](../roadmap/current.md); Step 8 and final whole-wave
+validation remain open. The accepted body above is preserved.

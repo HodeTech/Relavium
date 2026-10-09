@@ -254,3 +254,11 @@ a successor-held or subsequently vacant lease. Before-terminal loss remains term
 while loss after an acknowledged terminal preserves that outcome. The canonical lifecycle
 qualification is in [shared-core-engine.md](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103).
 Complete actor integration and public departure remain unimplemented.
+
+## 2026-10-10 — ADR-0103 lifecycle integration
+
+Exact-fence release is joined and cannot clear a successor claim. Local detached/closed results do not assert a successor's current global run status.
+See the [canonical engine lifecycle](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+and [CLI exit/remedy contract](../reference/cli/commands.md#exit-codes). Consolidated independent
+acceptance is tracked in [current.md](../roadmap/current.md); Step 8 and final whole-wave
+validation remain open. The accepted body above is preserved.

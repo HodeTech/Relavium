@@ -209,7 +209,7 @@ describe('independent actual runner deadline/decision ordering', () => {
       expect(r.calls()).toBe(decision === 'approved' ? 1 : 0);
       expect(r.keys()).toBe(decision === 'approved' ? 1 : 0);
       expect(r.base.armedCount()).toBe(0);
-      expect(r.base.livenessCount()).toBe(0);
+      await expect.poll(() => r.base.livenessCount()).toBe(0);
     },
   );
   it('a timeout preparation failure without a competing claim terminates as run_timeout', async () => {

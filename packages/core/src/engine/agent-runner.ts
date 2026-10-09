@@ -35,6 +35,7 @@ import {
 } from '@relavium/shared';
 import {
   LlmConfigError,
+  ProviderInvocationWork,
   LlmProviderError,
   ResponseFormatSchema,
   ToolDefSchema,
@@ -329,9 +330,15 @@ async function pollMediaJobThroughDeps(
       }),
     };
   }
-  const status = await (options === undefined
-    ? provider.pollMediaJob(job.jobId, key, signal)
-    : provider.pollMediaJob(job.jobId, key, signal, options));
+  const work = options === undefined ? undefined : new ProviderInvocationWork(options, signal);
+  let status: MediaJobStatus;
+  try {
+    status = await (work === undefined
+      ? provider.pollMediaJob(job.jobId, key, signal)
+      : provider.pollMediaJob(job.jobId, key, signal, work));
+  } finally {
+    work?.retire();
+  }
   if (
     status.state === 'failed' &&
     status.error.kind === 'context_overflow' &&
@@ -1346,38 +1353,47 @@ async function submitGenerativeMedia(
       throw new MediaRetentionEntryError(error);
     }
   };
+  let invocation: ProviderInvocationWork | undefined;
   const invoke = (): Promise<MediaGenResult> => {
+    invocation =
+      retainWork === undefined
+        ? undefined
+        : new ProviderInvocationWork({ retainWork: retain }, deadline?.signal ?? req.signal);
     onInvoke();
     const request = deadline === undefined ? req : { ...req, signal: deadline.signal };
-    return retainWork === undefined
+    return invocation === undefined
       ? generateMedia(request, key)
-      : generateMedia(request, key, { retainWork: retain });
+      : generateMedia(request, key, invocation);
   };
-  const call = retain(invoke);
-  if (deadline === undefined) {
-    return { kind: 'ok', result: await call };
+  try {
+    const call = retain(invoke);
+    if (deadline === undefined) {
+      return { kind: 'ok', result: await call };
+    }
+    const raced = await deadline.race(call);
+    if (raced.outcome !== 'deadline') {
+      return { kind: 'ok', result: raced.value };
+    }
+    // `classify()` owns the label: a caller cancel that beat the timer stays `cancelled`, the same cancel-wins
+    // precedence ADR-0036 gives the run and ADR-0082 §7 gives an attempt.
+    return {
+      kind: 'refused',
+      outcome:
+        deadline.classify() === 'caller'
+          ? failed(
+              'cancelled',
+              `agent node '${nodeId}': run cancelled during media generation`,
+              false,
+            )
+          : failed(
+              'provider_unavailable',
+              `agent node '${nodeId}': the provider did not respond within the ${String(MEDIA_GEN_SUBMIT_TIMEOUT_MS)}ms media-submission deadline`,
+              true,
+            ),
+    };
+  } finally {
+    invocation?.retire();
   }
-  const raced = await deadline.race(call);
-  if (raced.outcome !== 'deadline') {
-    return { kind: 'ok', result: raced.value };
-  }
-  // `classify()` owns the label: a caller cancel that beat the timer stays `cancelled`, the same cancel-wins
-  // precedence ADR-0036 gives the run and ADR-0082 §7 gives an attempt.
-  return {
-    kind: 'refused',
-    outcome:
-      deadline.classify() === 'caller'
-        ? failed(
-            'cancelled',
-            `agent node '${nodeId}': run cancelled during media generation`,
-            false,
-          )
-        : failed(
-            'provider_unavailable',
-            `agent node '${nodeId}': the provider did not respond within the ${String(MEDIA_GEN_SUBMIT_TIMEOUT_MS)}ms media-submission deadline`,
-            true,
-          ),
-  };
 }
 
 /**
