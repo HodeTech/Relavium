@@ -3,7 +3,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 
-import type { JsonSchema } from '@relavium/core';
+import type { JsonSchema, ToolHostCallOptions } from '@relavium/core';
 import type { AbortSignalLike } from '@relavium/shared';
 
 import type { DiscoveredTool, McpConnection, McpToolResult } from './connection.js';
@@ -20,6 +20,9 @@ import {
 import { McpConnectError, McpError } from './errors.js';
 import { INGRESS_BOUNDS, toolDefinitionBytes } from './ingress-bounds.js';
 import { shapeToolResult } from './result.js';
+import { SdkTransportOwner, type SdkRequestInvocation } from './sdk-work.js';
+import { mcpWorkEntryFailure } from './work-scope.js';
+import { OwnedSdkClient } from './sdk-client.js';
 
 /**
  * The **stdio** transport adapter — the ONE place the `@modelcontextprotocol/sdk` (and `node:child_process`,
@@ -165,43 +168,24 @@ export async function openStdioConnection(
   // at `ppid 1`. The registry is a THUNK list rather than a pid list for the same reason the bound's
   // `childPid` is a thunk: the pid does not exist yet at registration time, and does by the time an exit
   // handler evaluates it.
-  const release = registerLiveChild(latchPid(() => transport.pid ?? undefined));
-  try {
-    const connection = await connectSdkTransport(serverId, transport, {
+  const latchedPid = latchPid(() => transport.pid ?? undefined);
+  const release = registerLiveChild(latchedPid);
+  const owner = new SdkTransportOwner(transport, undefined, undefined, {
+    onAcknowledged: release,
+    onStartEntered: () => {
+      void latchedPid.read();
+    },
+  });
+  return connectSdkTransport(
+    serverId,
+    transport,
+    {
       timeoutMs: spec.connectTimeoutMs ?? MCP_DEADLINES.stdioConnectMs,
       ...(signal === undefined ? {} : { signal }),
-      // The SDK exposes the spawned pid; carrying it out is what lets a host reap synchronously on an exit
-      // path that cannot await an async close (ADR-0088 §1.3). `?? undefined` normalizes the SDK's `null`.
       childPid: () => transport.pid ?? undefined,
-    });
-    return releaseOnClose(connection, release);
-  } catch (err) {
-    // **Released LATE, and releasing it here synchronously is what let the measured orphan through.**
-    // `connectSdkTransport`'s catch does close the transport — but that ladder is ASYNCHRONOUS and, on an
-    // aborted connect, still running. Dropping the registration the instant the connect promise rejected
-    // meant the exit net asked for live pids while the child was mid-kill and was told there were none.
-    // Reproduced against a real subprocess with this exact line in place: host exit 143, child at `ppid 1`.
-    //
-    // An unref'd timer sized past the SDK's ~4 s ladder, so the registration outlives the teardown it is
-    // protecting and still cannot hold the process open or accumulate forever.
-    releaseAfterTeardown(release);
-    throw err;
-  }
-}
-
-/**
- * How long a failed connect's registration outlives the connect.
- *
- * The SDK's stdio close ladder is `stdin.end()` → race(2 s) → `SIGTERM` → race(2 s) → `SIGKILL`, so ~4 s
- * against a child that ignores both. This is that, plus margin: the registration must still be readable when
- * a synchronous exit handler runs at any point during the ladder.
- */
-const TEARDOWN_LADDER_MS = 6_000;
-
-function releaseAfterTeardown(release: () => void): void {
-  // Never hold the process open for a cleanup: if the host exits first, the registration is exactly what the
-  // exit net needs, and it dies with the process.
-  setTimeout(release, TEARDOWN_LADDER_MS).unref?.();
+    },
+    owner,
+  );
 }
 
 /**
@@ -225,7 +209,8 @@ const liveChildren = new Set<() => number | undefined>();
  *
  * The short unref'd interval exists because the pid does not exist at registration time either: the spawn
  * happens inside `client.connect()`, which is the call this registration wraps. It stops as soon as it has a
- * pid, never holds the loop open, and is the price of not monkey-patching an SDK object's `start`.
+ * pid and never holds the loop open. The owner also samples immediately after native start entry,
+ * before a same-tick cancellation can make the SDK's pid getter blind.
  */
 function latchPid(readPid: () => number | undefined): LatchedPid {
   let latched = readPid();
@@ -236,7 +221,11 @@ function latchPid(readPid: () => number | undefined): LatchedPid {
   }, PID_LATCH_INTERVAL_MS);
   poll.unref?.();
   return {
-    read: () => latched,
+    read: () => {
+      latched ??= readPid();
+      if (latched !== undefined) clearInterval(poll);
+      return latched;
+    },
     // **The poll must be stoppable, and leaving it self-terminating only was a leak.** It clears itself when
     // a pid appears — but a spawn that FAILS (a typo'd `command`, the ordinary `ENOENT`) never produces one,
     // so the interval ran for the life of the process, once per failed connect. Measured: three failed spawns
@@ -258,7 +247,7 @@ const PID_LATCH_INTERVAL_MS = 20;
 function registerLiveChild(latched: LatchedPid): () => void {
   liveChildren.add(latched.read);
   // Releasing a registration also stops its poll — the two have the same lifetime, so one owner keeps them
-  // from drifting apart. Both release paths (the close wrapper, the post-ladder timer) go through here.
+  // from drifting apart. Both actual native close and proved empty-start acknowledgement go through here.
   return () => {
     liveChildren.delete(latched.read);
     latched.stop();
@@ -268,7 +257,7 @@ function registerLiveChild(latched: LatchedPid): () => void {
 /**
  * The pids of every live stdio child, for a host's synchronous last-resort reap.
  *
- * Distinct from {@link McpClient.childPids}, which is a SNAPSHOT taken when the client was assembled and is
+ * Distinct from {@link McpClient.childPids}, which sees initialized connections only and is
  * therefore empty for exactly the window this covers: between the spawn and a completed handshake.
  */
 export function liveMcpChildPids(): readonly number[] {
@@ -276,32 +265,10 @@ export function liveMcpChildPids(): readonly number[] {
   for (const readPid of liveChildren) {
     const pid = readPid();
     // `undefined` here means "no pid yet", never "the child is gone" — the latch above makes sure of that —
-    // so this must NOT prune. Registrations are dropped by their owner: the close wrapper on success, the
-    // post-ladder timer on a failed connect.
+    // so this must NOT prune. Only actual native close or a proved empty start releases registration.
     if (pid !== undefined) pids.push(pid);
   }
   return pids;
-}
-
-/**
- * Wrap a connection so closing it also drops its live-child registration. Idempotent, as `close` is.
- *
- * Every member is forwarded EXPLICITLY rather than spread: `SdkConnection` is a class, so its methods live on
- * the prototype and a spread would silently produce an object missing all of them.
- */
-function releaseOnClose(connection: McpConnection, release: () => void): McpConnection {
-  return {
-    listTools: (signal) => connection.listTools(signal),
-    callTool: (name, args, signal) => connection.callTool(name, args, signal),
-    close: async () => {
-      try {
-        await connection.close();
-      } finally {
-        release();
-      }
-    },
-    childPid: connection.childPid,
-  };
 }
 
 /**
@@ -360,17 +327,18 @@ export async function connectSdkTransport(
   serverId: string,
   transport: Transport,
   bound: ConnectBound,
+  owner: SdkTransportOwner = new SdkTransportOwner(transport),
 ): Promise<McpConnection> {
   const window = openWindow(bound.timeoutMs);
   const bridged = toAbortSignal(bound.signal);
-  const client = new Client(clientInfo(), { capabilities: {} });
+  const client = new OwnedSdkClient(clientInfo(), owner);
   try {
     await raceDeadline(
       serverId,
       'connect',
       window,
       () =>
-        client.connect(transport, {
+        client.connect(owner.transport, {
           timeout: remainingMs(window) + SDK_TIMER_MARGIN_MS,
           ...(bridged.signal === undefined ? {} : { signal: bridged.signal }),
         }),
@@ -384,7 +352,9 @@ export async function connectSdkTransport(
     // SIGTERM → 2 s → SIGKILL) running to completion. An earlier version of this comment claimed the close did
     // NOT reach the transport and added a direct `transport.close()` beside it — the timing was byte-identical
     // with and without, so the addition was inert and the claim was wrong.
-    await safeClose(client);
+    // Start cleanup now, but never make bounded failure wait for uncooperative raw work.
+    // The owner still joins the exact close and admitted descendants independently.
+    void safeClose(client);
     // A deadline / cancellation keeps its own type — a caller distinguishing "too slow" from "you pressed Esc"
     // from "the server refused" is exactly what `#204` asks for; collapsing them here would undo it. Both now
     // extend `McpError`, so `startMcpClient`'s own wrap preserves them too (it did not, at first).
@@ -393,18 +363,29 @@ export async function connectSdkTransport(
   } finally {
     bridged.dispose();
   }
-  return new SdkConnection(serverId, client, bound.childPid?.());
+  return new SdkConnection(serverId, client, bound.childPid?.(), owner);
 }
 
 class SdkConnection implements McpConnection {
   readonly #serverId: string;
   readonly #client: Client;
-  readonly childPid: number | undefined;
+  readonly #owner: SdkTransportOwner;
+  readonly #childPid: number | undefined;
 
-  constructor(serverId: string, client: Client, childPid: number | undefined) {
+  constructor(
+    serverId: string,
+    client: Client,
+    childPid: number | undefined,
+    owner: SdkTransportOwner,
+  ) {
     this.#serverId = serverId;
     this.#client = client;
-    this.childPid = childPid;
+    this.#owner = owner;
+    this.#childPid = childPid;
+  }
+
+  get childPid(): number | undefined {
+    return this.#owner.nativeCloseAcknowledged ? undefined : this.#childPid;
   }
 
   /**
@@ -422,10 +403,24 @@ class SdkConnection implements McpConnection {
     );
   }
 
-  async callTool(name: string, args: unknown, signal?: AbortSignalLike): Promise<McpToolResult> {
+  async callTool(
+    name: string,
+    args: unknown,
+    signal?: AbortSignalLike,
+    callOptions?: ToolHostCallOptions,
+  ): Promise<McpToolResult> {
     const window = openWindow(MCP_DEADLINES.callMs);
-    const result = await this.#request('call', window, signal, (options) =>
-      this.#client.callTool({ name, arguments: assertRecordArgs(name, args) }, undefined, options),
+    const result = await this.#request(
+      'call',
+      window,
+      signal,
+      (options) =>
+        this.#client.callTool(
+          { name, arguments: assertRecordArgs(name, args) },
+          undefined,
+          options,
+        ),
+      callOptions,
     );
     return shapeToolResult(result);
   }
@@ -441,6 +436,7 @@ class SdkConnection implements McpConnection {
    */
   async close(): Promise<void> {
     await this.#client.close();
+    await this.#owner.close();
   }
 
   /**
@@ -458,21 +454,40 @@ class SdkConnection implements McpConnection {
     window: DeadlineWindow,
     signal: AbortSignalLike | undefined,
     send: (options: RequestOptions) => Promise<T>,
+    callOptions?: ToolHostCallOptions,
   ): Promise<T> {
+    let invocation: SdkRequestInvocation<T> | undefined;
+    // Retire the ordinary lane before the SDK observes cancellation and sends independent cleanup.
+    // Waiting for the bounded public outcome's finally leaves an SDK header continuation admissible.
+    const onAbort = (): void => invocation?.retire();
+    signal?.addEventListener('abort', onAbort);
     const bridged = toAbortSignal(signal);
     try {
       return await raceDeadline(
         this.#serverId,
         phase,
         window,
-        () =>
-          send({
-            timeout: remainingMs(window) + SDK_TIMER_MARGIN_MS,
-            ...(bridged.signal === undefined ? {} : { signal: bridged.signal }),
-          }),
+        () => {
+          invocation = this.#owner.invoke(callOptions, () => {
+            // The trusted aggregate transfer can synchronously cancel before SDK entry.
+            if (signal?.aborted === true) throw new McpAbortedError(this.#serverId, phase);
+            return send({
+              timeout: remainingMs(window) + SDK_TIMER_MARGIN_MS,
+              ...(bridged.signal === undefined ? {} : { signal: bridged.signal }),
+            });
+          });
+          if (signal?.aborted === true) invocation.retire();
+          return invocation.raw;
+        },
         signal,
       );
+    } catch (error) {
+      const entry = mcpWorkEntryFailure(error);
+      if (entry !== undefined) throw entry.error;
+      throw error;
     } finally {
+      signal?.removeEventListener('abort', onAbort);
+      invocation?.retire();
       bridged.dispose();
     }
   }

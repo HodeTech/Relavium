@@ -6,6 +6,7 @@ import type { McpConnection } from './connection.js';
 import { MCP_DEADLINES } from './deadlines.js';
 import { McpConnectError, McpError } from './errors.js';
 import { connectSdkTransport } from './sdk-stdio.js';
+import { SdkTransportOwner } from './sdk-work.js';
 
 /**
  * The **WebSocket** (`websocket`) transport adapter — one of the SDK-fenced files
@@ -57,8 +58,15 @@ export async function openWebSocketConnection(
   } catch (err) {
     throw new McpConnectError(serverId, { cause: err });
   }
-  return connectSdkTransport(serverId, new WebSocketClientTransport(endpoint), {
-    timeoutMs: spec.connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs,
-    ...(signal === undefined ? {} : { signal }),
-  });
+  const transport = new WebSocketClientTransport(endpoint);
+  const owner = new SdkTransportOwner(transport, undefined, undefined, {});
+  return connectSdkTransport(
+    serverId,
+    transport,
+    {
+      timeoutMs: spec.connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs,
+      ...(signal === undefined ? {} : { signal }),
+    },
+    owner,
+  );
 }

@@ -1,21 +1,23 @@
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 
 import type { AbortSignalLike } from '@relavium/shared';
+import type { ToolHostCallOptions } from '@relavium/core';
 
 import type { McpConnection } from './connection.js';
 import { MCP_DEADLINES } from './deadlines.js';
 import { McpConnectError } from './errors.js';
 import { connectSdkTransport } from './sdk-stdio.js';
+import { SdkTransportOwner, type SdkLaneLifetime } from './sdk-work.js';
+import { McpLifetimeError, McpWorkScope } from './work-scope.js';
 
 /**
  * The **Streamable HTTP** (`http`) transport adapter — one of the SDK-fenced files
  * ([ADR-0052](../../../docs/decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §1,
  * [ADR-0053](../../../docs/decisions/0053-mcp-network-transport-egress-security.md)). It opens the SDK's
  * `StreamableHTTPClientTransport` and reuses the shared `connectSdkTransport` Client wrapper, surfacing only the
- * Relavium {@link McpConnection} seam. The transport uses the runtime's global `fetch` (Node ≥ 18), so no extra
- * dependency. **SSRF is the host's gate**: the CLI host validates the `url` against the shared range-block
- * primitive (and the `allow_local_endpoint` opt-in) BEFORE calling this — the adapter itself only connects.
+ * Relavium {@link McpConnection} seam. Every SDK request uses the REQUIRED host-injected validated fetch,
+ * including the initialized session's request-local lanes. The host owns DNS validation and pinned
+ * connection entry; the adapter binds each lane's lifetime without relaxing that existing SSRF policy.
  */
 
 /**
@@ -27,7 +29,14 @@ import { connectSdkTransport } from './sdk-stdio.js';
  * (ADR-0034 g3). `Response`/`RequestInit` are platform globals, not SDK types — this package is host-bound by
  * design and already imports `@modelcontextprotocol/sdk`.
  */
-export type McpFetch = (url: string | URL, init?: RequestInit) => Promise<Response>;
+export interface McpFetchWorkOptions extends ToolHostCallOptions {
+  readonly signal?: AbortSignal;
+}
+export type McpFetch = (
+  url: string | URL,
+  init?: RequestInit,
+  options?: McpFetchWorkOptions,
+) => Promise<Response>;
 
 /** The explicit spec for a Streamable HTTP MCP server — a host-validated absolute `http(s)` url. */
 export interface HttpServerSpec {
@@ -61,21 +70,48 @@ export async function openHttpConnection(
     // A malformed url is a typed connect failure (secret-free; the host strips the opaque cause).
     throw new McpConnectError(serverId, { cause: err });
   }
-  // The SDK's StreamableHTTP transport declares `get sessionId(): string | undefined`, which TS rejects against
-  // `Transport.sessionId?: string` under exactOptionalPropertyTypes — a vendor getter-vs-interface inconsistency,
-  // not a real incompatibility (the class `implements Transport`). Rather than a whole-object `as Transport`
-  // (which would also silently mask a future MISSING-method drift), narrow to the load-bearing methods: those ARE
-  // the only required `Transport` members, so the value still satisfies `Transport` (its optionals may be absent)
-  // WITHOUT the getter comparison, and this assignment compile-guards against a dropped method on an SDK upgrade.
-  const transport: Pick<Transport, 'start' | 'send' | 'close'> = new StreamableHTTPClientTransport(
-    endpoint,
-    // The injected hop. Every request on this transport — the initialize POST, each `tools/call`, and the
-    // long-lived GET stream — goes through it, which is what makes §2.1's pinning cover the session rather
-    // than only its first dial.
-    { fetch: spec.fetch },
-  );
-  return connectSdkTransport(serverId, transport, {
-    timeoutMs: spec.connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs,
-    ...(signal === undefined ? {} : { signal }),
+  const work = new McpWorkScope();
+  const retries = (retired: () => boolean) => ({
+    initialReconnectionDelay: 1000,
+    maxReconnectionDelay: 30000,
+    reconnectionDelayGrowFactor: 1.5,
+    get maxRetries(): number {
+      return retired() ? 0 : 2;
+    },
   });
+  const base = new StreamableHTTPClientTransport(endpoint, {
+    reconnectionOptions: retries(() => owner?.retired === true),
+    fetch: (url, init) => {
+      if (owner.retired) throw new McpLifetimeError('retired');
+      return work.retainWork(() => spec.fetch(url, init, { retainWork: work.retainWork }));
+    },
+  });
+  const owner: SdkTransportOwner = new SdkTransportOwner(
+    base,
+    work,
+    (lifetime: SdkLaneLifetime) => {
+      return new StreamableHTTPClientTransport(endpoint, {
+        ...(base.sessionId === undefined ? {} : { sessionId: base.sessionId }),
+        reconnectionOptions: retries(() => lifetime.retired),
+        fetch: (url, init) => {
+          lifetime.assertActive();
+          return lifetime.work.retainWork(() =>
+            spec.fetch(url, init, {
+              retainWork: lifetime.work.retainWork,
+              signal: lifetime.signal,
+            }),
+          );
+        },
+      });
+    },
+  );
+  return connectSdkTransport(
+    serverId,
+    owner.transport,
+    {
+      timeoutMs: spec.connectTimeoutMs ?? MCP_DEADLINES.networkConnectMs,
+      ...(signal === undefined ? {} : { signal }),
+    },
+    owner,
+  );
 }
