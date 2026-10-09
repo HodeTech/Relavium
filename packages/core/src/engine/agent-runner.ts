@@ -517,11 +517,13 @@ async function prepareAgentDispatch(
         }),
       execute: async (execution) => {
         const preEgress = execution.preEgress ?? deps.preEgress;
+        const retainWork = executionRetainer(execution);
         generation.notify();
         const outcome = await captureAgentTurnOutcome({
           ...fields,
           preparedRequest: first.request,
           chainCapabilities: chainCapabilities(deps),
+          ...(retainWork === undefined ? {} : { retainWork }),
           nodeId: node.id,
           emit: execution.emit,
           signal: execution.signal,
@@ -549,6 +551,15 @@ async function prepareAgentDispatch(
       },
     },
   };
+}
+
+/** Execution-local transfer only; preparation and standalone/session callers acquire no host authority. */
+function executionRetainer(
+  ctx: NodeExecContext,
+): import('@relavium/llm').FallbackChainOptions['retainWork'] {
+  const continueReceipt = ctx.continueReceipt;
+  if (continueReceipt === undefined) return;
+  return <T>(factory: () => Promise<T>): Promise<T> => continueReceipt(() => factory());
 }
 
 /** The same delegate visibility for preparation and dispatch; preparation cannot prepare an effect. */
@@ -815,14 +826,26 @@ async function executeGenerativeMedia(
       // From this call onward the provider may have accepted/billed the generation even if its SDK throws or omits
       // a terminal payload. Preserve the bounded reservation in those uncertain paths; only credential resolution
       // above is proven pre-egress and may release it.
-      egressStarted = true;
-      const submitted = await submitGenerativeMedia(provider, req, key, deadline, node.id);
+      const submitted = await submitGenerativeMedia(
+        provider,
+        req,
+        key,
+        deadline,
+        node.id,
+        executionRetainer(ctx),
+        () => {
+          egressStarted = true;
+        },
+      );
       if (submitted.kind === 'refused') {
         admission?.settleAtReservedEstimate({ nodeId: node.id });
         return submitted.outcome;
       }
       result = submitted.result;
     } catch (err) {
+      const retentionFailure = mediaRetentionFailure(err);
+      if (retentionFailure !== undefined) throw retentionFailure.error;
+      if (!egressStarted) throw err;
       admission?.settleAtReservedEstimate({ nodeId: node.id });
       return mapGenerateMediaError(err, primary);
     } finally {
@@ -1265,6 +1288,22 @@ function prepareGenKnobs(
   };
 }
 
+const mediaRetentionFailures = new WeakMap<object, { readonly error: unknown }>();
+
+function mediaRetentionFailure(error: unknown): { readonly error: unknown } | undefined {
+  return (typeof error === 'object' && error !== null) || typeof error === 'function'
+    ? mediaRetentionFailures.get(error)
+    : undefined;
+}
+
+class MediaRetentionEntryError extends Error {
+  constructor(original: unknown) {
+    super('host work registration failed');
+    this.name = 'MediaRetentionEntryError';
+    mediaRetentionFailures.set(this, { error: original });
+  }
+}
+
 /**
  * The bounded `generateMedia` submission (`CR-21b`) — the seam call and its race, lifted out of
  * `executeGenerativeMedia` so that function's budget/egress bookkeeping reads as one story again.
@@ -1279,14 +1318,30 @@ async function submitGenerativeMedia(
   key: string,
   deadline: DeadlineScope | undefined,
   nodeId: string,
+  retainWork: import('@relavium/llm').FallbackChainOptions['retainWork'],
+  onInvoke: () => void,
 ): Promise<{ kind: 'ok'; result: MediaGenResult } | { kind: 'refused'; outcome: NodeOutcome }> {
   if (provider.generateMedia === undefined) {
     throw new Error('generateMedia is absent — the caller checks this before reaching here');
   }
-  const call = provider.generateMedia(
-    deadline === undefined ? req : { ...req, signal: deadline.signal },
-    key,
-  );
+  const generateMedia = provider.generateMedia.bind(provider);
+  let factoryFailure: { readonly error: unknown } | undefined;
+  const invoke = (): Promise<MediaGenResult> => {
+    try {
+      onInvoke();
+      return generateMedia(deadline === undefined ? req : { ...req, signal: deadline.signal }, key);
+    } catch (error) {
+      factoryFailure = { error };
+      throw error;
+    }
+  };
+  let call: Promise<MediaGenResult>;
+  try {
+    call = retainWork === undefined ? invoke() : retainWork(invoke);
+  } catch (error) {
+    if (factoryFailure !== undefined && Object.is(factoryFailure.error, error)) throw error;
+    throw new MediaRetentionEntryError(error);
+  }
   if (deadline === undefined) {
     return { kind: 'ok', result: await call };
   }

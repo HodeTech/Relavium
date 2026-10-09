@@ -25,6 +25,15 @@ The host injects only platform capabilities; the credential is threaded **opaque
 - `keyFor` / `sleep` / `now?` / `onAuthError?` — **forwarded** into the per-node `FallbackChain` (the existing `FallbackChainOptions` seam — **not** re-declared as a parallel credential surface). `onAuthError` (the single out-of-band credential refresh) is host-owned.
 - `resolverCapabilities?` (the `read_file` filter for a prompt), `fsScope?` (default `'sandboxed'`), `limits?`, `preEgress?`.
 
+The engine's execution context supplies `continueReceipt`, from which the runner derives a
+call-local producer-lifetime hook. Preparation grants no receipt authority. The chat turn passes
+that hook separately from `ChainCapabilities` and request data; the separate-endpoint generative
+path uses it before invoking `generateMedia`. Both retain the raw producer before the existing
+deadline race. A refused registration preserves host-error identity and engages no provider;
+proven pre-egress generative admission is released. Late completion changes lifetime only,
+without a second attempt/cost event, media pin, save or ordinary execution restart. See the
+[canonical chain lifetime contract](llm-provider-seam.md#the-per-attempt-deadline).
+
 The runner owns the **cost path** itself — one `CostTracker` per node execution and its own `onAttempt`→`cost:updated` — never a host-supplied (shared) tracker, because the executor is shared across concurrent runs.
 
 ## What the adapter does for an `agent` vertex

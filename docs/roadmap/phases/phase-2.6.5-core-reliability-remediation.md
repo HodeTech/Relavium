@@ -3865,3 +3865,32 @@ lifetimes only. Shipping provider/native integration proceeds to its own commit 
 review rounds; transitive work, actor retirement, final money/effects, parked clocks, public
 departure, CLI input ACK, Step 8 and Step 12 remain open. All six W7 register items and
 systematic ownership/lifecycle Highs remain open; 41/51 is unchanged. No further paid call or approval is needed.
+
+
+### W7 raw provider/native lifetime implemented — 2026-10-09
+
+Approved ADR-0103 now forwards execution-local work retention to exact raw generation, first
+stream construction/iterator next and independent timeout/final returns, plus separate-endpoint
+media submission. Registration precedes provider entry and bounded races; a refused first stream
+entry constructs no provider stream and records no invocation. Host observer provenance preserves
+original identity without reflecting arbitrary throwable prototypes. Native process abort is
+checked after awaited executable/cwd resolution immediately before spawn. Once a child exists,
+error remains a sticky diagnosis while completion waits for actual native close/stdio acknowledgement.
+
+There are 26 distinct new permanent cases (15 LLM, five Core, six CLI). Parent's final isolated
+combined cold-build checks pass 341 affected files / 7,463 cases / 12 existing skips and strict,
+lint, seam/purity and formatting. Eight final provider/forwarding removals plus two native
+guard/close removals fail unchanged assertions, then exact source restoration/rebuild passes.
+The newly added stream-entry regression fails before its correction. Earlier setup/fixture
+faults, a broad reflection regression corrected before integration, superseded aggregate log
+receipts and injected native child errors retain their qualifications; installed SDK HTTP
+fixtures are offline, and injected running-child errors are not OS kill-fault reproductions.
+
+Actual cache-qualified `CI=true pnpm run ci` passes 395 files / 8,948 cases /
+12 existing skips, strict/lint/purity/seam, DB sync, dependency and bundle fences,
+and all three offline smokes. This is not forced final whole-wave validation.
+This increment awaits two NEW complete independent review rounds and exact-head remote checks.
+It does not close transitive SDK/HTTP/MCP work, raw poll/media accounting, all engine actors,
+sticky final money/effects, original parked clocks, public cursor/departure or CLI input/exit
+ACK. Step 8 and final Step 12, all six W7 register items and systematic ownership/lifecycle
+Highs remain open; 41/51 is unchanged. No further paid call or ADR approval is needed.

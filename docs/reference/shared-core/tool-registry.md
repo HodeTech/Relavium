@@ -157,6 +157,24 @@ interface ToolOutputStore {
 
 > **Sibling seams, one host.** `ToolHost` is a distinct seam from [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s `ExecutionHost` (persistence / clock / transport) and from 1.L2's `ResolverCapabilities` (the `read_file` filter). The host wires all of them; in Phase-2 cloud the relocated `ExecutionHost` provides the `ToolHost`. None is folded into another — each stays minimal and auditable.
 
+### Native process completion
+
+The CLI process host rechecks cancellation at actual native spawn, after executable/cwd
+resolution and argument/environment copying. Cancellation during those asynchronous steps
+refuses entry; attaching a listener afterwards cannot observe an abort that already happened.
+The existing command allowlist, jailed cwd, minimal environment and `shell: false` remain the
+normal admission requirements.
+
+For a child that was created, the host Promise settles only after the actual native `close`
+event acknowledges the child and its stdio lifetime, including failed spawn. An `error` records
+its fixed failure reason and starts process-group cleanup once; it does not certify closure or
+remove timeout/abort listeners early. A repeated kill error cannot recursively start cleanup.
+Cancellation retains precedence when an error also arrives. This follows the installed
+[Node child-process contract](https://github.com/nodejs/node/blob/v22.23.1/doc/api/child_process.md#event-close)
+and [ADR-0103](../../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md).
+It establishes this host's local child lifetime, not complete workflow host departure or
+termination of remote work.
+
 ## Resolution & the dispatch lifecycle
 
 `registry.dispatch(toolCall, ctx)` runs a fixed, pure pipeline. **Security order matters:** the

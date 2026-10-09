@@ -598,6 +598,26 @@ awaited without bound, and a late chunk is discarded.
 **The guarantee is caller liveness, not resource termination.** An uncooperative provider's work may continue
 in the background; what is bounded is how long Relavium waits.
 
+When WorkflowEngine owns the call, the runner forwards an execution-local
+`FallbackChainOptions.retainWork(factory)` hook. It synchronously registers and returns the
+factory's exact Promise before invoking generation, each verifier `next()`, and each timeout or
+final iterator `return()`. The first registered read also constructs `stream()`; a host-entry
+refusal invokes no provider and records no egress, even for a synchronous stream factory.
+These lifetimes remain owed after a bounded attempt returns. The hook
+is optional for standalone chains and sessions without an engine owner; it is neither
+`LlmRequest` data nor a general platform capability, and grants no admission or new provider
+entry after its producing scope ends. The separate generative-media submission transfers its
+raw `generateMedia` Promise in the same way.
+
+Registration failure retains its original process-local identity and host provenance, outside
+provider retry/failover classification. A synchronous provider throw retains provider
+classification. An established provider/deadline failure stays primary over best-effort
+iterator cleanup; a cleanup-only host-entry failure accounts known usage once before escaping.
+Identity recognition does not inspect an arbitrary throwable's prototype. Raw completion after
+a bounded failure adds no second attempt observation, late charge, refund or terminal. This
+boundary does not certify all transitive SDK/network/MCP work or safe host departure; those
+remaining obligations are recorded in [ADR-0103](../../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md).
+
 A deadline abort is `timeout`; a caller abort is `cancelled`, and **a caller abort wins a same-tick tie** —
 resolved at classification time so the answer is a contract rather than a listener ordering. Rule 7 governs
 both: a pre-content timeout may fail over, a content-committed one is surfaced.

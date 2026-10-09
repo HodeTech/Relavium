@@ -251,3 +251,12 @@ running nested operation keeps its controller; the outer compaction receives the
 refusal. This is a repair to the existing operation and cancellation contract, with no new error code,
 host capability or financial policy. The canonical [session contract](../reference/contracts/agent-session-spec.md)
 states the handoff; historical text is preserved. Fresh corrective review remains required.
+
+## Native process lifetime refinement — 2026-10-09
+
+Approved [ADR-0103](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md)
+requires actual local producer completion before host closure. The CLI process implementation
+checks cancellation immediately before spawn and awaits native child/stdio `close` even after
+`error`; ordinary cancellation and fixed error taxonomy remain. The canonical host contract is
+[tool-registry.md](../reference/shared-core/tool-registry.md#native-process-completion).
+This scoped implementation does not complete all engine actors, departure or CLI input release.

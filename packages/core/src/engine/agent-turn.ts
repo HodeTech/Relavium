@@ -213,6 +213,8 @@ export interface AgentTurnParams {
   readonly planEntries: readonly FallbackPlanEntry[];
   /** The host-supplied chain capabilities; the core adds its own `costTracker` + `onAttempt`. */
   readonly chainCapabilities: ChainCapabilities;
+  /** Execution-local producer lifetime; absent on standalone/session calls without an engine owner. */
+  readonly retainWork?: FallbackChainOptions['retainWork'];
   /** Lowered from the node's `output_schema` (request-side hint; validation is node-side, in the adapter). */
   readonly responseFormat?: ResponseFormat;
   /** Per-turn generation knobs (node-over-agent precedence is resolved by the caller). */
@@ -1339,6 +1341,7 @@ export async function captureAgentTurnOutcome(
   const supplied = Object.freeze({ ...params });
   const suppliedCapabilities = Object.freeze({ ...supplied.chainCapabilities });
   const suppliedClock = suppliedCapabilities.now;
+  const suppliedRetainer = supplied.retainWork;
   const noteObserverFailure = (error: unknown): never => {
     acc.observerFailure = { error };
     throw error;
@@ -1366,6 +1369,28 @@ export async function captureAgentTurnOutcome(
             },
           }),
     },
+    ...(suppliedRetainer === undefined
+      ? {}
+      : {
+          retainWork: <T>(factory: () => Promise<T>): Promise<T> => {
+            let factoryFailure: { readonly error: unknown } | undefined;
+            try {
+              // The decorator is synchronous and returns the exact registered factory Promise.
+              return suppliedRetainer(() => {
+                try {
+                  return factory();
+                } catch (error) {
+                  factoryFailure = { error };
+                  throw error;
+                }
+              });
+            } catch (error) {
+              if (factoryFailure !== undefined && Object.is(factoryFailure.error, error))
+                throw error;
+              return noteObserverFailure(error);
+            }
+          },
+        }),
     ...(supplied.money === undefined
       ? {}
       : {
@@ -1690,6 +1715,7 @@ async function driveAgentTurn(
 
   const chain = new FallbackChain([...params.planEntries], {
     ...params.chainCapabilities,
+    ...(params.retainWork === undefined ? {} : { retainWork: params.retainWork }),
     costTracker,
     onAttempt: (record) => {
       try {

@@ -681,3 +681,30 @@ for standalone context implementations/doubles. This candidate requires full che
 fresh independent review rounds. It does not implement public departure, complete actor and
 transitive-provider retirement, final effect/money disposition, parked-node clock derivation or
 acknowledged CLI input/host teardown, and does not close the lifecycle High or W7.
+
+## Scoped raw provider and native producer lifetime checkpoint — 2026-10-09
+
+This W7 increment transfers execution-local receipt entry from AgentRunner to the fallback
+chain and the separate generative-media submission. The exact generate, verifier `next` and
+independent timeout/final `return` Promises enter before their bounded races. First stream
+construction occurs inside that first entry, so a refusal records no provider invocation.
+Retainer refusal
+preserves host provenance; synchronous provider faults retain their classification, and one
+existing attempt observation remains the money authority. Private identity recognition does
+not inspect a throwable's prototype. No callback becomes request or durable data.
+
+The CLI process host checks cancellation at native entry after executable/cwd resolution.
+It retains a created child's local lifetime until actual native `close`, including failed spawn,
+instead of treating `error` as a closure acknowledgement. Real child controls cover cancelled
+resolution, actual failed spawn and fault injection on a running native child. Fault injection
+is not an OS-generated kill-failure reproduction.
+
+The normative behaviour is in the [provider seam](../reference/shared-core/llm-provider-seam.md#the-per-attempt-deadline),
+[runner contract](../reference/shared-core/agent-runner.md) and
+[native host contract](../reference/shared-core/tool-registry.md#native-process-completion).
+Permanent controls also include actual installed OpenAI SDK body demand with a held raw read,
+inline and separate-endpoint media submission, exact Promise identity, independently held
+cleanup and pre-egress host refusal. This increment requires committed checks and two fresh
+independent review rounds. It does not certify transitive SDK/HTTP/MCP transport work, complete
+engine actor retirement, final receipt health, parked clocks, public departure, acknowledged CLI
+input/host teardown, Step 8 or W7.

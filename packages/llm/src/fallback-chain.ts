@@ -202,6 +202,8 @@ export interface FallbackChainOptions {
    * See {@link PreAttemptHook}.
    */
   readonly preAttempt?: PreAttemptHook;
+  /** Execution-local lifetime entry before invoking a raw producer; never request data or admission. */
+  readonly retainWork?: <T>(factory: () => Promise<T>) => Promise<T>;
   /**
    * The delay primitive used for backoff between same-entry retries. **Required and host-injected**:
    * the seam is platform-free (no ambient `setTimeout`), so the host supplies the timer — a
@@ -252,6 +254,24 @@ export interface FallbackChainOptions {
    * `handle` source is sent to the adapter unchanged (no-op).
    */
   readonly resolveForEgress?: (handle: string, provider: ProviderId) => Promise<MediaSource>;
+}
+
+const retainedEntryFailures = new WeakMap<object, { readonly error: unknown }>();
+
+/** Identity lookup never reflects on an arbitrary provider/host throwable. */
+function retainedEntryFailure(error: unknown): { readonly error: unknown } | undefined {
+  return (typeof error === 'object' && error !== null) || typeof error === 'function'
+    ? retainedEntryFailures.get(error)
+    : undefined;
+}
+
+/** Private invocation provenance, unwrapped before leaving the chain; no provider/retry authority. */
+class RetainedWorkEntryError extends Error {
+  constructor(original: unknown) {
+    super('host work registration failed');
+    this.name = 'RetainedWorkEntryError';
+    retainedEntryFailures.set(this, { error: original });
+  }
 }
 
 const DEFAULT_BACKOFF_BASE_MS = 250;
@@ -780,6 +800,7 @@ export class FallbackChain {
       }
     };
     let providerSucceeded = false;
+    let retentionFailure: { readonly error: unknown } | undefined;
     let outcome: GenerateAttempt;
     try {
       const plan = outputCapPlanForRequest(
@@ -803,8 +824,10 @@ export class FallbackChain {
       if (this.#aborted(entryReq)) {
         throw new LlmProviderError(this.#cancelledError(entry.provider.id));
       }
-      record = { ...record, providerInvoked: true };
-      const call = generate(request, key);
+      const call = this.#retainWork(() => {
+        record = { ...record, providerInvoked: true };
+        return generate(request, key);
+      });
       // A `generate()` has no chunks, so there is nothing to commit: a deadline here is always pre-content
       // and may fail over, which is rule 7's other half rather than an exception to it.
       const raced = deadline === undefined ? undefined : await deadline.race(call);
@@ -814,11 +837,11 @@ export class FallbackChain {
       outcome = { status: 'success', result: raced === undefined ? await call : raced.value };
       providerSucceeded = true;
     } catch (err) {
-      const error = this.#abortAware(
-        this.#errorOf(err, entry.provider.id),
-        entryReq,
-        entry.provider.id,
-      );
+      retentionFailure = retainedEntryFailure(err);
+      const error =
+        retentionFailure === undefined
+          ? this.#abortAware(this.#errorOf(err, entry.provider.id), entryReq, entry.provider.id)
+          : this.#retentionError(entry.provider.id, retentionFailure.error);
       outcome = { status: 'error', error };
     } finally {
       // A successful response must be owned before another custom host callback can mutate it.
@@ -837,6 +860,7 @@ export class FallbackChain {
           ? { ...record, contentReceived: true }
           : record;
       const error = this.#emitFailure(received, outcome.error);
+      if (retentionFailure !== undefined) throw retentionFailure.error;
       return { status: 'error', error: received.contentReceived ? committed(error) : error };
     }
     const result = outcome.result;
@@ -1010,6 +1034,7 @@ export class FallbackChain {
   ): AsyncGenerator<StreamChunk, LlmError | undefined> {
     let usage: Usage | undefined;
     let failure: LlmError | undefined;
+    let retentionFailure: { readonly error: unknown } | undefined;
     let cleanupFailure: { readonly error: unknown } | undefined;
     // Declared outside the `try` so the `finally` can dispose it on EVERY exit path — including success,
     // which is the one most likely to forget. A leaked timer holds the process awake, which on a CLI is a
@@ -1044,20 +1069,26 @@ export class FallbackChain {
       if (this.#aborted(entryReq)) {
         throw new LlmProviderError(this.#cancelledError(entry.provider.id));
       }
-      record = { ...record, providerInvoked: true };
-      const verified = verifyStreamGrammar(
-        stream(request, key),
-        entry.provider.id,
-        entry.model,
-        (observed) => {
-          usage = observed;
-        },
-      );
+      // Enter the first raw read before even constructing the provider's stream. A seam may begin
+      // work synchronously in stream(), so a refused lifetime entry must still prove no invocation.
+      const openIterator = (): AsyncIterator<StreamChunk> => {
+        if (iterator !== undefined) return iterator;
+        record = { ...record, providerInvoked: true };
+        const verified = verifyStreamGrammar(
+          stream(request, key),
+          entry.provider.id,
+          entry.model,
+          (observed) => {
+            usage = observed;
+          },
+        );
+        iterator = verified[Symbol.asyncIterator]();
+        return iterator;
+      };
       // Manual iteration, not `for await`: every `next()` is raced against the ABSOLUTE deadline. A
       // `for await` can only be bounded by a signal, and a signal is a request the provider may ignore.
-      iterator = verified[Symbol.asyncIterator]();
       for (;;) {
-        const step = await this.#raceStep(iterator, deadline);
+        const step = await this.#raceStep(openIterator, deadline);
         if (step.kind === 'timeout') {
           throw new LlmProviderError(this.#classifyDeadline(deadline, entry.provider.id));
         }
@@ -1076,11 +1107,11 @@ export class FallbackChain {
         yield chunk;
       }
     } catch (err) {
-      failure = this.#abortAware(
-        this.#errorOf(err, entry.provider.id),
-        entryReq,
-        entry.provider.id,
-      );
+      retentionFailure = retainedEntryFailure(err);
+      failure =
+        retentionFailure === undefined
+          ? this.#abortAware(this.#errorOf(err, entry.provider.id), entryReq, entry.provider.id)
+          : this.#retentionError(entry.provider.id, retentionFailure.error);
       // A raced confirming read can replace the diagnostic while the verifier still owns a
       // valid first terminal. Retain that observation; do not account here or invent a clean stop.
       if (usage !== undefined) failure = Object.freeze({ ...failure, usage });
@@ -1103,7 +1134,18 @@ export class FallbackChain {
       // In the `finally` rather than per branch so a future exit cannot miss it, and best-effort without an
       // unbounded await for the same reason `#raceStep`'s teardown is: caller liveness, not resource
       // termination (ADR-0082 §5). `return()` on an already-completed iterator is a no-op.
-      void Promise.resolve(iterator?.return?.(undefined)).catch(() => undefined);
+      const returnFailure = this.#closeIterator(iterator);
+      // Actual provider/deadline diagnosis stays primary. A standalone host-entry fault escapes only
+      // after the attempt observer has accounted any terminal usage already observed by the verifier.
+      if (failure === undefined && returnFailure !== undefined) retentionFailure = returnFailure;
+    }
+    if (retentionFailure !== undefined) {
+      const error = failure ?? this.#retentionError(entry.provider.id, retentionFailure.error);
+      this.#emitFailure(
+        { ...record, contentReceived: state.committed },
+        usage === undefined ? error : Object.freeze({ ...error, usage }),
+      );
+      throw retentionFailure.error;
     }
     // An existing provider failure keeps its diagnosis and financial evidence; cleanup cannot
     // replace it with an unrelated host exception or prevent its attempt record.
@@ -1393,23 +1435,68 @@ export class FallbackChain {
    * wired no timer port, and the reason the port is optional rather than required.
    */
   async #raceStep(
-    iterator: AsyncIterator<StreamChunk>,
+    openIterator: () => AsyncIterator<StreamChunk>,
     deadline: DeadlineScope | undefined,
   ): Promise<{ kind: 'chunk'; chunk: StreamChunk } | { kind: 'done' } | { kind: 'timeout' }> {
+    const next = this.#retainWork(() => openIterator().next());
     if (deadline === undefined) {
-      const plain = await iterator.next();
+      const plain = await next;
       return plain.done === true ? { kind: 'done' } : { kind: 'chunk', chunk: plain.value };
     }
-    const raced = await deadline.race(iterator.next());
+    const raced = await deadline.race(next);
     if (raced.outcome === 'deadline') {
       // Best-effort teardown, deliberately NOT awaited without bound: a hung iterator must not hang the
       // cleanup too. The guarantee is caller liveness, not resource termination (ADR-0082 §5).
-      void Promise.resolve(iterator.return?.(undefined)).catch(() => undefined);
+      this.#closeIterator(openIterator());
       return { kind: 'timeout' };
     }
     return raced.value.done === true
       ? { kind: 'done' }
       : { kind: 'chunk', chunk: raced.value.value };
+  }
+
+  /** Register exact producer Promise before invoking it; host-entry failure cannot become failover. */
+  #retainWork<T>(factory: () => Promise<T>): Promise<T> {
+    const retain = this.#options.retainWork;
+    if (retain === undefined) return factory();
+    let factoryFailure: { readonly error: unknown } | undefined;
+    try {
+      return retain(() => {
+        try {
+          return factory();
+        } catch (error) {
+          factoryFailure = { error };
+          throw error;
+        }
+      });
+    } catch (error) {
+      // A synchronous provider throw stays a provider error, including on the no-hook path.
+      if (factoryFailure !== undefined && Object.is(factoryFailure.error, error)) throw error;
+      throw new RetainedWorkEntryError(error);
+    }
+  }
+
+  /** Cleanup lifetime is registered even when its rejection is best-effort and its await unbounded. */
+  #closeIterator(
+    iterator: AsyncIterator<StreamChunk> | undefined,
+  ): { readonly error: unknown } | undefined {
+    const close = iterator?.return?.bind(iterator);
+    if (iterator === undefined || close === undefined) return;
+    try {
+      const closing = this.#retainWork(() => close(undefined));
+      void closing.catch(() => undefined);
+    } catch (error) {
+      const retainedFailure = retainedEntryFailure(error);
+      if (retainedFailure !== undefined) return retainedFailure;
+      // Source cleanup is best-effort; it never replaces an established provider/accounting failure.
+    }
+    return undefined;
+  }
+
+  #retentionError(provider: ProviderId, cause: unknown): LlmError {
+    return Object.freeze(
+      makeLlmError({ provider, kind: 'unknown', message: 'host work registration failed', cause }),
+    );
   }
 
   /** A deadline abort is `timeout`; a caller abort in the same window stays `cancelled` (ADR-0082 §5). */

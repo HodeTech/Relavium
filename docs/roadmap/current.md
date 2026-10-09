@@ -49,7 +49,8 @@ merged too (PR #85, 2026-08-28).
 > append/receipt integration is implemented at `a35739a4`;
 > [both complete round-1 reviews](../reviews/2026-10-09T01-27-00-w7-append-receipt-round-1-review.md) clear all 17 paths/57 hunks.
 > [Two fresh cumulative round-2 reviews](../reviews/2026-10-09T02-00-00-w7-append-receipt-round-2-review.md) accept all 23 paths/63 hunks
-> through `01115050`. Shipping raw provider/native integration now proceeds, then the remaining
+> through `01115050`. Raw provider/iterator/media and native child lifetime integration is
+> implemented with 26 permanent cases; its own two fresh review rounds follow. The remaining
 > host departure work and Step 8 atomic compaction/recovery. The ownership/lifecycle
 > Highs, Step 12, final whole-wave CI/coverage/Sonar and all six W7 register items remain open.
 > Draft PR #90 is unmerged; no further paid call, credential or ADR approval is needed.
