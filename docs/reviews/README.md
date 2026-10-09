@@ -11,6 +11,9 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 raw provider round-2 custody correction](2026-10-09T03-42-30-w7-raw-producer-custody-correction-review.md):
+  the lifecycle reviewer withdraws its nested DB-sync direct-tool assurance; missing historical receipts remain explicit and the original seal stays intact.
+
 - [2026-10-09 — W7 raw provider/native lifetime, round 2](2026-10-09T03-25-00-w7-raw-producer-round-2-review.md):
   two fresh complete 20-path/41-hunk reviews and Parent artifact/freeze audits accept the scoped increment;
   nested Corepack violations are excluded from proof, transitive host work and W7 remain open.
