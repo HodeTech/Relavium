@@ -4115,3 +4115,21 @@ Two NEW complete cumulative independent review rounds precede scoped acceptance.
 startup/all-actor retirement, sticky final effect/money disposition, original parked clocks, public
 departure and acknowledged CLI teardown remain open, followed by Step 8 compaction/recovery and
 final Step 12. All six W7 register items remain OPEN (41/51); PR #90 remains draft and unmerged.
+
+### 2026-10-09 — MCP lifetime round-1 corrections
+
+[Both fresh complete first-round static reviews and Parent runtime/artifact/freeze audits](../../reviews/2026-10-09T08-33-00-w7-mcp-lifetime-round-1-review.md)
+cover all 27 paths/55 hunks through `d2c888f9`. SDK task/schema bypass plus cancelled/closed
+queued replies retained an unused reservation forever; a synchronous abort/entry throw left
+the deadline guard unobserved; an injected body-disposal refusal left its reader pending.
+These verified defects are corrected, including stale same-ID callback refusal. Actual entered
+handlers/sends/native cleanup remain owed. Two genuine Sonar maintainability findings receive
+source corrections, independently of runtime defects or analyzer dispositions.
+
+Nineteen additional cases bring this increment to 67 new permanent cases. Original and
+guard-removal controls fail semantically after strict checking/actual builds; fixed controls
+pass. Private enforced coverage passes 411 files / 9,097 cases / 12 existing skips, with MCP
+96.17% lines and 90.22% branches under the unchanged 90% floor. The record preserves failed
+environment setup and unavailable earlier scratch artifacts without granting them fresh proof
+credit. A NEW complete cumulative second round remains required. Complete host obligations,
+Step 8, final Step 12 and all six W7 register items stay open; no paid call or user approval is pending.

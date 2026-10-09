@@ -129,6 +129,17 @@ remain owed independently. The response ID stays claimed until that exact work f
 duplicate peer ID cannot replace a pending reply. Close vetoes a queued handler before its
 factory enters without pretending an already-entered handler has settled.
 
+An unused queued reservation is not an entered producer. SDK task/schema rejection can bypass
+the registered handler, and cancellation can suppress its reply. Valid peer cancellation or
+native close revokes that unused reservation; actual entered handlers, sends and descendants
+remain independently owed. Cancellation is validated with the installed SDK schema and follows
+its request-ID acceptance rules, without granting authority over outgoing requests. A callback
+whose original signal is already aborted cannot claim a later request reusing the same peer ID.
+
+A synchronous ownership refusal still observes the deadline guard, including a simultaneous
+abort, while preserving the original refusal. A body cleanup refusal settles its waiting reader
+with the fixed, content-free read error; it cannot leave that reader pending indefinitely.
+
 Concurrent or reentrant transport close returns the same published join. SDK close fulfilment,
 `onerror`, a kill request and an elapsed grace period are not native-close acknowledgements.
 Created stdio/WebSocket resources require the actual native close callback; a proved-empty

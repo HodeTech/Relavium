@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 MCP transport and protocol lifetimes, round 1](2026-10-09T08-33-00-w7-mcp-lifetime-round-1-review.md):
+  complete 27-path/55-hunk static reviews and Parent runtime/artifact/freeze audits confirm
+  queued-reservation, deadline, disposer and coverage failures; corrections need fresh round 2.
+
 - [2026-10-09 — W7 invocation-local provider lifetimes, round 3](2026-10-09T07-06-28-w7-provider-invocation-round-3-review.md):
   both complete 28-path/67-hunk reviews and Parent artifact/freeze audits accept the scoped increment;
   no new confirmed finding, with remaining host work, Step 8 and whole W7 open.

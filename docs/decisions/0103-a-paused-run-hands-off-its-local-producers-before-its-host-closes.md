@@ -796,3 +796,17 @@ The implementation still requires its own committed full checks and two NEW comp
 independent review rounds. Complete manager startup/all-actor retirement, sticky final receipt
 health, parked clocks, public departure and acknowledged CLI teardown remain open, followed by
 Step 8 and final Step 12. This scoped checkpoint does not close W7.
+
+### 2026-10-09 — unused MCP peer reservations are revocable
+
+[Two complete cumulative first-round reviews and fresh Parent runtime evidence](../reviews/2026-10-09T08-33-00-w7-mcp-lifetime-round-1-review.md)
+correct the preceding implementation checkpoint. Installed SDK task/schema rejection can bypass
+the registered handler while cancellation/close suppresses its reply. An unused queued
+reservation must be revocable without inventing an entered producer. Actual handler, send,
+body and native-close descendants remain owed; a stale aborted callback cannot claim a later
+request reusing its ID. Synchronous abort/entry refusal must observe the deadline guard;
+body-disposal refusal must settle the waiting reader. The canonical
+[MCP lifetime contract](../reference/shared-core/mcp-integration.md#invocation-and-transport-lifetimes)
+records these refinements. Nineteen regressions and stronger existing controls restore the
+unchanged mandatory coverage floor. A NEW complete cumulative second round is required;
+remaining host obligations, Step 8, Step 12 and W7 stay open.
