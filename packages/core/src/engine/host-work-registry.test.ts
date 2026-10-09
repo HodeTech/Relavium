@@ -479,3 +479,37 @@ describe('HostWorkRegistry — structured receipt lifetimes (ADR-0103 foundation
     }
   });
 });
+
+describe('HostWorkRegistry entered synchronous-or-Promise host ports', () => {
+  it('registers before entry but finishes actual synchronous return/throw without an invented promise lifetime', () => {
+    const registry = new HostWorkRegistry('run');
+    expect(
+      registry.enter(() => {
+        expect(registry.isIdle).toBe(false);
+      }),
+    ).toBeUndefined();
+    expect(registry.isIdle).toBe(true);
+    const cause = new Error('PRIVATE host callback');
+    expect(() =>
+      registry.enter(() => {
+        throw cause;
+      }),
+    ).toThrow(cause);
+    expect(registry.isIdle).toBe(true);
+  });
+
+  it('keeps an async port exact, entered, and rejected with the original cause', async () => {
+    const registry = new HostWorkRegistry('run');
+    const port = deferred<void>();
+    const entered = registry.enter(() => port.promise);
+    expect(entered).toBe(port.promise);
+    const joined = watchJoin(registry);
+    expect(joined.joined).toBe(false);
+    const cause = new Error('PRIVATE host write');
+    const observed = expect(entered).rejects.toBe(cause);
+    port.reject(cause);
+    await observed;
+    await joined.promise;
+    expect(registry.isIdle).toBe(true);
+  });
+});

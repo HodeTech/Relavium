@@ -87,6 +87,7 @@ import type { WorkflowDefinition } from '../parser.js';
 import { resolveAndValidateWorkflowInputs } from './input-admission.js';
 import { verifyFrozenWorkflowContent, verifyResumeIdentity } from './resume-identity.js';
 import { EngineStateError } from './errors.js';
+import { HostWorkRegistry, type HostWorkScope } from './host-work-registry.js';
 import { RunEventBus, type RunEventDraft } from './event-bus.js';
 import { RunLoopInvariantError } from './invariant-error.js';
 import {
@@ -101,16 +102,13 @@ import type {
   CheckpointState,
 } from './checkpoint.js';
 import { CHECKPOINT_SCHEMA_VERSION } from './checkpoint.js';
-import {
-  LedgerDurabilityError,
-  MoneyDurability,
-  isLedgerDurabilityError,
-} from './money-durability.js';
+import { MoneyDurability, isLedgerDurabilityError } from './money-durability.js';
 import type { AbortControllerLike, ExecutionHost, InterruptedRun } from './execution-host.js';
 import type {
   GateRequest,
   MediaJobSubmission,
   NodeExecContext,
+  NodeReceiptContext,
   NodeExecutor,
   NodeFailure,
   NodeOutcome,
@@ -409,6 +407,24 @@ function maskInputs(
  */
 type RunOwnership = 'unclaimed' | 'held' | 'parked' | 'lost' | 'done';
 
+/** Private append truth; ordinary event delivery is not a persistence acknowledgement (ADR-0103). */
+type DurableAppendAcknowledgement =
+  | { readonly kind: 'persisted' }
+  | { readonly kind: 'refused'; readonly cause?: unknown }
+  | { readonly kind: 'failed'; readonly cause: unknown };
+
+/** Fixed, content-free money-bridge failure; an original store cause remains private. */
+class DurableAppendNotPersistedError extends Error {
+  readonly code = 'durable_append_not_persisted';
+
+  constructor(acknowledgement: Exclude<DurableAppendAcknowledgement, { kind: 'persisted' }>) {
+    super('a required money write was not acknowledged persisted', {
+      cause: acknowledgement.cause,
+    });
+    this.name = 'DurableAppendNotPersistedError';
+  }
+}
+
 interface PendingGate {
   readonly vertexId: string;
   readonly isBudgetGate: boolean;
@@ -550,6 +566,9 @@ class RunExecution {
   readonly #budgetGovernor: BudgetGovernor | undefined;
   /** The money-durability barrier for BOTH chains — always present, cap or no cap (ADR-0077 §5). */
   readonly #money: MoneyDurability;
+  readonly #hostWork: HostWorkRegistry;
+  #hostRetirement: Promise<void> | undefined;
+  #retiringHost = false;
   /** A confirmed approval is consumed once by its next dispatch, never restored from a checkpoint. */
   readonly #budgetApprovals = new Map<
     string,
@@ -581,7 +600,9 @@ class RunExecution {
   /**
    * The sequence number last ASKED of the store for this run, or `-1` before the first append.
    *
-   * Advanced for a guarded (non-terminal) event whether or not its write lands — see
+   * Read and advanced inside the ordered writer, after ownership admission. A successfully acknowledged
+   * terminal advances it too, before any later guarded ask. Advanced for a guarded event whether or not
+   * its write lands — see
    * `DurableWriteContext.expectedLastSequenceNumber` for why "asked" rather than "committed" is the value
    * that makes the next append fail closed after a lost write.
    */
@@ -593,6 +614,8 @@ class RunExecution {
    * be told the run completed.
    */
   #terminalDurability: RunDurability = 'pending';
+  /** A terminal without a store ACK permanently refuses later asks, preserving its original outbox order. */
+  #terminalAppendFailure: { readonly cause: unknown } | undefined;
   /**
    * This run's ownership claim (ADR-0079). Carried on every durable write, so the store refuses one from a
    * process that has been taken over.
@@ -690,6 +713,7 @@ class RunExecution {
     };
   }) {
     this.runId = params.runId;
+    this.#hostWork = new HostWorkRegistry(params.runId);
     this.#plan = params.plan;
     this.#workflow = params.workflow;
     this.#inputs = params.inputs;
@@ -723,36 +747,26 @@ class RunExecution {
     // join for BOTH chains, so `flushConservative` is wired to the governor once that exists.
     this.#money = new MoneyDurability({
       emit: async (draft, cumulativeCostMicrocents) => {
-        // **The observe half, and it has to be here rather than in `MoneyDurability`.** `#emitDurable` is
-        // TOTAL for store faults: it absorbs a `persistEvent` rejection into `#failure` and RESOLVES. So the
-        // ledger's own `.catch` never fires for the failure mode it exists to catch, and a barrier that only
-        // awaited would sail straight past a run whose money write did not land — exactly the trap ADR-0076
-        // §1 named and ADR-0077 kept. Comparing `#failure` across the await is what turns the absorbed fault
-        // back into something the barrier can throw. It can over-trigger when a SIBLING fails in the same
-        // window; that direction is fail-closed and correct at a money barrier.
-        const failureBefore = this.#failure;
-        await this.#emitDurable({
-          ...draft,
-          type: 'cost:attempt_settled',
-          runId: this.runId,
-          // The total CAPTURED AT `record()` TIME, passed in — deliberately not a fresh read of
-          // `#cumulativeCostMicrocents` here. `#nodeEmit`'s `cost:updated` arm folds the charge into the
-          // counter and the turn core records strictly after that, so the captured value satisfies
-          // `refineCostAttemptSettled`'s "cumulative already includes this charge" by construction. Reading it
-          // HERE would not: this callback is chained behind the previous write's `persistEvent`, so under a
-          // `fan_out` — concurrent nodes sharing one chain — it can run after several more attempts have
-          // settled and report their money as this attempt's running total.
-          cumulativeCostMicrocents,
-        });
-        if (this.#failure !== failureBefore) {
-          // Typed, not a bare `Error` (error-handling.md). `#emitDurable` discards the store error in its own
-          // catch, so there is no `cause` left to preserve — the run's `#failure` carries the user-facing
-          // reason instead, and this class exists to keep the node attribution that would otherwise be lost
-          // when the chain flattens a `preAttempt` throw.
-          throw new LedgerDurabilityError(
-            new Error('the run failed while this realized charge was being made durable'),
-            draft.nodeId,
-          );
+        // Each required money append observes its own store ACK, independently of earlier failures,
+        // cancellation and ownership refusal. A total ordinary writer is not a money durability ACK.
+        const acknowledgement = await this.#emitDurable(
+          {
+            ...draft,
+            type: 'cost:attempt_settled',
+            runId: this.runId,
+            // The total CAPTURED AT `record()` TIME, passed in — deliberately not a fresh read of
+            // `#cumulativeCostMicrocents` here. `#nodeEmit`'s `cost:updated` arm folds the charge into the
+            // counter and the turn core records strictly after that, so the captured value satisfies
+            // `refineCostAttemptSettled`'s "cumulative already includes this charge" by construction. Reading it
+            // HERE would not: this callback is chained behind the previous write's `persistEvent`, so under a
+            // `fan_out` — concurrent nodes sharing one chain — it can run after several more attempts have
+            // settled and report their money as this attempt's running total.
+            cumulativeCostMicrocents,
+          },
+          { receipt: true },
+        );
+        if (acknowledgement.kind !== 'persisted') {
+          throw new DurableAppendNotPersistedError(acknowledgement);
         }
       },
       ...(params.plan.budget === undefined
@@ -763,7 +777,13 @@ class RunExecution {
       this.#budgetGovernor = new BudgetGovernor({
         budget: params.plan.budget,
         defaultMaxTokensEstimate: this.#maxTokensEstimate,
-        emit: (draft) => this.#emitDurable({ ...draft, runId: this.runId }),
+        emit: async (draft) => {
+          const acknowledgement = await this.#emitDurable({ ...draft, runId: this.runId });
+          // Warning delivery remains best-effort; a required conservative commitment does not.
+          if (draft.type === 'budget:estimate_committed' && acknowledgement.kind !== 'persisted') {
+            throw new DurableAppendNotPersistedError(acknowledgement);
+          }
+        },
         ...(params.resolvePrice === undefined ? {} : { resolvePrice: params.resolvePrice }),
         ...(params.resolveEndpoint === undefined
           ? {}
@@ -2004,13 +2024,8 @@ class RunExecution {
   /** Await AND observe the actual append, then recheck the still-admitted owner after delivery. */
   async #emitBudgetAcknowledged(draft: RunEventDraft): Promise<boolean> {
     if (!this.#canAuthorizeBudget()) return false;
-    let persisted = false;
-    await this.#emitDurable(draft, {
-      onPersisted: () => {
-        persisted = true;
-      },
-    });
-    return persisted && this.#canAuthorizeBudget();
+    const acknowledgement = await this.#emitDurable(draft);
+    return acknowledgement.kind === 'persisted' && this.#canAuthorizeBudget();
   }
 
   #budgetPreparationContext(gate: PendingGate): NodePreparationContext {
@@ -2407,15 +2422,21 @@ class RunExecution {
    * The refusal rejects rather than resolves, so a caller that ignores it cannot mistake a refusal for a
    * durable claim and dispatch anyway.
    */
-  #fenceEffects(port: EffectDispatchPort, vertexId: string): EffectDispatchPort {
+  #fenceEffects(
+    port: EffectDispatchPort,
+    vertexId: string,
+    scope: HostWorkScope,
+  ): EffectDispatchPort {
     const dispatchId = this.#dispatchIdForVertex.get(vertexId) ?? -1;
     // Delegated method-by-method rather than spread. `{...port}` copies OWN properties only, so a host that
     // implements `EffectDispatchPort` as a CLASS would arrive here with `settle` and `discard` undefined —
     // TypeScript's spread-type inference hides it, and both shipping implementations happen to be object
     // literals, so it would have been latent until the first class-based one.
     return {
-      settle: (...args: Parameters<EffectDispatchPort['settle']>) => port.settle(...args),
-      discard: (...args: Parameters<EffectDispatchPort['discard']>) => port.discard(...args),
+      settle: (...args: Parameters<EffectDispatchPort['settle']>) =>
+        scope.enter(() => port.settle(...args)),
+      discard: (...args: Parameters<EffectDispatchPort['discard']>) =>
+        scope.enter(() => port.discard(...args)),
       prepare: async (...args: Parameters<EffectDispatchPort['prepare']>) => {
         const refuse = (): never => {
           throw new EngineStateError(
@@ -2424,8 +2445,9 @@ class RunExecution {
             { runId: this.runId },
           );
         };
+        scope.assertActive();
         if (!this.#isLive(vertexId, dispatchId)) refuse();
-        const verdict = await port.prepare(...args);
+        const verdict = await scope.enter(() => port.prepare(...args));
         // **Re-checked AFTER the await, and that is the whole point.** The journal write is I/O: the grace
         // window can elapse and the run can reach its terminal while it is in flight. A verdict computed
         // before the cutoff and returned after it would hand the caller a `proceed` for a run that has
@@ -2435,6 +2457,41 @@ class RunExecution {
         return verdict;
       },
     };
+  }
+
+  #receiptContext(
+    scope: HostWorkScope,
+    vertexId: string,
+    port?: EffectDispatchPort,
+  ): NodeReceiptContext {
+    return Object.freeze({
+      money: {
+        record: (draft) => {
+          scope.assertActive();
+          this.#money.record({ ...draft, nodeId: vertexId }, this.#cumulativeCostMicrocents);
+          // Lifetime ACK only. The main money join owns its consume-once failure; this observation
+          // cannot turn a refused write into persistence or consume the error before its caller.
+          void scope.enter(() => this.#money.waitForWrites());
+        },
+        join: () => scope.enter(() => this.#money.join()),
+      },
+      updateCost: (event) => {
+        scope.assertActive();
+        this.#nodeEmit({ ...event, nodeId: vertexId }, false);
+      },
+      ...(port === undefined
+        ? {}
+        : {
+            effects: {
+              settle: (...args: Parameters<EffectDispatchPort['settle']>) =>
+                scope.enter(() => port.settle(...args)),
+              discard: (...args: Parameters<EffectDispatchPort['discard']>) =>
+                scope.enter(() => port.discard(...args)),
+            },
+          }),
+      continueReceipt: <T>(operation: (receipt: NodeReceiptContext) => Promise<T>): Promise<T> =>
+        scope.continue((child) => operation(this.#receiptContext(child, vertexId, port))),
+    } satisfies NodeReceiptContext);
   }
 
   /**
@@ -2586,61 +2643,76 @@ class RunExecution {
     try {
       // Every attempt retains governance. The captured token identifies this dispatch across retries.
       const preEgress = this.#makePreEgressHook(dispatchId);
-      const ctx: NodeExecContext = {
-        vertex,
-        runOutputs: this.#completedOutputs(),
-        inputs: this.#inputs,
-        ctx: this.#resolvedContext,
-        secretInputNames: this.#secretInputNames,
-        toolPolicy: this.#workflow.workflow.tools ?? {},
-        emit: (event) => {
-          // **Fence point 2 (ADR-0085 §5): the cost DELIVERY, not the fold.** A straggler from an abandoned
-          // dispatch must not push a `cost:updated` at subscribers after the terminal has already reported
-          // the run total.
-          //
-          // **But the fold must still happen, and getting that wrong lost real money.** The counter is what
-          // `TurnMoneyPort.record` stamps as `cumulativeCostMicrocents`, and
-          // `refineCostAttemptSettled` rejects a row whose cumulative is below its own `costMicrocents`.
-          // Refusing the fold left the counter behind, so a genuinely billed attempt produced
-          // `cumulative 0 < cost 77` — rejected at the producer gate, which runs in `#bus.next` OUTSIDE
-          // `#emitDurable`'s try, so it threw in the one place the design assumes it cannot and the durable
-          // ledger row was lost entirely. ADR-0045 §5's local-only-cancel position and §5's own money table
-          // both say a charge already incurred is recorded either way; the fold is how that stays true.
-          const live = this.#isLive(vertex.id, dispatchId);
-          if (!live && event.type !== 'cost:updated') {
-            return;
-          }
-          this.#nodeEmit(event, live);
-        },
-        // **ADR-0036's producer-await, handed to the executor (`CR-30`).** The run's own consumer ceiling,
-        // so an executor that streams thousands of token deltas between node boundaries throttles instead
-        // of growing the buffer. `#step` still awaits it once per node — that call bounds the run loop
-        // itself; this one bounds a single node's stream, which is the unbounded case.
-        whenReady: () => this.handle.whenConsumersReady(),
-        signal: this.#abort.signal,
-        attemptNumber,
-        maxTokensEstimate: this.#maxTokensEstimate,
-        ...(preEgress === undefined ? {} : { preEgress }),
-        // The money ledger remains present on every dispatch, including approved ones.
-        money: this.#money.turnPort(() => this.#cumulativeCostMicrocents),
-        // The durable effect journal (ADR-0080), with the RUN correlation closed over. Only the run loop
-        // knows the `runId` and the node-retry attempt — exactly the reasoning that puts the ledger here.
-        // Absent when no host wired a journal, in which case the dispatch gets `unwiredEffectJournal()` and
-        // an effect is REFUSED rather than silently unrecorded.
-        ...(this.#effectJournal === undefined
-          ? {}
-          : {
-              effects: this.#fenceEffects(
-                this.#effectJournal({
-                  kind: 'run',
-                  runId: this.runId,
-                  nodeId: vertex.id,
-                  attempt: attemptNumber,
-                }),
-                vertex.id,
-              ),
-            }),
-      };
+      const raw = this.#hostWork.invoke((scope) => {
+        const effects = this.#effectJournal?.({
+          kind: 'run',
+          runId: this.runId,
+          nodeId: vertex.id,
+          attempt: attemptNumber,
+        });
+        const receipts = this.#receiptContext(scope, vertex.id, effects);
+        const ctx: NodeExecContext = {
+          continueReceipt: receipts.continueReceipt,
+          vertex,
+          runOutputs: this.#completedOutputs(),
+          inputs: this.#inputs,
+          ctx: this.#resolvedContext,
+          secretInputNames: this.#secretInputNames,
+          toolPolicy: this.#workflow.workflow.tools ?? {},
+          emit: (event) => {
+            if (event.type === 'cost:updated') scope.assertActive();
+            // **Fence point 2 (ADR-0085 §5): the cost DELIVERY, not the fold.** A straggler from an abandoned
+            // dispatch must not push a `cost:updated` at subscribers after the terminal has already reported
+            // the run total.
+            //
+            // **But the fold must still happen, and getting that wrong lost real money.** The counter is what
+            // `TurnMoneyPort.record` stamps as `cumulativeCostMicrocents`, and
+            // `refineCostAttemptSettled` rejects a row whose cumulative is below its own `costMicrocents`.
+            // Refusing the fold left the counter behind, so a genuinely billed attempt produced
+            // `cumulative 0 < cost 77` — rejected at the producer gate, which runs in `#bus.next` OUTSIDE
+            // `#emitDurable`'s try, so it threw in the one place the design assumes it cannot and the durable
+            // ledger row was lost entirely. ADR-0045 §5's local-only-cancel position and §5's own money table
+            // both say a charge already incurred is recorded either way; the fold is how that stays true.
+            const live = this.#isLive(vertex.id, dispatchId);
+            if (!live && event.type !== 'cost:updated') {
+              return;
+            }
+            this.#nodeEmit(event, live);
+          },
+          // **ADR-0036's producer-await, handed to the executor (`CR-30`).** The run's own consumer ceiling,
+          // so an executor that streams thousands of token deltas between node boundaries throttles instead
+          // of growing the buffer. `#step` still awaits it once per node — that call bounds the run loop
+          // itself; this one bounds a single node's stream, which is the unbounded case.
+          whenReady: () => this.handle.whenConsumersReady(),
+          signal: this.#abort.signal,
+          attemptNumber,
+          maxTokensEstimate: this.#maxTokensEstimate,
+          ...(preEgress === undefined
+            ? {}
+            : {
+                preEgress: (info: import('./agent-turn.js').PreEgressInfo) => {
+                  scope.assertActive();
+                  if (!this.#isLive(vertex.id, dispatchId))
+                    throw new EngineStateError(
+                      'run_already_terminal',
+                      'the run stopped waiting on this dispatch; no new admission is allowed',
+                      { runId: this.runId },
+                    );
+                  return preEgress(info);
+                },
+              }),
+          money: receipts.money,
+          // The durable effect journal (ADR-0080), with the RUN correlation closed over. Only the run loop
+          // knows the `runId` and the node-retry attempt — exactly the reasoning that puts the ledger here.
+          // Absent when no host wired a journal, in which case the dispatch gets `unwiredEffectJournal()` and
+          // an effect is REFUSED rather than silently unrecorded.
+          ...(effects === undefined
+            ? {}
+            : { effects: this.#fenceEffects(effects, vertex.id, scope) }),
+        };
+        // Return the EXACT raw promise to the registry before any pin/save/outcome or abort-race wrapper.
+        return preparation === undefined ? this.#executor.execute(ctx) : preparation.execute(ctx);
+      });
       // PIN the produced output ONCE, here, before anything reads it (`CR-54`,
       // [ADR-0043](../../../../docs/decisions/0043-media-egress-failover-rematerialization-ssrf.md) §3).
       //
@@ -2658,13 +2730,14 @@ class RunExecution {
       //
       // It is also the only place the pin can await safely: a throw is classified by this method's own
       // catch, and the settle path stays synchronous from its size checks through its status write.
-      const produced = await this.#pinMediaOutput(
-        await (preparation === undefined ? this.#executor.execute(ctx) : preparation.execute(ctx)),
-        vertex.id,
-      );
-      // After the executor completes, an `output` node with `save_to` writes its produced media to the
-      // host (1.AF/D16). A write failure FAILS the node (→ run:failed) — save_to is a real deliverable.
-      return await this.#applySaveTo(vertex, produced, dispatchId);
+      const outcome = await raw;
+      // Terminal publication retires new host work; only already entered pins/receipts remain joined.
+      if (!this.#isLive(vertex.id, dispatchId))
+        return { kind: 'failed', error: this.#saveToAbandoned() };
+      return await this.#hostWork.invoke(async () => {
+        const produced = await this.#pinMediaOutput(outcome, vertex.id);
+        return this.#applySaveTo(vertex, produced, dispatchId);
+      });
     } catch (error) {
       // A money-durability failure is NOT an anonymous handler throw. Barriers B1 and B2 (ADR-0077) both sit
       // INSIDE the turn, and `throwMappedChainError` has two arms whose only job is to keep the class and its
@@ -3591,7 +3664,9 @@ class RunExecution {
     // green. The ordering is kept because it makes the invariant true by construction rather than by two
     // coincidences, but it is not load-bearing alone.
     //
-    // **The claim is dropped BEFORE the pause is observable, and the row is deleted after.** Both halves are
+    // For a QUIET gate park the claim drops before pause delivery and the row is deleted after. Registered
+    // raw/child/entered receipts instead retain the same claim until #parkAfterReceipts observes idle.
+    // The quiet handoff's two ordering halves are
     // forced, in opposite directions. The row must go last because `run:paused` is itself a fence-guarded
     // write — deleting first would make the run's own pause event fail its own guard. But `#owned` must drop
     // FIRST, because `#emitDurable` delivers to consumers, and an inline prompter (`relavium gate`'s
@@ -3656,9 +3731,9 @@ class RunExecution {
     // previous timer with no way to stop it — a heartbeat that keeps renewing a stale fence for the life of
     // the process, long after the run it belonged to settled.
     this.#stopHeartbeat();
-    // A terminal writer may reclaim a parked lease while draining money. It needs the fence, but must
-    // not install a fresh liveness timer for an execution already closing its stream.
-    if (this.#settled) return;
+    // Terminal delivery does not end an admitted raw/receipt lifetime. Retain this exact fence's
+    // heartbeat until the final quiet retirement claim closes callback admission.
+    if (this.#retiringHost || this.#ownership !== 'held') return;
     // **`'liveness'`, not a work timer** — the kind is the whole reason the seam carries one. This beat
     // advances nothing and re-arms itself for as long as the run lives, so it must not join the set a test
     // fires to drive a run forward (a drive-to-quiescence loop would never terminate) nor the set that
@@ -3666,14 +3741,17 @@ class RunExecution {
     // {@link TimerKind}.
     this.#heartbeatDisarm = this.#host.setTimer(
       RUN_LEASE_HEARTBEAT_MS,
-      () => void this.#beat(fence),
+      () => {
+        if (this.#retiringHost || this.#ownership !== 'held' || this.#fence !== fence) return;
+        void this.#hostWork.invoke(() => this.#beat(fence));
+      },
       'liveness',
     );
   }
 
   /** One heartbeat: refresh the lease, then either re-arm or stop as a fenced run. */
   async #beat(fence: RunFence): Promise<void> {
-    if (this.#settled || this.#ownership !== 'held') return;
+    if (this.#retiringHost || this.#ownership !== 'held' || this.#fence !== fence) return;
     let alive = false;
     try {
       alive = await this.#host.runLeases.heartbeat(this.runId, fence, RUN_LEASE_TTL_MS);
@@ -3693,7 +3771,7 @@ class RunExecution {
     // Re-checked, and against `held` rather than `lost`: the await above suspends, and a gate park during it
     // hands the claim back without setting `lost`. A beat that then acted would either re-arm a timer for a
     // parked run or read a deliberate release as a takeover.
-    if (this.#settled || this.#ownership !== 'held') return;
+    if (this.#retiringHost || this.#ownership !== 'held' || this.#fence !== fence) return;
     if (!alive) {
       this.#loseOwnership();
       return;
@@ -3716,7 +3794,7 @@ class RunExecution {
   /** The one transition into `lost` (§5) — every discovery point routes here, so the teardown is identical. */
   #loseOwnership(): void {
     this.#ownership = 'lost';
-    this.#terminalDurability = 'uncertain';
+    if (this.#terminalDurability !== 'durable') this.#terminalDurability = 'uncertain';
     this.#settleFenced();
   }
 
@@ -3770,7 +3848,6 @@ class RunExecution {
       return; // exactly-one-terminal-event: idempotent
     }
     this.#settled = true;
-    this.#stopHeartbeat(); // no settled execution can renew; drain money under the existing fence
     // **A fenced run settles LOCALLY and emits nothing (ADR-0079 §5).** It still disarms its timers, closes
     // its stream and reports `uncertain` — the consumer's `for await` must complete rather than hang — but
     // the terminal is the new owner's to write. Placed before the timer sweep so the state is identical
@@ -3835,7 +3912,8 @@ class RunExecution {
     for (const vertexId of this.#nodeDeadlineDisarm.keys()) this.#disarmNodeDeadline(vertexId);
     // The media sweep above can START new conservative writes, including when pricing throws. Drain
     // both money chains after that sweep and observe their failures before stamping the terminal's
-    // sequence/totals. Teardown is already complete, so a failing join cannot strand timers or jobs.
+    // sequence/totals. Outcome timer/job teardown is complete; separately retained raw/receipt work may
+    // still owe host retirement. A failing accounting join cannot strand the outcome timers or jobs.
     await this.#joinMoneyDurability();
     if (this.#lostOwnership()) return;
     if (type === 'run:completed' && this.#failure !== undefined) type = 'run:failed';
@@ -3887,8 +3965,7 @@ class RunExecution {
     // already tore the run down without writing or delivering anything. Returning stops a loser from freeing
     // the winner's lease row and from firing `#onSettled` a second time.
     if (this.#lostOwnership()) return;
-    // The ordered terminal writer has released this exact fence before delivering/closing the stream.
-    this.#onSettled(this.runId);
+    this.#beginHostRetirement();
   }
 
   /**
@@ -3941,7 +4018,44 @@ class RunExecution {
     this.#pendingMediaJobs.clear();
     this.#disarmRunTimeout();
     this.#closeStream?.();
+    this.#beginHostRetirement();
+  }
+
+  /** Outcome publication stays bounded; raw/child/entered host work has its own unbounded join. */
+  #beginHostRetirement(): void {
+    if (this.#hostRetirement !== undefined) return;
+    this.#hostRetirement = this.#retireHostWhenQuiet();
+  }
+
+  async #retireHostWhenQuiet(): Promise<void> {
+    do {
+      await this.#hostWork.join();
+      await this.#money.waitForWrites();
+      await this.#deliveryTail;
+    } while (!this.#hostWork.isIdle);
+    // No raw/child authority remains. Stop future callbacks in this synchronous turn, then join the
+    // exact release. An entered heartbeat was itself registered and therefore already completed.
+    this.#retiringHost = true;
+    this.#stopHeartbeat();
+    if (this.#ownership === 'held') await this.#releaseOwnership();
     this.#onSettled(this.runId);
+  }
+
+  /** An ordinary pause relinquishes its claim only after its admitted receipts become idle. */
+  async #parkAfterReceipts(): Promise<void> {
+    await this.#hostWork.join();
+    await this.#deliveryTail;
+    if (
+      this.#settled ||
+      !this.#pauseEpisode ||
+      this.#countRunning() !== 0 ||
+      this.#pendingMediaJobs.size !== 0 ||
+      this.#publishingPauses !== 0 ||
+      !this.#hostWork.isIdle
+    )
+      return;
+    const fence = this.#park();
+    if (fence !== undefined) await this.#releaseLeaseRow(fence);
   }
 
   /** Stop beating and give the lease back — the run is over, one way or another (ADR-0079 §4). */
@@ -4159,14 +4273,9 @@ class RunExecution {
    * failed the run — before the node reaches any boundary. Without it the node could settle while the write was
    * still in flight, and a crash in that window loses money the provider may have billed.
    *
-   * The catch below is a BACKSTOP, and on the run path it is deliberately unreachable: `#emitDurable` is total for
-   * store faults, so a failed non-terminal write sets `#failure` and aborts there rather than rejecting. **That
-   * still holds under ADR-0078's ordered append** — §2's `AppendConflictError` is a non-terminal store
-   * rejection like any other, absorbed by the same catch, so the write path still resolves and this argument
-   * is unchanged rather than merely un-revisited. It
-   * matters for a HOST-wired governor whose sink can reject — the chat path, once §4 gives it a real durable
-   * write. Kept here so the two surfaces cannot diverge in what a durability failure means: never a released
-   * reservation, always a loud failure.
+   * Ordinary delivery remains total for store faults. Its private per-append acknowledgement makes
+   * the money bridge reject missing persistence even when the run already had a failure or lost its
+   * ownership. Both chains retain sticky failure state independently of their consume-once join errors.
    */
   async #joinMoneyDurability(nodeId?: string): Promise<void> {
     // **Barrier B3 (ADR-0077)** — and it is now the SINGLE join for both money chains. The old
@@ -4221,10 +4330,10 @@ class RunExecution {
     draft: RunEventDraft,
     opts?: {
       readonly handOff?: boolean;
-      /** Private success observation, fired only after the store's append acknowledgement. */
-      readonly onPersisted?: () => void;
+      /** Only an already-incurred money append can use the retained terminal claim. */
+      readonly receipt?: boolean;
     },
-  ): Promise<void> {
+  ): Promise<DurableAppendAcknowledgement> {
     const handOff = opts?.handOff === true;
     // **`CR-32`'s durable-event bound, and the terminal is exempt.** A run that cannot publish its terminal
     // is worse in every way than one that wrote an oversized final event: the stream never closes, the lease
@@ -4243,8 +4352,9 @@ class RunExecution {
     // durable-event size bound (below, after the de-inline). A store fault
     // must neither break the exactly-one-terminal-event invariant nor escape as an unhandled rejection
     // out of the fire-and-forget `#loop`. So the `sequenceNumber` is assigned once at the single
-    // authoritative point (`next`), and the event is **always delivered** — keeping the stream gap-free
-    // and guaranteeing a terminal always closes the consumer's `for await`. On a persist failure of a
+    // authoritative point (`next`), and an admitted event is delivered even on a store fault. Ownership
+    // loss can refuse a terminal; an unacknowledged terminal refuses every later ask (ADR-0103). Neither
+    // refusal is a persistence ACK. On a persist failure of a
     // **non-terminal** event we additionally fail the run (we must never report progress the durable
     // log lacks); a terminal whose write fails is still delivered in-process, and `reconcile()` repairs
     // the durable record on restart.
@@ -4311,37 +4421,27 @@ class RunExecution {
     // NOTE: the terminal media reclaim used to sit here, before the write. It now runs only after the
     // terminal's persist SUCCEEDS — see the write below (ADR-0078 §1 re-timing ADR-0042 §4).
     const prior = this.#deliveryTail;
-    // **The ordered append (ADR-0078 §1), and it is one line.** `expectedLastSequenceNumber` is read HERE,
-    // synchronously, before the region is entered — reading it inside would race with a concurrent emitter
-    // that has already advanced it, which is the very interleaving the tail exists to remove.
-    //
-    // **The terminal stays exempt, and CR-92 is where that was DECIDED rather than deferred.** The original
-    // reason — "a terminal the store will not take has nowhere to go" — is gone: §4's outbox now gives it a
-    // home, so a guarded terminal that conflicted would report `uncertain` and be re-appended by the drain
-    // with a fresh belief. It is exempt on a different ground. Guarding it would convert the COMMON case —
-    // a non-terminal write was lost, so `#lastAskedSequenceNumber` no longer matches the log — into a run
-    // whose terminal is refused, reported `uncertain`, and only lands at the next `reconcile()`. That trades
-    // a run that ends correctly-but-with-a-hole for one that does not durably end at all, on the failure
-    // path, which is the wrong direction. Exactly-one-terminal (ADR-0036) also outranks the guard.
-    //
-    // The residual is stated rather than hidden: a terminal can still land past a hole left by a lost
-    // non-terminal write. `checkDurableTruth` reports that log as ordered and `createAppendAudit` reports it
-    // as holed — which is the honest pair, since the run really did end and really did lose an event.
-    const expectedLastSequenceNumber = this.#lastAskedSequenceNumber;
-    const guarded = !TERMINAL_TYPES.has(event.type);
-    if (guarded) {
-      this.#lastAskedSequenceNumber = event.sequenceNumber;
-    }
+    const terminal = TERMINAL_TYPES.has(event.type);
+    const guarded = !terminal;
     // This closure's branch count is NOT extractable, and the reason is written throughout it:
     // every branch below is an ORDERING guarantee relative to `await prior` and the persist. Moving any of
     // them into a helper inserts a microtask hop at exactly the point the comments below record as having
     // reordered the log once already, and the `held`/`unclaimed` fast path exists specifically to AVOID that
     // hop. A metric is not worth re-opening the race this function was written to close (CR-10, CR-92).
-    const settled = (async (): Promise<void> => {
+    const settled = (async (): Promise<DurableAppendAcknowledgement> => {
       // `await prior` moved ABOVE the persist. Below it, the previous event's write had already been
       // STARTED but not joined, so two events for one run overlapped — nothing but the store's timing kept
       // the log a prefix. The same single tail now serializes the ask, the write and the delivery.
       await prior;
+      // This check precedes ownership reconciliation and head mutation: neither a recovered store nor
+      // a retained claim can make a later receipt poison original terminal-outbox recovery (ADR-0103).
+      if (this.#terminalAppendFailure !== undefined) {
+        return { kind: 'refused', cause: this.#terminalAppendFailure.cause };
+      }
+      if (this.#terminalDurability === 'durable' && opts?.receipt !== true) {
+        return { kind: 'refused' };
+      }
+      let acknowledgement: DurableAppendAcknowledgement;
       try {
         // **Ownership is reconciled HERE, and only here.** `#emitDurable` is the run's single durable
         // writer, so every path that can write after a gate park — a cooperative cancel, a gate deadline,
@@ -4359,9 +4459,15 @@ class RunExecution {
         if (!settledClaim && !(await this.#authorizeWrite())) {
           // Refused. A TERMINAL is not delivered either: `handle.subscribe` observers outlive the stream
           // close, and telling them the run ended is §5's "durable lie" in delivered form.
-          if (!TERMINAL_TYPES.has(event.type)) this.#bus.deliver(event);
-          return;
+          if (!terminal) this.#bus.deliver(event);
+          return { kind: 'refused' };
         }
+        // Derive the head at append time, after the predecessor's ACK. A guarded failed ask still
+        // advances the expectation so the next ordinary append fails closed (ADR-0078). A terminal
+        // remains exempt from that guard so it can end a log with an earlier hole; only its ACK advances
+        // the head. An unacknowledged terminal instead selects the sticky refusal above.
+        const expectedLastSequenceNumber = this.#lastAskedSequenceNumber;
+        if (guarded) this.#lastAskedSequenceNumber = event.sequenceNumber;
         // A terminal is exempt from the APPEND guard (ADR-0078 §2) but NOT from the fence: a process that
         // has been taken over must not write the run's terminal either — that is the whole of ADR-0079 §5.
         // The two claims are independent fields precisely so this asymmetry is expressible.
@@ -4369,30 +4475,21 @@ class RunExecution {
           ...(guarded ? { expectedLastSequenceNumber } : {}),
           ...(this.#fence === undefined ? {} : { fence: this.#fence }),
         });
-        opts?.onPersisted?.();
-        this.#recordProducedMedia(durable);
-        if (handOff && !TERMINAL_TYPES.has(event.type)) {
-          // The pause is now durable and was written AS THE OWNER; hand the claim back only after that.
-          // Entering `parked` here rather than before the write means the write that creates the state can
-          // never observe it, and a pause that fails for an ordinary store fault KEEPS ownership instead of
-          // stranding a dropped claim.
-          this.#park();
-        }
-        if (TERMINAL_TYPES.has(event.type)) {
+        acknowledgement = { kind: 'persisted' };
+        if (terminal) {
+          this.#lastAskedSequenceNumber = event.sequenceNumber;
           this.#terminalDurability = 'durable';
-          // **The media reclaim happens HERE, not before the write** (ADR-0078 §1, re-timing ADR-0042 §4).
-          // It used to run at the emit, so a terminal whose write then failed had already released the run's
-          // media references — the outbox could retry the terminal into a log whose media was gone.
-          this.#reclaimRunMedia();
         }
       } catch (writeError) {
+        acknowledgement = { kind: 'failed', cause: writeError };
+        if (terminal) this.#terminalAppendFailure = { cause: writeError };
         // **A FENCE rejection is not a store fault, and must not be treated as one (ADR-0079 §5).** Another
         // process owns the run now. This one stops: it does not fail the run, does not write a terminal, and
         // does not hand the terminal to the outbox — the run's real outcome belongs to the new owner, and
         // recording anything here would be a durable lie about somebody else's run.
         if (isLeaseFencedError(writeError)) {
           this.#loseOwnership();
-          if (TERMINAL_TYPES.has(event.type)) return; // §5 again, on the race path: deliver nothing
+          if (terminal) return acknowledgement; // §5 again, on the race path: deliver nothing
         } else if (TERMINAL_TYPES.has(event.type)) {
           // **The terminal outbox** (ADR-0078 §4). The run is settling and the caller is about to be handed
           // this terminal in-process; the durable record does not have it. Hold the intended payload OUTSIDE
@@ -4412,10 +4509,9 @@ class RunExecution {
         ) {
           this.#failure = {
             // Attribute it when the event names a node. This is the failure a user ACTUALLY sees for a failed
-            // durable write — including a `budget:estimate_committed`, whose typed
-            // `CommitmentDurabilityError` never fires here because this catch is total and resolves rather than
-            // rejecting. Without the id, `run:failed` said only "a durable run-event write failed" with nothing
-            // to point at, in a run that may have dozens of nodes.
+            // durable write — including a `budget:estimate_committed`. The private ACK separately tells
+            // its money bridge to reject. Without the id, `run:failed` named no owning node in a run
+            // that may have dozens of them.
             ...('nodeId' in event && typeof event.nodeId === 'string'
               ? { nodeId: event.nodeId }
               : {}),
@@ -4433,16 +4529,27 @@ class RunExecution {
           this.#schedule();
         }
       }
-      // Ownership ends AFTER terminal persistence (or its uncertain outbox path), but BEFORE terminal
-      // delivery closes the stream. Money draining can suspend settlement: a consumer that drains the
-      // terminal must not observe a lease whose cleanup is still queued behind this writer's return.
-      // A fenced terminal returns above and cannot release a successor. Release faults keep the existing
-      // bounded TTL fallback rather than replacing the recorded outcome or stranding stream closure.
-      if (TERMINAL_TYPES.has(event.type)) await this.#releaseOwnership();
+      if (acknowledgement.kind === 'persisted') {
+        // Post-ACK observers/retention cannot turn a successful store append into an outbox failure.
+        this.#recordProducedMedia(durable);
+        if (handOff && !terminal) {
+          if (this.#hostWork.isIdle) this.#park();
+          else void this.#parkAfterReceipts();
+        }
+        if (terminal) this.#reclaimRunMedia();
+      }
+      // A quiet run releases before terminal delivery. A run with registered raw/receipt work publishes
+      // its bounded primary outcome now and retains the exact fence until that work actually settles.
+      // A fenced terminal returns above and cannot release a successor.
+      if (terminal && this.#hostWork.isIdle) await this.#releaseOwnership();
       this.#bus.deliver(event); // still in seq order — `prior` is now awaited above, before the write
+      return acknowledgement;
     })();
-    this.#deliveryTail = settled.catch(() => undefined);
-    await settled;
+    this.#deliveryTail = settled.then(
+      () => undefined,
+      () => undefined,
+    );
+    return await settled;
   }
 
   /**
@@ -4709,12 +4816,10 @@ class RunExecution {
    *  retention failure never breaks the run (the port is documented best-effort, ADR-0042 §3-4). */
   #bestEffortMediaRef(call: () => void | Promise<void>): void {
     try {
-      const result = call();
-      if (result instanceof Promise) {
-        result.catch(() => undefined); // never an unhandled rejection
-      }
+      const entered = this.#hostWork.enter(call);
+      if (entered !== undefined) void entered.catch(() => {});
     } catch {
-      // best-effort retention; the run is unaffected (I3 / totality untouched)
+      /* Best-effort retention: failure never changes money or the actual outcome. */
     }
   }
 

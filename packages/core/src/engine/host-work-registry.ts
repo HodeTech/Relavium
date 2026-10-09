@@ -1,6 +1,6 @@
 /**
  * Internal ADR-0103 lifetime substrate, not a departure or persistence certificate. RunExecution
- * integration will separately enforce producer retirement, ownership and receipt disposition.
+ * consumes it for receipt retirement; final departure and receipt disposition remain separate.
  * Nothing here grants provider, media, effect-prepare or other host capabilities.
  */
 import { EngineStateError } from './errors.js';
@@ -8,7 +8,7 @@ import { EngineStateError } from './errors.js';
 // Observe actual Promise settlement, never a caller-overridden `raw.then` callback protocol.
 const observePromise: unknown = Object.getOwnPropertyDescriptor(Promise.prototype, 'then')?.value;
 
-/** A lifetime guard supplied only to a registered factory; no public NodeExecContext API yet. */
+/** A lifetime guard supplied only to a registered factory; receipt ports retain separate authority. */
 export interface HostWorkScope {
   /** Guard a synchronous port entry. Throws EngineStateError('receipt_scope_ended') after settlement. */
   readonly assertActive: () => void;
@@ -79,6 +79,30 @@ export class HostWorkRegistry {
         active = false;
         this.#finish();
       },
+    );
+  }
+
+  /**
+   * Enter a host port whose contract permits synchronous completion. A void return or synchronous throw
+   * completes its slot now; a Promise keeps its exact lifetime and original rejection. No future receipt
+   * authority is created by this entry. This avoids inventing asynchronous work for native sync ports.
+   */
+  enter(operation: () => void | Promise<void>): void | Promise<void> {
+    this.#pending += 1;
+    let raw: void | Promise<void>;
+    try {
+      raw = operation();
+    } catch (error) {
+      this.#finish();
+      throw error;
+    }
+    if (raw === undefined) {
+      this.#finish();
+      return;
+    }
+    return this.#observe(
+      () => raw,
+      () => this.#finish(),
     );
   }
 

@@ -118,3 +118,11 @@ A new durable event `type` is precisely the input ADR-0075 governs. Before it, a
 - **A durability failure now fails a turn that would previously have completed.** Deliberate, and the same posture as §2: a run that cannot record what it spent must not keep spending. Mitigation: the failure is classified and names the attempt, rather than surfacing later as an unexplained cap refusal.
 - **An older binary cannot replay a log containing this event.** Inherited from ADR-0075 and stated there; the remedy is an upgrade, and every read-only surface still shows the run.
 - **`cost:updated` remains, and now has a durable sibling.** Two events describing one charge is a real risk of drift. Mitigation: the streamed one keeps its documented role as the live observation and the durable one is the record; the spec says which is authoritative, and the engine emits both from one place so they cannot disagree about the amount.
+
+## Registered late incurred ledger receipts — 2026-10-09
+
+The approved ADR-0103 scoped receipt integration permits an already incurred ledger receipt
+after an acknowledged bounded terminal. It preserves per-attempt/native accounting and the
+already observed terminal payload; it adds no second charge or terminal. The canonical
+qualification is in [sse-event-schema.md](../reference/contracts/sse-event-schema.md#terminal-publication-and-late-ledger-receipts).
+Public host-safe departure and final money/effect disposition remain dependent implementation.

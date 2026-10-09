@@ -285,6 +285,23 @@ for await (const event of handle.events) {
 
 On the desktop the same events are produced and consumed WebView-side over the engine's in-process `RunEventBus` (they do not cross IPC) — see [ipc-contract.md](ipc-contract.md#run-events-are-webview-side). On the cloud portal (Phase 2) they arrive over HTTP SSE. In all cases the consumer routes by `nodeId` into the per-node status map in `runStore` (kept deliberately separate from the canvas store to avoid re-rendering ReactFlow on every token — see [../shared-core/store-shapes.md](../shared-core/store-shapes.md)).
 
+### Terminal publication and late ledger receipts
+
+Under [ADR-0103](../../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md),
+the bounded run terminal can precede settlement of already registered raw or receipt work. A
+permitted late incurred `cost:attempt_settled` remains durable through the same sequence source,
+ordered writer and exact retained ownership fence after an acknowledged terminal. It does not
+publish another terminal, alter the already delivered terminal's payload/tokens/cost snapshot,
+reopen the closed primary stream or announce a fresh ordinary `cost:updated` total there. Native
+history accounting records the receipt using its existing per-attempt and cumulative rules.
+
+An uncertain terminal persistence acknowledgement refuses every subsequent local run-event ask
+before another store entry or head change, preserving the original terminal-outbox recovery.
+Required money failure remains distinct from terminal durability. The ordered acknowledgement
+rules live in [execution-model.md](../../architecture/execution-model.md#per-append-acknowledgement-and-late-incurred-receipts),
+and retained receipt lifetime in [shared-core-engine.md](../../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103).
+These scoped rules do not yet expose a public host-safe departure result or change the event union.
+
 ## Human-gate suspend/resume across the stream
 
 A human gate threads two events through the stream around a suspension:

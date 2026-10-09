@@ -133,3 +133,12 @@ Removing the uncertain-terminal retention branch breaks its control.
 
 This corrects the ordering of an existing best-effort retention side effect. It changes no host
 port, money acknowledgement, terminal exemption, non-terminal fault delivery or lease policy.
+
+## Per-append acknowledgement and terminal head — 2026-10-09
+
+The approved ADR-0103 scoped writer integration observes each required money append
+acknowledgement and advances the ordered expected head after a successfully persisted terminal.
+An uncertain terminal refuses subsequent local event asks without displacing its original outbox
+cause. The canonical rules are in [execution-model.md](../architecture/execution-model.md#per-append-acknowledgement-and-late-incurred-receipts)
+and the [event qualification](../reference/contracts/sse-event-schema.md#terminal-publication-and-late-ledger-receipts).
+This does not implement public departure or change ordinary non-terminal fault delivery.

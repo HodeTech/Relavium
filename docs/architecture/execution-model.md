@@ -195,6 +195,22 @@ fires for any reason, an executor that does not settle within it is abandoned, i
 `node:failed`, and the run reaches its terminal. That makes exactly-one-terminal a liveness property with
 respect to the EXECUTOR — §6 of that ADR states the half that stays conditional on the store.
 
+#### Per-append acknowledgement and late incurred receipts
+
+The ordered writer reports the actual result of each append internally: persisted, refused or
+failed. Required realized/conservative money bridges observe that append's acknowledgement;
+absence of a new run failure is insufficient evidence that their write landed. Expected-head
+selection and advancement happen inside the ordered writer after ownership admission. A
+successfully acknowledged terminal advances that head, so a permitted later incurred ledger
+receipt appends after the same terminal through the same writer without changing its outcome.
+
+A terminal whose persistence is uncertain latches refusal before any subsequent ownership check,
+head change or store entry. Later run-event receipts cannot displace its original terminal-outbox
+cause or ordering. A post-acknowledgement cosmetic callback cannot revoke persistence truth.
+The distinction between bounded terminal publication and retained receipt/fence lifetime lives in
+[shared-core-engine.md](shared-core-engine.md#internal-departure-foundations-adr-0103); it does not
+yet provide a public host-safe departure result.
+
 ### 6. Finish
 
 On the last node the engine writes the final output and its terminal record to SQLite

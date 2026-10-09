@@ -244,3 +244,13 @@ with the separate owned-terminal outbox retention path described in
 [ADR-0078's correction](0078-ordered-durable-append-and-the-terminal-outbox.md#media-retention-acknowledgement-correction--2026-10-03-w7-step-10-seventh-review).
 A refused fence creates no new run reference and cannot reclaim the successor's references. This
 adds no elapsed-acknowledgement freshness guarantee, clock, TTL or acquisition policy.
+
+## Retained ownership for registered receipts — 2026-10-09
+
+The approved ADR-0103 scoped receipt integration retains the same exact fence and heartbeat
+while registered raw/child/entered work owes receipts after bounded terminal publication.
+Quiet retirement joins exact release; ownership loss never authorises an old scope to reacquire
+a successor-held or subsequently vacant lease. Before-terminal loss remains terminal-free,
+while loss after an acknowledged terminal preserves that outcome. The canonical lifecycle
+qualification is in [shared-core-engine.md](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103).
+Complete actor integration and public departure remain unimplemented.

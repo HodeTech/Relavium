@@ -170,6 +170,7 @@ export type {
 export type {
   NodeExecutor,
   NodeExecContext,
+  NodeReceiptContext,
   NodePreparationContext,
   BudgetDispatchPreparation,
   BudgetDispatchPreparationResult,

@@ -132,9 +132,11 @@ How a single run progresses node-by-node — including streaming and the human g
 
 The first internal increment of
 [ADR-0103](../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md)
-adds primary-delivery observation and a platform-free host-work lifetime registry. These are
-foundations for subsequent `RunExecution` integration; `RunHandle.depart()` and
-`NodeExecContext.continueReceipt()` are not implemented yet.
+adds primary-delivery observation and a platform-free host-work lifetime registry. The subsequent
+scoped integration registers exact raw executor and prepared-executor promises, entered host
+operations and structured receipt children. `RunHandle.depart()`, complete actor retirement,
+original parked-node clocks, final receipt disposition and CLI host-close acknowledgement remain
+unimplemented; this receipt increment is not a host-safe departure certificate.
 
 Each run handle's existing primary queue privately counts actual publications before offering them
 to a waiting pull or buffer. Delivery advances synchronously only when a buffered pull or waiting
@@ -165,11 +167,31 @@ The boundary is observable native settlement, not synchronous introspection of P
 an earlier attached reaction may enter work before the registry's completion reaction, and that
 entered work remains joined. This cannot detect dishonest untransferred background intent.
 
+`WorkflowEngine` supplies `NodeExecContext.continueReceipt()` for each executor dispatch. The field
+is optional in the TypeScript interface for standalone context implementations and test doubles;
+an engine dispatch always supplies it. Register before invoking a child. Its `NodeReceiptContext`
+has only money record/join, effect settle/discard, quiet cost updates and further receipt-child
+registration. It grants no provider/key access, prepare, admission, media operation or ordinary
+event publication. Raw or child settlement ends that scope's future entry; already entered
+operations and independently transferred children remain joined. There is no implicit transfer
+for fire-and-forget work. Shipping transitive provider, iterator and media-poll lifetimes still
+require subsequent complete producer integration.
+
+After a terminal acknowledgement, the execution retains its exact fence and heartbeat while
+registered raw/child work, entered host operations or receipt writes remain. Once these are quiet,
+retirement revokes future entry, disarms the heartbeat, joins exact lease release and notifies the
+engine's existing settled-retention policy. This does not wait for raw settlement before publishing
+the bounded terminal. Ordinary
+post-terminal publication stays refused; permitted late incurred ledger appends use the same
+ordered writer, whose acknowledgement rules live in [execution-model.md](execution-model.md#5-checkpoint-each-node-boundary).
+An ended scope cannot reacquire ownership lost to a successor, including after that successor
+releases its own lease. A native synchronous retention callback is observed synchronously;
+Promise-returning work stays joined to its real completion.
+
 This increment does not close the paused-finalization lifecycle finding. Integration still owes
-producer registration and retirement, the final pause/cursor claim, retained exact-fence ownership,
-ordered late-receipt writer rules, final money/effect disposition, parked-node timing, and CLI
-input-release/primary-reader/host-close acceptance. Existing queue and session lifecycle behavior
-is unchanged.
+all accepted actors and transitive producers, the final pause/cursor claim, final money/effect
+disposition, parked-node timing and CLI input-release/primary-reader/host-close acceptance.
+Primary observation still grants no public departure API. Session lifecycle remains unchanged.
 
 ## Inbound MCP connection lifecycle
 

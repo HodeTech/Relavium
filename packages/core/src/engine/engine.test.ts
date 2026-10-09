@@ -3340,6 +3340,7 @@ ${line
     const calls: string[] = [];
     const livePrepare: { slot: number; toolId: string }[] = [];
     let captured: NodeExecContext['effects'];
+    let prepared = false;
     const host = createInMemoryHost();
     const engine = new WorkflowEngine({
       host,
@@ -3349,6 +3350,7 @@ ${line
           // A LIVE prepare, while the dispatch is unquestionably current — the pass-through this wrapper
           // must not break.
           await ctx.effects?.prepare(7, 'run_command', 3, {});
+          prepared = true;
           return new Promise<NodeOutcome>(() => undefined); // never settles — so it gets abandoned
         },
       },
@@ -3377,6 +3379,8 @@ ${line
     })();
     for (let i = 0; i < 200 && captured === undefined; i += 1) await Promise.resolve();
     expect(captured).toBeDefined();
+    for (let i = 0; i < 200 && !prepared; i += 1) await Promise.resolve();
+    expect(prepared).toBe(true);
 
     engine.cancel(handle.runId);
     for (let i = 0; i < 200 && host.deadlineCount() === 0; i += 1) await Promise.resolve();
@@ -3573,18 +3577,24 @@ ${line
       gen: (ctx) => {
         dispatches += 1;
         if (dispatches === 1) {
-          // Keep dispatch N's closure alive past its own pause.
-          staleEmit = () => {
-            ctx.emit({
-              type: 'cost:updated',
-              nodeId: 'gen',
-              model: 'm',
-              inputTokens: 0,
-              outputTokens: 0,
-              costMicrocents: 999_999,
-              cumulativeCostMicrocents: 0,
-            });
-          };
+          // Transfer the incurred-cost receipt before dispatch N's producer settles at its pause.
+          void ctx.continueReceipt?.(
+            (receipt) =>
+              new Promise<void>((resolve) => {
+                staleEmit = () => {
+                  receipt.updateCost({
+                    type: 'cost:updated',
+                    nodeId: 'gen',
+                    model: 'm',
+                    inputTokens: 0,
+                    outputTokens: 0,
+                    costMicrocents: 999_999,
+                    cumulativeCostMicrocents: 0,
+                  });
+                  resolve();
+                };
+              }),
+          );
           return {
             kind: 'paused',
             gate: {

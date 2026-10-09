@@ -150,8 +150,25 @@ export type NodeOutcome =
   | { readonly kind: 'paused'; readonly gate: GateRequest }
   | { readonly kind: 'media_job'; readonly job: MediaJobSubmission };
 
+/** A registered receipt scope has accounting/settlement authority only (ADR-0103). */
+export interface NodeReceiptContext {
+  readonly money: import('./money-durability.js').TurnMoneyPort;
+  readonly effects?: Pick<import('@relavium/shared').EffectDispatchPort, 'settle' | 'discard'>;
+  readonly updateCost: (event: Extract<NodeStreamEvent, { type: 'cost:updated' }>) => void;
+  readonly continueReceipt: <T>(
+    operation: (receipt: NodeReceiptContext) => Promise<T>,
+  ) => Promise<T>;
+}
+
 /** The context handed to a node executor for one dispatch of one vertex. */
 export interface NodeExecContext {
+  /**
+   * Register a child before invoking it. Raw execute settlement ends this context's future receipt entry;
+   * transferred children keep their own authority. Supplied by WorkflowEngine; absent on context doubles.
+   */
+  readonly continueReceipt?: <T>(
+    operation: (receipt: NodeReceiptContext) => Promise<T>,
+  ) => Promise<T>;
   /** The vertex being executed — its engine type, config block, and un-evaluated input templates. */
   readonly vertex: PlanVertex;
   /** Settled upstream outputs by vertex id — the data the node resolves its `{{ run.outputs }}` against. */
@@ -267,9 +284,9 @@ export interface NodeExecutor {
    * [ADR-0082](../../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
    * §5 races a provider call, because "an `AbortSignal` is a request, not a guarantee" is as true of an
    * executor as of a provider. An implementation that ignores the signal and never settles is abandoned:
-   * its vertex is closed `node:failed`, the run reaches its terminal, and the work is left running with
-   * nobody waiting on it. Returning a failure promptly is strictly better than being abandoned — the
-   * abandoned path cannot report WHY.
+   * its vertex is closed `node:failed`, and the run reaches its bounded terminal. Registered raw/child
+   * work still retains its separate host-retirement lifetime until actual settlement. Returning a
+   * failure promptly is strictly better than being abandoned — the abandoned path cannot report WHY.
    *
    * A vertex carrying an authored `agent.timeout_ms` is additionally bounded by that value, absolute across
    * every attempt and re-dispatch of the node (§2).

@@ -664,3 +664,20 @@ The maintainer approves this decision in its latest reviewed form, including the
 Earlier Proposed/unauthorised statements above describe the proposal history; this approval
 opens the implementation gate. Acceptance still requires the specified implementation,
 causal controls and fresh independent review rounds; approval alone does not close W7.
+
+## Scoped append/receipt integration — 2026-10-09
+
+The W7 implementation candidate adds actual per-append acknowledgement, terminal-head
+advancement and sticky post-uncertain-terminal refusal. Exact raw executor/prepared-executor
+promises, structured receipt children and entered money/effect/media-reference operations retain
+their registered lifetimes and the same fence while owed receipts remain. A synchronous native
+retention callback keeps its actual synchronous semantics. Lifetime observation does not consume
+the money barrier's retained error or certify durability.
+
+The canonical rules land in [shared-core-engine.md](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+and [execution-model.md](../architecture/execution-model.md#per-append-acknowledgement-and-late-incurred-receipts).
+The engine always supplies structured receipt registration; its context field remains optional
+for standalone context implementations/doubles. This candidate requires full checks and two
+fresh independent review rounds. It does not implement public departure, complete actor and
+transitive-provider retirement, final effect/money disposition, parked-node clock derivation or
+acknowledged CLI input/host teardown, and does not close the lifecycle High or W7.
