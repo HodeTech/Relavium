@@ -2193,16 +2193,22 @@ class RunExecution {
           if (!(await this.#waitForConsumer())) return;
         } catch {
           if (this.#settled || this.#abort.signal.aborted) return;
-          await this.#settleFailedOrBackstop(vertex, {
-            code: 'internal',
-            message: 'the event consumer readiness check failed',
-            retryable: false,
-          });
+          await this.#settleFailedOrBackstop(
+            vertex,
+            {
+              code: 'internal',
+              message: 'the event consumer readiness check failed',
+              retryable: false,
+            },
+            1,
+          );
           return;
         }
         if (this.#noNewDispatch || this.#settled || this.#abort.signal.aborted) return;
         unstarted.delete(vertex.id);
         this.#nodeDispatches += 1;
+        // An approved redispatch opens attempt 1 before its start append can yield to grace.
+        this.#lastAttemptByVertex.set(vertex.id, 1);
         await this.#emitDurable({
           type: 'node:started',
           runId: this.runId,
@@ -2214,21 +2220,29 @@ class RunExecution {
         if (this.#noNewDispatch || this.#settled) return;
         if (this.#abort.signal.aborted) {
           // node:started is already entered, but no executor/deadline exists to await through grace.
-          await this.#settleFailedOrBackstop(vertex, {
-            code: 'cancelled',
-            message: 'node execution was cancelled before dispatch',
-            retryable: false,
-          });
+          await this.#settleFailedOrBackstop(
+            vertex,
+            {
+              code: 'cancelled',
+              message: 'node execution was cancelled before dispatch',
+              retryable: false,
+            },
+            1,
+          );
           return;
         }
         // Unexpected host causes stay private: even string conversion may run caller code and
         // throw while reporting. Contain the failure continuation as well as the dispatch itself.
         void this.#dispatch(vertex, 1).catch(async () => {
-          await this.#settleFailedOrBackstop(vertex, {
-            code: 'internal',
-            message: 'node dispatch failed unexpectedly',
-            retryable: false,
-          });
+          await this.#settleFailedOrBackstop(
+            vertex,
+            {
+              code: 'internal',
+              message: 'node dispatch failed unexpectedly',
+              retryable: false,
+            },
+            this.#lastAttemptByVertex.get(vertex.id) ?? 1,
+          );
         });
       }
     } finally {
@@ -3101,7 +3115,7 @@ class RunExecution {
   async #settleFailedOrBackstop(
     vertex: PlanVertex,
     error: NodeFailure,
-    attemptNumber = 1,
+    attemptNumber: number,
   ): Promise<void> {
     // A deadline/outcome may already own this node's terminal while its append is still pending.
     // Refusal/backstop callers must preserve that terminal just like #onOutcome does.

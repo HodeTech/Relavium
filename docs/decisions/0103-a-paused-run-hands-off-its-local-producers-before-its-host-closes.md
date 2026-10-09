@@ -1064,3 +1064,28 @@ one new permanent case and passing original/removal/fixed/restored causal contro
 The accepted decision is unchanged. Fresh cumulative review is required before scoped
 closure; full actors/departure, final health/clocks/ACKs, Step 8 and Step 12 remain required.
 All six W7 items stay OPEN (41/51), and PR #90 remains draft/unmerged.
+
+### 2026-10-09 — Explicit dispatch attempt correlation
+
+[Complete cumulative round-4 reviews](../reviews/2026-10-09T19-10-39-w7-dispatch-corrections-round-4-review.md)
+verify one High with two schedules: later-retry detached failure defaults to attempt 1,
+and an approved fresh first start can retain the previous retry basis through grace.
+Lifecycle discovers both independently; Authority corroborates after disclosure; Parent
+owns exact-source runtime confirmation, correction and causal removal controls.
+
+All four failed-helper callers now select an explicit attempt. Detached failure uses the
+latest entered attempt; a new first start resets 1 synchronously before its append.
+The [canonical engine architecture](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+owns these mechanics. Five permanent cases join the cumulative controls. Final sixteen-case
+original/fixed/two-removal/restored results are 3/13, 0/16, 2/14, 1/15 and 0/16 fail/pass;
+Parent verifies all 6,290 physical inputs and complete logs, plus private strict/lint/full
+core (117 files / 2,884 cases). Fresh complete cumulative review is required.
+
+Both frozen-head reviewers pass seven originals and 2,879 core cases. Parent verifies
+reports/maps/originals, 17,626 physical input copies and protected inventories. A pre-seal
+historical map attribution error is corrected without changing source or original captures.
+The 647,505-entry shared tree is identical before explicit release at
+`2026-10-09T19:10:39.474325+00:00`. This note leaves the accepted decision unchanged.
+Full actors/public departure/CLI, final health, parked clocks, Step 8 and Step 12 remain
+required. The broader prototype's 38 original CLI failures are unaccepted. All six W7
+items stay OPEN (41/51); PR #90 remains draft/unmerged. No W7 work is deferred.

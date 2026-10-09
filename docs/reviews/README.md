@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 dispatch attempt correlation, round 4](2026-10-09T19-10-39-w7-dispatch-corrections-round-4-review.md):
+  one High with two confirmed schedules; explicit attempt/reset correction and five new
+  permanent cases require NEW complete cumulative review.
+
 - [2026-10-09 — W7 dispatch terminal idempotence, round 3](2026-10-09T18-37-30-w7-dispatch-corrections-round-3-review.md):
   one confirmed retry/deadline High; Parent correction and permanent causal regression
   require fresh complete cumulative review.

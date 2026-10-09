@@ -98,6 +98,8 @@ merged too (PR #85, 2026-08-28).
 > before scoped closure; complete scheduler/dispatch roots stay open.
 > [Complete cumulative round-3 reviews](../reviews/2026-10-09T18-37-30-w7-dispatch-corrections-round-3-review.md) verify a retry/deadline duplicate-terminal High.
 > Parent confirms and corrects it, with a new permanent causal regression; fresh cumulative review remains required.
+> [Complete cumulative round-4 reviews](../reviews/2026-10-09T19-10-39-w7-dispatch-corrections-round-4-review.md) verify two paths of one attempt-correlation High.
+> Parent corrects explicit failure forwarding and first-start reset with five permanent cases; NEW cumulative review is required.
 > A broader private actor prototype exposed CLI closure/lease-handoff failures in root CI.
 > Complete scheduler/dispatch/resume registration must land with shipping host departure;
 > original failures and assertions are retained, and that integration stays required in W7.

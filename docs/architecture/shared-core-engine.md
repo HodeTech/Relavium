@@ -184,7 +184,10 @@ complete actor and public departure acceptance.
 An entered `node:started` append, including a retry's, must recheck stopped state before
 entering fresh work. Initial dispatch checks before arming its node deadline; retry
 dispatch captures its entered attempt number before awaiting persistence so grace can
-settle that same attempt. Cancellation settles the matching entered attempt through
+settle that same attempt. Every new first start resets its basis to 1 before that append,
+including an approved redispatch after a prior retry. All shared failed-settlement callers
+select an explicit attempt; detached failure forwards the latest entered attempt rather
+than defaulting a later retry to 1. Cancellation settles the matching entered attempt through
 the diagnostic backstop, preserving an earlier failure; an already settled/grace-abandoned
 dispatch produces no second terminal. The shared refusal/diagnostic helper also preserves
 a vertex that is already completed, failed or skipped while its terminal append is pending.
