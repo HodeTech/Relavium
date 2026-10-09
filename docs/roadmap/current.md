@@ -49,6 +49,12 @@ merged too (PR #85, 2026-08-28).
 > final Step 12 remain open. All six W7 register items remain OPEN (41/51 closed), PR #90 remains
 > draft/unmerged, and no paid call, credential or maintainer approval is pending.
 
+> **Complete composition review:** [host-closure round 1](../reviews/2026-10-09T23-05-00-w7-host-closure-round-1-review.md)
+> confirms three lifecycle High findings (post-pause receipt cursor, rejected activation joining,
+> post-unmount Ink visibility) and a required shipping-registry acceptance gap. Parent corrections
+> add eighteen permanent cases and strengthen native output assertions. Fresh complete review of
+> the corrected composition remains required before acceptance; Step 8/12 are still open.
+
 > **W7 live status, 2026-10-09:** all five immutable provider records and Step 7's four-round
 > acceptance remain complete. [Two fresh adapter/chain round-3 reviews](../reviews/2026-10-08T23-47-31-w7-owned-adapter-chain-round-3-review.md)
 > accept all 24 cumulative paths/78 hunks through `0c3c185b`; exact-head required CI, coverage,

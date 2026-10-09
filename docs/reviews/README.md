@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 consolidated host closure, cumulative round 1](2026-10-09T23-05-00-w7-host-closure-round-1-review.md):
+  three confirmed lifecycle High findings and one shipping-registry acceptance gap; Parent corrections
+  and eighteen permanent additions require fresh complete review.
+
 - [2026-10-09 — W7 first-start publication, cumulative round 9](2026-10-09T21-43-39-w7-dispatch-corrections-round-9-review.md):
   one independently discovered and Parent-confirmed High; six paired regressions pass after correction,
   with fresh consolidated review required.

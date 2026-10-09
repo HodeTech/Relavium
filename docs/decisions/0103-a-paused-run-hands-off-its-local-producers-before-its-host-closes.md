@@ -1141,3 +1141,15 @@ and output/remedies in [commands.md](../reference/cli/commands.md#exit-codes).
 Two fresh complete cumulative reviews remain required; earlier scoped acceptance is not
 broader host-departure acceptance. Step 8 and final Step 12 remain open. Accepted policy
 above is unchanged.
+
+## 2026-10-10 — Complete composition review corrections
+
+[Consolidated round 1](../reviews/2026-10-09T23-05-00-w7-host-closure-round-1-review.md)
+finds three live lifecycle violations: successful post-pause money publication permanently
+blocks detachment, rejected activation returns before entered heartbeat/timer work retires,
+and Ink hides a terminal after unmount while receipts remain held. Parent confirms and corrects
+all three under the existing accepted policy, with eighteen permanent additions including
+the separately required shipping ToolRegistry quiet-failure/mapping/bounding acceptance paths.
+The canonical engine and CLI contracts above own these mechanisms. This rejected frozen review
+does not accept the later fix; fresh complete independent review remains required. Step 8 and
+final Step 12 remain open, with no new provider capture or approval pending.

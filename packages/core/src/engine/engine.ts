@@ -1716,28 +1716,19 @@ class RunExecution {
   /**
    * Tear down a half-initialized execution that is being REJECTED before it ever ran for the caller — an
    * invalid `resumeFromCheckpoint` form or a later activation fault. Constructor seeding is passive;
-   * any work installed during activation is disarmed and its signal aborted so no orphan poll hits a run the
-   * caller saw rejected (which would also let a natural retry double-attach the same opaque jobId). Emits
+   * any work installed during activation is disarmed and its signal aborted. Entered host work is joined
+   * before the facade can release its fence or let the caller close the host. Emits
    * NOTHING and runs no terminal — it is an abandon, not a settle; the façade drops the execution from `#runs`.
    */
-  abandon(): void {
-    if (this.#settled) {
-      return; // already torn down (a real settle ran) — idempotent
-    }
+  async abandon(): Promise<void> {
     this.#settled = true; // any straggler timer callback now short-circuits on the #settled guard
-    this.#disarmGraceWindow();
+    // An entered heartbeat checks retirement after its raw ACK. `settled` alone deliberately permits
+    // ordinary terminal heartbeats until receipts finish, so abandonment must close that admission too.
+    this.#retiringHost = true;
+    this.#disarmPausedTimers(); // includes partially restored node deadlines and quiescing media timers
     this.#abort.abort();
     this.#checkpoint = undefined;
     this.#clearBudgetDispatchState();
-    this.#stopHeartbeat();
-    for (const disarm of this.#gateTimers.values()) {
-      disarm();
-    }
-    this.#gateTimers.clear();
-    for (const disarm of this.#mediaJobTimers.values()) {
-      disarm();
-    }
-    this.#mediaJobTimers.clear();
     // ADR-0074 §3: release every unknown-basis HOLD before dropping the jobs. A `checkPreEgress` awaiting a job
     // that will now never settle would hang forever — worse than either failing or admitting. This is the reason
     // the bulk paths cannot simply drop the map.
@@ -1745,7 +1736,15 @@ class RunExecution {
       this.#budgetGovernor?.clearLegacyMediaJob(nodeId);
     }
     this.#pendingMediaJobs.clear();
-    this.#disarmRunTimeout();
+    // No new runtime root can enter, but existing raw actors may still transfer children/receipts.
+    // Observe actual quiescence rather than mistaking abort or the failed activation for their ACK.
+    do {
+      await this.#hostWork.join();
+      await this.#money.waitForWrites();
+      await this.#deliveryTail;
+      await this.#parkingWork;
+    } while (!this.#hostWork.isIdle);
+    await this.#hostRetirement;
   }
 
   /** Latch cancellation during passive admission, without scheduling before an owned execution exists. */
@@ -4389,7 +4388,9 @@ class RunExecution {
       generation > 0 &&
       this.#pauseGeneration === generation &&
       this.#pauseEpisode &&
-      primary.publishedCount === this.#pausePublication &&
+      // Receipt publications do not begin a new pause episode. The original pause must have been
+      // consumed, and the CURRENT cursor must be drained, including successful late money receipts.
+      primary.publishedCount >= this.#pausePublication &&
       primary.deliveredCount === primary.publishedCount &&
       this.#resolvedGates.size === resolvedGates &&
       this.#countRunning() === 0 &&
@@ -5938,9 +5939,9 @@ export class WorkflowEngine {
       // resume() validates the gate AFTER rehydration; an unknown_gate / run_not_paused /
       // pending_gate_requires_decision throw must not strand the half-initialized execution in #runs (a retry
       // would then wrongly hit run_already_active) or leave work installed by checkpoint activation.
-      // Abandon (disarm + abort) BEFORE dropping it, else an orphan poll would later hit the
-      // provider for a run the caller saw rejected (and a natural retry could double-attach the same jobId).
-      execution.abandon();
+      // Retire and join BEFORE dropping it or releasing its fence: no returned handle exists to retain
+      // a heartbeat/raw port after this rejection authorizes the caller's host teardown.
+      await execution.abandon();
       this.#runs.delete(input.runId);
       // A cleanup I/O fault must not replace the safe admission refusal with raw host content.
       // This exact-fence release cannot delete a successor; failure leaves only our original TTL.

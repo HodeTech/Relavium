@@ -222,6 +222,7 @@ async function exercise(
               writeSummary: (text) => {
                 summaries.push(text);
               },
+              writeTerminalNotice: (text) => io.io.writeErr(text),
             });
     return {
       ...renderer,
@@ -444,6 +445,7 @@ async function exercise(
     expect(settled).toBe(false);
     expect(closes).toBe(0);
     expect(summaries).toEqual([]);
+    if (mode === 'ink') expect(io.err()).toContain(`Run ${finish}; run cleanup is pending.`);
     expect(await createRunLeasePort(store).read(runId)).toBeDefined();
     if (inputOrder !== undefined) {
       await inputEntered.promise;

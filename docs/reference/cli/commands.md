@@ -367,7 +367,10 @@ relavium budget resume <runId> [--gate <gateId>] --abort
   waiting. A failed cleanup acknowledgement emits `cleanup_failed` and retains the owner rather
   than treating failure as completion. JSON diagnostics are nondurable objects with `type`, `code`
   and `message`; stdout remains the run-event stream. SIGINT stays owned through input and engine
-  acknowledgement. Ink prints one persistent summary for the actual final local outcome;
+  acknowledgement. On receiving an actual terminal, Ink immediately writes a fixed provisional
+  human outcome to stderr (`Run completed/failed/cancelled; run cleanup is pending.`), even if its
+  input mount has already exited or its last frame is throttled. This notice carries no final
+  receipt verdict or provider error text. Ink prints one persistent summary for the actual final local outcome;
   plain/NDJSON add no synthetic terminal or summary.
   The operator can inspect or reject the pending gate through
   `budget resume`. Ordinary human-gate prompts retain

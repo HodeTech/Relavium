@@ -34,6 +34,8 @@ export interface InkRendererOptions {
   readonly stdout?: NodeJS.WriteStream;
   /** Where the persistent final summary is written after unmount — defaults to `stdout`. Injectable for tests. */
   readonly writeSummary?: (text: string) => void;
+  /** Immediate fixed human outcome on stderr; independent of input and host-cleanup ACKs. */
+  readonly writeTerminalNotice?: (text: string) => void;
   /** Mounts the `ink` app — defaults to `ink`'s `render`. Injectable so finalize is tested without a real mount. */
   readonly mount?: (store: RunStore) => InkMountInstance;
 }
@@ -117,10 +119,37 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
 
   let finalized = false;
   let finalizing: Promise<void> | undefined;
+  let terminalNoticed = false;
 
   return {
     onEvent: (event) => {
       store.apply(event);
+      if (
+        !terminalNoticed &&
+        (event.type === 'run:completed' ||
+          event.type === 'run:failed' ||
+          event.type === 'run:cancelled')
+      ) {
+        terminalNoticed = true;
+        // The live mount may already be gone, or its last frame may be throttled. State delivery is
+        // not visible output. This provisional notice carries no final receipt verdict or raw error.
+        const outcome =
+          event.type === 'run:completed'
+            ? 'completed'
+            : event.type === 'run:failed'
+              ? 'failed'
+              : 'cancelled';
+        try {
+          const write =
+            options.writeTerminalNotice ??
+            ((text: string): void => {
+              process.stderr.write(text);
+            });
+          write(`Run ${outcome}; run cleanup is pending.\n`);
+        } catch {
+          // A cosmetic sink fault cannot authorize teardown, change the outcome or print a final summary.
+        }
+      }
     },
     releaseInput: stop,
     suspend: async () => {

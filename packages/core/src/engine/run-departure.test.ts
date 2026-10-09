@@ -228,3 +228,79 @@ for (const receipt of ['committed', 'failed'] as const) {
     expect(await host.runLeases.read(handle.runId)).toBeUndefined();
   });
 }
+
+for (const delivery of ['waiting-reader', 'buffered'] as const) {
+  it(`a successful post-pause money receipt detaches only after its current cursor is drained (${delivery})`, async () => {
+    const host = createInMemoryHost();
+    const release = deferred<void>();
+    let child: Promise<void> | undefined;
+    const handle = new WorkflowEngine({
+      host,
+      executor: {
+        execute: (ctx) => {
+          if (ctx.continueReceipt === undefined) throw new Error('receipt scope required');
+          child = ctx.continueReceipt(async (receipt) => {
+            await release.promise;
+            receipt.updateCost({
+              type: 'cost:updated',
+              nodeId: 'work',
+              model: 'offline',
+              inputTokens: 1,
+              outputTokens: 1,
+              costMicrocents: 17,
+              cumulativeCostMicrocents: 17,
+            });
+            receipt.money.record({
+              nodeId: 'work',
+              model: 'offline',
+              attemptNumber: 1,
+              inputTokens: 1,
+              outputTokens: 1,
+              costMicrocents: 17,
+              priced: true,
+            });
+            await receipt.money.join();
+          });
+          return Promise.resolve(paused);
+        },
+      },
+    }).start({ workflow });
+    const read = await readPause(handle);
+    try {
+      const waiting = delivery === 'waiting-reader' ? read.iterator.next() : undefined;
+      const departure = handle.depart();
+      let settled = false;
+      void departure.then(() => {
+        settled = true;
+      });
+      for (let turn = 0; turn < 30; turn++) await Promise.resolve();
+      expect(settled).toBe(false);
+      release.resolve();
+      await child;
+      if (delivery === 'buffered') expect(await departure).toEqual({ kind: 'continue' });
+      const receipt = await (waiting ?? read.iterator.next());
+      expect(receipt).toMatchObject({ done: false, value: { type: 'cost:attempt_settled' } });
+      if (receipt.done) throw new Error('receipt event required');
+      read.events.push(receipt.value);
+      const result = await (delivery === 'waiting-reader' ? departure : handle.depart());
+      expect(result).toEqual({
+        kind: 'detached',
+        moneyDurability: 'durable',
+        effectNeedsAttention: false,
+      });
+      expect(read.events.filter((event) => event.type === 'run:paused')).toHaveLength(1);
+      expect(read.events.at(-1)?.type).toBe('cost:attempt_settled');
+      expect(await read.iterator.next()).toEqual({ done: true, value: undefined });
+      expect(await host.runLeases.read(handle.runId)).toBeUndefined();
+      expect(host.armedCount() + host.deadlineCount() + host.livenessCount()).toBe(0);
+    } finally {
+      release.resolve();
+      handle.cancel();
+      // Retain the same primary through cleanup, including the deliberately failing control.
+      while (!(await read.iterator.next()).done) {
+        /* consume */
+      }
+      await handle.depart();
+    }
+  });
+}

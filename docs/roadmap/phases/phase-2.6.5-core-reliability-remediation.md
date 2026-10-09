@@ -4564,3 +4564,15 @@ The consolidated increment requires two fresh complete independent review rounds
 scoped reviews do not accept these new bytes or their composition. Step 8 and final Step 12
 remain open; all six W7 register items stay OPEN (41/51). No required work is deferred and
 no paid call, credential or further ADR approval is pending.
+
+### W7 host closure — round 1 corrections, 2026-10-10
+
+[Complete round 1](../../reviews/2026-10-09T23-05-00-w7-host-closure-round-1-review.md)
+rejects the frozen composition for three Parent-confirmed lifecycle High findings and a
+shipping ToolRegistry acceptance gap. The correction retains the current drained cursor after
+post-pause money receipts, joins rejected activation's entered heartbeat/timers before returning,
+and keeps Ink's actual terminal visible independently of input/host ACKs. Eighteen permanent
+additions include native quiet settlement/discard and mapping/bounding final-health controls;
+existing native input/receipt controls now assert visible output. Fresh complete review of the
+corrected composition remains required. Step 8 and Step 12 remain open; no required work is
+deferred and no provider call or further approval is pending.

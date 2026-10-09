@@ -54,6 +54,8 @@ and final whole-wave Step 12. Supplemental ADR-0099–ADR-0103 are Accepted.
 The consolidated ADR-0103 host/actor/MCP/custom-provider/final-health/clock/CLI integration
 is implemented on 2026-10-10 and awaiting two fresh complete independent review rounds.
 Dispatch round 9's first-start publication High is corrected with six paired cases.
+Complete host-closure round 1 verifies three further lifecycle High findings and a shipping
+acceptance gap; Parent corrections add eighteen permanent cases and require fresh complete review.
 Step 8 and final Step 12 remain open; no user approval or provider capture is pending.
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 

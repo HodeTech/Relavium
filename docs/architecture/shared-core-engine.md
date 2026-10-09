@@ -152,6 +152,9 @@ cursor, accepted actors and absolute run/node/gate/media deadlines after every a
 barrier, including exact lease release. A due action follows its existing outcome path. A changed
 episode returns `continue` and restores the original timers. The final synchronous local claim
 revokes callbacks and removes this execution without claiming that a successor remains paused.
+Successful receipt publications after the original pause do not invalidate that episode: the
+initial pause must have been consumed and the current cursor, including those receipts, must be
+fully drained. An unconsumed receipt still requires the existing reader to continue.
 
 Each run handle's existing primary queue privately counts actual publications before offering them
 to a waiting pull or buffer. Delivery advances synchronously only when a buffered pull or waiting
@@ -184,6 +187,11 @@ A noncooperative context read can finish, but cancellation is
 checked before another filter or resolved-text delivery, including a second `read_file` in
 the same reference. Pre-handle resume and scheduler/timer continuations also retain their raw
 lifetimes; a public result cannot close their host while an admitted operation remains pending.
+If checkpoint activation is rejected before returning a handle, abandonment closes runtime-root
+admission, aborts the execution, disarms every installed timer (including partially restored node
+deadlines), and joins entered actors, receipt writes and delivery/parking continuations before
+the facade drops the execution and releases its exact fence. It preserves the original rejection
+and publishes no invented terminal. An already entered heartbeat cannot rearm during abandonment.
 
 The scheduler's node-boundary consumer readiness has a separately registered raw lifetime.
 Only its wait is raced against execution abort, so cancellation can progress while an

@@ -20,7 +20,10 @@ export function selectRenderer(io: CliIo, global: GlobalOptions): RunRenderer {
     // The ink renderer takes the real stdout stream directly (not the CliIo text seam): ink needs a
     // NodeJS.WriteStream for cursor control / raw mode / terminal dimensions, which `writeOut(text)` cannot
     // represent. This path is only reached on an interactive TTY (never in tests — captureIo is not a TTY).
-    return createInkRenderer({ color: global.color });
+    return createInkRenderer({
+      color: global.color,
+      writeTerminalNotice: (text) => io.writeErr(text),
+    });
   }
   // 'plain' covers --json (NDJSON), CI, and no-TTY: NDJSON only under the explicit --json opt-in (ADR-0049).
   return global.json ? createJsonRenderer(io) : createPlainRenderer(io);
