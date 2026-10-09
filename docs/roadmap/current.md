@@ -79,7 +79,9 @@ merged too (PR #85, 2026-08-28).
 > shared-tree audit has zero file/link changes and one qualified `.git` directory mtime change.
 > Fresh startup registers its complete continuation. [Two complete first-round reviews](../reviews/2026-10-09T14-28-09-w7-startup-lifetime-round-1-review.md)
 > and Parent audits verify reentrant clock/timer cancellation; three permanent regressions
-> cover the correction. A NEW complete cumulative round 2 is required before scoped acceptance.
+> cover the correction. [Two NEW complete cumulative round-2 reviews](../reviews/2026-10-09T14-55-12-w7-startup-lifetime-round-2-review.md)
+> and Parent's exact-source/physical-artifact/647,041-entry freeze audits accept all ten
+> paths/sixteen hunks through `5d44b13b`, with zero new confirmed findings and 2,850 core cases per reviewer.
 > Complete MCP startup/all-actor retirement, custom-provider descendants and remaining host departure work
 > and Step 8 atomic compaction/recovery remain open. The ownership/lifecycle
 > Highs, Step 12, final whole-wave CI/coverage/Sonar and all six W7 register items remain open.

@@ -4272,3 +4272,28 @@ health, parked clocks, public departure/primary ACK/CLI teardown, Step 8 and fin
 remain open. Permanently unavailable clocks are not covered by the one-shot initial-fault
 fixtures. All six W7 items remain OPEN (41/51 closed); draft PR #90 is unmerged.
 No additional paid call, credential, user decision or ADR approval is pending.
+
+### W7 fresh-start lifetime — round-2 acceptance, 2026-10-09
+
+[Two NEW complete cumulative reviews](../../reviews/2026-10-09T14-55-12-w7-startup-lifetime-round-2-review.md)
+accept all ten paths / sixteen literal hunks from `e397afcb` through `5d44b13b`, with
+zero new confirmed findings. Each independently passes cold shared/LLM/core builds,
+strict core, purity, scoped lint and 108 core files / 2,850 cases / no skips. Fourteen
+cumulative additions remain supported by the qualified Parent before/fixed/removal
+controls; those controls and root CI are attributed, not rerun as reviewer evidence.
+
+Parent reads both complete reports/maps and verifies exact Git/head/hunk/archive,
+all 34 original captures / 42,364 eligible input copies, private source bytes,
+individual dependencies/workspace remaps, physical artifacts and original temporary
+outputs. Permission protection and separate inventory-control bindings are verified
+without following dependency targets. Both administrative read-path failures and
+direct helper/cwd/readback qualifications remain visible in the record. The complete
+647,041-entry shared-tree comparison has zero differences before explicit freeze
+release and these acceptance edits. The next scheduler prototype remains private and
+unaccepted; its integration failures are outside this frozen review scope.
+
+Only fresh startup/interpolation is accepted here. All remaining engine/pre-handle/
+MCP startup roots, custom-provider descendants, final receipt health, parked clocks,
+public departure/primary ACK/CLI teardown, Step 8 and final Step 12 remain open.
+All six W7 items remain OPEN (41/51 closed); draft PR #90 is unmerged. No additional
+paid call, credential, user decision or ADR approval is pending.

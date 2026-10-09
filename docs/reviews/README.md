@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 fresh-start lifetime, round 2](2026-10-09T14-55-12-w7-startup-lifetime-round-2-review.md):
+  two NEW complete ten-path/sixteen-hunk reviews and Parent artifact/freeze audits accept
+  the scoped increment; remaining actors, public departure and Steps 8/12 stay open.
+
 - [2026-10-09 — W7 fresh-start lifetime, round 1](2026-10-09T14-28-09-w7-startup-lifetime-round-1-review.md):
   complete seven-path/eleven-hunk reviews and Parent audits verify reentrant cancellation;
   three causal regressions cover the correction, with NEW cumulative round 2 required.

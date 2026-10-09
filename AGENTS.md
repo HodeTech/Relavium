@@ -44,7 +44,10 @@ lifetimes are accepted after three cumulative rounds, including getter/receiver 
 permanent cases; [round 3](docs/reviews/2026-10-09T07-06-28-w7-provider-invocation-round-3-review.md)
 includes Parent's artifact and whole-shared-tree audits. MCP transport/handler/fetch lifetimes
 are accepted after five cumulative rounds and 77 permanent cases; [round 5](docs/reviews/2026-10-09T13-37-00-w7-mcp-lifetime-round-5-review.md)
-includes Parent's complete artifact audit and qualified shared-tree comparison. Complete MCP
+includes Parent's complete artifact audit and qualified shared-tree comparison. Fresh-start
+and interpolation lifetimes are accepted after two cumulative rounds and fourteen permanent
+additions; [round 2](docs/reviews/2026-10-09T14-55-12-w7-startup-lifetime-round-2-review.md)
+includes Parent's complete artifact and unchanged shared-tree audits. Complete MCP
 startup/all-actor ownership, custom-provider descendants and host departure remain open, as do
 Step 8 compaction/recovery
 and final whole-wave Step 12. Supplemental ADR-0099–ADR-0103 are Accepted.

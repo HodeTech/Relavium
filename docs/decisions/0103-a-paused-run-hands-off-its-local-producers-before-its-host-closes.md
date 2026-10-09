@@ -891,3 +891,17 @@ The existing decision is unchanged; no runtime dependency or new public contract
 A NEW complete cumulative round 2 is required. One-shot clock-fault tests do not establish
 recovery from a permanently unavailable clock. The other actor/startup roots, final receipt
 health, parked clocks, public departure/CLI teardown, Step 8 and whole W7 remain open.
+
+### 2026-10-09 — Fresh startup/interpolation lifetime acceptance
+
+[Two NEW complete cumulative round-2 reviews and Parent audits](../reviews/2026-10-09T14-55-12-w7-startup-lifetime-round-2-review.md)
+accept the ten-path/sixteen-hunk increment through `5d44b13b`, with no new confirmed
+findings. Both independently pass the seven prescribed checks and 2,850 core cases.
+Parent verifies exact Git/head/hunk/archive and original input identities, all physical
+artifacts/link targets and a zero-change 647,041-entry shared-tree comparison before
+explicit freeze release. Administrative capture and finite/source-only proof limits
+remain in the review record. The accepted decision is unchanged.
+
+This accepts fresh startup and interpolation only. Remaining actor/pre-handle/MCP
+startup roots, custom-provider descendants, final receipt health, parked clocks,
+public departure/CLI teardown, Step 8 and final whole-wave Step 12 remain open.
