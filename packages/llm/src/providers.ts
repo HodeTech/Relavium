@@ -3,6 +3,7 @@ import type { ProviderKind } from '@relavium/shared';
 import { createAnthropicAdapter } from './adapters/anthropic.js';
 import { createGeminiAdapter } from './adapters/gemini.js';
 import { createOpenAiAdapter } from './adapters/openai.js';
+import type { ProviderFetch } from './adapters/invocation-work.js';
 import type { LlmProvider, ProviderId } from './types.js';
 
 /**
@@ -57,7 +58,7 @@ export function providerKind(id: ProviderId): ProviderKind {
 export function createCustomOpenAiProvider(deps: {
   readonly providerId: Extract<ProviderId, 'openai' | 'deepseek'>;
   readonly baseURL: string;
-  readonly fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+  readonly fetch?: ProviderFetch;
 }): LlmProvider {
   // Preserve the factory's actual-host classification: a spelled official URL stays official.
   return createOpenAiAdapter({

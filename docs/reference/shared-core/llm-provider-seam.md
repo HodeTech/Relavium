@@ -241,18 +241,22 @@ type StreamChunk =
   | { type: 'stop'; stopReason: StopReason; usage: Usage }
   | { type: 'error'; error: LlmError };
 
+interface LlmInvocationOptions {
+  readonly retainWork: <T>(factory: () => Promise<T>) => Promise<T>;
+}
+
 interface LlmProvider {
   readonly id: 'anthropic' | 'openai' | 'gemini' | 'deepseek';
   readonly customEndpoint?: boolean; // actual adapter-factory identity; absent means official
-  generate(req: LlmRequest, key: string): Promise<LlmResult>;
-  stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk>;
+  generate(req: LlmRequest, key: string, options?: LlmInvocationOptions): Promise<LlmResult>;
+  stream(req: LlmRequest, key: string, options?: LlmInvocationOptions): AsyncIterable<StreamChunk>;
   readonly supports: CapabilityFlags;  // { tools, streaming, parallelToolCalls, vision, promptCache, reasoning, media } — vision is the derived alias of media.input.image (ADR-0031)
   // ADR-0031 decision #6 — separate-endpoint media generation. The A5 ADR ([ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md))
   // is landed and the SHAPE is final (the additive pollMediaJob `signal` param, 1.AG Section A); the BEHAVIOR
   // is WIRED — `generateMedia` SYNC de-inline (1.AG Section C) + the engine-owned async poll/checkpoint/
   // resume/cancel loop (1.AG Section D). The Sora/Veo/Imagen/TTS ADAPTER impls are 1.AH host-wiring.
-  generateMedia?(req: MediaGenRequest, key: string): Promise<MediaGenResult>;  // sync → { media }; async → { jobId } (Relavium-opaque — never a vendor operation name)
-  pollMediaJob?(jobId: string, key: string, signal?: AbortSignalLike): Promise<MediaJobStatus>; // pending(progress?) | done(media) | failed(LlmError); signal aborts the in-flight poll (1.AG/ADR-0045 §4)
+  generateMedia?(req: MediaGenRequest, key: string, options?: LlmInvocationOptions): Promise<MediaGenResult>;  // sync → { media }; async → { jobId } (Relavium-opaque — never a vendor operation name)
+  pollMediaJob?(jobId: string, key: string, signal?: AbortSignalLike, options?: LlmInvocationOptions): Promise<MediaJobStatus>; // pending(progress?) | done(media) | failed(LlmError); signal aborts the in-flight poll (1.AG/ADR-0045 §4)
   // ADR-0062 context-compaction: per-provider token/context vocabulary, in Relavium/Zod seam types only (no vendor type crosses).
   contextLimit?(model: string): number | undefined;      // the model's context window in tokens; undefined for an unrated/custom model (engine then skips auto-compaction)
   managesOwnContext?(): boolean;                          // provider bounds context itself ⇒ engine skips compaction; false for all current providers
@@ -608,6 +612,35 @@ is optional for standalone chains and sessions without an engine owner; it is ne
 `LlmRequest` data nor a general platform capability, and grants no admission or new provider
 entry after its producing scope ends. The separate generative-media submission transfers its
 raw `generateMedia` Promise in the same way.
+
+**Invocation-local transitive work (ADR-0103).** The chain forwards a separate optional
+`LlmInvocationOptions` argument to `generate`/`stream`; the generative runner forwards it to
+`generateMedia`. This is an additive behavioural signature extension. It is never a field in
+`LlmRequest`, `MediaGenRequest`, providerOptions, SDK RequestInit, a budget quote or durable history.
+Existing implementations with fewer parameters remain assignable; ignoring this option does not
+certify a foreign implementation's hidden descendants as complete.
+
+The controlled OpenAI-compatible adapter transfers one aggregate lifetime before SDK construction
+or entry. It binds that invocation's work and retirement signal into its own client fetch closure,
+including custom-endpoint validated fetch. A lazy stream captures the retainer function and receiver
+at call time and transfers its lifetime only on first pull; ignoring the iterable enters no SDK.
+Return/throw retires fresh entry synchronously even behind a held next. Exact SDK reads/returns,
+request normalization, raw DNS, body next/return and actual native request/incoming-close children
+remain owed independently. An unobservable native Promise never supplies a completion ACK.
+
+SDK success, headers, EOF, dispose, abort and a bounded public result do not replace actual close.
+Retirement vetoes fresh fetch, learned-parameter retry/learning, post-DNS native entry and subsequent
+Sora download. One poll aggregate covers status and completed binary download; each actual transport
+keeps its own close lifetime. Different invocations on the same reusable adapter/fetch do not share
+retirement authority. Standalone calls without options keep their existing API behaviour.
+
+The engine owns each raw media poll, including credential resolution, separately from the old
+submission context. `NodeExecutor.pollMediaJob` receives its own optional third invocation argument;
+the runner forwards it as the provider's fourth argument after its existing post-key abort check.
+Admitted descendants transfer before the raw poll returns. A late poll after terminal cannot pin
+media, charge again or publish another event. This incremental transport contract does not close
+all poll scheduling/accounting actors, official Gemini transport, MCP, final health, parked clocks
+or public departure; their remaining ADR-0103 obligations still require implementation and review.
 
 Registration failure retains its original process-local identity and host provenance, outside
 provider retry/failover classification. A synchronous provider throw retains provider

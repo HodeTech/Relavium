@@ -355,3 +355,16 @@ reports and their sealed controls, exact source restoration and 19-path/53-hunk 
 are independently verified by Parent. The implementation checkpoint above is now accepted
 within this scope. Session/summariser/recovery integration, the wider ownership High,
 ADR-0103 and whole W7 remain open; the earlier checkpoint is retained as dated history.
+
+
+### 2026-10-09 — separate invocation-lifetime compatibility extension
+
+The earlier unchanged-generate/stream-signature statement describes this inert-data ownership
+increment. The later accepted ADR-0103 transitive-lifetime implementation adds an optional,
+platform-free behavioural invocation argument to the existing provider methods; the
+[canonical seam](../reference/shared-core/llm-provider-seam.md#the-per-attempt-deadline) owns its
+contract. No callback enters measured request data, providerOptions, prepared cap metadata,
+SDK RequestInit, quotes or history. This does not extend this ADR's inert-data guarantee to
+separate-endpoint MediaGenRequest, introduce a provider preparation API or replace cap authority.
+The controlled OpenAI-compatible and raw media-poll increment requires its own fresh reviews;
+other descendants and W7 remain open.

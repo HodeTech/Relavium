@@ -826,7 +826,8 @@ export class FallbackChain {
       }
       const call = this.#retainWork(() => {
         record = { ...record, providerInvoked: true };
-        return generate(request, key);
+        const options = this.#invocationOptions();
+        return options === undefined ? generate(request, key) : generate(request, key, options);
       });
       // A `generate()` has no chunks, so there is nothing to commit: a deadline here is always pre-content
       // and may fail over, which is rule 7's other half rather than an exception to it.
@@ -1074,8 +1075,9 @@ export class FallbackChain {
       const openIterator = (): AsyncIterator<StreamChunk> => {
         if (iterator !== undefined) return iterator;
         record = { ...record, providerInvoked: true };
+        const options = this.#invocationOptions();
         const verified = verifyStreamGrammar(
-          stream(request, key),
+          options === undefined ? stream(request, key) : stream(request, key, options),
           entry.provider.id,
           entry.model,
           (observed) => {
@@ -1457,6 +1459,12 @@ export class FallbackChain {
     return raced.value.done === true
       ? { kind: 'done' }
       : { kind: 'chunk', chunk: raced.value.value };
+  }
+
+  #invocationOptions(): import('./types.js').LlmInvocationOptions | undefined {
+    return this.#options.retainWork === undefined
+      ? undefined
+      : { retainWork: <T>(factory: () => Promise<T>) => this.#retainWork(factory) };
   }
 
   /** Register exact producer Promise before invoking it; host-entry failure cannot become failover. */

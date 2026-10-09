@@ -33,6 +33,13 @@ deadline race. A refused registration preserves host-error identity and engages 
 proven pre-egress generative admission is released. Late completion changes lifetime only,
 without a second attempt/cost event, media pin, save or ordinary execution restart. See the
 [canonical chain lifetime contract](llm-provider-seam.md#the-per-attempt-deadline).
+The chain and separate media submission pass that authority through the provider's optional
+invocation argument, outside request data. Each engine-owned media poll creates a new retained
+raw scope, including its key resolution, and forwards a poll-local invocation hook; it never reuses
+the settled submission context. Poll status and binary-download transport children remain owed
+through that invocation's independent aggregate. Existing bounded outcomes and once-only media
+accounting are preserved; full poll-actor/departure certification remains an ADR-0103 obligation.
+
 
 The runner owns the **cost path** itself — one `CostTracker` per node execution and its own `onAttempt`→`cost:updated` — never a host-supplied (shared) tracker, because the executor is shared across concurrent runs.
 

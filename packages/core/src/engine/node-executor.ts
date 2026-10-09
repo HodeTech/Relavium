@@ -27,7 +27,7 @@ import type {
   ToolPolicy,
 } from '@relavium/shared';
 
-import type { MediaJobStatus } from '@relavium/llm';
+import type { LlmInvocationOptions, MediaJobStatus } from '@relavium/llm';
 
 import type { RunEventDraft } from './event-bus.js';
 import type { PlanVertex } from '../run-plan.js';
@@ -302,5 +302,9 @@ export interface NodeExecutor {
    * `signal` aborts the in-flight poll on a run cancel. Optional — an executor with no generative providers
    * (or before Section D is wired) omits it; the engine treats its absence as a host-wiring gap (`internal`).
    */
-  pollMediaJob?(job: MediaJobSubmission, signal: AbortSignalLike): Promise<MediaJobStatus>;
+  pollMediaJob?(
+    job: MediaJobSubmission,
+    signal: AbortSignalLike,
+    options?: LlmInvocationOptions,
+  ): Promise<MediaJobStatus>;
 }

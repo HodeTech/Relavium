@@ -742,3 +742,31 @@ synthetic workflow controls, not new live provider captures. The candidate requi
 own committed full checks and two fresh cumulative review rounds. MCP transitive
 transport sends/readers, media/poll retirement, all engine actors, final receipt health,
 parked clocks, public departure, CLI acknowledgement, Step 8 and whole W7 remain open.
+
+### 2026-10-09 — invocation-local provider and raw-poll integration checkpoint
+
+The next implementation increment transfers the controlled OpenAI-compatible SDK invocation
+lifetime before SDK construction and binds it into that client's fetch closure, with no ambient
+shared scope. Its optional behavioural provider argument is an additive seam extension; the
+[canonical provider seam](../reference/shared-core/llm-provider-seam.md#the-per-attempt-deadline)
+owns the shape. Request-data ownership, cap authority, retry policy, SSRF/TLS admission, opaque
+job identity and provider-bound media accounting are preserved.
+
+The same invocation owns generate, lazy stream, separate image/speech/video submission and
+Sora status plus binary download. Raw SDK operations, body reads/returns and native close
+acknowledgements remain independent of bounded public outcomes. Retirement prevents new entry
+and parameter learning/retry; call-time lazy-stream authority and per-invocation fetch closures
+keep siblings separate. Before-entry host refusal invokes no SDK; a post-transfer refusal keeps
+its original identity outside SDK classifiers while completing only the empty admitted scope.
+
+Validated fetch independently transfers normalization/DNS and a body child before eager Web
+Streams pull, preserving actual next/return/native completion after public cancellation.
+The engine also owns each exact raw poll and its credential resolution, forwarding a poll-local
+hook independently of the already-settled submission context. Late poll completion cannot pin
+media or settle cost again. This checkpoint does not claim that arbitrary foreign ReadableStream
+hidden producers or official Gemini native transport are exposed by the same rail.
+
+Implementation, strictly built causal checks and two NEW complete independent review rounds
+must precede scoped acceptance. MCP, all scheduling/accounting actors and generations, sticky
+final health, original parked clocks, public departure and acknowledged CLI teardown remain
+open. Step 8, Step 12 and all six W7 register items remain open; no whole-wave acceptance follows.

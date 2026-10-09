@@ -4,8 +4,11 @@ import {
   SafeEgressError,
   type EgressDeps,
   type EgressMethod,
+  type EgressWorkOptions,
   type HopResponse,
 } from '@relavium/db';
+
+import { EgressWorkScope, egressWorkEntryFailure } from './egress-work.js';
 
 /**
  * A `fetch`-shaped function that routes EVERY request through the ONE shared host-side SSRF hop
@@ -30,7 +33,16 @@ import {
  * deterministically unit-testable without real network/DNS.
  */
 
-export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+/** Trusted invocation options are separate from RequestInit and never serialized by the SDK. */
+export interface FetchWorkOptions extends EgressWorkOptions {
+  readonly signal?: AbortSignal;
+}
+
+export type FetchLike = (
+  input: string | URL | Request,
+  init?: RequestInit,
+  options?: FetchWorkOptions,
+) => Promise<Response>;
 
 /** Statuses that MUST carry a null body (a `Response` with a body + one of these throws). All ≥ 200 (a `< 200`
  *  status is itself out-of-range for `new Response` — handled by the range check in {@link toResponse}). */
@@ -38,31 +50,51 @@ const NULL_BODY_STATUS: ReadonlySet<number> = new Set([204, 205, 304]);
 
 /** Build the validated `fetch`. `deps` default to Node's real DNS + pinned-HTTPS connect. */
 export function createValidatedFetch(deps: EgressDeps = nodeEgressDeps): FetchLike {
-  return async (input, init) => {
+  return async (input, init, options) => {
+    let work: EgressWorkScope | undefined;
     try {
-      const req = await normalizeRequest(input, init);
-      const hop = await connectValidated(
-        req.url,
-        {
-          // No `localEndpoint`: a custom `base_url` resolving to a private/loopback/metadata address is
-          // REFUSED. ADR-0088 §4 turned the old `allowPrivate: false` into an absent policy — the same
-          // answer, without a boolean that a future edit could flip to "private is fine, anywhere".
-          method: req.method,
-          ...(req.headers === undefined ? {} : { headers: req.headers }),
-          ...(req.body === undefined ? {} : { body: req.body }),
-        },
-        deps,
-        req.signal,
+      const signal = composeEgressSignal(
+        init?.signal ?? (input instanceof Request ? input.signal : undefined),
+        options?.signal,
       );
-      // `toResponse` disposes `hop` on its OWN construction failure (the catch here has no `hop` in scope).
-      return toResponse(hop);
+      assertNotCancelled(signal);
+      work = new EgressWorkScope(options);
+      const admitted = work;
+      const raw = admitted.retainWork(async () => {
+        const req = await admitted.retainWork(() => normalizeRequest(input, init, signal));
+        assertNotCancelled(signal);
+        const hop = await admitted.retainWork(() =>
+          connectValidated(
+            req.url,
+            {
+              // Authored custom URLs retain the existing public-only policy and pinned transport.
+              method: req.method,
+              ...(req.headers === undefined ? {} : { headers: req.headers }),
+              ...(req.body === undefined ? {} : { body: req.body }),
+            },
+            deps,
+            req.signal,
+            admitted,
+          ),
+        );
+        if (signal.aborted) {
+          hop.dispose();
+          assertNotCancelled(signal);
+        }
+        return toResponse(hop, admitted, signal);
+      });
+      return await raceCancellation(raw, signal);
     } catch (err) {
+      const entryFailure = egressWorkEntryFailure(err);
+      if (entryFailure !== undefined) throw entryFailure.error;
       // EVERY escaping error — a bad method (normalizeRequest), a policy/connect fault or a raw resolver/socket
       // throw (connectValidated), or a response-mapping failure — is normalized to ONE reason-only SafeEgressError
       // (never the url/IP/host/key). connectValidated's policy throws are already SafeEgressErrors (preserved).
       throw err instanceof SafeEgressError
         ? err
         : new SafeEgressError('network', 'egress request failed');
+    } finally {
+      work?.seal();
     }
   };
 }
@@ -92,6 +124,7 @@ function inputToUrl(input: string | URL | Request): string {
 async function normalizeRequest(
   input: string | URL | Request,
   init: RequestInit | undefined,
+  signal: AbortSignal,
 ): Promise<NormalizedRequest> {
   const isRequest = input instanceof Request;
   const url = inputToUrl(input);
@@ -101,9 +134,12 @@ async function normalizeRequest(
     // silently downgrading a method (a secret-free, typed failure the SDK surfaces as a request error).
     throw new SafeEgressError('network', `unsupported egress method '${rawMethod}'`);
   }
-  const headers = headersToRecord(init?.headers ?? (isRequest ? input.headers : undefined));
-  const body = await bodyToString(init?.body ?? (isRequest ? input.body : undefined));
-  const signal = composeEgressSignal(init?.signal ?? (isRequest ? input.signal : undefined));
+  let headers = headersToRecord(init?.headers ?? (isRequest ? input.headers : undefined));
+  const normalizedBody = await bodyToString(init?.body ?? (isRequest ? input.body : undefined));
+  if (normalizedBody.contentType !== undefined && headers?.['content-type'] === undefined) {
+    headers = { ...headers, 'content-type': normalizedBody.contentType };
+  }
+  const body = normalizedBody.body;
   return { url, method: rawMethod, headers, body, signal };
 }
 
@@ -117,9 +153,19 @@ const DEFAULT_EGRESS_CEILING_MS = 15 * 60_000; // 15 minutes — a backstop, not
 /** Compose the caller's `AbortSignal` (if any) with the generous {@link DEFAULT_EGRESS_CEILING_MS} backstop.
  *  `AbortSignal.timeout`'s timer is unref'd, so the ceiling never keeps the process alive after a fast call, and
  *  a caller-provided signal still drives cancellation on connect AND during streaming (it fires long before this). */
-function composeEgressSignal(callerSignal: AbortSignal | undefined): AbortSignal {
+function composeEgressSignal(
+  callerSignal: AbortSignal | null | undefined,
+  retirementSignal?: AbortSignal,
+): AbortSignal {
   const ceiling = AbortSignal.timeout(DEFAULT_EGRESS_CEILING_MS);
-  return callerSignal === undefined ? ceiling : AbortSignal.any([callerSignal, ceiling]);
+  const signals = [ceiling];
+  if (callerSignal !== undefined && callerSignal !== null) signals.push(callerSignal);
+  if (retirementSignal !== undefined) signals.push(retirementSignal);
+  return signals.length === 1 ? ceiling : AbortSignal.any(signals);
+}
+
+function assertNotCancelled(signal: AbortSignal): void {
+  if (signal.aborted) throw new SafeEgressError('network', 'egress request cancelled');
 }
 
 /** Flatten a `RequestInit['headers']` (Headers | record | pairs) to a plain record; connectValidated re-sanitizes it.
@@ -141,16 +187,21 @@ function headersToRecord(
 /** Read a request body to a string (connectValidated frames a string body). A chat body is already a JSON string. */
 async function bodyToString(
   body: RequestInit['body'] | ReadableStream<Uint8Array> | null,
-): Promise<string | undefined> {
-  if (body === undefined || body === null) return undefined;
-  if (typeof body === 'string') return body;
-  if (body instanceof Uint8Array) return new TextDecoder().decode(body);
+): Promise<{ readonly body: string | undefined; readonly contentType?: string }> {
+  if (body === undefined || body === null) return { body: undefined };
+  if (typeof body === 'string') return { body };
+  if (body instanceof Uint8Array) return { body: new TextDecoder().decode(body) };
   // A ReadableStream / Blob / URLSearchParams / etc. — read it through a Response (the SDK's chat path never hits this).
-  return await new Response(body).text();
+  const response = new Response(body);
+  const contentType = response.headers.get('content-type');
+  return {
+    body: await response.text(),
+    ...(contentType === null ? {} : { contentType }),
+  };
 }
 
 /** Map a validated {@link HopResponse} to a standard `Response` with a backpressure-aware streaming body. */
-function toResponse(hop: HopResponse): Response {
+function toResponse(hop: HopResponse, work: EgressWorkScope, signal: AbortSignal): Response {
   // `new Response(..., { status })` throws a RangeError for a status outside [200, 599]. A hostile custom endpoint
   // can emit a `999` (or a malformed line ⇒ `statusCode ?? 0`), so guard it into the typed, reason-only failure —
   // never a raw RangeError escaping this wrapper — and reap the socket.
@@ -158,16 +209,19 @@ function toResponse(hop: HopResponse): Response {
     hop.dispose();
     throw new SafeEgressError('network', 'egress returned an out-of-range HTTP status');
   }
-  const headers = hop.headers ?? {};
-  if (NULL_BODY_STATUS.has(hop.status)) {
-    hop.dispose(); // a null-body status must not carry a stream — reap the (empty) socket
-    return new Response(null, { status: hop.status, headers });
-  }
+  let prepared: ReturnType<typeof hopBodyToStream> | undefined;
   try {
-    return new Response(hopBodyToStream(hop), { status: hop.status, headers });
+    // Validate headers before constructing an eager Web Streams body. A mapping failure must
+    // close its transferred body scope as well as request native disposal.
+    const headers = new Headers(hop.headers ?? {});
+    if (NULL_BODY_STATUS.has(hop.status) || headers.get('content-length') === '0') {
+      hop.dispose();
+      return new Response(null, { status: hop.status, headers });
+    }
+    prepared = hopBodyToStream(hop, work, signal);
+    return new Response(prepared.stream, { status: hop.status, headers });
   } catch (err) {
-    // The `Response` constructor rejected the headers (a CR/LF/NUL / codepoint > 255 a swapped transport didn't
-    // filter) — the stream was never consumed, so reap the socket directly + surface a reason-only failure.
+    prepared?.close();
     hop.dispose();
     throw err instanceof SafeEgressError
       ? err
@@ -177,44 +231,123 @@ function toResponse(hop: HopResponse): Response {
 
 /** Wrap the HopResponse's live `AsyncIterable` body in a pull-based `ReadableStream` (backpressure — one chunk per
  *  `pull`, not an eager drain), disposing the socket on end / error / cancel. */
-function hopBodyToStream(hop: HopResponse): ReadableStream<Uint8Array> {
-  const iterator = hop.body[Symbol.asyncIterator]();
+function hopBodyToStream(
+  hop: HopResponse,
+  parent: EgressWorkScope,
+  signal: AbortSignal,
+): { readonly stream: ReadableStream<Uint8Array>; readonly close: () => void } {
+  // Transfer before iterator acquisition or the eager first Web Streams pull.
+  const body = parent.fork();
+  let iterator: AsyncIterator<Uint8Array>;
+  try {
+    iterator = hop.body[Symbol.asyncIterator]();
+  } catch (error) {
+    body.seal();
+    hop.dispose();
+    throw error;
+  }
+  let closed = false;
   let disposed = false;
+  let returnStarted = false;
+  let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
     hop.dispose();
   };
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        const next = await iterator.next();
-        if (next.done === true) {
-          controller.close();
-          dispose();
-        } else {
-          controller.enqueue(next.value);
-        }
-      } catch {
-        // A body-read/socket fault — never surface the raw error (it can carry the host/IP), and reap the socket.
-        dispose();
-        controller.error(new SafeEgressError('network', 'egress response body read failed'));
-      }
-    },
-    cancel() {
+  const returnIterator = (): void => {
+    if (returnStarted) return;
+    returnStarted = true;
+    try {
+      const close = iterator.return?.bind(iterator);
+      if (close === undefined) return;
+      const returned = body.retainWork(() => close(undefined));
+      void returned.catch(() => {
+        // Existing best-effort source cleanup: rejection is observed, actual settlement still owed.
+      });
+    } catch {
+      // A synchronous source return fault completes only that entered operation.
+    }
+  };
+  const finish = (): void => {
+    if (closed) return;
+    closed = true;
+    signal.removeEventListener('abort', onAbort);
+    try {
       dispose();
-      // Best-effort iterator cleanup — a `return()` fault must never escape `cancel()` nor leave a floating promise:
-      // catch a SYNCHRONOUS throw, and attach a no-op `.catch` to an async rejection.
-      try {
-        const returned = iterator.return?.(undefined);
-        if (returned !== undefined) {
-          returned.catch(() => {
-            // ignore — cancel is best-effort and must not throw
-          });
+    } finally {
+      returnIterator();
+      body.seal();
+    }
+  };
+  const onAbort = (): void => {
+    try {
+      finish();
+    } catch {
+      // The controller below reports a fixed diagnosis; native close still has its own retained ACK.
+    }
+    controller?.error(new SafeEgressError('network', 'egress request cancelled'));
+  };
+  try {
+    const stream = new ReadableStream<Uint8Array>({
+      start(value) {
+        controller = value;
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      },
+      async pull(value) {
+        if (closed) return;
+        try {
+          const next = await body.retainWork(() => iterator.next());
+          // A cancellation can win while the source ignores it. Its late result grants no fresh pull
+          // and must never enqueue into an already closed or cancelled Web Streams controller.
+          if (closed) return;
+          if (next.done === true) {
+            try {
+              finish();
+            } catch {
+              value.error(new SafeEgressError('network', 'egress response cleanup failed'));
+              return;
+            }
+            value.close();
+          } else {
+            value.enqueue(next.value);
+          }
+        } catch {
+          if (closed) return;
+          try {
+            finish();
+          } finally {
+            value.error(new SafeEgressError('network', 'egress response body read failed'));
+          }
         }
-      } catch {
-        // ignore — a synchronous return() throw is best-effort cleanup, never propagated
-      }
-    },
+      },
+      cancel() {
+        try {
+          finish();
+        } catch {
+          throw new SafeEgressError('network', 'egress response cleanup failed');
+        }
+      },
+    });
+    return { stream, close: finish };
+  } catch (error) {
+    finish();
+    throw error;
+  }
+}
+
+/** Cancel the public wait while its exact admitted producer and descendants stay retained. */
+async function raceCancellation<T>(raw: Promise<T>, signal: AbortSignal): Promise<T> {
+  let onAbort: () => void = () => {};
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new SafeEgressError('network', 'egress request cancelled'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
   });
+  try {
+    return await Promise.race([raw, cancelled]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
 }

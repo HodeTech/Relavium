@@ -553,6 +553,11 @@ export interface EstimateTokensInput {
   readonly responseFormat?: ResponseFormat | undefined;
 }
 
+/** Trusted, process-local lifetime authority, separate from request data and durable records. */
+export interface LlmInvocationOptions {
+  readonly retainWork: <T>(factory: () => Promise<T>) => Promise<T>;
+}
+
 /**
  * The provider seam itself. A behavioural interface (it carries methods), so it is not a Zod
  * schema. `key` is "the credential the implementation needs" — a resolved provider key on
@@ -575,8 +580,8 @@ export interface LlmProvider {
    * must never withhold a capability a model actually has.
    */
   readonly customEndpoint?: boolean;
-  generate(req: LlmRequest, key: string): Promise<LlmResult>;
-  stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk>;
+  generate(req: LlmRequest, key: string, options?: LlmInvocationOptions): Promise<LlmResult>;
+  stream(req: LlmRequest, key: string, options?: LlmInvocationOptions): AsyncIterable<StreamChunk>;
   readonly supports: CapabilityFlags;
   /**
    * The model's context window in tokens, or `undefined` for an unrated / custom-base-URL model (ADR-0062) —
@@ -602,14 +607,23 @@ export interface LlmProvider {
    * implements SYNC image generation (Section C) and the engine owns the async poll/checkpoint/resume/
    * cancel loop (Section D, A5). The Sora/Veo/Imagen/TTS adapters are 1.AH host-wiring.
    */
-  generateMedia?(req: MediaGenRequest, key: string): Promise<MediaGenResult>;
+  generateMedia?(
+    req: MediaGenRequest,
+    key: string,
+    options?: LlmInvocationOptions,
+  ): Promise<MediaGenResult>;
   /**
    * Poll an async media job by its Relavium-opaque id (A5, [ADR-0045](../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)).
    * `signal` aborts the IN-FLIGHT poll so a run cancel reaches the open provider request, not just the
    * next schedule. The engine drives this loop (1.AG Section D); the OpenAI/Sora adapter implements it at
    * 1.AH A3 (`pollMediaJobSora`), the Gemini/Veo adapter at 1.AH A4.
    */
-  pollMediaJob?(jobId: string, key: string, signal?: AbortSignalLike): Promise<MediaJobStatus>;
+  pollMediaJob?(
+    jobId: string,
+    key: string,
+    signal?: AbortSignalLike,
+    options?: LlmInvocationOptions,
+  ): Promise<MediaJobStatus>;
   /**
    * **Live model discovery** (ADR-0064 §1) — return the models this `key` can currently reach, each mapped
    * to the Relavium {@link ModelListing} INSIDE the adapter (the vendor `models.list()` row is normalized

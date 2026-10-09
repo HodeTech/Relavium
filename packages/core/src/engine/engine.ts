@@ -3437,10 +3437,15 @@ class RunExecution {
     submission: MediaJobSubmission,
   ): Promise<MediaJobStatus> {
     try {
-      const poll = this.#executor.pollMediaJob?.(submission, deadline.signal);
-      if (poll === undefined) {
-        throw new Error('the executor implements no pollMediaJob');
-      }
+      const pollMediaJob = this.#executor.pollMediaJob?.bind(this.#executor);
+      if (pollMediaJob === undefined) throw new Error('the executor implements no pollMediaJob');
+      // Credential resolution, the actual raw poll and each transferred transport child belong
+      // to this poll invocation, independently of the already-settled submission executor.
+      const poll = this.#hostWork.invoke((scope) =>
+        pollMediaJob(submission, deadline.signal, {
+          retainWork: <T>(factory: () => Promise<T>) => scope.continue(() => factory()),
+        }),
+      );
       const raced = await deadline.race(poll);
       if (raced.outcome === 'deadline') {
         throw new Error(

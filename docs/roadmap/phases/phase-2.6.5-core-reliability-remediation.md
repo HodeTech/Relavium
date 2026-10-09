@@ -3990,3 +3990,28 @@ Transitive MCP/custom-provider/media polling, all actors/generations, sticky fin
 parked clocks, public departure and acknowledged CLI teardown remain open. Step 8 and Step 12,
 all six W7 register items and systematic ownership/lifecycle obligations remain open;
 41/51 is unchanged and PR #90 stays draft. Work proceeds with provider/poll lifetime integration.
+
+### W7 invocation-local provider and raw-poll lifetime implemented — 2026-10-09
+
+The controlled OpenAI-compatible SDK now receives a separate invocation-local work capability
+before SDK construction. Its fetch closure, lazy stream, image/speech/video submission and
+Sora status/download retain admitted raw operations and actual transport completion independently
+of bounded public outcomes. The engine separately owns each raw media poll, including credential
+resolution and its own descendants. The [provider seam](../../reference/shared-core/llm-provider-seam.md#the-per-attempt-deadline)
+is the canonical behavioural signature; dated ADR-0102/0103 notes qualify the additive extension.
+
+The private candidate adds 53 permanent cases. Strict seam/purity/type checks, affected-package
+lint, actual library and CLI builds pass; 374 affected test files report 8,063 passing cases and
+12 existing skips. Ten distinct, strictly rebuilt one-mechanism removals fail semantic assertions
+and pass after exact source/test/generated-output restoration. Preserved earlier fixture,
+automation and historical source-custody failures receive no causal or final-baseline credit.
+Actual loopback controls hold only the safe-egress callbacks after native close emission; they
+do not claim that the operating-system resource stayed open after that emission.
+
+Repository `pnpm run ci` passes: 404 files / 9,026 passing cases / 12 existing skips, including
+compiled CLI and offline overflow/replay smoke checks. Eight of 23 lint/type/test tasks and
+five of seven build/format tasks are cached; this is not forced whole-wave validation. Two NEW
+complete independent review rounds still precede scoped acceptance. Official Gemini transport,
+MCP, all actors/generations, sticky final
+health, parked clocks, public departure and acknowledged CLI teardown remain open. Step 8,
+Step 12 and all six W7 register items remain open; 41/51 is unchanged and PR #90 stays draft.

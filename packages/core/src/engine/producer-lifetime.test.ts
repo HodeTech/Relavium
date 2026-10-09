@@ -356,3 +356,76 @@ it('generative entry refusal releases proven pre-egress admission and escapes th
   expect(conservative).toBe(0);
   expect(events.some((e) => e.type.startsWith('cost:'))).toBe(false);
 });
+
+for (const held of ['raw poll', 'transferred child'] as const)
+  it(`media poll keeps its original lease and heartbeat after cancel while ${held} remains owed`, async () => {
+    const raw = latch<import('@relavium/llm').MediaJobStatus>();
+    const child = latch<void>();
+    const entered = latch<void>();
+    let polls = 0;
+    let pins = 0;
+    const p = provider({
+      generateMedia: () => Promise.resolve({ jobId: 'local-test-job', raw: {} }),
+      pollMediaJob: (_id, _key, _signal, options) => {
+        polls += 1;
+        if (options === undefined) throw new Error('poll lost invocation lifetime authority');
+        void options.retainWork(() => child.promise);
+        entered.resolve();
+        return raw.promise;
+      },
+    });
+    const host = createInMemoryHost({
+      mediaStore: {
+        put: () => {
+          pins += 1;
+          return Promise.resolve(`media://sha256-${'1'.repeat(64)}`);
+        },
+        get: () => Promise.resolve(new Uint8Array([1])),
+        readRange: () => Promise.reject(new Error('unexpected range')),
+        resolveForEgress: () => Promise.reject(new Error('unexpected media egress')),
+      },
+    });
+    const clock = timer();
+    const executor = createAgentNodeExecutor(
+      deps(p, clock, { resolveMediaSurface: () => 'generative' }),
+    );
+    const handle = new WorkflowEngine({ host, executor }).start({ workflow: workflow(true) });
+    const events: RunEvent[] = [];
+    const drained = (async () => {
+      for await (const event of handle.events) events.push(event);
+    })();
+    try {
+      await until(() => events.some((event) => event.type === 'run:paused'));
+      host.fireTimers();
+      await entered.promise;
+      const fence = await host.runLeases.read(handle.runId);
+      expect(fence).toBeDefined();
+      handle.cancel();
+      host.fireTimers();
+      await drained;
+      expect(events.at(-1)?.type).toBe('run:cancelled');
+      expect(await host.runLeases.read(handle.runId)).toEqual(fence);
+      expect(host.livenessCount()).toBe(1);
+      const costs = events.filter((event) => event.type.startsWith('cost:')).length;
+      if (held === 'raw poll') child.resolve();
+      else raw.resolve({ state: 'pending' });
+      for (let n = 0; n < 20; n += 1) await Promise.resolve();
+      expect(await host.runLeases.read(handle.runId)).toEqual(fence);
+      expect(host.livenessCount()).toBe(1);
+      child.resolve();
+      raw.resolve({ state: 'done', media: image });
+      await until(async () => (await host.runLeases.read(handle.runId)) === undefined);
+      expect(host.livenessCount()).toBe(0);
+      expect(polls).toBe(1);
+      expect(pins).toBe(0);
+      expect(events.filter((event) => event.type.startsWith('cost:'))).toHaveLength(costs);
+    } finally {
+      child.resolve();
+      raw.resolve({ state: 'pending' });
+      handle.cancel();
+      host.fireTimers();
+      clock.fire();
+      await drained;
+      await until(async () => (await host.runLeases.read(handle.runId)) === undefined);
+    }
+  });

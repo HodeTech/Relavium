@@ -53,6 +53,7 @@ export type {
   // ADR-0064 — the live model-discovery entry returned by LlmProvider.listModels?.
   ModelListing,
   LlmProvider,
+  LlmInvocationOptions,
 } from './types.js';
 
 // The shared-owned seam substrate, re-exported so callers import it from the seam (single

@@ -42,6 +42,7 @@ import {
   makeLlmError,
   type FallbackPlanEntry,
   type LlmMessage,
+  type LlmInvocationOptions,
   type LlmProvider,
   type MediaGenRequest,
   type MediaGenResult,
@@ -272,7 +273,7 @@ export function createAgentNodeExecutor(deps: AgentRunnerDeps): NodeExecutor {
     },
     // The engine owns the async media-job poll loop (1.AG Section D), but provider + credential resolution
     // lives here (the AgentRunnerDeps), so the engine delegates the actual poll back through the executor.
-    pollMediaJob: (job, signal) => pollMediaJobThroughDeps(deps, job, signal),
+    pollMediaJob: (job, signal, options) => pollMediaJobThroughDeps(deps, job, signal, options),
   };
 }
 
@@ -289,6 +290,7 @@ async function pollMediaJobThroughDeps(
   deps: AgentRunnerDeps,
   job: MediaJobSubmission,
   signal: AbortSignalLike,
+  options?: LlmInvocationOptions,
 ): Promise<MediaJobStatus> {
   const provider = deps.resolveProvider(job.provider);
   if (provider === undefined || provider.pollMediaJob === undefined) {
@@ -327,7 +329,9 @@ async function pollMediaJobThroughDeps(
       }),
     };
   }
-  const status = await provider.pollMediaJob(job.jobId, key, signal);
+  const status = await (options === undefined
+    ? provider.pollMediaJob(job.jobId, key, signal)
+    : provider.pollMediaJob(job.jobId, key, signal, options));
   if (
     status.state === 'failed' &&
     status.error.kind === 'context_overflow' &&
@@ -1325,23 +1329,31 @@ async function submitGenerativeMedia(
     throw new Error('generateMedia is absent — the caller checks this before reaching here');
   }
   const generateMedia = provider.generateMedia.bind(provider);
-  let factoryFailure: { readonly error: unknown } | undefined;
-  const invoke = (): Promise<MediaGenResult> => {
+  const retain = <T>(factory: () => Promise<T>): Promise<T> => {
+    if (retainWork === undefined) return factory();
+    let factoryFailure: { readonly error: unknown } | undefined;
     try {
-      onInvoke();
-      return generateMedia(deadline === undefined ? req : { ...req, signal: deadline.signal }, key);
+      return retainWork(() => {
+        try {
+          return factory();
+        } catch (error) {
+          factoryFailure = { error };
+          throw error;
+        }
+      });
     } catch (error) {
-      factoryFailure = { error };
-      throw error;
+      if (factoryFailure !== undefined && Object.is(factoryFailure.error, error)) throw error;
+      throw new MediaRetentionEntryError(error);
     }
   };
-  let call: Promise<MediaGenResult>;
-  try {
-    call = retainWork === undefined ? invoke() : retainWork(invoke);
-  } catch (error) {
-    if (factoryFailure !== undefined && Object.is(factoryFailure.error, error)) throw error;
-    throw new MediaRetentionEntryError(error);
-  }
+  const invoke = (): Promise<MediaGenResult> => {
+    onInvoke();
+    const request = deadline === undefined ? req : { ...req, signal: deadline.signal };
+    return retainWork === undefined
+      ? generateMedia(request, key)
+      : generateMedia(request, key, { retainWork: retain });
+  };
+  const call = retain(invoke);
   if (deadline === undefined) {
     return { kind: 'ok', result: await call };
   }
