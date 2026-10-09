@@ -126,8 +126,10 @@ and message bounds.
 Incoming peer request IDs have a separate ownership map from outgoing SDK request IDs. A handler
 is admitted before delivery to the SDK's queued callback; its actual handler and response send
 remain owed independently. The response ID stays claimed until that exact work finishes, so a
-duplicate peer ID cannot replace a pending reply. Close vetoes a queued handler before its
-factory enters without pretending an already-entered handler has settled.
+duplicate peer ID cannot replace a pending reply. Owner-created duplicate admission refusal
+uses the normal typed `onerror` channel and suppresses that message before SDK delivery,
+instead of throwing the refusal from a native base/lane callback. Close vetoes a queued
+handler before its factory enters without pretending an already-entered handler has settled.
 
 An unused queued reservation is not an entered producer. SDK task/schema rejection can bypass
 the registered handler, and cancellation can suppress its reply. Valid peer cancellation or

@@ -4153,3 +4153,30 @@ Source-transformed and compiled MCP controls are distinguished in the record.
 A NEW complete cumulative round 3 remains required before scoped acceptance. Complete
 MCP startup/all-actor retirement, custom-provider descendants, final receipt health, parked
 clocks, public departure, acknowledged CLI teardown, Step 8 and final Step 12 remain open.
+
+### W7 MCP transport/handler lifetimes — complete round 3 correction, 2026-10-09
+
+[Both independent complete cumulative reviews](../../reviews/2026-10-09T10-51-01-w7-mcp-lifetime-round-3-review.md)
+cover all 35 paths/67 textual hunks through `4f119cab`. Lifecycle identifies one High,
+independently verified by Parent: a duplicate live peer-ID refusal escapes the incoming
+base/lane callback. Installed native callback/read-loop source confirms differing WebSocket
+and legacy SSE consequences; no native duplicate-message crash/leak experiment ran.
+`23310428` reports the content-free typed refusal through the normal error channel and
+suppresses only the refused delivery without replacing its existing live reservation.
+
+Two new local callback controls bring this increment to 70 permanent cases; the installed
+in-memory held-response control is strengthened. Original code fails semantically after
+strict checking/lint. Fixed focused checks, actual MCP build and root CI pass; fresh enforced
+private coverage passes 411 files / 9,100 cases / 12 existing skips, MCP lines 96.42% / branches
+90.41%, with unchanged thresholds. Coverage precedes one additional preservation assertion;
+final focused checks and root CI cover that assertion. CI is cache-qualified, not final forced
+whole-wave proof. Parent reads both final complete reports/maps, audits 52,184/13,978 physical
+inventory entries plus two separately sealed map corrections, and verifies every head/hunk.
+The 646,647-entry shared-tree freeze has zero changes before explicit release. Interrupted
+preliminary work, superseded draft attributions and tooling/setup failures receive no proof credit.
+
+A NEW complete cumulative round 4 remains required before scoped acceptance. Complete MCP
+startup/all-actor retirement, custom-provider descendants, sticky final receipt health, parked
+clocks, public departure, acknowledged CLI teardown, Step 8 and final Step 12 remain open.
+All six W7 register items remain OPEN (41/51 closed); PR #90 remains draft and unmerged.
+No further paid call, credential or new ADR approval is needed.

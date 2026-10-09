@@ -823,3 +823,17 @@ A new permanent regression and root CI/enforced coverage pass. A NEW complete cu
 round 3 remains required; this correction does not accept manager startup, all-actor host
 retirement, public departure, Step 8 or whole W7. Evidence and native/source distinctions are
 in [round 2](../reviews/2026-10-09T09-07-17-w7-mcp-lifetime-round-2-review.md).
+
+## 2026-10-09 — Third MCP review: contain incoming admission refusal
+
+The [complete cumulative third round](../reviews/2026-10-09T10-51-01-w7-mcp-lifetime-round-3-review.md)
+verifies that duplicate live peer-ID admission throws from the incoming base/lane callback.
+Installed SDK WebSocket delivery does not catch that refusal; legacy SSE instead promotes it
+through EventSource to a reader-loop/reconnect failure. Those are source-confirmed boundaries,
+not experimentally reproduced native crashes/leaks. The owner now reports its typed refusal
+through the normal error channel and suppresses only that delivery, preserving the original
+handler/response-send lifetime. The [canonical MCP contract](../reference/shared-core/mcp-integration.md#invocation-and-transport-lifetimes)
+records this correction. Two new local controls plus a strengthened installed in-memory SDK
+control, root CI and enforced private coverage pass. A NEW complete cumulative round 4 remains
+required; complete manager startup/all-actor retirement, final receipt health, parked clocks,
+public departure, acknowledged CLI teardown, Step 8 and whole W7 remain open.
