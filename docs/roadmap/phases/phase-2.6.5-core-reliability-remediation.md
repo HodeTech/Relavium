@@ -4474,3 +4474,14 @@ MCP startup/custom-provider descendants, sticky final health, parked clocks, pri
 host ACK and CLI teardown, Step 8 and final Step 12 remain required. All six W7 items stay
 OPEN (41/51), PR #90 stays draft/unmerged, and no further maintainer action or paid call
 is pending. No work is deferred by this correction.
+
+### 2026-10-09 — Retry/deadline terminal idempotence
+
+[Complete cumulative round-3 reviews](../../reviews/2026-10-09T18-37-30-w7-dispatch-corrections-round-3-review.md) verify one High:
+a retry refusal can publish a second node terminal behind an already pending timeout
+terminal. Lifecycle discovers it independently; Authority corroborates after disclosure.
+Parent confirms the frozen source and corrects the shared terminal-status guard, with
+one new permanent case and passing original/removal/fixed/restored causal controls.
+The accepted decision is unchanged. Fresh cumulative review is required before scoped
+closure; full actors/departure, final health/clocks/ACKs, Step 8 and Step 12 remain required.
+All six W7 items stay OPEN (41/51), and PR #90 remains draft/unmerged.

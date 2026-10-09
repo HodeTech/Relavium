@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 dispatch terminal idempotence, round 3](2026-10-09T18-37-30-w7-dispatch-corrections-round-3-review.md):
+  one confirmed retry/deadline High; Parent correction and permanent causal regression
+  require fresh complete cumulative review.
+
 - [2026-10-09 — W7 inherited dispatch corrections, round 2](2026-10-09T17-58-41-w7-dispatch-corrections-round-2-review.md):
   both complete ten-path/nineteen-hunk reviews verify a retry-start High; Parent's retry
   and synchronous-entry corrections add ten causal cases, with fresh cumulative review required.

@@ -3103,6 +3103,13 @@ class RunExecution {
     error: NodeFailure,
     attemptNumber = 1,
   ): Promise<void> {
+    // A deadline/outcome may already own this node's terminal while its append is still pending.
+    // Refusal/backstop callers must preserve that terminal just like #onOutcome does.
+    const status = this.#states.get(vertex.id)?.status;
+    if (status !== undefined && SETTLED.has(status)) {
+      this.#schedule();
+      return;
+    }
     try {
       await this.#settleFailed(vertex, error, attemptNumber);
     } catch {

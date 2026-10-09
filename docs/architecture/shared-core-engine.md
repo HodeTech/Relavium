@@ -186,7 +186,9 @@ entering fresh work. Initial dispatch checks before arming its node deadline; re
 dispatch captures its entered attempt number before awaiting persistence so grace can
 settle that same attempt. Cancellation settles the matching entered attempt through
 the diagnostic backstop, preserving an earlier failure; an already settled/grace-abandoned
-dispatch produces no second terminal. Unstarted siblings unwind normally. Actual attempt
+dispatch produces no second terminal. The shared refusal/diagnostic helper also preserves
+a vertex that is already completed, failed or skipped while its terminal append is pending.
+Unstarted siblings unwind normally. Actual attempt
 entry also checks after synchronous host deadline setup, captures the executor method
 once, checks again after method acquisition and after context/effect factories, and invokes
 only a live method with its captured receiver. This covers synchronous cancellation at

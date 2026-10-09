@@ -96,6 +96,8 @@ merged too (PR #85, 2026-08-28).
 > Parent-discovered synchronous attempt-entry correction add ten permanent cases;
 > final-source causal controls pass. NEW complete cumulative reviews are required
 > before scoped closure; complete scheduler/dispatch roots stay open.
+> [Complete cumulative round-3 reviews](../reviews/2026-10-09T18-37-30-w7-dispatch-corrections-round-3-review.md) verify a retry/deadline duplicate-terminal High.
+> Parent confirms and corrects it, with a new permanent causal regression; fresh cumulative review remains required.
 > A broader private actor prototype exposed CLI closure/lease-handoff failures in root CI.
 > Complete scheduler/dispatch/resume registration must land with shipping host departure;
 > original failures and assertions are retained, and that integration stays required in W7.
