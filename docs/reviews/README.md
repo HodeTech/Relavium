@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 HTTP producer-entry Sonar dispositions](2026-10-09T04-20-30-w7-http-sonar-disposition-review.md):
+  five current-head labels individually verified and read back as false positives; gate API passes,
+  broader source-quality correction candidates and W7 remain open.
+
 - [2026-10-09 — W7 HTTP descendant lifetimes, round 1](2026-10-09T04-16-24-w7-http-descendants-round-1-review.md):
   two complete 22-path/38-hunk reviews and Parent source/output/freeze audits find no verified issue;
   rejected fixtures and surviving controls remain explicit; fresh round 2 required.
