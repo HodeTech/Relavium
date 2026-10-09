@@ -84,7 +84,11 @@ merged too (PR #85, 2026-08-28).
 > paths/sixteen hunks through `5d44b13b`, with zero new confirmed findings and 2,850 core cases per reviewer.
 > [Both complete scheduler readiness round-1 reviews](../reviews/2026-10-09T15-44-15-w7-scheduler-readiness-round-1-review.md)
 > verify a secondary readiness-diagnostic failure. Its correction has twelve causal readiness
-> regressions and 2,862 passing private core cases; a NEW complete cumulative round 2 is required.
+> regressions and 2,862 passing private core cases. [Two NEW complete cumulative round-2 reviews](../reviews/2026-10-09T16-14-29-w7-scheduler-readiness-round-2-review.md)
+> and Parent's source/artifact/647,245-entry unchanged freeze audit accept all nine paths/ten
+> hunks through `95f3923a`, with zero new readiness findings. Two existing dispatch Highs
+> discovered during separate Parent preparation remain required complete-dispatch work:
+> post-start-append cancellation admission and unsafe detached failure formatting.
 > Complete scheduler/dispatch roots remain open alongside the other lifecycle obligations.
 > Complete MCP startup/all-actor retirement, custom-provider descendants and remaining host departure work
 > and Step 8 atomic compaction/recovery remain open. The ownership/lifecycle

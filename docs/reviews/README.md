@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 scheduler readiness, round 2](2026-10-09T16-14-29-w7-scheduler-readiness-round-2-review.md):
+  two NEW complete nine-path/ten-hunk reviews and Parent artifact/freeze audits accept
+  the scoped increment; two inherited dispatch Highs and remaining W7 work stay open.
+
 - [2026-10-09 — W7 scheduler readiness, round 1](2026-10-09T15-44-15-w7-scheduler-readiness-round-1-review.md):
   complete six-path/seven-hunk reviews verify a secondary diagnostic failure; two causal
   regressions cover the correction, with a NEW complete cumulative round 2 required.

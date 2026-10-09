@@ -4371,3 +4371,19 @@ release precedes the correction. A NEW complete cumulative round 2 is required.
 Complete scheduler/dispatch/timer/resume/pre-handle roots, MCP startup, custom-provider
 descendants, final sticky health, parked clocks, public departure/CLI teardown, Step 8
 and final Step 12 remain required and open; all six W7 register items stay OPEN (41/51).
+
+### W7 scheduler readiness — cumulative round 2 acceptance, 2026-10-09
+
+[Two NEW complete cumulative round-2 reviews and Parent audits](../../reviews/2026-10-09T16-14-29-w7-scheduler-readiness-round-2-review.md)
+accept all nine paths/ten hunks through `95f3923a`, with zero new scoped findings.
+Both independently pass seven prescribed checks and 2,862 core cases. Parent reads
+both complete reports/maps, verifies original source/artifact identities and observes
+an unchanged 647,245-entry shared tree before explicit freeze release. The first-round
+finding and finite/reference-host proof qualifications remain in their dated records.
+
+Two pre-existing dispatch Highs discovered during separate Parent preparation remain
+required: cancellation after an entered start append must refuse and settle fresh
+node work, and detached dispatch failures must avoid raw cause inspection/coercion.
+Both reviewers source-corroborate those defects without accepting the private proposed
+corrections. Complete actor integration, final health/clocks/departure, Step 8 and
+whole-wave Step 12 remain open. The accepted decision is unchanged.
