@@ -304,21 +304,36 @@ describe('MCP raw protocol ownership', () => {
     },
   );
 
-  it('SDK close fulfillment cannot acknowledge native close', async () => {
+  it('SDK close fulfillment and native errors cannot acknowledge native close', async () => {
+    const errors: Error[] = [];
+    const previousErrors: Error[] = [];
     const transport: Transport = {
       start: () => Promise.resolve(),
       send: () => Promise.resolve(),
       close: () => Promise.resolve(),
+      onerror: (error) => {
+        previousErrors.push(error);
+      },
     };
     const owner = new SdkTransportOwner(transport, undefined, undefined, {});
+    owner.onerror = (error) => {
+      errors.push(error);
+    };
     await owner.start();
+    const activeFault = new Error('active native error');
+    transport.onerror?.(activeFault);
+    expect(errors).toEqual([activeFault]);
+    expect(previousErrors).toEqual([activeFault]);
     let complete = false;
     const closing = owner.close();
     void closing.then(() => {
       complete = true;
     });
+    transport.onerror?.(new Error('late native error'));
     await tick();
     expect(complete).toBe(false);
+    expect(errors).toEqual([activeFault]);
+    expect(previousErrors).toEqual([activeFault]);
     transport.onclose?.();
     await closing;
     expect(complete).toBe(true);
@@ -441,4 +456,43 @@ describe('MCP raw protocol ownership', () => {
     expect(parentScope.isComplete).toBe(true);
     await parentScope.done;
   });
+  it.each([false, true])(
+    'transfer-caused synchronous abort has no unhandled guard (throws=%s)',
+    async (throws) => {
+      const [transport, peer] = InMemoryTransport.createLinkedPair();
+      const server = new McpServer({ name: 'synchronous-transfer-cancel', version: '1' });
+      let calls = 0;
+      server.registerTool('echo', { inputSchema: {} }, () => {
+        calls += 1;
+        return { content: [] };
+      });
+      await server.connect(peer);
+      const connection = await connectSdkTransport('transfer-cancel', transport, {
+        timeoutMs: 1000,
+      });
+      const controller = new AbortController();
+      const primary = new Error('trusted synchronous transfer refused');
+      const admitted: Promise<unknown>[] = [];
+      try {
+        const result = connection.callTool('echo', {}, controller.signal, {
+          retainWork: (factory) => {
+            const raw = factory();
+            admitted.push(raw);
+            controller.abort();
+            if (throws) throw primary;
+            return raw;
+          },
+        });
+        if (throws) await expect(result).rejects.toBe(primary);
+        else await expect(result).rejects.toMatchObject({ name: 'McpAbortedError' });
+        expect(calls).toBe(0);
+        expect(admitted).toHaveLength(1);
+        await Promise.all(admitted);
+        await tick();
+      } finally {
+        await connection.close();
+        await server.close();
+      }
+    },
+  );
 });

@@ -5,11 +5,13 @@ import type {
 } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
   JSONRPCMessageSchema,
+  CancelledNotificationSchema,
   isJSONRPCRequest,
   isJSONRPCNotification,
   isJSONRPCResultResponse,
   isJSONRPCErrorResponse,
   type JSONRPCMessage,
+  type JSONRPCResponse,
   type RequestId,
 } from '@modelcontextprotocol/sdk/types.js';
 import { McpLifetimeError, McpWorkScope } from './work-scope.js';
@@ -183,8 +185,8 @@ class ServerReplyWork {
   constructor(parent: McpWorkScope, state: RequestWork | undefined) {
     this.work = parent.fork();
     this.state = state;
-    // The SDK queues the handler after transport delivery. Closing the connection must
-    // not acknowledge that already-queued entry before it actually enters or responds.
+    // The SDK queues the handler after delivery. Reserve its future entry before
+    // exposing the message; cancellation may revoke an entry that never begins.
     const activation = new Promise<void>((resolve) => {
       this.#activate = resolve;
     });
@@ -226,9 +228,19 @@ class ServerReplyWork {
     this.work.seal();
   }
 
+  cancelQueued(): void {
+    // An entered handler already observes the SDK's actual signal. Retiring it before
+    // that queued abort could release its ID before the SDK aborts the old controller.
+    if (!this.#entered && !this.#responseEntered) this.retire();
+  }
+
   retire(): void {
+    if (this.#retired) return;
     this.#retired = true;
-    if (!this.#entered) return;
+    // Revoke future factory entry. SDK task/schema refusal can bypass run(), and
+    // cancellation then suppresses its response. No actual producer exists in this
+    // empty reservation; already-entered handlers/sends retain independent slots.
+    if (!this.#entered) this.#activate();
     this.#stop();
     this.work.seal();
   }
@@ -284,6 +296,7 @@ export class SdkTransportOwner {
     const previousError = base.onerror;
     const previousMessage = base.onmessage;
     base.onclose = () => {
+      for (const reply of this.#serverReplies.values()) reply.retire();
       this.#acknowledgeNativeClose();
       previousClose?.();
       this.onclose?.();
@@ -297,7 +310,7 @@ export class SdkTransportOwner {
     base.onmessage = (message, extra) => {
       if (this.#closed) return;
       previousMessage?.(message, extra);
-      if (isJSONRPCRequest(message)) this.#associateServerRequest(message.id, 'infrastructure');
+      this.#observeServerMessage(message, 'infrastructure');
       this.onmessage?.(message, extra);
     };
   }
@@ -390,14 +403,7 @@ export class SdkTransportOwner {
 
   send(message: JSONRPCMessage, options?: TransportSendOptions): Promise<void> {
     try {
-      if (
-        this.#closed &&
-        (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) &&
-        (typeof message.id === 'string' || typeof message.id === 'number')
-      ) {
-        const reply = this.#serverReplies.get(message.id);
-        reply?.responded();
-      }
+      if (this.#closed) this.#acknowledgeLateResponse(message);
       this.#assertOpen();
       if (isJSONRPCRequest(message) && this.#frame !== undefined) {
         return this.#sendRequest(this.#frame, message, options);
@@ -410,22 +416,7 @@ export class SdkTransportOwner {
         return this.#sendControl(state, message, options);
       }
       if (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) {
-        const id = message.id;
-        if (typeof id !== 'string' && typeof id !== 'number')
-          throw new McpLifetimeError('unreadable');
-        const owner = this.#serverReplies.get(id);
-        if (owner === undefined) throw new McpLifetimeError('unowned');
-        owner.claimResponse();
-        let raw: Promise<void>;
-        try {
-          raw =
-            owner.state === undefined || this.#laneFactory === undefined
-              ? this.#sendBase(owner.work, message, options, owner.state)
-              : this.#sendLaneControl(owner.state, owner.work, message, options);
-        } finally {
-          owner.responded();
-        }
-        return raw;
+        return this.#sendResponse(message, options);
       }
       // Only the initial SDK handshake is unscoped manager infrastructure.
       if (
@@ -437,6 +428,30 @@ export class SdkTransportOwner {
     } catch (error) {
       // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- preserve an opaque original refusal without reflection
       return Promise.reject(error);
+    }
+  }
+
+  #acknowledgeLateResponse(message: JSONRPCMessage): void {
+    if (
+      (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) &&
+      (typeof message.id === 'string' || typeof message.id === 'number')
+    ) {
+      this.#serverReplies.get(message.id)?.responded();
+    }
+  }
+
+  #sendResponse(message: JSONRPCResponse, options?: TransportSendOptions): Promise<void> {
+    const id = message.id;
+    if (typeof id !== 'string' && typeof id !== 'number') throw new McpLifetimeError('unreadable');
+    const owner = this.#serverReplies.get(id);
+    if (owner === undefined) throw new McpLifetimeError('unowned');
+    owner.claimResponse();
+    try {
+      return owner.state === undefined || this.#laneFactory === undefined
+        ? this.#sendBase(owner.work, message, options, owner.state)
+        : this.#sendLaneControl(owner.state, owner.work, message, options);
+    } finally {
+      owner.responded();
     }
   }
 
@@ -562,7 +577,7 @@ export class SdkTransportOwner {
       this.#protocolVersion,
       (message, extra) => {
         if (this.#closed || state.retired) return;
-        if (isJSONRPCRequest(message)) this.#associateServerRequest(message.id, state);
+        this.#observeServerMessage(message, state);
         this.onmessage?.(message, extra);
       },
       (error) => this.onerror?.(error),
@@ -571,6 +586,21 @@ export class SdkTransportOwner {
       },
     );
   }
+  #observeServerMessage(message: JSONRPCMessage, owner: RequestWork | 'infrastructure'): void {
+    if (isJSONRPCRequest(message)) {
+      this.#associateServerRequest(message.id, owner);
+      return;
+    }
+    if (!isJSONRPCNotification(message) || message.method !== 'notifications/cancelled') return;
+    const cancellation = CancelledNotificationSchema.safeParse(message);
+    if (!cancellation.success) return;
+    const id = cancellation.data.params.requestId;
+    // SDK 1.29 ignores zero/empty IDs in _oncancel; its parser rejects malformed
+    // notifications. Never revoke an entry that the installed protocol will continue.
+    if (id === undefined || id === 0 || id === '') return;
+    this.#serverReplies.get(id)?.cancelQueued();
+  }
+
   #associateServerRequest(id: RequestId, owner: RequestWork | 'infrastructure'): void {
     if (this.#serverReplies.has(id)) throw new McpLifetimeError('ambiguous');
     const state = owner === 'infrastructure' ? undefined : owner;
@@ -587,6 +617,9 @@ export class SdkTransportOwner {
     signal: AbortSignal,
     factory: () => Promise<T>,
   ): Promise<T> {
+    // A queued callback from an already-cancelled request must not claim or retire
+    // a later reservation which legitimately reuses that peer ID.
+    if (signal.aborted) return Promise.reject(new McpLifetimeError('retired'));
     const reply = this.#serverReplies.get(id);
     if (reply === undefined) return Promise.reject(new McpLifetimeError('unowned'));
     return reply.run(signal, factory);

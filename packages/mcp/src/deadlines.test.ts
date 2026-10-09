@@ -275,6 +275,30 @@ describe('raceDeadline', () => {
     expect(cancelsDuringTheCall.aborted).toBe(true); // …and it really was cancelled by then
   });
 
+  it('observes cancellation even when synchronous operation entry throws its own refusal', async () => {
+    const { signal, abort, listenerCount } = fakeSignal();
+    const original = new Error('synchronous operation refused');
+    let entries = 0;
+    await expect(
+      raceDeadline(
+        's',
+        'call',
+        openWindow(1000),
+        () => {
+          entries += 1;
+          abort();
+          throw original;
+        },
+        signal,
+      ),
+    ).rejects.toBe(original);
+    expect(entries).toBe(1);
+    expect(listenerCount()).toBe(0);
+    // Flush the actual unhandled-rejection checkpoint. The old guard rejected without
+    // a Promise.race observer; Vitest must reject that run even though the primary was caught.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  });
+
   it('lets the operation’s OWN failure through unchanged, with its own type', async () => {
     // The race adds a verdict; it must not launder one. A server that answers with an error is not a timeout
     // and not a cancellation, and a caller distinguishing the three is what `#204` asks for.

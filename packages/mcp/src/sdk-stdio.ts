@@ -173,7 +173,7 @@ export async function openStdioConnection(
   const owner = new SdkTransportOwner(transport, undefined, undefined, {
     onAcknowledged: release,
     onStartEntered: () => {
-      void latchedPid.read();
+      latchedPid.read();
     },
   });
   return connectSdkTransport(

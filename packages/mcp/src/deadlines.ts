@@ -210,7 +210,16 @@ export async function raceDeadline<T>(
   });
 
   try {
-    return await Promise.race([operation(), guard]);
+    let raw: Promise<T>;
+    try {
+      raw = operation();
+    } catch (error) {
+      // Keep ownership entry synchronous and preserve its primary refusal. Even if
+      // entry synchronously aborts, the race must observe the already-rejected guard.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- preserve the exact opaque operation refusal
+      raw = Promise.reject(error);
+    }
+    return await Promise.race([raw, guard]);
   } catch (err) {
     // Classification time, not listener order. Only OUR OWN deadline verdict is reclassified: an error the
     // operation itself produced is its own answer and must not be laundered into a cancellation.

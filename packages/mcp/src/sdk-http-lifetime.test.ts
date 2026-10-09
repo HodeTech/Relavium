@@ -265,4 +265,125 @@ describe('one initialized SDK HTTP session, independent request ownership', () =
       await connection.close();
     }
   });
+  it.each([
+    {
+      label: 'ordinary',
+      task: false,
+      id: 'cancelled-peer',
+      cancelId: 'cancelled-peer',
+      reason: 'cancelled',
+      replies: 0,
+    },
+    {
+      label: 'task refusal',
+      task: true,
+      id: 'cancelled-peer',
+      cancelId: 'cancelled-peer',
+      reason: 'cancelled',
+      replies: 0,
+    },
+    {
+      label: 'zero ID ignored by SDK',
+      task: true,
+      id: 0,
+      cancelId: 0,
+      reason: 'cancelled',
+      replies: 1,
+    },
+    {
+      label: 'empty ID ignored by SDK',
+      task: true,
+      id: '',
+      cancelId: '',
+      reason: 'cancelled',
+      replies: 1,
+    },
+    {
+      label: 'missing ID ignored by SDK',
+      task: true,
+      id: 'queued-peer',
+      cancelId: undefined,
+      reason: 'cancelled',
+      replies: 1,
+    },
+    {
+      label: 'unmatched ID leaves another reply live',
+      task: true,
+      id: 'queued-peer',
+      cancelId: 'other-peer',
+      reason: 'cancelled',
+      replies: 1,
+    },
+    {
+      label: 'malformed cancellation ignored by SDK',
+      task: true,
+      id: 'cancelled-peer',
+      cancelId: 'cancelled-peer',
+      reason: 7,
+      replies: 1,
+    },
+  ])(
+    'peer $label cancellation releases only its queued reply while the session stays usable',
+    async ({ task, id, cancelId, reason, replies: expectedReplies }) => {
+      const host = parent();
+      let replies = 0;
+      let calls = 0;
+      const fixture = wire(({ message }) => {
+        if (!isJSONRPCRequest(message)) {
+          replies += 1;
+          return Promise.resolve(new Response(null, { status: 202 }));
+        }
+        calls += 1;
+        if (calls > 1) return Promise.resolve(jsonReply(message.id, textResult));
+        const messages: JSONRPCMessage[] = [
+          {
+            jsonrpc: '2.0',
+            id,
+            method: 'ping',
+            ...(task ? { params: { task: { ttl: 1000 } } } : {}),
+          },
+          {
+            jsonrpc: '2.0',
+            method: 'notifications/cancelled',
+            params: { requestId: cancelId, reason },
+          },
+          { jsonrpc: '2.0', id: message.id, result: textResult },
+        ];
+        const bytes = new TextEncoder().encode(
+          messages.map((entry) => 'data: ' + JSON.stringify(entry) + '\n\n').join(''),
+        );
+        return Promise.resolve(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(bytes);
+                controller.close();
+              },
+            }),
+            { headers: { 'content-type': 'text/event-stream' } },
+          ),
+        );
+      });
+      const connection = await openHttpConnection('http', {
+        url: 'https://offline.example/mcp',
+        fetch: fixture.fetch,
+      });
+      try {
+        expect((await connection.callTool('echo', {}, undefined, host.options)).content).toEqual(
+          textResult.content,
+        );
+        host.observe();
+        await tick();
+        expect(host.complete()).toBe(true);
+        expect(replies).toBe(expectedReplies);
+        expect((await connection.callTool('echo', {})).content).toEqual(textResult.content);
+        expect(calls).toBe(2);
+        await connection.close();
+      } finally {
+        // A failed original ghost-reservation assertion must stay a semantic failure, not
+        // turn into a timeout by awaiting the known unresolved close in test cleanup.
+        if (host.complete()) await connection.close();
+      }
+    },
+  );
 });
