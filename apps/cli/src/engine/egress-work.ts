@@ -35,9 +35,9 @@ export class EgressWorkScope {
     this.#done = new Promise<void>((resolve) => {
       this.#acknowledge = resolve;
     });
-    const retain = parent?.retainWork;
-    if (retain === undefined) return;
     try {
+      const retain = parent?.retainWork;
+      if (retain === undefined) return;
       // The only parent transfer is synchronous and precedes producer entry. Descendants then
       // use their own retained scope; the old executor context need not remain open for pulls.
       void retain.call(parent, () => this.#done);

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { EgressDeps, HopRequest, HopResponse } from '@relavium/db';
+import {
+  SafeEgressError,
+  type EgressDeps,
+  type EgressWorkOptions,
+  type HopRequest,
+  type HopResponse,
+} from '@relavium/db';
 
 import { createValidatedFetch } from './validated-fetch.js';
 
@@ -460,5 +466,119 @@ describe('validated fetch trusted retainer receiver', () => {
     } finally {
       native.resolve();
     }
+  });
+});
+
+describe('validated fetch retainer acquisition provenance', () => {
+  it('preserves an opaque throwing getter without reflection or producer entry', async () => {
+    let reflections = 0;
+    let dns = 0;
+    let connections = 0;
+    const original = new Proxy(new Error('opaque getter refusal'), {
+      get() {
+        reflections += 1;
+        throw new Error('opaque getter refusal reflected');
+      },
+      getPrototypeOf() {
+        reflections += 1;
+        throw new Error('opaque getter refusal reflected');
+      },
+    });
+    const authority: EgressWorkOptions = {
+      get retainWork(): NonNullable<EgressWorkOptions['retainWork']> {
+        throw original;
+      },
+    };
+    const fetch = createValidatedFetch({
+      resolveHost: () => {
+        dns += 1;
+        return Promise.resolve(['93.184.216.34']);
+      },
+      openConnection: () => {
+        connections += 1;
+        return Promise.resolve(response());
+      },
+    });
+    let failure: unknown;
+    try {
+      await fetch('https://fixture.example', undefined, authority);
+    } catch (error) {
+      failure = error;
+    }
+    expect(Object.is(failure, original)).toBe(true);
+    expect(reflections).toBe(0);
+    expect(dns).toBe(0);
+    expect(connections).toBe(0);
+  });
+
+  it('selects a getter-backed method once and preserves its receiver and raw descendant', async () => {
+    const native = deferred<void>();
+    function retain<T>(
+      this: { admitted: Promise<unknown>[] },
+      factory: () => Promise<T>,
+    ): Promise<T> {
+      const raw = factory();
+      this.admitted.push(raw);
+      return raw;
+    }
+    const authority = {
+      selected: 0,
+      admitted: new Array<Promise<unknown>>(),
+      get retainWork() {
+        this.selected += 1;
+        return retain;
+      },
+    };
+    const fetch = createValidatedFetch({
+      resolveHost: () => Promise.resolve(['93.184.216.34']),
+      openConnection: (_request, _signal, work) => {
+        void work?.retainWork?.(() => native.promise);
+        return Promise.resolve(response());
+      },
+    });
+    try {
+      expect((await fetch('https://fixture.example', undefined, authority)).status).toBe(204);
+      expect(authority.selected).toBe(1);
+      expect(authority.admitted).toHaveLength(1);
+      let complete = false;
+      const joined = Promise.all(authority.admitted).then(() => {
+        complete = true;
+      });
+      await tick();
+      expect(complete).toBe(false);
+      native.resolve();
+      await joined;
+      expect(complete).toBe(true);
+    } finally {
+      native.resolve();
+    }
+  });
+
+  it('keeps an entered resolver fault on the ordinary reason-only network boundary', async () => {
+    const original = new Error('private resolver detail');
+    const admitted: Promise<unknown>[] = [];
+    const fetch = createValidatedFetch({
+      resolveHost: () => {
+        throw original;
+      },
+      openConnection: () => Promise.resolve(response()),
+    });
+    let failure: unknown;
+    try {
+      await fetch('https://fixture.example', undefined, {
+        retainWork: (factory) => {
+          const raw = factory();
+          admitted.push(raw);
+          return raw;
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(Object.is(failure, original)).toBe(false);
+    expect(failure).toBeInstanceOf(SafeEgressError);
+    expect(failure).toMatchObject({ code: 'network', message: 'egress request failed' });
+    expect(admitted).toHaveLength(1);
+    await Promise.all(admitted);
   });
 });
