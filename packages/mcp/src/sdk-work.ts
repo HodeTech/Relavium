@@ -328,6 +328,12 @@ export class SdkTransportOwner {
   get nativeCloseAcknowledged(): boolean {
     return this.#nativeClose !== undefined && this.#nativeAcknowledge === undefined;
   }
+  /** Package-internal cardinality of control lanes still owned by live requests. */
+  get pendingControlLaneCount(): number {
+    let count = 0;
+    for (const state of this.#live) count += state.controls.size;
+    return count;
+  }
   setProtocolVersion(version: string): void {
     this.#protocolVersion = version;
     this.#base.setProtocolVersion?.(version);
@@ -554,6 +560,9 @@ export class SdkTransportOwner {
   ): Promise<void> {
     const lane = this.#newLane(state, parent);
     state.controls.add(lane);
+    // Send settlement can precede native close/body cleanup. Release references only on the
+    // exact lane acknowledgement, while the parent request may still remain active.
+    void lane.work.done.then(() => state.controls.delete(lane));
     let raw: Promise<void>;
     try {
       raw = lane.send(message, options);
