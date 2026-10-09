@@ -162,7 +162,10 @@ ownership acquisition or context resolution. A terminal can remain visible while
 pending; retirement keeps an already held exact fence and its heartbeat until the root finishes.
 An acquisition entered before cancellation still owes release of its returned exact fence.
 After each startup await, a stopped execution refuses fresh start publication, acquisition,
-context entry or scheduling. A noncooperative context read can finish, but cancellation is
+context entry or scheduling. Synchronous initial clock and timer callbacks are also cancellation
+boundaries: startup rechecks before its next entry, and timeout setup disposes a disarm receipt
+returned after cancellation rather than installing a timer after the terminal sweep.
+A noncooperative context read can finish, but cancellation is
 checked before another filter or resolved-text delivery, including a second `read_file` in
 the same reference. This covers fresh startup, not the still-open pre-handle resume and
 complete scheduler/timer actor integration.

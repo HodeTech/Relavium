@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 fresh-start lifetime, round 1](2026-10-09T14-28-09-w7-startup-lifetime-round-1-review.md):
+  complete seven-path/eleven-hunk reviews and Parent audits verify reentrant cancellation;
+  three causal regressions cover the correction, with NEW cumulative round 2 required.
+
 - [2026-10-09 — W7 MCP transport and protocol lifetimes, round 5](2026-10-09T13-37-00-w7-mcp-lifetime-round-5-review.md):
   two fresh complete 38-path/70-hunk reviews and Parent artifact audits accept the scoped
   increment; capture/map/directory-mtime qualifications remain explicit, with whole-host/W7 work open.

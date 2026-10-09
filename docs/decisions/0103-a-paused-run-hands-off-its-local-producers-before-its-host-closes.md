@@ -877,3 +877,17 @@ This is staged implementation, pending two fresh complete independent review rou
 not close scheduler/dispatch/timer/resume or pre-handle roots, MCP startup, custom-provider
 descendants, final semantic receipt health, parked clocks, public departure/CLI teardown,
 Step 8 or final Step 12. The accepted decision and public departure requirements are unchanged.
+
+### 2026-10-09 — First startup review: synchronous cancellation boundaries
+
+[Two complete first-round reviews and Parent source/runtime/artifact audits](../reviews/2026-10-09T14-28-09-w7-startup-lifetime-round-1-review.md)
+verify that an initial clock, elapsed-clock or timer callback can synchronously cancel the
+fresh execution before its first awaited lookup. The original continuation still enters
+that lookup and retains a newly armed timer after the terminal sweep. Startup now rechecks
+these synchronous returns, and timeout setup disposes a disarm receipt returned after
+cancellation. Three permanent reference-host cases and causal removals cover the correction.
+The existing decision is unchanged; no runtime dependency or new public contract is added.
+
+A NEW complete cumulative round 2 is required. One-shot clock-fault tests do not establish
+recovery from a permanently unavailable clock. The other actor/startup roots, final receipt
+health, parked clocks, public departure/CLI teardown, Step 8 and whole W7 remain open.

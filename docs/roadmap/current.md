@@ -77,6 +77,9 @@ merged too (PR #85, 2026-08-28).
 > and Parent's complete source/artifact audits accept all 38 paths/70 hunks through `99c46bbd`,
 > with no new confirmed finding and 268 independently passing cases per reviewer. The full
 > shared-tree audit has zero file/link changes and one qualified `.git` directory mtime change.
+> Fresh startup registers its complete continuation. [Two complete first-round reviews](../reviews/2026-10-09T14-28-09-w7-startup-lifetime-round-1-review.md)
+> and Parent audits verify reentrant clock/timer cancellation; three permanent regressions
+> cover the correction. A NEW complete cumulative round 2 is required before scoped acceptance.
 > Complete MCP startup/all-actor retirement, custom-provider descendants and remaining host departure work
 > and Step 8 atomic compaction/recovery remain open. The ownership/lifecycle
 > Highs, Step 12, final whole-wave CI/coverage/Sonar and all six W7 register items remain open.

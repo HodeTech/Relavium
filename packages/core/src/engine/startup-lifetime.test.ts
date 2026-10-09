@@ -43,6 +43,83 @@ function workflow(context = false, timeoutMs?: number) {
   );
 }
 
+for (const cancelAt of ['initial-clock', 'elapsed-clock', 'timer'] as const)
+  it(`refuses fresh startup after reentrant cancellation from ${cancelAt}`, async () => {
+    const base = createInMemoryHost();
+    let latestId = '';
+    let clockReads = 0;
+    let cancelled = false;
+    let lookups = 0;
+    let executions = 0;
+    let workTimerEntries = 0;
+    const cancel = () => {
+      if (cancelled) return;
+      cancelled = true;
+      engine.cancel(latestId);
+    };
+    const host: typeof base = {
+      ...base,
+      ids: { newId: () => (latestId = base.ids.newId()) },
+      clock: {
+        now: () => {
+          clockReads += 1;
+          if (
+            (cancelAt === 'initial-clock' && clockReads === 1) ||
+            (cancelAt === 'elapsed-clock' && clockReads === 2)
+          )
+            cancel();
+          return base.clock.now();
+        },
+      },
+      setTimer: (...args) => {
+        if (args[2] === 'work') workTimerEntries += 1;
+        const disarm = base.setTimer(...args);
+        if (cancelAt === 'timer' && args[2] === 'work') cancel();
+        return disarm;
+      },
+      store: {
+        ...base.store,
+        resolveWorkflowId: (name) => {
+          lookups += 1;
+          return base.store.resolveWorkflowId(name);
+        },
+        persistEvent: (...args) => base.store.persistEvent(...args),
+        listInterruptedRuns: () => base.store.listInterruptedRuns(),
+        readWorkflowSnapshot: (runId) => base.store.readWorkflowSnapshot(runId),
+      },
+    };
+    const engine = new WorkflowEngine({
+      host,
+      executor: {
+        execute: () => {
+          executions += 1;
+          return Promise.resolve({ kind: 'completed', output: '' });
+        },
+      },
+    });
+    const handle = engine.start({ workflow: workflow(false, 50) });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) events.push(event);
+    expect(cancelled).toBe(true);
+    expect(events).toMatchObject([{ type: 'run:cancelled' }]);
+    expect({
+      lookups,
+      executions,
+      workTimers: host.armedCount(),
+      deadlineTimers: host.deadlineCount(),
+      livenessTimers: host.livenessCount(),
+      workTimerEntries,
+    }).toEqual({
+      lookups: 0,
+      executions: 0,
+      workTimers: 0,
+      deadlineTimers: 0,
+      livenessTimers: 0,
+      workTimerEntries: cancelAt === 'timer' ? 1 : 0,
+    });
+    expect(await host.runLeases.read(handle.runId)).toBeUndefined();
+  });
+
 for (const fault of ['clock', 'timer'] as const)
   it(`routes a synchronous initial ${fault} failure through the startup terminal boundary`, async () => {
     const base = createInMemoryHost();

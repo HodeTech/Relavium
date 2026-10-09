@@ -4247,3 +4247,28 @@ scheduler/dispatch/timer/resume and pre-handle actors, MCP startup, custom-provi
 final receipt health, parked clocks, public departure/CLI teardown, Step 8 and final Step 12
 remain open. All six W7 register items remain OPEN (41/51); PR #90 stays draft and unmerged.
 No paid call, credential or new ADR approval is needed.
+
+### W7 fresh-start lifetime — round-1 correction, 2026-10-09
+
+[Both complete cumulative reviews](../../reviews/2026-10-09T14-28-09-w7-startup-lifetime-round-1-review.md)
+cover seven paths / eleven literal hunks through `15ea6021`; each passes 108 core files /
+2,847 cases and all prescribed cold-build/strict/purity/lint checks. Authority independently
+finds reentrant clock/timer cancellation, corroborated by Parent's exact-head private
+runtime controls. Lifecycle reports no additional finding. Parent's complete physical and
+Git/source audits preserve all original inputs/logs and capture qualifications; the whole
+646,973-entry shared-tree comparison has zero differences before explicit freeze release.
+
+The correction stops fresh lookup/timer entry after synchronous cancellation and disarms
+a timer receipt returned after the terminal sweep. Three new permanent cases bring this
+scoped increment to fourteen additions. Parent's two focused files pass 51 cases; final
+before-fix production fails three, and isolated elapsed-clock/late-receipt/post-arm removals
+fail one/one/two respectively before exact restoration passes. These are controlled reference
+host/source tests, not real timer-process, native SQLite, compiled CLI or provider evidence.
+The first counterfactual driver's wrong expected failure count is preserved and qualified.
+
+A NEW complete cumulative round 2 is required before fresh-start scoped acceptance. All
+other engine/pre-handle/MCP startup roots, custom-provider descendants, final semantic receipt
+health, parked clocks, public departure/primary ACK/CLI teardown, Step 8 and final Step 12
+remain open. Permanently unavailable clocks are not covered by the one-shot initial-fault
+fixtures. All six W7 items remain OPEN (41/51 closed); draft PR #90 is unmerged.
+No additional paid call, credential, user decision or ADR approval is pending.

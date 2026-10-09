@@ -939,7 +939,9 @@ class RunExecution {
   async #begin(): Promise<void> {
     try {
       this.#startEpochMs = Date.parse(this.#host.clock.now());
+      if (this.#settled || this.#abort.signal.aborted) return;
       this.#armRunTimeout();
+      if (this.#settled || this.#abort.signal.aborted) return;
       this.#workflowId = await this.#host.store.resolveWorkflowId(this.#workflow.workflow.id);
       if (this.#settled || this.#abort.signal.aborted) return;
       await this.#emitDurable({
@@ -1011,6 +1013,7 @@ class RunExecution {
    */
   #armRunTimeout(): void {
     this.#disarmRunTimeout();
+    if (this.#settled || this.#abort.signal.aborted) return;
     const timeoutMs = this.#plan.timeoutMs;
     if (timeoutMs === undefined) {
       return;
@@ -1035,13 +1038,21 @@ class RunExecution {
     // half had this clamp from the Step 3 review and the run half twenty-five lines away did not; same
     // exposure, same one-line fix, simply not carried across.
     const remainingMs = Math.max(0, Math.min(timeoutMs, timeoutMs - this.#elapsedMs()));
-    this.#runTimeoutDisarm = armLongTimer(
+    if (this.#settled || this.#abort.signal.aborted) return;
+    const disarm = armLongTimer(
       remainingMs,
       () => {
         void this.#onRunTimeout(timeoutMs);
       },
       (ms, fire) => this.#host.setTimer(ms, fire, 'work'),
     );
+    // A host timer factory can reenter cancellation before returning its cleanup receipt. The
+    // terminal sweep cannot see that receipt yet, so dispose it here instead of installing it late.
+    if (this.#settled || this.#abort.signal.aborted) {
+      disarm();
+      return;
+    }
+    this.#runTimeoutDisarm = disarm;
   }
 
   /**
