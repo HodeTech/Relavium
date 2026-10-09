@@ -4203,3 +4203,24 @@ startup/all-actor retirement, custom-provider descendants, final receipt health,
 public departure, acknowledged CLI teardown, Step 8 and final Step 12 remain open. All six W7
 register items remain OPEN (41/51); PR #90 remains draft and unmerged. No paid call or user
 approval is pending.
+
+### W7 MCP transport/handler lifetimes — scoped round 5 acceptance, 2026-10-09
+
+[Two fresh complete cumulative reviews and Parent audits](../../reviews/2026-10-09T13-37-00-w7-mcp-lifetime-round-5-review.md)
+accept all 38 paths/70 literal hunks through `99c46bbd`. Both cold-build the private libraries,
+pass strict MCP/CLI checks and scoped lint, and independently pass all 18 files/268 cases.
+The increment contains 77 added permanent cases; no new confirmed finding remains. CLI proof
+is source Vitest, not compiled CLI. Earlier mutations/root CI/coverage remain separately
+attributed evidence. Parent verifies both full reports/maps, original inputs/outputs, exact
+Git head/hunk bytes, all physical inventories and a separately sealed attribution correction.
+
+The 646,773-entry shared-tree comparison has zero regular-file or symlink changes. One `.git`
+directory mtime change remains qualified; both snapshots are preserved without a false
+identical-tree claim. Explicit freeze release precedes further development-source edits.
+Current required CI/coverage pass; Sonar and final whole-wave gates remain open.
+
+Next implement complete engine actor/pre-handle and MCP startup ownership, then final receipt
+health and parked clocks, public departure/primary ACK and acknowledged CLI teardown. Each
+increment retains its own causal checks, commit and fresh independent review rounds. Step 8
+atomic compaction/recovery follows; final Step 12 and all six W7 register items remain OPEN
+(41/51 closed). PR #90 remains draft/unmerged. No paid call, credential or user approval is pending.

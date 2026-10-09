@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 MCP transport and protocol lifetimes, round 5](2026-10-09T13-37-00-w7-mcp-lifetime-round-5-review.md):
+  two fresh complete 38-path/70-hunk reviews and Parent artifact audits accept the scoped
+  increment; capture/map/directory-mtime qualifications remain explicit, with whole-host/W7 work open.
+
 - [2026-10-09 — W7 MCP transport and protocol lifetimes, round 4](2026-10-09T12-58-01-w7-mcp-lifetime-round-4-review.md):
   complete 36-path/68-hunk reviews confirm completed control-lane retention; corrected
   reference release passes CI/coverage and seven causal regressions, with fresh round 5 required.

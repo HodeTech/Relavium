@@ -73,8 +73,11 @@ merged too (PR #85, 2026-08-28).
 > completed control-lane reference retention. Correction `37220a95` releases only fully
 > acknowledged lanes and passes actual root CI; seven new causal regressions and fresh enforced
 > private coverage pass (412 files / 9,107 cases / 12 skips; MCP branches 90.68%).
-> A NEW complete cumulative independent round 5 is required before acceptance. Complete MCP startup/all-actor
-> retirement, custom-provider descendants and remaining host departure work
+> [Two NEW complete cumulative round-5 reviews](../reviews/2026-10-09T13-37-00-w7-mcp-lifetime-round-5-review.md)
+> and Parent's complete source/artifact audits accept all 38 paths/70 hunks through `99c46bbd`,
+> with no new confirmed finding and 268 independently passing cases per reviewer. The full
+> shared-tree audit has zero file/link changes and one qualified `.git` directory mtime change.
+> Complete MCP startup/all-actor retirement, custom-provider descendants and remaining host departure work
 > and Step 8 atomic compaction/recovery remain open. The ownership/lifecycle
 > Highs, Step 12, final whole-wave CI/coverage/Sonar and all six W7 register items remain open.
 > Draft PR #90 is unmerged; no further paid call, credential or ADR approval is needed.

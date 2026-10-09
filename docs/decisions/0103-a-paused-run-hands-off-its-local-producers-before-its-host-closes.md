@@ -850,3 +850,16 @@ are reference/lifetime controls, not native heap or GC measurements. The [canoni
 owns the rule. A NEW complete cumulative round 5 remains required. Complete manager startup,
 all-actor/custom-provider retirement, final receipt health, parked clocks, public departure,
 acknowledged CLI teardown, Step 8 and whole W7 remain open.
+
+## 2026-10-09 — Fifth MCP review: scoped transport acceptance
+
+[Two fresh complete cumulative reviews](../reviews/2026-10-09T13-37-00-w7-mcp-lifetime-round-5-review.md)
+and Parent's full source/artifact audits accept all 38 changed paths/70 literal hunks through
+`99c46bbd`. Both independently pass cold builds, strict checks, scoped lint and 268 existing
+cases; no new confirmed finding remains. The record preserves separately corrected review
+attributions, original capture limits and the qualified shared-tree directory-mtime difference.
+The [canonical MCP contract](../reference/shared-core/mcp-integration.md#invocation-and-transport-lifetimes)
+remains unchanged. This accepts only transport/protocol/CLI-fetch lifetime integration.
+Complete manager startup/all-engine actor ownership, custom-provider descendants, sticky final
+receipt health, parked clocks, public departure, acknowledged CLI teardown, Step 8 and whole
+W7 remain open. No new policy or dependency is introduced by this acceptance checkpoint.

@@ -156,8 +156,11 @@ are accepted with 23 new permanent cases, passing root CI, two fresh complete cu
 rounds and Parent artifact/freeze audits. Invocation-local provider/raw-poll lifetimes are accepted
 after three cumulative rounds, including getter/receiver corrections and 57 permanent cases;
 [the complete round-3 record](docs/reviews/2026-10-09T07-06-28-w7-provider-invocation-round-3-review.md)
-includes Parent's artifact and whole-shared-tree audits. Transitive MCP/custom-provider,
-host departure, Step 8 and final Step 12 remain open. Systematic review's
+includes Parent's artifact and whole-shared-tree audits. MCP transport/handler/fetch lifetimes
+are accepted after five cumulative rounds and 77 permanent cases; [round 5](docs/reviews/2026-10-09T13-37-00-w7-mcp-lifetime-round-5-review.md)
+includes Parent's complete artifact audit and qualified shared-tree comparison. Complete MCP
+startup/all-actor ownership, custom-provider descendants, host departure, Step 8 and final
+Step 12 remain open. Systematic review's
 ownership/lifecycle obligations remain
 open until that integration is independently verified.
 
