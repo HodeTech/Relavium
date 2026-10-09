@@ -310,7 +310,7 @@ export class SdkTransportOwner {
     base.onmessage = (message, extra) => {
       if (this.#closed) return;
       previousMessage?.(message, extra);
-      this.#observeServerMessage(message, 'infrastructure');
+      if (!this.#observeServerMessage(message, 'infrastructure')) return;
       this.onmessage?.(message, extra);
     };
   }
@@ -577,7 +577,7 @@ export class SdkTransportOwner {
       this.#protocolVersion,
       (message, extra) => {
         if (this.#closed || state.retired) return;
-        this.#observeServerMessage(message, state);
+        if (!this.#observeServerMessage(message, state)) return;
         this.onmessage?.(message, extra);
       },
       (error) => this.onerror?.(error),
@@ -586,23 +586,29 @@ export class SdkTransportOwner {
       },
     );
   }
-  #observeServerMessage(message: JSONRPCMessage, owner: RequestWork | 'infrastructure'): void {
+  #observeServerMessage(message: JSONRPCMessage, owner: RequestWork | 'infrastructure'): boolean {
     if (isJSONRPCRequest(message)) {
-      this.#associateServerRequest(message.id, owner);
-      return;
+      return this.#associateServerRequest(message.id, owner);
     }
-    if (!isJSONRPCNotification(message) || message.method !== 'notifications/cancelled') return;
+    if (!isJSONRPCNotification(message) || message.method !== 'notifications/cancelled')
+      return true;
     const cancellation = CancelledNotificationSchema.safeParse(message);
-    if (!cancellation.success) return;
+    if (!cancellation.success) return true;
     const id = cancellation.data.params.requestId;
     // SDK 1.29 ignores zero/empty IDs in _oncancel; its parser rejects malformed
     // notifications. Never revoke an entry that the installed protocol will continue.
-    if (id === undefined || id === 0 || id === '') return;
+    if (id === undefined || id === 0 || id === '') return true;
     this.#serverReplies.get(id)?.cancelQueued();
+    return true;
   }
 
-  #associateServerRequest(id: RequestId, owner: RequestWork | 'infrastructure'): void {
-    if (this.#serverReplies.has(id)) throw new McpLifetimeError('ambiguous');
+  #associateServerRequest(id: RequestId, owner: RequestWork | 'infrastructure'): boolean {
+    if (this.#serverReplies.has(id)) {
+      // Native WebSocket callbacks do not catch delivery errors. Refuse this message through the
+      // normal protocol error channel without escaping its callback or replacing the live owner.
+      this.onerror?.(new McpLifetimeError('ambiguous'));
+      return false;
+    }
     const state = owner === 'infrastructure' ? undefined : owner;
     // Admit the protocol handler BEFORE exposing an incoming request to the SDK.
     // Its reply can still owe work after the original tools/call has settled.
@@ -611,6 +617,7 @@ export class SdkTransportOwner {
     void reply.work.done.then(() => {
       if (this.#serverReplies.get(id) === reply) this.#serverReplies.delete(id);
     });
+    return true;
   }
   handleServerRequest<T>(
     id: RequestId,

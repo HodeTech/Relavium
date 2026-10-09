@@ -1,6 +1,11 @@
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { PingRequestSchema, isJSONRPCResultResponse } from '@modelcontextprotocol/sdk/types.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import {
+  PingRequestSchema,
+  isJSONRPCResultResponse,
+  type JSONRPCMessage,
+} from '@modelcontextprotocol/sdk/types.js';
 import { describe, expect, it } from 'vitest';
 import { OwnedSdkClient } from './sdk-client.js';
 import { SdkTransportOwner } from './sdk-work.js';
@@ -27,10 +32,96 @@ async function connected() {
 }
 
 describe('actual installed SDK request handler ownership', () => {
+  it.each(['base', 'lane'] as const)(
+    'reports refused %s callback admission without throwing or replacing live handler work',
+    async (path) => {
+      const target = (): Transport => ({
+        start: () => Promise.resolve(),
+        send: () => Promise.resolve(),
+        close: () => Promise.resolve(),
+      });
+      const base = target();
+      const lanes: Transport[] = [];
+      const owner = new SdkTransportOwner(
+        base,
+        undefined,
+        path === 'base'
+          ? undefined
+          : () => {
+              const lane = target();
+              lanes.push(lane);
+              return lane;
+            },
+      );
+      const delivered: JSONRPCMessage[] = [];
+      const errors: Error[] = [];
+      owner.onmessage = (message) => delivered.push(message);
+      owner.onerror = (error) => errors.push(error);
+      const request = deferred<void>();
+      const sent = deferred<void>();
+      const handler = deferred<Record<string, never>>();
+      await owner.start();
+      const invocation =
+        path === 'base'
+          ? undefined
+          : owner.invoke(undefined, () => {
+              void owner
+                .send({ jsonrpc: '2.0', id: 'local', method: 'tools/call' })
+                .then(sent.resolve, sent.reject);
+              return request.promise;
+            });
+      let closing: Promise<void> | undefined;
+      try {
+        if (invocation !== undefined) await sent.promise;
+        const incoming = path === 'base' ? base : lanes[0];
+        if (incoming?.onmessage === undefined) throw new Error('incoming callback not installed');
+        const message = { jsonrpc: '2.0', id: 'live-peer', method: 'ping' } as const;
+        incoming.onmessage(message);
+        const rawHandler = owner.handleServerRequest(
+          message.id,
+          new AbortController().signal,
+          () => handler.promise,
+        );
+        expect(rawHandler).toBe(handler.promise);
+        expect(() => incoming.onmessage?.(message)).not.toThrow();
+        expect(delivered).toEqual([message]);
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toMatchObject({ name: 'McpLifetimeError', code: 'ambiguous' });
+        expect(errors[0]?.message).not.toContain(message.id);
+        let replacements = 0;
+        await expect(
+          owner.handleServerRequest(message.id, new AbortController().signal, () => {
+            replacements += 1;
+            return Promise.resolve({});
+          }),
+        ).rejects.toMatchObject({ name: 'McpLifetimeError', code: 'duplicate_entry' });
+        expect(replacements).toBe(0);
+        let complete = false;
+        closing = owner.close();
+        void closing.then(() => {
+          complete = true;
+        });
+        await tick();
+        expect(complete).toBe(false);
+        handler.resolve({});
+        request.resolve();
+        await closing;
+        expect(complete).toBe(true);
+      } finally {
+        handler.resolve({});
+        request.resolve();
+        await invocation?.raw;
+        await (closing ?? owner.close());
+      }
+    },
+  );
+
   it('refuses peer ID reuse until the exact previous response send settles', async () => {
     const { server, owner, client, transport, serverTransport } = await connected();
     const entered = deferred<string | number>();
     const send = deferred<void>();
+    const errors: Error[] = [];
+    client.onerror = (error) => errors.push(error);
     let calls = 0;
     client.setRequestHandler(PingRequestSchema, () => {
       calls += 1;
@@ -49,7 +140,9 @@ describe('actual installed SDK request handler ownership', () => {
       const id = await entered.promise;
       await expect(
         serverTransport.send({ jsonrpc: '2.0', id, method: 'ping' }),
-      ).rejects.toMatchObject({ name: 'McpLifetimeError', code: 'ambiguous' });
+      ).resolves.toBeUndefined();
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatchObject({ name: 'McpLifetimeError', code: 'ambiguous' });
       await tick();
       expect(calls).toBe(1);
       let complete = false;
