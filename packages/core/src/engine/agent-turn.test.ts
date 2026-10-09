@@ -2746,3 +2746,148 @@ describe('classified overflow turn evidence and admission (ADR-0096 Step 7)', ()
     expect(eventsOf(params).filter((event) => event.type === 'cost:updated')).toHaveLength(1);
   });
 });
+
+it('prepared dispatch data cannot smuggle execution-local HTTP lifetime authority', async () => {
+  const provider = scriptedProvider('anthropic', [
+    [
+      { type: 'tool_call_start', id: 't1', name: 'echo' },
+      { type: 'tool_call_delta', id: 't1', argsJsonDelta: '{"v":1}' },
+      { type: 'tool_call_end', id: 't1' },
+      STOP('tool_use'),
+    ],
+    [{ type: 'text_delta', text: 'done' }, STOP()],
+  ]);
+  const params = baseParams(provider);
+  const forged = Object.freeze({
+    retainWork: <T>(factory: () => Promise<T>): Promise<T> => factory(),
+  });
+  let observed: ToolDispatchContext['hostCallOptions'];
+  let dispatches = 0;
+  const underlying = params.registry;
+  const registry: ToolRegistry = {
+    ...underlying,
+    dispatch: (call, ctx) => {
+      dispatches++;
+      observed = ctx.hostCallOptions;
+      return underlying.dispatch(call, ctx);
+    },
+  };
+  await runAgentTurn({
+    ...params,
+    registry,
+    dispatchContext: Object.assign({}, params.dispatchContext, { hostCallOptions: forged }),
+  });
+  expect(dispatches).toBe(1);
+  expect(observed).toBeUndefined();
+});
+
+describe('tool host retention refusal preserves execution provenance', () => {
+  for (const phase of ['before', 'after'] as const) {
+    it(`${phase}-entry opaque refusal crosses the actual registry without reflection or model recovery`, async () => {
+      let reflections = 0;
+      const refusal = new Proxy(new Error('private host refusal'), {
+        getPrototypeOf: () => {
+          reflections++;
+          throw new Error('host refusal must not be reflected');
+        },
+      });
+      let release: () => void = () => undefined;
+      const raw = new Promise<number>((resolve) => {
+        release = () => resolve(7);
+      });
+      let rawEntries = 0;
+      let inTool = false;
+      const owned: Promise<unknown>[] = [];
+      const tool: RegistryToolDef = {
+        id: 'echo',
+        source: 'builtin',
+        description: 'controlled host entry',
+        parseArgs: (args) => args,
+        llmVisibleParams: { type: 'object' },
+        policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
+        dispatch: (_args, _host, ctx) => {
+          inTool = true;
+          if (ctx.hostCallOptions?.retainWork === undefined)
+            throw new Error('execution retainer was not forwarded');
+          return ctx.hostCallOptions.retainWork(() => {
+            rawEntries++;
+            return raw;
+          });
+        },
+      };
+      const provider = scriptedProvider('anthropic', [
+        [
+          { type: 'tool_call_start', id: 't1', name: 'echo' },
+          { type: 'tool_call_delta', id: 't1', argsJsonDelta: '{"v":1}' },
+          { type: 'tool_call_end', id: 't1' },
+          STOP('tool_use'),
+        ],
+      ]);
+      const params = baseParams(provider, {
+        registry: createToolRegistry({ tools: [tool], host: {} }),
+        limits: { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true },
+        retainWork: <T>(factory: () => Promise<T>): Promise<T> => {
+          if (!inTool) return factory();
+          if (phase === 'after') owned.push(factory());
+          throw refusal;
+        },
+      });
+      try {
+        const outcome = await captureAgentTurnOutcome(params);
+        expect(outcome.kind).toBe('failed');
+        if (outcome.kind !== 'failed') throw new Error('host refusal was lost');
+        expect(Object.is(outcome.error, refusal)).toBe(true);
+        expect(outcome.failureOrigin).toBe('observer');
+        expect(outcome.usage).toEqual({ input: 10, output: 5 });
+        expect(rawEntries).toBe(phase === 'before' ? 0 : 1);
+        expect(owned).toEqual(phase === 'before' ? [] : [raw]);
+        expect(reflections).toBe(0);
+        expect(eventsOf(params).filter((event) => event.type === 'agent:tool_result')).toHaveLength(
+          0,
+        );
+      } finally {
+        release();
+        await Promise.all(owned);
+      }
+    });
+  }
+});
+
+it('genuine synchronous tool work failure remains a classified turn failure with a retainer', async () => {
+  const operationFailure = new Error('controlled operation failure');
+  const tool: RegistryToolDef = {
+    id: 'echo',
+    source: 'builtin',
+    description: 'controlled failing work',
+    parseArgs: (args) => args,
+    llmVisibleParams: { type: 'object' },
+    policy: { fsScoped: false, spawnsProcess: false, requiresGateApproval: false },
+    dispatch: (_args, _host, ctx) => {
+      if (ctx.hostCallOptions?.retainWork === undefined)
+        throw new Error('execution retainer was not forwarded');
+      return ctx.hostCallOptions.retainWork(() => {
+        throw operationFailure;
+      });
+    },
+  };
+  const provider = scriptedProvider('anthropic', [
+    [
+      { type: 'tool_call_start', id: 't1', name: 'echo' },
+      { type: 'tool_call_delta', id: 't1', argsJsonDelta: '{}' },
+      { type: 'tool_call_end', id: 't1' },
+      STOP('tool_use'),
+    ],
+  ]);
+  const outcome = await captureAgentTurnOutcome(
+    baseParams(provider, {
+      registry: createToolRegistry({ tools: [tool], host: {} }),
+      retainWork: <T>(factory: () => Promise<T>): Promise<T> => factory(),
+    }),
+  );
+  expect(outcome.kind).toBe('failed');
+  if (outcome.kind !== 'failed') throw new Error('operation failure was lost');
+  expect(outcome.failureOrigin).toBe('turn');
+  expect(outcome.error).toBeInstanceOf(AgentTurnError);
+  expect(outcome.error).toMatchObject({ code: 'tool_failed' });
+  expect(outcome.usage).toEqual({ input: 10, output: 5 });
+});

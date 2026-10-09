@@ -168,6 +168,7 @@ export {
   SAFE_EGRESS_ERROR_CODES,
   type SafeEgressErrorCode,
   type EgressDeps,
+  type EgressWorkOptions,
   type EgressMethod,
   // `HopRequest`/`HopResponse` are part of THIS mechanism's public surface (the CLI egress arm + its test
   // consume them from `@relavium/db`); export them directly here rather than only via the media-egress alias.

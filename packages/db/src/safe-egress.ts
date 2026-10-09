@@ -102,12 +102,21 @@ export interface HopResponse {
   readonly dispose: () => void;
 }
 
+/** Structural call-local lifetime hook, independent of Core and outside HopRequest. */
+export interface EgressWorkOptions {
+  readonly retainWork?: <T>(factory: () => Promise<T>) => Promise<T>;
+}
+
 /** Injectable I/O primitives — Node by default; faked in tests so the SSRF policy is deterministic. */
 export interface EgressDeps {
   /** Resolve a hostname to its IP(s) (an IP literal resolves to itself). */
   readonly resolveHost: (hostname: string) => Promise<readonly string[]>;
   /** Open ONE pinned HTTPS connection and return its (unread) response. */
-  readonly openConnection: (request: HopRequest, signal: AbortSignal) => Promise<HopResponse>;
+  readonly openConnection: (
+    request: HopRequest,
+    signal: AbortSignal,
+    work?: EgressWorkOptions,
+  ) => Promise<HopResponse>;
 }
 
 /** True for the redirect statuses callers may follow (a `Location` is required, re-validated per hop). */
@@ -289,9 +298,12 @@ export async function connectValidated(
   },
   deps: EgressDeps,
   signal: AbortSignal,
+  work?: EgressWorkOptions,
 ): Promise<HopResponse> {
   const authority = validateEgressTarget(target, opts.localEndpoint);
   const ips = await resolveValidatedIps(authority, deps, opts.localEndpoint);
+  // DNS is not abortable. A timeout/cancel during resolution must not enter native I/O later.
+  if (signal.aborted) throw new SafeEgressError('network', 'egress request cancelled');
   // Connect by the FIRST validated IP — every IP was range-checked + confirmed an IP literal above, so
   // pinning means the address validated is the address connected to (no re-resolve TOCTOU window).
   const pinnedIp = ips[0];
@@ -313,6 +325,7 @@ export async function connectValidated(
       body: opts.body,
     },
     signal,
+    work,
   );
 }
 
@@ -440,8 +453,8 @@ export async function* streamBounded(
 
 /**
  * The shared timeout + abort + error-normalization wrapper. Composes the caller's `signal` with a timeout into
- * one `AbortController`, RACES `fn(controller.signal)` against a hard timeout, and guarantees the ONLY thrown
- * type is a typed, secret-free {@link SafeEgressError} — every raw resolver / socket / `new URL` / body-read
+ * one `AbortController`, refuses pre-aborted entry and RACES the entered raw function against a hard timeout.
+ * Except for an exact trusted execution-local retention refusal, failures are a typed, secret-free {@link SafeEgressError} — every raw resolver / socket / `new URL` / body-read
  * error becomes `SafeEgressError('network')`, never a raw leak.
  *
  * The timeout does BOTH: it `abort()`s the controller (cooperative cancellation) AND rejects the race after
@@ -451,12 +464,15 @@ export async function* streamBounded(
  * `https.request`, which tears the socket down), but NOT the DNS-resolution phase — Node's
  * `dns.promises.lookup` is not abortable, so a hung authoritative resolver keeps a background `getaddrinfo`
  * running (a libuv threadpool slot) until the OS resolver's own timeout, even though the deadline already
- * rejected the caller. The deadline bounds the caller's wait, not that background resource.
+ * rejected the caller. The deadline bounds the caller's wait, not that background resource. An execution-local
+ * retainer owns the exact raw function independently of this race; native requests separately join actual
+ * request/response close. A late DNS answer is cancellation-checked before native connection entry.
  */
 export async function withEgressTimeout<T>(
   signal: AbortSignalLike | undefined,
   timeoutMs: number,
-  fn: (signal: AbortSignal) => Promise<T>,
+  fn: (signal: AbortSignal, work?: EgressWorkOptions) => Promise<T>,
+  options?: EgressWorkOptions,
 ): Promise<T> {
   const controller = new AbortController();
   const abort = (): void => controller.abort();
@@ -471,9 +487,43 @@ export async function withEgressTimeout<T>(
       reject(new SafeEgressError('network', 'egress request timed out'));
     }, timeoutMs);
   });
+  let entryRefused = false;
+  let entryFailure: unknown;
+  const supplied = options?.retainWork;
+  const work: EgressWorkOptions | undefined =
+    supplied === undefined
+      ? undefined
+      : {
+          retainWork: <R>(factory: () => Promise<R>): Promise<R> => {
+            let factoryFailure: { readonly error: unknown } | undefined;
+            try {
+              return supplied(() => {
+                try {
+                  return factory();
+                } catch (error) {
+                  factoryFailure = { error };
+                  throw error;
+                }
+              });
+            } catch (error) {
+              if (factoryFailure === undefined || !Object.is(factoryFailure.error, error)) {
+                entryRefused = true;
+                entryFailure = error;
+              }
+              throw error;
+            }
+          },
+        };
   try {
-    return await Promise.race([fn(controller.signal), deadline]);
+    // Credential/DNS preparation may have completed after the caller already cancelled.
+    if (controller.signal.aborted) throw new SafeEgressError('network', 'egress request cancelled');
+    const invoke = (): Promise<T> => fn(controller.signal, work);
+    const raw = work?.retainWork === undefined ? invoke() : work.retainWork(invoke);
+    return await Promise.race([raw, deadline]);
   } catch (error) {
+    // A trusted host-entry refusal is not a socket/resolver failure. Preserve opaque identity
+    // without reading arbitrary thrown properties/prototypes; raw I/O faults stay secret-free.
+    if (entryRefused && Object.is(error, entryFailure)) throw error;
     if (error instanceof SafeEgressError) {
       throw error; // a typed failure (blocked_host / too_large / bad_status / timeout / …) — preserve the discriminant
     }
@@ -494,64 +544,122 @@ export const nodeEgressDeps: EgressDeps = {
     const records = await dnsLookup(hostname, { all: true });
     return records.map((record) => record.address);
   },
-  openConnection: (request: HopRequest, signal: AbortSignal): Promise<HopResponse> =>
-    new Promise<HopResponse>((resolve, reject) => {
-      const parsed = new URL(request.url);
-      const family = isIP(request.pinnedIp) === 6 ? 6 : 4;
-      // Dispatch on the VALIDATED scheme, never on the url's own text. `http` reaches here only for an
-      // authored local endpoint that resolved private (ADR-0088 §4); everything else was refused upstream,
-      // so this branch cannot be reached by a crafted url alone.
-      const send = request.scheme === 'http' ? httpRequest : httpsRequest;
-      const clientRequest = send(
-        {
-          protocol: `${request.scheme}:`,
-          hostname: request.hostname,
-          // The port the ADMISSION validated, not a second reading of the url. It is honored as-is — a public
-          // CDN/API URL may legitimately serve over a non-443 HTTPS port — and that is safe under the default
-          // wiring (no `localEndpoint`), because the private/loopback/link-local range block prevents reaching
-          // an internal service on ANY port. **`SEC-EGRESS-3`'s required port decision is made** in the one
-          // place that relaxes that block: `LocalEndpoint` is a `host:port` pair and the target must match
-          // BOTH, so an opted-in `localhost:4000` cannot reach `localhost:6379` (ADR-0088 §4).
-          //
-          // Carried rather than re-derived precisely BECAUSE of that match. This branch used to re-parse
-          // `request.url` and re-apply the scheme default itself, so the number the opt-in was scoped to and
-          // the number dialled came from two independent readings of one string. They agree today; a divergence
-          // would connect somewhere the admission never approved, which is the whole failure the pin exists to
-          // prevent, one layer up.
-          port: request.port,
-          path: `${parsed.pathname}${parsed.search}`,
-          method: request.method,
-          ...(request.headers === undefined ? {} : { headers: request.headers }),
-          // SNI + certificate hostname — TLS verification stays ON. Meaningless on the plaintext local
-          // branch (there is no TLS to verify), and harmless there: `node:http` ignores it.
-          servername: request.hostname,
-          // Pin to the pre-validated IP: the agent connects to exactly this address, never re-resolving.
-          lookup: (_hostname, _opts, callback) => callback(null, request.pinnedIp, family),
-          signal,
-        },
-        (incoming) => {
-          const location = incoming.headers.location;
-          resolve({
-            status: incoming.statusCode ?? 0,
-            headers: flattenHeaders(incoming.headers),
-            location: typeof location === 'string' ? location : undefined,
-            body: incoming,
-            dispose: () => {
-              incoming.destroy();
-              clientRequest.destroy();
-            },
-          });
-        },
-      );
-      // A secret-free network failure — never echo the underlying message (it can carry the host/IP).
-      clientRequest.on('error', () =>
-        reject(new SafeEgressError('network', 'egress request failed')),
-      );
-      if (request.body !== undefined) {
-        clientRequest.write(request.body);
+  openConnection: (
+    request: HopRequest,
+    signal: AbortSignal,
+    work?: EgressWorkOptions,
+  ): Promise<HopResponse> => {
+    let resolveResponse: (response: HopResponse) => void = () => {};
+    let rejectResponse: (error: unknown) => void = () => {};
+    const response = new Promise<HopResponse>((resolve, reject) => {
+      resolveResponse = resolve;
+      rejectResponse = reject;
+    });
+    let acknowledgeClose: () => void = () => {};
+    const closed = new Promise<void>((resolve) => {
+      acknowledgeClose = resolve;
+    });
+    let requestClosed = false;
+    let responseClosed = true;
+    const acknowledgeIfQuiet = (): void => {
+      if (requestClosed && responseClosed) acknowledgeClose();
+    };
+    const invoke = (): Promise<void> => {
+      if (signal.aborted) {
+        rejectResponse(new SafeEgressError('network', 'egress request cancelled'));
+        acknowledgeClose();
+        return closed;
       }
-      clientRequest.end();
-    }),
+      let created: ReturnType<typeof httpRequest> | undefined;
+      try {
+        const parsed = new URL(request.url);
+        const family = isIP(request.pinnedIp) === 6 ? 6 : 4;
+        const send = request.scheme === 'http' ? httpRequest : httpsRequest;
+        const clientRequest = send(
+          {
+            protocol: `${request.scheme}:`,
+            hostname: request.hostname,
+            // The port the ADMISSION validated, not a second reading of the url. It is honored as-is — a public
+            // CDN/API URL may legitimately serve over a non-443 HTTPS port — and that is safe under the default
+            // wiring (no `localEndpoint`), because the private/loopback/link-local range block prevents reaching
+            // an internal service on ANY port. **`SEC-EGRESS-3`'s required port decision is made** in the one
+            // place that relaxes that block: `LocalEndpoint` is a `host:port` pair and the target must match
+            // BOTH, so an opted-in `localhost:4000` cannot reach `localhost:6379` (ADR-0088 §4).
+            //
+            // Carried rather than re-derived precisely BECAUSE of that match. This branch used to re-parse
+            // `request.url` and re-apply the scheme default itself, so the number the opt-in was scoped to and
+            // the number dialled came from two independent readings of one string. They agree today; a divergence
+            // would connect somewhere the admission never approved, which is the whole failure the pin exists to
+            // prevent, one layer up.
+            port: request.port,
+            path: `${parsed.pathname}${parsed.search}`,
+            method: request.method,
+            ...(request.headers === undefined ? {} : { headers: request.headers }),
+            // SNI + certificate hostname — TLS verification stays ON. Meaningless on the plaintext local
+            // branch (there is no TLS to verify), and harmless there: `node:http` ignores it.
+            servername: request.hostname,
+            // Pin to the pre-validated IP: the agent connects to exactly this address, never re-resolving.
+            lookup: (_hostname, _opts, callback) => callback(null, request.pinnedIp, family),
+            signal,
+          },
+          (incoming) => {
+            if (work?.retainWork !== undefined) {
+              responseClosed = false;
+              incoming.once('close', () => {
+                responseClosed = true;
+                acknowledgeIfQuiet();
+              });
+            }
+            const location = incoming.headers.location;
+            resolveResponse({
+              status: incoming.statusCode ?? 0,
+              headers: flattenHeaders(incoming.headers),
+              location: typeof location === 'string' ? location : undefined,
+              body: incoming,
+              dispose: () => {
+                incoming.destroy();
+                clientRequest.destroy();
+              },
+            });
+          },
+        );
+        created = clientRequest;
+        if (work?.retainWork !== undefined) {
+          // Headers/error/destroy are not request/body close acknowledgement. A successful pooled
+          // socket is host infrastructure; this joins the request and its owned response stream.
+          clientRequest.once('close', () => {
+            requestClosed = true;
+            acknowledgeIfQuiet();
+          });
+        } else {
+          // Standalone callers retain their existing header-time completion contract.
+          acknowledgeClose();
+        }
+        clientRequest.on('error', () =>
+          rejectResponse(new SafeEgressError('network', 'egress request failed')),
+        );
+        if (request.body !== undefined) clientRequest.write(request.body);
+        clientRequest.end();
+      } catch {
+        rejectResponse(new SafeEgressError('network', 'egress request failed'));
+        if (created === undefined) acknowledgeClose();
+        else created.destroy(); // a created request still owes actual close
+      }
+      return closed;
+    };
+    // Register before native creation, independently of the header/timeout Promise. Its exact
+    // lifetime remains owed even when the bounded caller or response body has already failed.
+    try {
+      const lifetime = work?.retainWork === undefined ? invoke() : work.retainWork(invoke);
+      void lifetime.catch(rejectResponse);
+    } catch (error) {
+      // A retainer may refuse after native entry. The exact refusal stays primary, while the
+      // already-created request can still reject its now-abandoned header Promise on abort.
+      void response.catch(() => {});
+      throw error;
+    }
+    return response;
+  },
 };
 
 /** Flatten Node's `IncomingHttpHeaders` (string | string[] | undefined) to a plain string record. */

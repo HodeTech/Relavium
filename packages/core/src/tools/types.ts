@@ -174,6 +174,12 @@ export interface SpawnOpts {
   readonly timeoutMs?: number | undefined;
 }
 
+/** Call-local lifetime authority; never part of a request, tool argument or durable event. */
+export interface ToolHostCallOptions {
+  /** Synchronously admit/invoke the factory and retain its exact Promise; throwing refuses fresh I/O. */
+  readonly retainWork?: <T>(factory: () => Promise<T>) => Promise<T>;
+}
+
 export interface EgressCapability {
   /**
    * Perform an outbound HTTPS request the engine has ALREADY policy-checked (per egress kind). The
@@ -181,7 +187,11 @@ export interface EgressCapability {
    * CGNAT; DNS-resolve + connect-by-validated-IP + per-hop-redirect-revalidate — security-review.md)
    * and resolve any `credentialRef` host-side. Ships feature-flag-OFF until the primitive lands (1.AE).
    */
-  fetch(request: EgressRequest, signal?: AbortSignalLike): Promise<EgressResponse>;
+  fetch(
+    request: EgressRequest,
+    signal?: AbortSignalLike,
+    options?: ToolHostCallOptions,
+  ): Promise<EgressResponse>;
 }
 
 export interface OsCapability {
@@ -358,6 +368,8 @@ export interface ToolApprovalContext {
 }
 
 export interface ToolDispatchContext {
+  /** Supplied at actual execution; preparation and model-controlled arguments grant none. */
+  readonly hostCallOptions?: ToolHostCallOptions | undefined;
   readonly nodeId: string;
   /** The node's narrowed grant (ADR-0029(b)); a dispatch outside it is refused (registered ≠ authorized). */
   readonly grantedToolIds: ReadonlySet<ToolId>;

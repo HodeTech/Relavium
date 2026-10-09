@@ -37,7 +37,8 @@ ADR-0102 controlled adapters/chain are accepted after three cumulative rounds; e
 measured-round reuse is accepted after two fresh cumulative review rounds. ADR-0103
 append/receipt integration is accepted after two fresh cumulative review rounds; shipping
 provider/native integration is accepted after two fresh cumulative review rounds, including
-the confirmed public-return correction and 28 permanent cases. Transitive HTTP/MCP and
+the confirmed public-return correction and 28 permanent cases. HTTP descendants are implemented
+with 23 new permanent cases and passing root CI, awaiting two fresh review rounds. Transitive MCP/custom-provider and
 host departure remain open, as do Step 8 compaction/recovery
 and final whole-wave Step 12. Supplemental ADR-0099–ADR-0103 are Accepted.
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.

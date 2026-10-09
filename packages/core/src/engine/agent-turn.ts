@@ -258,7 +258,7 @@ export interface AgentTurnParams {
   readonly signal: AbortSignalLike;
   /** The shared tool registry (1.T) and the dispatch context for this node (the core adds `signal`). */
   readonly registry: ToolRegistry;
-  readonly dispatchContext: Omit<ToolDispatchContext, 'signal'>;
+  readonly dispatchContext: Omit<ToolDispatchContext, 'signal' | 'hostCallOptions'>;
   /** Session-only identity allocator; provider ids remain within the live protocol. */
   readonly sessionToolCallId?: (slot: number) => string;
   /** Loop bounds (default {@link DEFAULT_AGENT_TURN_LIMITS}). */
@@ -1125,6 +1125,41 @@ function emitToolOutcome(
   }
 }
 
+const toolHostEntryFailures = new WeakMap<object, { readonly error: unknown }>();
+
+/** Keep a host throwable inert while the tool registry classifies its own safe wrapper. */
+function retainToolHostWork(
+  supplied: NonNullable<AgentTurnParams['retainWork']>,
+): NonNullable<AgentTurnParams['retainWork']> {
+  return <T>(factory: () => Promise<T>): Promise<T> => {
+    let factoryFailure: { readonly error: unknown } | undefined;
+    try {
+      return supplied(() => {
+        try {
+          return factory();
+        } catch (error) {
+          factoryFailure = { error };
+          throw error;
+        }
+      });
+    } catch (error) {
+      if (factoryFailure !== undefined && Object.is(factoryFailure.error, error)) throw error;
+      const marker = new Error('tool host work entry refused');
+      toolHostEntryFailures.set(marker, { error });
+      throw marker;
+    }
+  };
+}
+
+function toolHostEntryFailure(error: unknown): { readonly error: unknown } | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const direct = toolHostEntryFailures.get(error);
+  if (direct !== undefined) return direct;
+  if (!(error instanceof ToolDispatchError)) return undefined;
+  const cause: unknown = error.cause;
+  return typeof cause === 'object' && cause !== null ? toolHostEntryFailures.get(cause) : undefined;
+}
+
 /**
  * Dispatch each tool call of a tool-use turn through the registry, emitting `agent:tool_call` /
  * `agent:tool_result` and returning the `role:'tool'` result messages. A model-correctable throw
@@ -1171,6 +1206,11 @@ async function dispatchToolCalls(
     try {
       outcome = await params.registry.dispatch(call, {
         ...params.dispatchContext,
+        // Prepared/standalone context data cannot grant execution-local lifetime authority.
+        hostCallOptions:
+          params.retainWork === undefined
+            ? undefined
+            : { retainWork: retainToolHostWork(params.retainWork) },
         effectSlot: slotBase + slot,
         ...(id === undefined
           ? {}
@@ -1178,6 +1218,8 @@ async function dispatchToolCalls(
         signal: params.signal,
       });
     } catch (err) {
+      const hostFailure = toolHostEntryFailure(err);
+      if (hostFailure !== undefined) throw hostFailure.error;
       // Either a model-correctable result to feed back, or a classified throw — see `toolFailureMessage`.
       const failure = toolFailureMessage(err, call, params, getModel(), attemptNumber);
       const part = failure.content.find((entry) => entry.type === 'tool_result');

@@ -556,3 +556,32 @@ describe('read_media (1.AF/D12 + `CR-50` — scope-set authz, whole handle, deli
     expect(() => t.parseArgs({ handle: 'media://sha256-not-hex' })).toThrow();
   });
 });
+
+for (const id of ['http_request', 'web_search'])
+  it(`${id} forwards execution-only lifetime authority separately from model arguments`, async () => {
+    const authority = { retainWork: <T>(factory: () => Promise<T>): Promise<T> => factory() };
+    const controller = new AbortController();
+    const fetch = vi.fn<NonNullable<ToolHost['egress']>['fetch']>(() =>
+      Promise.resolve({ status: 200, headers: {}, body: 'ok' }),
+    );
+    const host = { ...fullHost(), egress: { fetch } };
+    const args =
+      id === 'http_request'
+        ? { url: 'https://api.example/x' }
+        : {
+            query: 'offline',
+            endpoint: 'https://api.example/search',
+            credentialRef: 'synthetic-ref',
+          };
+    await tool(id).dispatch(args, host, {
+      ...ctx,
+      signal: controller.signal,
+      hostCallOptions: authority,
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0]).toHaveLength(3);
+    expect(fetch.mock.calls[0]?.[1]).toBe(controller.signal);
+    expect(fetch.mock.calls[0]?.[2]).toBe(authority);
+    expect(fetch.mock.calls[0]?.[0]).not.toHaveProperty('retainWork');
+    expect(fetch.mock.calls[0]?.[0]).not.toHaveProperty('hostCallOptions');
+  });

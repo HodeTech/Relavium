@@ -3932,3 +3932,30 @@ all actors/generations, final money/effects, parked clocks, public departure and
 CLI teardown remain open. Step 8 and Step 12, all six W7 register items and systematic
 ownership/lifecycle obligations remain open; 41/51 is unchanged and PR #90 stays draft.
 The separately prepared HTTP increment proceeds next with its own commit and fresh review rounds.
+
+### W7 HTTP descendant lifetime implemented — 2026-10-09
+
+The approved ADR-0103 HTTP increment carries execution-local work retention outside authored
+request data, through actual agent dispatch, HTTP/search builtins, CLI egress and validated
+DB transport. DNS, credential resolution, native connection and body work remain owned after
+bounded cancellation. Native completion requires actual request and incoming-message close;
+headers, an error, destroy/dispose invocation and timeout do not acknowledge that completion.
+A tool-local marker preserves host-entry refusal identity before registry classification,
+while an ordinary tool-factory fault retains its existing typed tool failure.
+
+There are 23 distinct new permanent cases. The final exact-current private check passes
+320 affected files / 6,438 cases / one existing skip, strict/lint and five cold-built
+libraries. Sixteen compiled mechanism removals fail their corresponding unchanged controls
+and pass after exact source/test/export restoration. An early incorrectly wired test fixture
+and a later mutant rejected by TypeScript receive no causal credit; their original receipts
+remain separate from the corrected controls. The private CLI bundle was not built.
+
+Actual main-root `CI=true pnpm run ci` passes 398 files / 8,973 cases / 12 existing skips,
+strict/lint/purity/seam, DB sync, dependency/bundle fences and all three offline smokes.
+Its first task group uses eight cache hits and the build/format group five; this is not
+forced final whole-wave validation. Two NEW complete independent review rounds and exact-head
+remote checks remain required before accepting this increment. MCP/custom-provider descendants,
+raw poll/media accounting, all actors/generations, sticky final money/effects, original parked
+clocks, public departure and acknowledged CLI teardown remain open. Step 8 and Step 12, all
+six W7 register items and systematic ownership/lifecycle obligations remain open; 41/51
+is unchanged and PR #90 stays draft. No further paid call or maintainer approval is needed.

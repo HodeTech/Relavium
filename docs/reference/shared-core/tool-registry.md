@@ -130,6 +130,10 @@ interface ProcessCapability {
         opts: SpawnOpts, signal?: AbortSignalLike): Promise<ProcessResult>;
 }
 
+interface ToolHostCallOptions {
+  readonly retainWork?: <T>(factory: () => Promise<T>) => Promise<T>;
+}
+
 interface EgressCapability {
   /**
    * Perform an outbound HTTPS request the engine has ALREADY policy-checked (per egress kind, below).
@@ -142,7 +146,7 @@ interface EgressCapability {
    * `EgressResponse.body`; a future `maxBytes` on `EgressRequest` (with 1.AE) enables source-side truncation.
    * Ships feature-flag-OFF until the shared primitive lands at 1.AE.
    */
-  fetch(request: EgressRequest, signal?: AbortSignalLike): Promise<EgressResponse>;
+  fetch(request: EgressRequest, signal?: AbortSignalLike, options?: ToolHostCallOptions): Promise<EgressResponse>;
   // EgressRequest = { method, url, headers, body?, credentialRef?: string }
 }
 
@@ -174,6 +178,46 @@ Cancellation retains precedence when an error also arrives. This follows the ins
 and [ADR-0103](../../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md).
 It establishes this host's local child lifetime, not complete workflow host departure or
 termination of remote work.
+
+### HTTP producer completion
+
+At actual agent execution, the runner supplies transient `hostCallOptions` from its local
+receipt-lifetime registration. The prepared dispatch context cannot supply this authority; actual dispatch explicitly
+clears any runtime field when execution supplied no retainer.
+`http_request` and `web_search` forward it as the separate third `fetch` parameter; it never
+enters `EgressRequest`, tool arguments, provider request data or a durable event. The hook
+owns raw work and does not authorize a new effect, money operation or fresh I/O after a
+refusal. Standalone hosts may omit it.
+
+A tool-local host retention refusal crosses registry error classification only as a fixed,
+private marker. The original opaque value remains in private identity storage and is restored
+before conversational tool recovery or diagnostic events. Pre-entry refusal invokes no raw
+factory; post-entry refusal keeps already-entered work owned. Genuine synchronous factory
+faults retain ordinary tool classification. The captured turn reports host-origin provenance
+and known usage without reflecting, serializing or treating that cause as a model-correctable
+failure.
+
+The CLI text-egress host registers the complete credential/request operation before entry.
+The shared DB mechanism separately registers the raw DNS/connection/body operation before
+racing its bounded timeout. Already-aborted work does not enter, and a DNS answer arriving
+after cancellation cannot open a native connection. An entered operation remains owed until
+its actual Promise settles even when the caller has already received a timeout or terminal.
+Existing URL, IP, port, header and redirect policies remain the admission authority.
+
+The native Node opener also registers its created request independently of the header
+Promise. Headers, errors and `destroy()` do not acknowledge completion: both the native
+`ClientRequest` and its owned `IncomingMessage` must emit `close`. A reusable pooled socket
+is host infrastructure; this contract covers the request and its response, rather than
+claiming that every pooled socket has physically closed. A trusted retention refusal keeps
+its exact opaque identity without throwable reflection. If it happens after native entry,
+the abandoned header Promise is still observed while the already-entered close lifetime
+remains owned. Ordinary I/O faults retain their fixed, secret-free diagnostics.
+
+These HTTP controls cover shipped agent/registry dispatch with both reference and SQLite
+host fences. They do not yet certify MCP's transitive sends/readers, media polling, all engine
+actors, final receipt health, public departure or acknowledged CLI teardown; those remain
+[ADR-0103](../../decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md)
+implementation obligations.
 
 ## Resolution & the dispatch lifecycle
 
@@ -215,6 +259,7 @@ live durability latch independently of journal tier or cached effect identity.
 
 ```ts
 interface ToolDispatchContext {
+  readonly hostCallOptions?: ToolHostCallOptions | undefined; // trusted execution-only lifetime authority, never tool arguments
   readonly nodeId: string;
   readonly grantedToolIds: ReadonlySet<ToolId>;  // the node's narrowed grant (0029(b)); dispatch refused outside it
   readonly config: ToolNodeConfig;        // resolved tool_config/agent_config block: configOnly VALUES + input/output_mapping (node-types.md)

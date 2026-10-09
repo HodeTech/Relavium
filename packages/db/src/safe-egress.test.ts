@@ -502,15 +502,17 @@ describe('withEgressTimeout — timeout + abort + error normalization', () => {
     ).rejects.toMatchObject({ code: 'too_large' });
   });
 
-  it('aborts the inner signal immediately when the outer signal is already aborted', async () => {
+  it('refuses an already-aborted caller before entering the raw factory', async () => {
     const ac = new AbortController();
     ac.abort();
-    let innerAborted: boolean | undefined;
-    await withEgressTimeout(ac.signal, 1000, (inner) => {
-      innerAborted = inner.aborted;
-      return Promise.resolve('ok');
-    });
-    expect(innerAborted).toBe(true);
+    let calls = 0;
+    await expect(
+      withEgressTimeout(ac.signal, 1000, () => {
+        calls++;
+        return Promise.resolve('ok');
+      }),
+    ).rejects.toMatchObject({ code: 'network', message: 'egress request cancelled' });
+    expect(calls).toBe(0);
   });
 
   it('fires the timeout: the inner signal aborts and the call rejects (normalized to network)', async () => {

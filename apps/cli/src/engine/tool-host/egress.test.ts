@@ -234,24 +234,33 @@ describe('createNodeEgressCapability (2.5.E Step 3) — text egress over the sha
     expect(calls).toHaveLength(0); // rejected at the url policy gate, never opened a connection
   });
 
-  it('threads the caller abort signal through to the connection (the cancel contract)', async () => {
+  it('threads in-flight caller cancellation to the already-entered connection', async () => {
     let innerAborted: boolean | undefined;
+    let entered: () => void = () => {};
+    const connected = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
     const deps: EgressDeps = {
       resolveHost: () => Promise.resolve(['203.0.113.10']),
       openConnection: (_request, signal) =>
         new Promise((_resolve, reject) => {
           innerAborted = signal.aborted;
-          signal.addEventListener('abort', () => reject(new Error('aborted')));
-          if (signal.aborted) reject(new Error('aborted'));
+          signal.addEventListener('abort', () => {
+            innerAborted = signal.aborted;
+            reject(new Error('aborted'));
+          });
+          entered();
         }),
     };
     const egress = createNodeEgressCapability({ deps });
     const ac = new AbortController();
+    const result = egress.fetch({ method: 'GET', url: 'https://api.example.com/x' }, ac.signal);
+    const rejected = expect(result).rejects.toBeInstanceOf(EgressCapabilityError);
+    await connected;
+    expect(innerAborted).toBe(false);
     ac.abort();
-    await egress
-      .fetch({ method: 'GET', url: 'https://api.example.com/x' }, ac.signal)
-      .catch(() => undefined);
-    expect(innerAborted).toBe(true); // the composed inner signal reached the connection already-aborted
+    await rejected;
+    expect(innerAborted).toBe(true);
   });
 
   it('times out a hung connection as a transient EgressCapabilityError (retryable)', async () => {

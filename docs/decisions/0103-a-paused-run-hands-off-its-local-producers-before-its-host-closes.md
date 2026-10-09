@@ -719,3 +719,26 @@ handles the refusal inside `finally`, emits exactly one attempt observation with
 confirmed usage, and propagates the original host cause. Existing provider/deadline failures
 retain precedence. Two permanent public-return regressions fail before this correction;
 scoped independent acceptance and the full host-departure decision remain separate gates.
+
+## Scoped HTTP producer lifetime checkpoint — 2026-10-09
+
+The next separately reviewable increment supplies execution-only `ToolHostCallOptions`
+from actual agent dispatch to the HTTP/search builtins and the CLI text-egress host. A
+whole credential/request producer, its raw DNS/connection/body operation and created
+native request/response close are independently registered before their bounded waits.
+Pre-aborted entry and a cancelled late DNS answer refuse fresh native I/O. A post-entry
+host refusal preserves its exact cause and observes the abandoned header Promise while
+actual close remains owed. A private tool-local marker carries host refusal through registry
+classifiers; exact original identity and observer provenance are restored before model recovery,
+without reflected throwables or diagnostic events. Genuine synchronous tool factory errors
+remain ordinary tool failures. URL/IP/port/header/redirect policy and the original receipt,
+money and effect authorities remain unchanged; no hook becomes durable or model data.
+
+The canonical contract is [HTTP producer completion](../reference/shared-core/tool-registry.md#http-producer-completion).
+Permanent controls include real local native headers, finite body and connection failure,
+opaque pre/post-entry refusals, exact raw timeout ownership and actual shipped HTTP
+agent/registry workflows on reference and SQLite hosts. These are local/native and
+synthetic workflow controls, not new live provider captures. The candidate requires its
+own committed full checks and two fresh cumulative review rounds. MCP transitive
+transport sends/readers, media/poll retirement, all engine actors, final receipt health,
+parked clocks, public departure, CLI acknowledgement, Step 8 and whole W7 remain open.

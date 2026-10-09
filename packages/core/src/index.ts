@@ -398,6 +398,7 @@ export type {
   FsCapability,
   ProcessCapability,
   EgressCapability,
+  ToolHostCallOptions,
   OsCapability,
   McpCapability,
   ToolOutputStore,

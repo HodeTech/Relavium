@@ -1,4 +1,9 @@
-import type { EgressCapability, EgressRequest, EgressResponse } from '@relavium/core';
+import type {
+  EgressCapability,
+  EgressRequest,
+  EgressResponse,
+  ToolHostCallOptions,
+} from '@relavium/core';
 import {
   connectValidated,
   nodeEgressDeps,
@@ -54,44 +59,85 @@ export function createNodeEgressCapability(
   const decoder = new TextDecoder();
 
   return {
-    fetch: async (request: EgressRequest, signal?: AbortSignalLike): Promise<EgressResponse> => {
-      try {
-        // Resolve the opaque credentialRef host-side and attach it as a bearer header INSIDE the trusted
-        // boundary — the raw secret never crosses back into the engine. No ref / no resolver / a resolver that
-        // THROWS (a native-keychain fault) all ⇒ no header: the request proceeds credential-less per the
-        // documented "never a crash" contract — a provider that needs the credential returns 401, surfaced to
-        // the model. `resolveCredentialSafely` degrades a rejecting resolver to `undefined` rather than failing.
-        const credential =
-          request.credentialRef === undefined
-            ? undefined
-            : await resolveCredentialSafely(config.resolveCredential, request.credentialRef);
-        const headers = mergeEgressHeaders(request.headers, credential);
-        return await withEgressTimeout(signal, timeoutMs, async (sig) => {
-          const response = await connectValidated(
-            request.url,
-            {
-              // No `localEndpoint`: this arm is model-facing, so there is no author to have opted one in.
-              // Fail-closed on private targets, unchanged (ADR-0088 §4 replaced the old `allowPrivate: false`
-              // with an absent policy, which says the same thing without a flag one edit away from `true`).
-              method: request.method,
-              headers,
-              ...(request.body === undefined ? {} : { body: request.body }),
+    fetch: (
+      request: EgressRequest,
+      signal?: AbortSignalLike,
+      options?: ToolHostCallOptions,
+    ): Promise<EgressResponse> => {
+      let entryRefused = false;
+      let entryFailure: unknown;
+      const supplied = options?.retainWork;
+      const work: ToolHostCallOptions | undefined =
+        supplied === undefined
+          ? undefined
+          : {
+              retainWork: <T>(factory: () => Promise<T>): Promise<T> => {
+                let factoryFailure: { readonly error: unknown } | undefined;
+                try {
+                  return supplied(() => {
+                    try {
+                      return factory();
+                    } catch (error) {
+                      factoryFailure = { error };
+                      throw error;
+                    }
+                  });
+                } catch (error) {
+                  if (factoryFailure === undefined || !Object.is(factoryFailure.error, error)) {
+                    entryRefused = true;
+                    entryFailure = error;
+                  }
+                  throw error;
+                }
+              },
+            };
+      const invoke = async (): Promise<EgressResponse> => {
+        try {
+          // Resolve the opaque credentialRef host-side and attach it as a bearer header INSIDE the trusted
+          // boundary — the raw secret never crosses back into the engine. No ref / no resolver / a resolver that
+          // THROWS (a native-keychain fault) all ⇒ no header: the request proceeds credential-less per the
+          // documented "never a crash" contract — a provider that needs the credential returns 401, surfaced to
+          // the model. `resolveCredentialSafely` degrades a rejecting resolver to `undefined` rather than failing.
+          const credential =
+            request.credentialRef === undefined
+              ? undefined
+              : await resolveCredentialSafely(config.resolveCredential, request.credentialRef);
+          const headers = mergeEgressHeaders(request.headers, credential);
+          return await withEgressTimeout(
+            signal,
+            timeoutMs,
+            async (sig, nativeWork) => {
+              const response = await connectValidated(
+                request.url,
+                {
+                  // No `localEndpoint`: this arm is model-facing, so there is no author to have opted one in.
+                  // Fail-closed on private targets, unchanged (ADR-0088 §4 replaced the old `allowPrivate: false`
+                  // with an absent policy, which says the same thing without a flag one edit away from `true`).
+                  method: request.method,
+                  headers,
+                  ...(request.body === undefined ? {} : { body: request.body }),
+                },
+                deps,
+                sig,
+                nativeWork,
+              );
+              // NO redirect following (allowedDomains bypass — see the file header): return ANY status, with the
+              // raw body read under the size cap and decoded as UTF-8 text.
+              const bytes = await readBounded(response.body, maxResponseBytes, response.dispose);
+              return {
+                status: response.status,
+                headers: response.headers ?? {},
+                body: decoder.decode(bytes),
+              };
             },
-            deps,
-            sig,
+            work,
           );
-          // NO redirect following (allowedDomains bypass — see the file header): return ANY status, with the
-          // raw body read under the size cap and decoded as UTF-8 text.
-          const bytes = await readBounded(response.body, maxResponseBytes, response.dispose);
-          return {
-            status: response.status,
-            headers: response.headers ?? {},
-            body: decoder.decode(bytes),
-          };
-        });
-      } catch (error) {
-        throw classifyEgressError(error);
-      }
+        } catch (error) {
+          if (entryRefused && Object.is(error, entryFailure)) throw error;
+          throw classifyEgressError(error);
+        }
+      };
+      return work?.retainWork === undefined ? invoke() : work.retainWork(invoke);
     },
   };
 }

@@ -410,6 +410,7 @@ const httpRequestTool = defineBuiltin({
     requireEgress(host, 'http_request').fetch(
       { method: args.method ?? 'GET', url: args.url, headers: args.headers, body: args.body },
       ctx.signal,
+      ctx.hostCallOptions,
     ),
 });
 
@@ -445,6 +446,7 @@ const webSearchTool = defineBuiltin({
     return requireEgress(host, 'web_search').fetch(
       { method: 'GET', url, credentialRef: args.credentialRef },
       ctx.signal,
+      ctx.hostCallOptions,
     );
   },
 });
