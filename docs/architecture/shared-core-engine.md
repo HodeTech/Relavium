@@ -178,8 +178,17 @@ must not masquerade as an in-flight executor and force the run to wait for grace
 readiness fault uses a fixed internal error; if creating that diagnostic faults, an
 in-memory backstop preserves failure and scheduler reevaluation. Method acquisition is followed by another
 stopped-state check before invocation; a live call preserves the handle as its receiver.
-Controlled public-port tests establish these
-mechanics; complete scheduler/dispatch roots and public departure are still open.
+Controlled public-port tests establish these readiness mechanics separately from
+complete actor and public departure acceptance.
+
+An entered `node:started` append must recheck cancellation before arming a fresh node
+deadline or executor. If cancelled, that already-entered node receives a matching failed
+settlement; unstarted siblings unwind normally. Unexpected dispatch failures use fixed
+content-free text without reading or coercing their cause. Readiness, pre-dispatch
+cancellation and detached failure share the diagnostic-publication backstop. Complete
+scheduler/dispatch/resume actor registration must be integrated with actual host departure:
+terminal delivery alone cannot authorize a surface to close its database. Those roots,
+timer/pre-handle work, final semantic health and public departure remain open.
 
 Settlement observation uses the captured native Promise intrinsic rather than a caller-overridden
 `then`. A constructor/species failure while attaching that observer is not settlement: the exact raw

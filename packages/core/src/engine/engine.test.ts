@@ -1448,9 +1448,14 @@ describe('WorkflowEngine — output-node save_to (1.AF/D16, ADR-0044 §2)', () =
 describe('WorkflowEngine — cancellation', () => {
   it('cancels mid-stream, aborts the in-flight node cooperatively, and ends in exactly one run:cancelled', async () => {
     let abortObserved = false;
+    let entered!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
     const engine = engineWith({
       slow: (ctx) =>
         new Promise<NodeOutcome>((resolve) => {
+          entered();
           // The correct executor pattern (what 1.O/1.P do): honour an abort that already fired, then
           // subscribe — a listener registered after the signal aborted never fires (as with a native
           // AbortSignal), so checking `aborted` first avoids hanging on a fast cancel.
@@ -1480,6 +1485,7 @@ describe('WorkflowEngine — cancellation', () => {
     for await (const event of handle.events) {
       events.push(event);
       if (event.type === 'node:started' && event.nodeId === 'slow') {
+        await ready; // Observe actual executor entry before testing its cooperative abort.
         engine.cancel(handle.runId);
       }
     }
@@ -1493,9 +1499,14 @@ describe('WorkflowEngine — cancellation', () => {
   });
 
   it('cancel wins a racing node failure: a node that fails while cancelling ends in run:cancelled', async () => {
+    let entered!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
     const engine = engineWith({
       slow: (ctx) =>
         new Promise<NodeOutcome>((resolve) => {
+          entered();
           const onAbort = (): void =>
             resolve({
               kind: 'failed',
@@ -1522,6 +1533,7 @@ describe('WorkflowEngine — cancellation', () => {
     for await (const event of handle.events) {
       events.push(event);
       if (event.type === 'node:started' && event.nodeId === 'slow') {
+        await ready; // Observe actual executor entry before testing its cooperative abort.
         engine.cancel(handle.runId); // abort fires; the in-flight node then settles as `failed`
       }
     }
@@ -3799,6 +3811,9 @@ ${line
       ) {
         await Promise.resolve();
       }
+      // The test faults an already-entered deadline, not a fresh arm after cancellation.
+      for (let i = 0; i < 400 && !nodeDeadlineArmed; i += 1) await Promise.resolve();
+      expect(nodeDeadlineArmed).toBe(true);
       engine.cancel(handle.runId);
       for (let i = 0; i < 400 && host.deadlineCount() < 2; i += 1) await Promise.resolve();
       expect(nodeDeadlineArmed).toBe(true); // the node bound is armed, with the throwing disarm attached
@@ -3865,9 +3880,10 @@ ${line
       const events = await drain(engine.start({ workflow: workflow(FAULTY) }));
       const terminal = events.at(-1);
       expect(terminal?.type).toBe('run:failed');
-      expect(terminal?.type === 'run:failed' && terminal.error.message).toContain(
-        'host clock unavailable',
+      expect(terminal?.type === 'run:failed' && terminal.error.message).toBe(
+        'node dispatch failed unexpectedly',
       );
+      expect(JSON.stringify(events)).not.toContain('host clock unavailable');
       expect(
         events.filter((e) => e.type === 'run:failed' || e.type === 'run:completed'),
       ).toHaveLength(1);
@@ -3978,7 +3994,16 @@ ${line
 
     const observe = async (wf: string): Promise<{ settledBeforeGrace: boolean }> => {
       const host = createInMemoryHost();
-      const engine = engineWith({ work: () => new Promise<NodeOutcome>(() => undefined) }, host);
+      let entered = false;
+      const engine = engineWith(
+        {
+          work: () => {
+            entered = true;
+            return new Promise<NodeOutcome>(() => undefined);
+          },
+        },
+        host,
+      );
       const handle = engine.start({ workflow: workflow(wf) });
       let settled = false;
       let started = false;
@@ -3991,8 +4016,9 @@ ${line
       // Wait for the node to be genuinely in flight — a cancel before it starts settles the run at once and
       // neither shape reaches the path under test. `deadlineCount()` cannot be the trigger here: the bounded
       // shape has already armed its own node deadline, which is the same kind.
-      for (let i = 0; i < 300 && !started; i += 1) await Promise.resolve();
+      for (let i = 0; i < 300 && !entered; i += 1) await Promise.resolve();
       expect(started).toBe(true);
+      expect(entered).toBe(true); // node:started alone precedes actual executor entry.
       engine.cancel(handle.runId);
       // Pump generously WITHOUT firing any backstop.
       for (let i = 0; i < 300; i += 1) await Promise.resolve();

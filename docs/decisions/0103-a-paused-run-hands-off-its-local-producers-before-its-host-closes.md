@@ -968,3 +968,37 @@ node work, and detached dispatch failures must avoid raw cause inspection/coerci
 Both reviewers source-corroborate those defects without accepting the private proposed
 corrections. Complete actor integration, final health/clocks/departure, Step 8 and
 whole-wave Step 12 remain open. The accepted decision is unchanged.
+
+### Inherited dispatch corrections staged — 2026-10-09
+
+Two inherited dispatch Highs recorded in the
+[readiness round-2 review](../reviews/2026-10-09T16-14-29-w7-scheduler-readiness-round-2-review.md)
+are corrected. Cancellation after an entered start append refuses fresh deadline/executor
+entry and immediately settles that matching node. Unexpected detached dispatch failures
+use fixed content-free text; no raw cause property or coercion is evaluated. Readiness,
+pre-dispatch cancellation and detached failure share the existing diagnostic backstop.
+The [canonical engine architecture](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
+describes the mechanics. No public API, dependency or accepted decision changes.
+
+Six permanent cases cover cancelled/live held start appends at widths one/three and
+private Error/non-Error coercion faults. Parent's eighteen-case private causal matrix
+fails four cases with one unhandled rejection on exact old production and passes the
+complete correction. Removing the post-append guard, matching settlement, safe dispatch
+handling or diagnostic backstop fails two cases each; restoration passes eighteen.
+That matrix includes a broader private actor prototype and is not exact proof of the
+narrower final main source: final-source checks/controls must be retained separately.
+The hostile non-Error fixture has one explained local lint exception; production has none.
+Affected existing cancellation fixtures now witness actual executor/deadline entry.
+
+The broader actor prototype passes private core checks (112 files / 2,868 cases), but
+its original actual root CI fails 38 CLI cases across thirteen files. Registering complete
+scheduler/dispatch/resume roots exposes host closure and lease handoff before actual
+retirement. No red implementation is accepted and no CLI closure assertion is weakened.
+Only Parent-owned uncommitted root/retirement-fixture edits are removed from the main
+candidate; the complete prototype and original failing CI inputs/logs remain preserved.
+Full root ownership must be integrated with shipping host departure within W7.
+
+Actual root CI and two NEW complete independent review rounds are required for the
+scoped dispatch corrections. Other actors, MCP startup/custom-provider descendants,
+final receipt/writer/money health, parked clocks, public departure/CLI teardown, Step 8
+and whole-wave Step 12 remain required; none is deferred by this ordering correction.

@@ -90,6 +90,11 @@ merged too (PR #85, 2026-08-28).
 > discovered during separate Parent preparation remain required complete-dispatch work:
 > post-start-append cancellation admission and unsafe detached failure formatting.
 > Complete scheduler/dispatch roots remain open alongside the other lifecycle obligations.
+> The next scoped increment corrects both inherited dispatch Highs with six permanent
+> cases; actual root CI and two fresh complete independent review rounds are required.
+> A broader private actor prototype exposed CLI closure/lease-handoff failures in root CI.
+> Complete scheduler/dispatch/resume registration must land with shipping host departure;
+> original failures and assertions are retained, and that integration stays required in W7.
 > Complete MCP startup/all-actor retirement, custom-provider descendants and remaining host departure work
 > and Step 8 atomic compaction/recovery remain open. The ownership/lifecycle
 > Highs, Step 12, final whole-wave CI/coverage/Sonar and all six W7 register items remain open.

@@ -2193,14 +2193,11 @@ class RunExecution {
           if (!(await this.#waitForConsumer())) return;
         } catch {
           if (this.#settled || this.#abort.signal.aborted) return;
-          const message = 'the event consumer readiness check failed';
-          try {
-            await this.#settleFailed(vertex, { code: 'internal', message, retryable: false });
-          } catch {
-            // ID/clock/timer faults while publishing the failure must not escape the scheduler.
-            this.#failNodeInternal(vertex.id, message);
-          }
-          this.#schedule();
+          await this.#settleFailedOrBackstop(vertex, {
+            code: 'internal',
+            message: 'the event consumer readiness check failed',
+            retryable: false,
+          });
           return;
         }
         if (this.#noNewDispatch || this.#settled || this.#abort.signal.aborted) return;
@@ -2213,28 +2210,25 @@ class RunExecution {
           nodeType: vertex.type,
         });
         // Re-read the latch AFTER the durable `node:started` write above: the grace window may have elapsed
-        // while it was pending, and a dispatch started past the cutoff is exactly what the latch forbids.
-        if (this.#noNewDispatch || this.#settled) {
+        // while it was pending. Cancellation must also refuse a fresh dispatch/deadline before grace.
+        if (this.#noNewDispatch || this.#settled) return;
+        if (this.#abort.signal.aborted) {
+          // node:started is already entered, but no executor/deadline exists to await through grace.
+          await this.#settleFailedOrBackstop(vertex, {
+            code: 'cancelled',
+            message: 'node execution was cancelled before dispatch',
+            retryable: false,
+          });
           return;
         }
-        // **A dispatch may never float its rejection (Medium 9).** `#dispatch` is `async`, so even a
-        // SYNCHRONOUS fault before its `try` — a host whose `setTimer` throws, which `#armNodeDeadline` calls
-        // outside it — surfaces as a rejected promise here. Un-caught that is an `unhandledRejection` AND a
-        // terminal-less run: the node stays `running`, `#handleIdle` sees work in flight forever, and nothing
-        // ever publishes `run:failed`. Route it to the same settle every other node failure takes.
-        void this.#dispatch(vertex, 1).catch(async (cause: unknown) => {
-          const message = `dispatch failed unexpectedly: ${cause instanceof Error ? cause.message : String(cause)}`;
-          try {
-            // The FULL settle, not just the in-memory flag: `#failNodeInternal` marks the state and aborts but
-            // emits no `node:failed`, so the graph never publishes this node's terminal. Measured — with the
-            // flag alone the run still hung.
-            await this.#settleFailed(vertex, { code: 'internal', message, retryable: false });
-          } catch {
-            // The settle itself faulted (the same broken host can fault the abort path's own timer arm).
-            // Fall back to the in-memory backstop — an aborted run still beats a hung one.
-            this.#failNodeInternal(vertex.id, message);
-          }
-          this.#schedule();
+        // Unexpected host causes stay private: even string conversion may run caller code and
+        // throw while reporting. Contain the failure continuation as well as the dispatch itself.
+        void this.#dispatch(vertex, 1).catch(async () => {
+          await this.#settleFailedOrBackstop(vertex, {
+            code: 'internal',
+            message: 'node dispatch failed unexpectedly',
+            retryable: false,
+          });
         });
       }
     } finally {
@@ -3060,6 +3054,16 @@ class RunExecution {
       // Which attempt produced the output, when a node-retry recovered (1.S) — absent ⇒ attempt 1.
       ...(attemptNumber > 1 ? { attemptNumber } : {}),
     });
+  }
+
+  /** Host diagnostics cannot strand scheduler reevaluation when ID/clock/timer publication faults. */
+  async #settleFailedOrBackstop(vertex: PlanVertex, error: NodeFailure): Promise<void> {
+    try {
+      await this.#settleFailed(vertex, error);
+    } catch {
+      this.#failNodeInternal(vertex.id, error.message);
+    }
+    this.#schedule();
   }
 
   /** A `failed` outcome (terminal — the node-retry budget is exhausted or the failure is fatal): record the
