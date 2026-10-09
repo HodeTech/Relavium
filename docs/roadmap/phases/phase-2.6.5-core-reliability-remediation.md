@@ -3812,3 +3812,20 @@ The next stage is two fresh cumulative Core round-2 reviews; this first round do
 the increment or close the production ownership High. Approved ADR-0103 host departure,
 Step 8 atomic compaction/recovery, final whole-wave Step 12 and all six W7 register items remain
 open. Draft PR #90 is unmerged; no new paid call, credential or ADR approval is required.
+
+### W7 core owned-round increment accepted — 2026-10-09
+
+[Two fresh cumulative round-2 reviews](../../reviews/2026-10-09T01-00-00-w7-owned-core-round-2-review.md)
+accept all 19 paths/53 hunks through `f1281214`, after the first complete independent round.
+Parent reads both entire final reports, verifies all 1,645/2,679 evidence artifacts, all
+1,229 tracked shared/private originals and exact causal restoration before releasing the freeze.
+Authority's final baseline passes 5,184 tests including thirteen private cases; lifecycle's
+permanent baseline passes 5,171 with nineteen controls separately. Selections overlap and are
+not added. Survived/repeated interventions, fixture errors and the lifecycle Corepack download
+exception remain explicit in the review record. Exact-head required PR/push CI, coverage floor,
+Node 22, Windows, peers and Sonar pass; this is not forced final whole-wave verification.
+
+Approved ADR-0103 append/receipt integration now proceeds to its own commit and fresh review
+rounds, followed by complete host departure and Step 8 atomic compaction/recovery. Production
+ownership/lifecycle Highs, Step 12 and all six W7 register items remain open; 41/51 is unchanged.
+Draft PR #90 remains unmerged. No further paid call, credential or ADR approval is required.

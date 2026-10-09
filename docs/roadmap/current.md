@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-10-08
+> Last updated: 2026-10-09
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -44,8 +44,9 @@ merged too (PR #85, 2026-08-28).
 > accept all 24 cumulative paths/78 hunks through `0c3c185b`; exact-head required CI, coverage,
 > Node 22, Windows, peers and Sonar pass. Core measured-round reuse is implemented at `99e78e55`;
 > [both independent round-1 reviews](../reviews/2026-10-09T00-16-47-w7-owned-core-round-1-review.md)
-> clear all 13 paths/47 hunks and exact-head CI passes. Fresh round 2 remains required, followed
-> by ADR-0103 host departure and Step 8 atomic compaction/recovery. The ownership/lifecycle
+> clear all 13 paths/47 hunks. [Two fresh round-2 reviews](../reviews/2026-10-09T01-00-00-w7-owned-core-round-2-review.md)
+> accept all 19 cumulative paths/53 hunks through `f1281214`; exact-head CI passes. ADR-0103
+> append/receipt integration proceeds next, then host departure and Step 8 atomic compaction/recovery. The ownership/lifecycle
 > Highs, Step 12, final whole-wave CI/coverage/Sonar and all six W7 register items remain open.
 > Draft PR #90 is unmerged; no further paid call, credential or ADR approval is needed.
 > Earlier progress statements below describe their publication checkpoints.

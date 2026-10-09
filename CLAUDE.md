@@ -148,8 +148,8 @@ six W7 register items. All five required live provider records are complete as o
 [ADR-0102](docs/decisions/0102-a-measured-request-owns-its-inert-data-through-egress.md) and
 [ADR-0103](docs/decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md)
 clarifications on 2026-10-08. Their internal foundations and controlled adapter/chain increment
-are accepted; exact core measured rounds are implemented with round 1 clear and fresh round 2
-required. Host departure, Step 8 and final Step 12 remain open. Systematic review's ownership/lifecycle obligations remain
+are accepted; exact core measured rounds are accepted after two fresh cumulative review rounds.
+ADR-0103 append/receipt integration proceeds next. Host departure, Step 8 and final Step 12 remain open. Systematic review's ownership/lifecycle obligations remain
 open until that integration is independently verified.
 
 The first six review rounds shaped these ADRs, and they surfaced two shipping defects, opened as `CR-96` and

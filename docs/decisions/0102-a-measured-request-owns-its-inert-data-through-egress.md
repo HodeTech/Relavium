@@ -346,3 +346,12 @@ The canonical contracts remain the [LLM seam](../reference/shared-core/llm-provi
 and [runner injection contract](../reference/shared-core/agent-runner.md#pre-egress-injection-contract).
 This is an implementation checkpoint, pending fresh independent core reviews. It does not close
 the ownership High, Step 8's session/summariser/recovery integration, ADR-0103 or whole W7.
+
+## Core owned-round scoped acceptance — 2026-10-09
+
+[Two fresh cumulative round-2 reviews](../reviews/2026-10-09T01-00-00-w7-owned-core-round-2-review.md),
+following round 1, accept the Core measured-round increment through `f1281214`. Both complete
+reports and their sealed controls, exact source restoration and 19-path/53-hunk inventories
+are independently verified by Parent. The implementation checkpoint above is now accepted
+within this scope. Session/summariser/recovery integration, the wider ownership High,
+ADR-0103 and whole W7 remain open; the earlier checkpoint is retained as dated history.

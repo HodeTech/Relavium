@@ -11,6 +11,9 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 core owned-round integration, round 2](2026-10-09T01-00-00-w7-owned-core-round-2-review.md):
+  both fresh complete reviews accept all 19 paths/53 hunks; approved host integration, Step 8 and whole-wave work remain open.
+
 - [2026-10-09 — W7 core owned-round integration, round 1](2026-10-09T00-16-47-w7-owned-core-round-1-review.md):
   both complete independent reviews clear 13 paths/47 hunks; exact-head CI passes, fresh round 2 remains required.
 
