@@ -3959,3 +3959,14 @@ raw poll/media accounting, all actors/generations, sticky final money/effects, o
 clocks, public departure and acknowledged CLI teardown remain open. Step 8 and Step 12, all
 six W7 register items and systematic ownership/lifecycle obligations remain open; 41/51
 is unchanged and PR #90 stays draft. No further paid call or maintainer approval is needed.
+
+### W7 HTTP descendant round 1 reviewed — 2026-10-09
+
+[Both complete independent reviews](../../reviews/2026-10-09T04-16-24-w7-http-descendants-round-1-review.md)
+clear all 22 cumulative paths / 38 hunks through `db02b83c` without a verified product finding.
+Parent reads both full reports and independently verifies physical evidence, source/test
+restoration, actual five-library/CLI outputs, direct commands, declared links and the complete
+645,604-entry shared freeze. The record preserves failed fixtures, two original survivors,
+nonadditive causal counts and command/environment limitations. A second fresh complete round
+is required before scoped acceptance. Transitive MCP/custom-provider, host departure, Step 8,
+Step 12 and all six W7 register items remain open; PR #90 remains draft and unmerged.

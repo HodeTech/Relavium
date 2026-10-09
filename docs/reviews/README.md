@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 HTTP descendant lifetimes, round 1](2026-10-09T04-16-24-w7-http-descendants-round-1-review.md):
+  two complete 22-path/38-hunk reviews and Parent source/output/freeze audits find no verified issue;
+  rejected fixtures and surviving controls remain explicit; fresh round 2 required.
+
 - [2026-10-09 — W7 raw provider round-2 custody correction](2026-10-09T03-42-30-w7-raw-producer-custody-correction-review.md):
   the lifecycle reviewer withdraws its nested DB-sync direct-tool assurance; missing historical receipts remain explicit and the original seal stays intact.
 

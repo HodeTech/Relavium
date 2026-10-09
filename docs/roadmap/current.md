@@ -55,8 +55,10 @@ merged too (PR #85, 2026-08-28).
 > [Two fresh cumulative round-2 reviews](../reviews/2026-10-09T03-25-00-w7-raw-producer-round-2-review.md) accept all 20 paths/41 hunks
 > through `1172d247` after complete report/artifact/freeze audits; nested Corepack reviewer
 > violations get no proof credit. The HTTP descendant increment now has 23 new permanent
-> cases, 16 compiled negative controls and a passing cache-qualified root CI; two fresh
-> cumulative review rounds are required before scoped acceptance. Transitive MCP/custom-provider, remaining host departure work
+> cases, 16 compiled negative controls and a passing cache-qualified root CI;
+> [both complete round-1 reviews](../reviews/2026-10-09T04-16-24-w7-http-descendants-round-1-review.md)
+> clear all 22 paths/38 hunks through `db02b83c` after Parent's complete artifact/freeze audits.
+> A second fresh cumulative round is required before scoped acceptance. Transitive MCP/custom-provider, remaining host departure work
 > and Step 8 atomic compaction/recovery remain open. The ownership/lifecycle
 > Highs, Step 12, final whole-wave CI/coverage/Sonar and all six W7 register items remain open.
 > Draft PR #90 is unmerged; no further paid call, credential or ADR approval is needed.
