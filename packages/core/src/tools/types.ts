@@ -204,7 +204,11 @@ export interface NotifyInput {
 }
 
 export interface McpCapability {
-  call(input: McpCallInput, signal?: AbortSignalLike): Promise<unknown>;
+  call(
+    input: McpCallInput,
+    signal?: AbortSignalLike,
+    options?: ToolHostCallOptions,
+  ): Promise<unknown>;
 }
 export interface McpCallInput {
   readonly server: string;

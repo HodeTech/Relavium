@@ -473,6 +473,7 @@ const mcpCallTool = defineBuiltin({
     requireMcp(host, 'mcp_call').call(
       { server: args.server, tool: args.tool, args: args.args },
       ctx.signal,
+      ctx.hostCallOptions,
     ),
 });
 
