@@ -86,12 +86,13 @@ merged too (PR #85, 2026-08-28).
 > verify a secondary readiness-diagnostic failure. Its correction has twelve causal readiness
 > regressions and 2,862 passing private core cases. [Two NEW complete cumulative round-2 reviews](../reviews/2026-10-09T16-14-29-w7-scheduler-readiness-round-2-review.md)
 > and Parent's source/artifact/647,245-entry unchanged freeze audit accept all nine paths/ten
-> hunks through `95f3923a`, with zero new readiness findings. Two existing dispatch Highs
-> discovered during separate Parent preparation remain required complete-dispatch work:
-> post-start-append cancellation admission and unsafe detached failure formatting.
-> Complete scheduler/dispatch roots remain open alongside the other lifecycle obligations.
-> The next scoped increment corrects both inherited dispatch Highs with six permanent
-> cases; actual root CI and two fresh complete independent review rounds are required.
+> hunks through `95f3923a`, with zero new readiness findings. Both inherited dispatch Highs
+> (post-start-append cancellation admission and unsafe detached failure formatting) are
+> corrected in `1918690d`, with six new permanent cases and passing exact-input root CI.
+> [Both complete dispatch-correction round-1 reviews](../reviews/2026-10-09T17-28-06-w7-dispatch-corrections-round-1-review.md)
+> and Parent's artifact/647,355-entry unchanged freeze audits accept the eight-path/
+> seventeen-hunk scope with zero confirmed findings. A NEW complete cumulative second
+> round remains required; complete scheduler/dispatch roots stay open.
 > A broader private actor prototype exposed CLI closure/lease-handoff failures in root CI.
 > Complete scheduler/dispatch/resume registration must land with shipping host departure;
 > original failures and assertions are retained, and that integration stays required in W7.

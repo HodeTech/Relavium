@@ -1002,3 +1002,19 @@ Actual root CI and two NEW complete independent review rounds are required for t
 scoped dispatch corrections. Other actors, MCP startup/custom-provider descendants,
 final receipt/writer/money health, parked clocks, public departure/CLI teardown, Step 8
 and whole-wave Step 12 remain required; none is deferred by this ordering correction.
+
+### 2026-10-09 — inherited dispatch corrections, round-1 acceptance
+
+[Two complete independent round-1 reviews and Parent audits](../reviews/2026-10-09T17-28-06-w7-dispatch-corrections-round-1-review.md)
+accept all eight paths/seventeen hunks through `1918690d`, with zero confirmed findings.
+Each passes seven prescribed original checks and 2,868 core cases; Parent verifies all
+17,542 reviewer input copies, exact Git/archive/head/hunk identities and protected artifact
+inventories. The complete 647,355-entry shared tree remains unchanged before explicit
+freeze release. An adjacent grace-fixture coverage hypothesis is not confirmed by Parent's
+exact-final removal control; its stronger explicit witnesses remain clarity hardening.
+
+A NEW complete cumulative second round is required before scoped closure. Complete
+actor roots must integrate with shipping departure; the broader prototype's original
+38 CLI failures remain unaccepted evidence. Final receipt health, parked clocks,
+primary/input/host acknowledgement, Step 8 and final Step 12 remain required W7 work.
+No accepted decision is changed and no whole-wave acceptance is claimed.

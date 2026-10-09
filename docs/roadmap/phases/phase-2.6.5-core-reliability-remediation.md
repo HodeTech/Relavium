@@ -4421,3 +4421,21 @@ Actual root CI and two NEW complete independent review rounds are required for t
 scoped dispatch corrections. Other actors, MCP startup/custom-provider descendants,
 final receipt/writer/money health, parked clocks, public departure/CLI teardown, Step 8
 and whole-wave Step 12 remain required; none is deferred by this ordering correction.
+
+### W7 inherited dispatch corrections — round-1 acceptance, 2026-10-09
+
+[Both complete independent round-1 reviews and Parent audits](../../reviews/2026-10-09T17-28-06-w7-dispatch-corrections-round-1-review.md)
+accept the complete eight-path/seventeen-hunk correction through `1918690d`, with zero
+confirmed findings. Each passes seven prescribed original checks, including 112 core
+files / 2,868 cases / no skips. Parent verifies all 17,542 reviewer input copies, exact
+source/hunk identities and protected inventories. The 647,355-entry shared-tree
+comparison has zero changes before explicit release. A proposed adjacent grace-fixture
+vacuity is not confirmed by Parent's exact-final catch-removal control; stronger entry/
+identity witnesses remain clarity hardening, with runtime attribution preserved.
+
+A NEW complete cumulative second round follows this committed record. The broader actor
+prototype and its original 38 CLI failures remain unaccepted: complete registration must
+integrate with shipping host departure within W7. Remaining actors, MCP startup/custom
+provider descendants, sticky final health, parked clocks, public departure/CLI teardown,
+Step 8 and final Step 12 stay required. All six W7 register items remain OPEN (41/51);
+draft PR #90 is unmerged. No further paid call or maintainer approval is pending.

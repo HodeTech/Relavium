@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 inherited dispatch corrections, round 1](2026-10-09T17-28-06-w7-dispatch-corrections-round-1-review.md):
+  both complete eight-path/seventeen-hunk reviews and Parent artifact/freeze audits accept
+  the scoped fixes; a NEW complete cumulative second round and remaining W7 work are required.
+
 - [2026-10-09 — W7 scheduler readiness, round 2](2026-10-09T16-14-29-w7-scheduler-readiness-round-2-review.md):
   two NEW complete nine-path/ten-hunk reviews and Parent artifact/freeze audits accept
   the scoped increment; two inherited dispatch Highs and remaining W7 work stay open.
