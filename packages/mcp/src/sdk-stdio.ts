@@ -318,7 +318,9 @@ export interface ConnectBound {
  *
  * **The `catch` below is the ONE owner of teardown**, and it is what reaps a spawned `stdio` child rather than
  * orphaning it: `Protocol.connect` assigns `this._transport` BEFORE awaiting `start()`, so `client.close()`
- * reaches `transport.close()` even when the connect never completed.
+ * reaches `transport.close()` even when the connect never completed. A refusal before
+ * `client.connect()` entry has no attached SDK transport; the same catch independently
+ * closes the idempotent owner to release that proved-empty lifetime too.
  *
  * The **remaining** time is also handed to the SDK as `options.timeout`, so its internal 60 s default can
  * neither cut an authored 120 s window short nor outlive the end of one.
@@ -353,8 +355,11 @@ export async function connectSdkTransport(
     // NOT reach the transport and added a direct `transport.close()` beside it — the timing was byte-identical
     // with and without, so the addition was inert and the claim was wrong.
     // Start cleanup now, but never make bounded failure wait for uncooperative raw work.
-    // The owner still joins the exact close and admitted descendants independently.
+    // A pre-aborted/spent window can refuse before Protocol attaches the transport.
+    // Close the owner independently: it releases that empty registration, or joins the
+    // same published close already reached by client.close(), without another native close.
     void safeClose(client);
+    void safeClose(owner);
     // A deadline / cancellation keeps its own type — a caller distinguishing "too slow" from "you pressed Esc"
     // from "the server refused" is exactly what `#204` asks for; collapsing them here would undo it. Both now
     // extend `McpError`, so `startMcpClient`'s own wrap preserves them too (it did not, at first).
@@ -500,9 +505,9 @@ class SdkConnection implements McpConnection {
  * spawn/handshake failure with a close failure. On the ORDINARY teardown path there is no original error to
  * protect, and swallowing is what made `onCloseError` unreachable — see {@link SdkConnection.close}.
  */
-async function safeClose(client: Client): Promise<void> {
+async function safeClose(target: { close(): Promise<void> }): Promise<void> {
   try {
-    await client.close();
+    await target.close();
   } catch {
     // A teardown error must never mask the original outcome (e.g. a connect failure) — the child is exiting.
   }
