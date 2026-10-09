@@ -496,3 +496,68 @@ describe('createMcpFetch — it is a TRANSPORT, not only a refusal machine', () 
     expect(disposed).toBe(1);
   });
 });
+
+describe('MCP response cleanup refusal', () => {
+  it.each(['eof', 'oversize'])('a throwing disposer cannot strand the %s reader', async (phase) => {
+    let disposed = 0;
+    let returned = 0;
+    const deps: EgressDeps = {
+      resolveHost: () => Promise.resolve(['93.184.216.34']),
+      openConnection: () =>
+        Promise.resolve({
+          status: 200,
+          headers: {},
+          location: undefined,
+          body: {
+            [Symbol.asyncIterator]: () => ({
+              next: () =>
+                Promise.resolve(
+                  phase === 'eof'
+                    ? { done: true, value: undefined }
+                    : { done: false, value: new Uint8Array([1, 2, 3, 4, 5]) },
+                ),
+              return: () => {
+                returned += 1;
+                return Promise.resolve({ done: true, value: undefined });
+              },
+            }),
+          },
+          dispose: () => {
+            disposed += 1;
+            throw new Error('private native cleanup details');
+          },
+        }),
+    };
+    const response = await createMcpFetch({ deps, maxMessageBytes: 4 })('https://api.example/mcp');
+    const reader = response.body?.getReader();
+    if (reader === undefined) throw new Error('missing response body');
+    let settled = false;
+    let failure: unknown;
+    const observed = reader.read().then(
+      () => {
+        settled = true;
+      },
+      (error: unknown) => {
+        settled = true;
+        failure = error;
+      },
+    );
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled).toBe(true);
+      expect(failure).toBeInstanceOf(SafeEgressError);
+      expect(failure).toMatchObject({
+        code: 'network',
+        message: 'egress response body read failed',
+      });
+      expect(disposed).toBe(1);
+      expect(returned).toBe(1);
+      await observed;
+    } finally {
+      await reader.cancel().catch(() => {
+        // A permanently errored reader rejects cancel with its already asserted fixed failure.
+      });
+      await observed;
+    }
+  });
+});

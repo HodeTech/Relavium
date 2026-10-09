@@ -374,13 +374,16 @@ function hopBodyToStream(
       },
       async pull(value) {
         if (closed) return;
+        let finishing = false;
         try {
           const next = await body.retainWork(() => iterator.next());
           if (closed) return;
           if (next.done === true) {
+            finishing = true;
             finish();
             value.close();
           } else if (!chargeAndReset(next.value)) {
+            finishing = true;
             finish();
             value.error(
               new SafeEgressError(
@@ -392,7 +395,9 @@ function hopBodyToStream(
             value.enqueue(next.value);
           }
         } catch {
-          if (closed) return;
+          // A different path already ended the stream only when this pull did not
+          // start cleanup. A throwing disposer must still settle this reader.
+          if (closed && !finishing) return;
           try {
             finish();
           } finally {
