@@ -3829,3 +3829,21 @@ Approved ADR-0103 append/receipt integration now proceeds to its own commit and 
 rounds, followed by complete host departure and Step 8 atomic compaction/recovery. Production
 ownership/lifecycle Highs, Step 12 and all six W7 register items remain open; 41/51 is unchanged.
 Draft PR #90 remains unmerged. No further paid call, credential or ADR approval is required.
+
+
+### W7 append/receipt round 1 complete — 2026-10-09
+
+[Two independent complete reviews](../../reviews/2026-10-09T01-27-00-w7-append-receipt-round-1-review.md) find no new verified product issue
+in all 17 paths/57 hunks through `a35739a4`. Parent reads both entire reports, verifies all
+2,771 authority and 2,796 lifecycle regular evidence artifacts, exact 1,233 tracked originals,
+source/export restoration and all causal receipts before releasing the source freeze.
+Initial generated/cache custody gaps, fixture corrections and the first causal survivor remain
+explicit; no missing baseline is invented. Both affected baselines independently pass 7,959
+cases with 12 existing skips; controls/reruns overlap and are not added to shipping counts.
+
+Actual local CI passes 391 files / 8,922 cases / 12 existing skips with declared cache reuse;
+exact-head required PR/push CI, coverage floor, Node 22, Windows, peers and Sonar pass.
+Two NEW cumulative reviewers are required before scoped acceptance. Raw producer/transitive
+work, all actor retirement, final money/effects, parked clocks, public departure and CLI input
+ACK remain open, followed by Step 8 and Step 12. All six W7 register items and systematic
+ownership/lifecycle Highs remain open; 41/51 is unchanged. No new paid call or approval is needed.

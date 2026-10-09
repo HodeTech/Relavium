@@ -46,7 +46,9 @@ merged too (PR #85, 2026-08-28).
 > [both independent round-1 reviews](../reviews/2026-10-09T00-16-47-w7-owned-core-round-1-review.md)
 > clear all 13 paths/47 hunks. [Two fresh round-2 reviews](../reviews/2026-10-09T01-00-00-w7-owned-core-round-2-review.md)
 > accept all 19 cumulative paths/53 hunks through `f1281214`; exact-head CI passes. ADR-0103
-> append/receipt integration proceeds next, then host departure and Step 8 atomic compaction/recovery. The ownership/lifecycle
+> append/receipt integration is implemented at `a35739a4`;
+> [both complete round-1 reviews](../reviews/2026-10-09T01-27-00-w7-append-receipt-round-1-review.md) clear all 17 paths/57 hunks.
+> Fresh cumulative round 2 follows, then host departure and Step 8 atomic compaction/recovery. The ownership/lifecycle
 > Highs, Step 12, final whole-wave CI/coverage/Sonar and all six W7 register items remain open.
 > Draft PR #90 is unmerged; no further paid call, credential or ADR approval is needed.
 > Earlier progress statements below describe their publication checkpoints.

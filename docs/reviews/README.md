@@ -11,6 +11,10 @@ added.
 
 ## Records
 
+- [2026-10-09 — W7 append/receipt integration, round 1](2026-10-09T01-27-00-w7-append-receipt-round-1-review.md):
+  both complete 17-path/57-hunk reviews return zero verified findings; Parent verifies full reports,
+  source/export restoration and qualified custody evidence; fresh cumulative round 2 required.
+
 - [2026-10-09 — W7 core owned-round integration, round 2](2026-10-09T01-00-00-w7-owned-core-round-2-review.md):
   both fresh complete reviews accept all 19 paths/53 hunks; approved host integration, Step 8 and whole-wave work remain open.
 
