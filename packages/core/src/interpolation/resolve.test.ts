@@ -10,6 +10,43 @@ function scope(over: Partial<RunScope> = {}): RunScope {
   return { inputs: {}, ctx: {}, outputs: {}, ...over };
 }
 
+for (const asynchronous of [false, true]) {
+  for (const chained of [false, true]) {
+    it(`refuses ${chained ? 'a second read' : 'resolved text'} after a ${asynchronous ? 'promise' : 'synchronous'} reader cancels`, async () => {
+      const controller = new AbortController();
+      const paths: string[] = [];
+      const caps: ResolverCapabilities = {
+        readFile: (path) => {
+          paths.push(path);
+          controller.abort();
+          return asynchronous ? Promise.resolve('next.txt') : 'next.txt';
+        },
+      };
+      await expectCode(
+        `{{inputs.path | read_file${chained ? ' | read_file' : ''}}}`,
+        scope({ inputs: { path: 'first.txt' } }),
+        'aborted',
+        caps,
+        controller.signal,
+      );
+      expect(paths).toEqual(['first.txt']);
+    });
+  }
+}
+
+it('still permits sequential host reads in one live reference', async () => {
+  const paths: string[] = [];
+  await expect(
+    resolveTemplate('{{inputs.path | read_file | read_file}}', scope({ inputs: { path: 'a' } }), {
+      readFile: (path) => {
+        paths.push(path);
+        return `${path}b`;
+      },
+    }),
+  ).resolves.toBe('abb');
+  expect(paths).toEqual(['a', 'ab']);
+});
+
 /** Resolve `text`, asserting it throws an InterpolationError with the given code; returns the error. */
 async function expectCode(
   text: string,

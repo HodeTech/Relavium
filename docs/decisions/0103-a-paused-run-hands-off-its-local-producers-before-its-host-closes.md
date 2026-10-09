@@ -863,3 +863,17 @@ remains unchanged. This accepts only transport/protocol/CLI-fetch lifetime integ
 Complete manager startup/all-engine actor ownership, custom-provider descendants, sticky final
 receipt health, parked clocks, public departure, acknowledged CLI teardown, Step 8 and whole
 W7 remain open. No new policy or dependency is introduced by this acceptance checkpoint.
+
+### Implementation note — fresh startup root staged, 2026-10-09
+
+The next scoped implementation registers the complete fresh-start continuation before its
+first workflow-id/store/context call. Terminal delivery stays bounded; retirement retains
+entered startup work and releases an already entered acquisition's exact returned fence.
+Retirement checks after startup awaits refuse fresh host entry, and cancellation between
+interpolation filters refuses a second read after a noncooperative first read completes.
+The mechanics live in [shared-core-engine.md](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103).
+
+This is staged implementation, pending two fresh complete independent review rounds. It does
+not close scheduler/dispatch/timer/resume or pre-handle roots, MCP startup, custom-provider
+descendants, final semantic receipt health, parked clocks, public departure/CLI teardown,
+Step 8 or final Step 12. The accepted decision and public departure requirements are unchanged.

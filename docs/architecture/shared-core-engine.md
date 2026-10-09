@@ -157,6 +157,16 @@ Joining waits for actual completion notifications and rechecks quiescence; idle 
 immediately, while a never-settling raw invocation or child intentionally keeps the join pending.
 Joining does not seal new root admission, certify persistence or delay terminal publication.
 
+Fresh run startup also registers its complete continuation before workflow-id lookup, initial
+ownership acquisition or context resolution. A terminal can remain visible while that work is
+pending; retirement keeps an already held exact fence and its heartbeat until the root finishes.
+An acquisition entered before cancellation still owes release of its returned exact fence.
+After each startup await, a stopped execution refuses fresh start publication, acquisition,
+context entry or scheduling. A noncooperative context read can finish, but cancellation is
+checked before another filter or resolved-text delivery, including a second `read_file` in
+the same reference. This covers fresh startup, not the still-open pre-handle resume and
+complete scheduler/timer actor integration.
+
 Settlement observation uses the captured native Promise intrinsic rather than a caller-overridden
 `then`. A constructor/species failure while attaching that observer is not settlement: the exact raw
 Promise and its slot/authority remain retained, with a sticky content-free `observationFailed`

@@ -4224,3 +4224,26 @@ health and parked clocks, public departure/primary ACK and acknowledged CLI tear
 increment retains its own causal checks, commit and fresh independent review rounds. Step 8
 atomic compaction/recovery follows; final Step 12 and all six W7 register items remain OPEN
 (41/51 closed). PR #90 remains draft/unmerged. No paid call, credential or user approval is pending.
+
+### W7 fresh-start lifetime — implementation staged, 2026-10-09
+
+The first remaining engine-actor increment registers fresh startup before workflow-id lookup,
+initial claim and context resolution. Bounded terminal publication retains already entered
+host work; late startup results cannot start another claim/context/dispatch. Interpolation
+checks cancellation between filters and before returning resolved reference text. An already
+entered fresh acquisition still releases its exact returned fence. The canonical mechanics
+are in [shared-core-engine.md](../../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103).
+
+Eleven new permanent cases cover initial clock/timer faults, held context fulfilment/rejection,
+actual retirement joins
+for workflow-id/claim waits, exact-fence cleanup, cancellation through synchronous/asynchronous
+and chained readers, and the live sequential-read control. These are reference-host/source
+Vitest controls, not native SQLite, real timers, live providers or compiled CLI evidence.
+Early terminal-cache/fence assertions and a non-UUID lookup fixture were corrected before
+the final causal controls; superseded controls receive no corresponding proof credit. Original command inputs/logs remain outside the repository.
+
+Two fresh complete independent review rounds are required before scoped acceptance. Remaining
+scheduler/dispatch/timer/resume and pre-handle actors, MCP startup, custom-provider descendants,
+final receipt health, parked clocks, public departure/CLI teardown, Step 8 and final Step 12
+remain open. All six W7 register items remain OPEN (41/51); PR #90 stays draft and unmerged.
+No paid call, credential or new ADR approval is needed.

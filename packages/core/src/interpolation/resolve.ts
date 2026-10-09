@@ -50,6 +50,7 @@ export async function resolveTemplate(
     } else {
       abortIfCancelled(signal);
       const value = await resolveReference(segment.reference, scope, caps, signal);
+      abortIfCancelled(signal);
       out += stringify(value, segment.reference);
     }
   }
@@ -93,6 +94,9 @@ async function resolveReference(
 ): Promise<unknown> {
   let value = getByPath(resolveHead(ref, scope), ref.path, ref.raw);
   for (const filter of ref.filters) {
+    // A noncooperative read may fulfil after abort. Its ACK ends that read's lifetime; it does
+    // not authorise the next filter (which can itself enter another host read).
+    abortIfCancelled(signal);
     value = await filterFn(filter, ref)(value, filter.args, caps, ref, signal);
   }
   return value;

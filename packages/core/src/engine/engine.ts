@@ -930,11 +930,18 @@ class RunExecution {
 
   // --- lifecycle ------------------------------------------------------------------------------
 
-  async begin(): Promise<void> {
-    this.#startEpochMs = Date.parse(this.#host.clock.now());
-    this.#armRunTimeout();
+  begin(): Promise<void> {
+    // A terminal may be published while workflow-id/context/claim work is still pending. Own the
+    // complete continuation before entering any host port; retirement joins it outside this root.
+    return this.#hostWork.invoke(() => this.#begin());
+  }
+
+  async #begin(): Promise<void> {
     try {
+      this.#startEpochMs = Date.parse(this.#host.clock.now());
+      this.#armRunTimeout();
       this.#workflowId = await this.#host.store.resolveWorkflowId(this.#workflow.workflow.id);
+      if (this.#settled || this.#abort.signal.aborted) return;
       await this.#emitDurable({
         type: 'run:started',
         runId: this.runId,
@@ -942,6 +949,7 @@ class RunExecution {
         inputs: this.#maskedInputs,
         executionMode: this.#executionMode,
       });
+      if (this.#settled || this.#abort.signal.aborted) return;
       // **Ownership is taken right AFTER `run:started`, not before it — a deviation from ADR-0079 §3 that
       // the FK forced, recorded rather than quietly absorbed.** §3 said the lease row is created inside the
       // same transaction as the fold; `run_leases.run_id` references `runs.id`, and that row only exists
@@ -969,6 +977,9 @@ class RunExecution {
         await this.#settle('run:failed');
         return;
       }
+      // An acquisition already entered before cancellation still owes exact-fence cleanup. Keep
+      // that returned claim for retirement, but do not enter context or dispatch after it resolves.
+      if (this.#settled || this.#abort.signal.aborted) return;
     } catch (error) {
       // Could not even start the run (e.g. the store rejected) — close with the single terminal event
       // rather than leaving a started-but-never-finished run. Never swallowed: it becomes run:failed.
@@ -990,6 +1001,7 @@ class RunExecution {
       await this.#settle(this.#cancelling ? 'run:cancelled' : 'run:failed');
       return;
     }
+    if (this.#settled || this.#abort.signal.aborted) return;
     this.#schedule();
   }
 
