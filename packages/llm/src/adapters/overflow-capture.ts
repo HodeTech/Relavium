@@ -75,7 +75,7 @@ export function parseCaptureArguments(args: readonly string[]): CaptureOptions {
     flags.set(flag, value);
   }
   const integer = (value: string | undefined): number =>
-    value !== undefined && /^[0-9]+$/.test(value) ? Number(value) : NaN;
+    value !== undefined && /^[0-9]+$/.test(value) ? Number(value) : Number.NaN;
   const parsed = CaptureOptionsSchema.safeParse({
     provider: flags.get('--provider'),
     model: flags.get('--model'),

@@ -91,7 +91,7 @@ export class McpWorkScope {
     this.assertActive();
     this.#pending += 1;
     let raw: Promise<T>;
-    try {
+    try /* NOSONAR — S4822: sync factory refusal; the intrinsic two-arm observer below owns raw settlement. */ {
       raw = factory();
     } catch (error) {
       this.#finish();

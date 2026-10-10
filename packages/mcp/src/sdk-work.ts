@@ -67,7 +67,7 @@ class RequestLane implements SdkLaneLifetime {
         if (!this.#retired) onerror(error);
       };
       // A lane's close never closes the shared SDK Client or other requests.
-      this.#started = this.work.retainWork(() => this.#target.start());
+      this.#started = this.work.retainWork(() => this.#target.start()); // NOSONAR — S7059: same-turn start is retained before exposure; send joins it and partial entry owns cleanup.
     } catch (error) {
       this.#retired = true;
       this.#controller.abort();
@@ -108,7 +108,7 @@ class RequestLane implements SdkLaneLifetime {
     }
   }
   #closeTarget(target: Target): void {
-    try {
+    try /* NOSONAR — S4822: sync close entry; raw.catch below retains asynchronous cleanup faults. */ {
       const raw = this.work.retainWork(() => target.close());
       void raw.catch(this.#onCleanupError);
     } catch (error) {
@@ -205,7 +205,7 @@ class ServerReplyWork {
     const onAbort = (): void => this.retire();
     signal.addEventListener('abort', onAbort, { once: true });
     this.#stop = () => signal.removeEventListener('abort', onAbort);
-    try {
+    try /* NOSONAR — S4822: exact raw Promise; scope observes rejection and finally must activate synchronously. */ {
       return this.work.retainWork(factory);
     } catch (error) {
       // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- preserve an opaque original refusal without reflection
@@ -342,7 +342,7 @@ export class SdkTransportOwner {
     this.#assertOpen();
     this.#startEntered = true;
     let raw: Promise<void>;
-    try {
+    try /* NOSONAR — S4822: only sync entry proves no native resource; raw.catch below owns async start failure. */ {
       raw = this.work.retainWork(() => this.#base.start());
     } catch (error) {
       // The installed native transports throw synchronously only before native construction.
@@ -386,7 +386,7 @@ export class SdkTransportOwner {
       }
     });
     let raw: Promise<T>;
-    try {
+    try /* NOSONAR — S4822: sync frame lifetime; both raw settlement arms below finish the owned invocation. */ {
       raw = state.work.retainWork(() => {
         const previous = this.#frame;
         this.#frame = state;
@@ -527,7 +527,7 @@ export class SdkTransportOwner {
       state?.ordinaryBaseSends.delete(send);
     });
     let raw: Promise<void>;
-    try {
+    try /* NOSONAR — S4822: sync base-send entry; both raw settlement arms below retire this exact child. */ {
       raw = send.work.retainWork(() => this.#base.send(message, options));
     } catch (error) {
       send.retire();
@@ -564,7 +564,7 @@ export class SdkTransportOwner {
     // exact lane acknowledgement, while the parent request may still remain active.
     void lane.work.done.then(() => state.controls.delete(lane));
     let raw: Promise<void>;
-    try {
+    try /* NOSONAR — S4822: sync lane entry; both raw settlement arms below retire the lane, native cleanup stays owed. */ {
       raw = lane.send(message, options);
     } catch (error) {
       lane.retire();
@@ -671,7 +671,7 @@ export class SdkTransportOwner {
     for (const send of this.#baseSends.values()) send.retire();
     for (const reply of this.#serverReplies.values()) reply.retire();
     let raw: Promise<void>;
-    try {
+    try /* NOSONAR — S4822: seal must be synchronous; await raw below owns asynchronous close failure. */ {
       raw = this.work.retainWork(() => this.#base.close());
     } catch (error) {
       // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- close faults are opaque and must retain their original identity

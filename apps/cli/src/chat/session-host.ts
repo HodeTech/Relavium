@@ -445,7 +445,7 @@ function buildSessionRuntime(
           // Settling/discarding an existing claim must remain possible after a failure: that records what
           // already happened rather than admitting another effect.
           assertDurableDispatch(toolId);
-          return (port ?? unwiredEffectJournal()).prepare(
+          return await (port ?? unwiredEffectJournal()).prepare(
             slot,
             toolId,
             tier,

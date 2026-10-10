@@ -216,7 +216,7 @@ export async function assertBudgetResumeBinary(repoRoot, sandboxHome) {
       .split('\n')
       .filter((line) => line.includes(silent))
       .map((line) => {
-        const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line);
+        const match = /^\s*(\d+)\s+(\d+)\s+(\S.*)$/.exec(line);
         assert.ok(match);
         return { pid: Number(match[1]), ppid: Number(match[2]) };
       });

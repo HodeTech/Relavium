@@ -211,7 +211,7 @@ export async function raceDeadline<T>(
 
   try {
     let raw: Promise<T>;
-    try {
+    try /* NOSONAR — S4822: sync entry only; Promise.race below observes raw and the deadline guard. */ {
       raw = operation();
     } catch (error) {
       // Keep ownership entry synchronous and preserve its primary refusal. Even if

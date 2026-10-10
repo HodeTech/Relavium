@@ -781,11 +781,11 @@ const createSdkClient = (key: string): GoogleGenAI =>
 const sdkTransport: GeminiTransport = {
   async generate(request: GeminiRequest, key: string): Promise<GeminiResponse> {
     const client = createSdkClient(key);
-    return client.models.generateContent(request);
+    return await client.models.generateContent(request);
   },
   async stream(request: GeminiRequest, key: string): Promise<AsyncIterable<GeminiResponse>> {
     const client = createSdkClient(key);
-    return client.models.generateContentStream(request);
+    return await client.models.generateContentStream(request);
   },
   async listModels(key: string, signal?: AbortSignalLike): Promise<GeminiModelInfo[]> {
     const client = createSdkClient(key);
@@ -808,7 +808,7 @@ const sdkTransport: GeminiTransport = {
   },
   async generateImages(request: GeminiImageRequest, key: string): Promise<GeminiImageResponse> {
     const client = createSdkClient(key);
-    return client.models.generateImages(request);
+    return await client.models.generateImages(request);
   },
   async generateVideos(request: GeminiVideoRequest, key: string): Promise<GeminiVideoOperation> {
     const client = createSdkClient(key);
