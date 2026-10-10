@@ -11,6 +11,9 @@ added.
 
 ## Records
 
+- [2026-10-10 — W7 Step 8, cumulative round 4](2026-10-10T02-10-00-w7-step-8-round-4-review.md):
+  second fresh clean complete round; Step 8 accepted within scope.
+
 - [2026-10-10 — W7 Step 8, cumulative round 3](2026-10-10T01-55-00-w7-step-8-round-3-review.md):
   first fresh clean complete round after the current-attempt correction; second required.
 

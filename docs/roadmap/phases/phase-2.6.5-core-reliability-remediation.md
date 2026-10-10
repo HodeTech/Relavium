@@ -1989,7 +1989,7 @@ correction inside its own ADR rather than a rewrite, so the wrong reasoning stay
 
 ### W7 pre-implementation review and proposed execution plan — 2026-10-02
 
-**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–6 and 9–11 obtained scoped independent acceptance, but the 2026-10-04 systematic PR review reopens Step 6 request ownership and adjacent session/CLI, replay-tool and document obligations. Previous acceptance records remain historical. Step 6's configured-output-estimate precedence follows ADR-0101, approved on 2026-10-02. All five live captures exist as of 2026-10-08, including Anthropic's separate native context-stop response. Step 7 obtained fresh complete acceptance on 2026-10-08 after four cumulative rounds. Approved ADR-0102/0103 production integration is accepted. Step 8 is implemented and awaiting independent acceptance; whole Step 12 remains open. All remaining systematic corrections require fresh independent acceptance.**
+**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–6 and 9–11 obtained scoped independent acceptance, but the 2026-10-04 systematic PR review reopens Step 6 request ownership and adjacent session/CLI, replay-tool and document obligations. Previous acceptance records remain historical. Step 6's configured-output-estimate precedence follows ADR-0101, approved on 2026-10-02. All five live captures exist as of 2026-10-08, including Anthropic's separate native context-stop response. Step 7 obtained fresh complete acceptance on 2026-10-08 after four cumulative rounds. Approved ADR-0102/0103 production integration is accepted. Step 8 is accepted after two fresh clean complete cumulative rounds; whole Step 12 remains open. All remaining systematic corrections require fresh independent acceptance.**
 The four Accepted ADRs retain their decisions. Three verified gaps were explicitly resolved before code:
 manual compaction with an unknown window and the budget outcome of idle compaction
 ([ADR-0099](../../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md)),
@@ -4648,3 +4648,11 @@ late cancellation; billed usage and optional estimator observations do not autho
 Implementation checks and two fresh complete independent review rounds precede acceptance.
 All six W7 register items remain open (41/51); final Step 12 remains required. PR #90 stays draft
 and unmerged. No provider call, credential, billing setup or user decision is pending.
+
+### W7 Step 8 — accepted, 2026-10-10
+
+[Round 4](../../reviews/2026-10-10T02-10-00-w7-step-8-round-4-review.md) records the second fresh clean complete
+cumulative round after the current-attempt correction, following clean round 3. Each NEW reviewer
+covers all 45 paths / 140 hunks independently; Parent reads every report and coverage row and
+verifies the scoped freeze before acceptance. Step 8 measured atomic compaction/recovery is
+accepted. Final Step 12 and all six W7 register items remain open (41/51); PR #90 stays draft.

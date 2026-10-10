@@ -35,8 +35,8 @@ are Accepted. ADR-0102 adapters/chain and exact measured-core reuse are accepted
 ADR-0103 startup/MCP/custom-provider/all-actor ownership, receipt health, original clocks, public
 departure and shipping CLI teardown are accepted after two clean complete cumulative rounds;
 [round 6](docs/reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md) records the independent reviews and Parent audit.
-Step 8 measured atomic compaction/recovery is implemented and awaiting independent acceptance,
-followed by final whole-wave Step 12.
+Step 8 measured atomic compaction/recovery is accepted after two fresh clean complete cumulative
+rounds; final whole-wave Step 12 remains open.
 All six W7 register items remain open (41/51 closed); PR #90 remains draft/unmerged.
 No user decision, billing setup, credential or provider capture is pending.
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.

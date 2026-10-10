@@ -130,7 +130,7 @@ number.
   is priced. Step 6 implements per-request input/output admission under the accepted shared reservation
   rules. Step 7's fixture-pinned overflow classification is accepted after four cumulative review
   rounds; production request ownership is accepted. Step 8 measured/recovery compaction is
-  implemented and awaiting independent acceptance.
+  accepted after two fresh clean complete cumulative review rounds.
 - [ADR-0097](docs/decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) decides that a budget
   approval grants a dispatch-owned, shown, durable allowance. Steps 9–10 implement and accept the
   governor/debit and strict replay barrier; Step 11's CLI surface is accepted after three independent review rounds.
@@ -164,7 +164,7 @@ and interpolation lifetimes are accepted after two cumulative rounds and fourtee
 additions; [round 2](docs/reviews/2026-10-09T14-55-12-w7-startup-lifetime-round-2-review.md)
 includes Parent's complete artifact and unchanged shared-tree audits. Consolidated startup/MCP/custom-provider/all-actor ownership, final receipt health, original
 clocks, public departure and shipping CLI teardown are accepted after two clean complete cumulative
-rounds and Parent artifact/source audits. Step 8 measured atomic compaction/recovery is implemented and awaiting independent review; final
+rounds and Parent artifact/source audits. Step 8 measured atomic compaction/recovery is accepted after two fresh clean complete cumulative rounds; final
 whole-wave Step 12 remains open; all six W7 register items remain open, and PR #90 remains draft.
 
 
@@ -182,7 +182,7 @@ had the ADRs restated as decisions, invariants and acceptance tests, because eve
 previous round's fixes.
 
 [Complete host round 6](docs/reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md) records the scoped ADR-0103 acceptance,
-corrected factual review artifacts and qualified evidence. Step 8 is implemented and awaiting independent acceptance, followed by Step 12.
+corrected factual review artifacts and qualified evidence. Step 8 is accepted after two fresh clean complete cumulative rounds; Step 12 remains open.
 No user decision, billing setup, credential or provider capture is pending.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
