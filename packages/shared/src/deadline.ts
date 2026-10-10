@@ -57,9 +57,14 @@ import type { AbortSignalLike } from './content.js';
  */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
-/** Clamp a delay into the range a host timer can honour — see {@link MAX_TIMER_DELAY_MS}. */
+function normalizedDelay(ms: number): number {
+  if (!Number.isFinite(ms)) throw new RangeError('Timer delay must be finite.');
+  return Math.max(0, ms);
+}
+
+/** Clamp a finite delay into the range a host timer can honour — see {@link MAX_TIMER_DELAY_MS}. */
 export function clampTimerDelayMs(ms: number): number {
-  return Math.min(Math.max(0, ms), MAX_TIMER_DELAY_MS);
+  return Math.min(normalizedDelay(ms), MAX_TIMER_DELAY_MS);
 }
 
 /**
@@ -78,7 +83,7 @@ export function clampTimerDelayMs(ms: number): number {
  * with no upper bound and is a published contract, so narrowing it would refuse workflows that parse today.
  */
 export function armLongTimer(ms: number, fire: () => void, setTimer: SetDeadlineTimer): () => void {
-  let remaining = Math.max(0, ms);
+  let remaining = normalizedDelay(ms);
   let disarmHop: (() => void) | undefined;
   let disarmed = false;
   const hop = (): void => {

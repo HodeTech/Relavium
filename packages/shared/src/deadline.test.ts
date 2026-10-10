@@ -21,6 +21,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { AbortSignalLike } from './content.js';
 import {
+  armLongTimer,
   clampTimerDelayMs,
   MAX_TIMER_DELAY_MS,
   openDeadline,
@@ -383,3 +384,35 @@ describe('openDeadline (ADR-0082 §5-§7, ADR-0085 §9)', () => {
   // `finally { waiters.delete(wake); }` body with a no-op and assert `waiters.size` is 0 after a settled
   // race — which requires that accessor. Recorded rather than asserted, per this phase's discipline rule 3.
 });
+
+for (const ms of [NaN, Infinity, -Infinity])
+  it(`refuses nonfinite timer delay ${ms} before any host timer is armed`, () => {
+    let armed = 0;
+    const setTimer = () => {
+      armed++;
+      return () => undefined;
+    };
+    for (const call of [
+      () => clampTimerDelayMs(ms),
+      () => armLongTimer(ms, () => undefined, setTimer),
+      () => openDeadline(ms, controller, setTimer),
+    ])
+      expect(call).toThrow('Timer delay must be finite.');
+    expect(armed).toBe(0);
+  });
+
+for (const ms of [-42, 0])
+  it(`retains immediate semantics for finite delay ${ms}`, () => {
+    let actual: number | undefined;
+    const disarm = armLongTimer(
+      ms,
+      () => undefined,
+      (value) => {
+        actual = value;
+        return () => undefined;
+      },
+    );
+    expect(actual).toBe(0);
+    expect(clampTimerDelayMs(ms)).toBe(0);
+    disarm();
+  });
