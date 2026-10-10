@@ -806,7 +806,7 @@ The PR #86 review returned 18 findings; an independent verification round reprod
 were fixed before the merge. **These ten went in open**, and the first is a blocker — recorded here with the
 severity, the trigger and the product claim each narrows, per exit criterion 2.
 
-- [ ] **An un-pulled stream DROPS the terminal event ([ADR-0036](../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)).**
+- [x] **An un-pulled stream DROPS the terminal event ([ADR-0036](../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)).** *Implementation accepted on `development` 2026-10-10; W8 publication pending.*
   *Blocker.* Reproduced on `main`: a `BoundedEventStream` at capacity 2 given three pushes and a `close()`
   delivers a clean EOF and never the terminal, with no `sequenceNumber` gap to signal it. **The claim it
   narrows:** ADR-0036 promises a gap-free, no-drop canonical stream, and `run-handle.ts` repeats it — neither
@@ -818,10 +818,11 @@ severity, the trigger and the product claim each narrows, per exit criterion 2.
   implements the immutable mode through both standalone session handles and workflow
   start/checkpoint resume. Iterated streams retain every publication before first pull;
   subscribe-only streams retain no primary buffer and refuse iteration with a typed error.
-  CLI builders select their actual consumption mode. Runtime review is clean after the
-  running-departure correction; final cumulative review of the documentation reconciliation
-  remains open. The checkbox stays open until scoped acceptance, and publication to `main`
-  remains part of the W8 PR. The separate exact-capacity residual below is unchanged.
+  CLI builders select their actual consumption mode. Three NEW cumulative review rounds
+  verify runtime and living-document corrections, with the final round clean in both
+  dimensions. The linked register records exact heads, causal controls and scoped acceptance.
+  Publication to `main` remains part of the W8 PR. The separate exact-capacity residual below
+  is unchanged.
   *(packages/core/src/engine/event-stream.ts, run-handle.ts, session-handle.ts)*
 
 - [x] **Media is measured as a handle but RETAINED as base64.** *Medium — CLOSED 2026-09-04, fixed in `W5`.*

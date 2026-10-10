@@ -2489,8 +2489,9 @@ stand.
 
 ## W8 — Provider and conformance
 
-**Plan and ADR-0104 approved on 2026-10-10; Step 1 implemented, final cumulative review pending.**
-ADR-0087 §1, CR-81 and CR-82 remain open. CR-80 below was already closed before W7. Current execution order is in
+**Plan and ADR-0104 approved on 2026-10-10; Step 1 accepted on `development`; Step 2 is next.**
+ADR-0087 §1 has scoped implementation acceptance; CR-81/82 and whole-W8 publication remain open.
+CR-80 below was already closed before W7. Current execution order is in
 [current.md](../current.md#next-work--phase-265-w8).
 
 ### CR-80 — An invalid custom base URL fails OPEN to the official endpoint · High (security/compliance) · ✅ **closed 2026-09-06**
@@ -2534,7 +2535,7 @@ asserting the username and password of `https://alice:hunter2@10.0.0.5/v1` are b
 The wave's **provider/config-trust security sitting** is recorded in
 [security-review.md](../../standards/security-review.md#sitting-provider-and-config-trust--cr-80-2026-09-06).
 
-### ADR-0087 §1 — the `W3` live blocker · Blocker · **scheduled into `W8` 2026-09-18** · tracked as an ADR obligation, not a counted `CR` item
+### ADR-0087 §1 — the `W3` live blocker · Blocker · **implementation accepted on `development` 2026-10-10; W8 publication pending** · tracked as an ADR obligation, not a counted `CR` item
 An un-pulled event stream drops the terminal event, which breaches
 [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)'s gap-free contract.
 [ADR-0087](../../decisions/0087-consumed-streams-size-bounds-and-run-retention.md) §1 is the accepted fix — a
@@ -2547,11 +2548,14 @@ rather than `W7` so that `W7`'s PR stays about its own four ADRs; the phase cann
 event, and a `subscribe-only` handle buffers nothing while every subscriber still sees every event. It carries no
 `CR` number and sits outside the 51-item denominator deliberately: it is an accepted ADR's unimplemented section, and it
 closes against exit criteria 2 and 4 and `W8`'s closing register rather than against a register row.
+The [Step 1 register](#w8-step-1-consumption-modes--2026-10-10) records the accepted implementation,
+three independent cumulative rounds and causal controls. The separate exact-capacity residual
+remains approved and open; `main` publication follows the whole-W8 gate.
 
 ### W8 preflight and proposed execution plan — 2026-10-10
 
-**Status: preflight complete, plan and ADR-0104 approved on 2026-10-10; Step 1 final cumulative review pending.**
-No W8 runtime step is accepted yet.
+**Status: preflight complete, plan and ADR-0104 approved on 2026-10-10; Step 1 accepted on `development`.**
+Steps 2–7 and whole-W8 publication remain open.
 The maintainer requests implementation on `development`, an implementation commit followed by
 two fresh independent cumulative review rounds per step, confirmed fixes committed between
 rounds, and approval of any new decision before dependent work. W7 and PR #91 are merged;
@@ -2708,7 +2712,7 @@ gate only; CR-81/CR-82, the stream blocker and all implementation acceptance gat
 
 ### W8 Step 1 consumption modes — 2026-10-10
 
-**Author implementation; independent review pending.** Base `8844eb0b`, branch `development`.
+**Accepted on `development` after round 3; whole-W8 publication remains pending.** Base `8844eb0b`.
 The shared queue and both handles now have immutable `iterated`/`subscribe-only` consumption;
 workflow start and checkpoint resume preserve the selected mode, including closed handles.
 Iterated readiness applies before first pull without dropping publications or terminals.
@@ -2754,6 +2758,21 @@ and one Medium current-document discrepancy: the live W3 residual still said no 
 mode existed. The phase introduction also still awaited approval. Those living status claims
 are reconciled; historical checkpoints and Accepted ADR bodies remain preserved. A third
 NEW complete cumulative round follows the documentation correction before scoped acceptance.
+
+**Round 3 and acceptance — reviewed head `9955edaabbb720371fbfe12d871c7348769403a3`:** two NEW
+independent reviewers inspected the complete 25-file step against base `8844eb0b`.
+GPT-6-astra/high (lifecycle/receipts) and GPT-6.1-sol/high (integration/contracts/status)
+both returned **zero actionable findings**. Fresh checks passed 219 tests across 11 files
+and 547 tests across 20 files respectively, including actual Home integration. Document
+links and whitespace checks pass; the 47/51 register count remains correct. Neither review
+claims whole CI, coverage or provider calls. The corrected source's author gates pass
+23/23 lint/typecheck/test and 6/6 build; compiled CLI smoke passes. Earlier causal removals
+and exact restoration remain recorded above and in local ignored review evidence.
+
+**Step 1 is accepted.** ADR-0087 §1's no-drop/no-primary-buffer obligation is implemented;
+the existing exact-capacity residual remains open. This documentation-only acceptance
+checkpoint changes no runtime source and does not claim publication to `main`. Proceed to
+Step 2's strict expected-exchange replay. CR-81/82 and whole-W8 acceptance remain open.
 
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High
 A recorded response carries status, content type and body only; replay checks that the request body is parseable
