@@ -71,7 +71,10 @@ This evidence belongs to the reviewed head, not to a future W8 change.
 **W8 — Provider and conformance is in preflight; runtime implementation has not started.**
 The [proposed seven-step plan](phases/phase-2.6.5-core-reliability-remediation.md#w8-preflight-and-proposed-execution-plan--2026-10-10)
 and [Proposed ADR-0104](../decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md)
-require maintainer review before implementation. Begin with the existing W3 blocker, then the two remaining provider items:
+await maintainer approval before implementation. The submitted ADR review is dispositioned;
+two fresh complete cumulative rounds returned zero actionable findings at `292ccccd`.
+Detailed review records are now local and Git-ignored; acceptance remains in the linked plan.
+Begin with the existing W3 blocker, then the two remaining provider items:
 
 1. **ADR-0087 §1:** declare primary-stream consumption for run and session handles; an
    un-pulled stream must preserve its terminal, and a subscribe-only handle must buffer nothing.

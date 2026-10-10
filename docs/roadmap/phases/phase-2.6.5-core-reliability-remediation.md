@@ -2682,7 +2682,22 @@ locally under ignored `docs/reviews/`; Git history is preserved. Historical revi
 resolve to exact files in published merge `f267bb0d`, with current conventions in the
 [documentation standard](../../standards/documentation-style.md#12-local-review-records).
 Future detailed records stay local; this register retains concise acceptance and dispositions.
-Fresh cumulative review results and checked revisions are recorded here before approval handoff.
+**Fresh revision reviews:** both complete cumulative rounds reviewed author commit
+`292ccccdb03d27417c991832dc71a78f614444b1` against base `1fccd7bd` (round 1's financial
+review began on the identical working-tree bytes before commit). Each round used two NEW
+read-only reviewers: GPT-6-astra/high for financial/durability/ownership and GPT-6.1-sol/high
+for native evidence/contracts/archival integrity. All four returned **zero actionable findings**.
+The reviewed ADR-0104 SHA-256 is
+`e7aa88cb48c4293476906d946652c828ae66f02b876dd7edd9b9d80581306d50`.
+
+Author checks pass: lint/typecheck/test **23/23, all cached**; build **6/6, all cached**.
+These are cache checks, not fresh runtime execution. Tracked-tree checks cover **805 relative
+links**, **343 exact archived file citations** to **147 distinct targets**, unchanged bytes
+for all **181** retired local files, zero tracked review files and URI-only repairs to four
+Accepted ADRs. Independent remote checks confirm the archive commit is published; whitespace
+checks pass. Detailed round records remain local and ignored. The follow-up register records
+these results only; ADR-0104 remains Proposed and W8/CR-81/CR-82 remain open pending maintainer
+approval and implementation.
 
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High
 A recorded response carries status, content type and body only; replay checks that the request body is parseable
