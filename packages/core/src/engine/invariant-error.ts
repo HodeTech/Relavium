@@ -24,6 +24,7 @@
 export type RunLoopInvariantCode =
   | 'both_correlation_keys' // an event draft carried BOTH runId and sessionId (exactly one is required)
   | 'no_correlation_key' // an event draft carried NEITHER runId nor sessionId
+  | 'invalid_consumer_mode' // iteration attempted on a stream constructed for subscribe-only delivery
   | 'concurrent_consumer' // a second next() while one is already parked on a single-consumer stream
   | 'media_store_unavailable' // a media-bearing event was emitted but no MediaStore was injected (1.AF, I3)
   | 'event_too_large'; // a NON-terminal durable event exceeded CR-32's size bound (ADR-0087 §2); a terminal is exempt

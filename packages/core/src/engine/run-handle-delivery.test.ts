@@ -124,31 +124,33 @@ describe('RunHandle — private primary-delivery observation (ADR-0103 foundatio
     await f.iterator.return?.();
   });
 
-  it('keeps never-pulled overflow sticky after draining and receiving a later event', async () => {
+  it('owes every unpulled publication without losing primary cursor authority above capacity', async () => {
     const f = fixture(1);
     f.bus.emit(progress());
-    f.bus.emit(pause); // Declined by the existing queue; it must remain observable as a gap.
-    expect(f.handle.bufferedCount).toBe(1);
+    f.bus.emit(pause);
+    expect(f.handle.bufferedCount).toBe(2);
     expect(f.read()).toEqual({
       publishedCount: 2,
       deliveredCount: 0,
-      hasGap: true,
+      hasGap: false,
       abandoned: false,
     });
     await f.iterator.next();
+    expect((await f.iterator.next()).value).toMatchObject({
+      type: 'run:paused',
+      sequenceNumber: 1,
+    });
     const pending = f.iterator.next();
     f.bus.emit(progress());
     expect((await pending).value).toMatchObject({ sequenceNumber: 2 });
     expect(f.handle.bufferedCount).toBe(0);
     expect(f.read()).toEqual({
       publishedCount: 3,
-      deliveredCount: 2,
-      hasGap: true,
+      deliveredCount: 3,
+      hasGap: false,
       abandoned: false,
     });
     f.close();
-    await f.iterator.next();
-    expect(f.read().hasGap).toBe(true);
   });
 
   it('records early return independently of a gap, including when the cursor had caught up', async () => {
@@ -219,16 +221,17 @@ describe('RunHandle — private primary-delivery observation (ADR-0103 foundatio
     });
   });
 
-  it('a never-pulled dropped terminal remains a gap even after the closed buffer drains', async () => {
+  it('delivers an unpulled terminal above capacity with a complete gap-free primary cursor', async () => {
     const f = fixture(1);
     f.bus.emit(progress());
     f.bus.emit(terminal);
     await f.iterator.next();
+    expect((await f.iterator.next()).value).toMatchObject({ type: 'run:completed' });
     expect((await f.iterator.next()).done).toBe(true);
     expect(f.read()).toEqual({
       publishedCount: 2,
-      deliveredCount: 1,
-      hasGap: true,
+      deliveredCount: 2,
+      hasGap: false,
       abandoned: false,
     });
   });

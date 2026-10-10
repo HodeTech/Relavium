@@ -112,6 +112,7 @@ export type {
   BusEventDraft,
 } from './engine/event-bus.js';
 export type { RunHandle, RunDeparture } from './engine/run-handle.js';
+export type { EventConsumption } from './engine/event-stream.js';
 export {
   InMemoryRunStore,
   createInMemoryHost,

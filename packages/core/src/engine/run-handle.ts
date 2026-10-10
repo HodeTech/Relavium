@@ -1,17 +1,10 @@
 /**
- * `RunHandle` (1.N) — the surface-agnostic handle `WorkflowEngine.start` returns. Its `events` is the
- * `AsyncIterable<RunEvent>` every surface consumes with the identical `for await … switch (event.type)`
- * loop (sse-event-schema.md §Consuming the stream); `subscribe` is the co-equal push API for additional
- * passive observers (cost, UI). Both ride the one in-house {@link RunEventBus}
- * ([ADR-0036](../../../../docs/decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)).
- *
- * The async iterable is a **thin push→pull adapter** over the bus — the bounded, no-drop
- * {@link BoundedEventStream} (shared with `SessionHandle`, 1.W). The buffer never drops an event (a drop
- * would force a `sequenceNumber` resync); a slow consumer applies backpressure through
- * {@link RunHandle.whenConsumersReady}, which the engine awaits at node boundaries. The primary stream
- * subscribes at construction — *before* the engine emits `run:started` — so the consumer can attach
- * lazily without a startup race. (Late additional subscribers via {@link RunHandle.subscribe} resync from
- * persisted `run_events` — 1.R; the in-process replay path is out of 1.N scope and noted here.)
+ * RunHandle is the surface-agnostic handle returned by WorkflowEngine. Its construction selects
+ * lossless primary iteration (the default) or live subscribe-only delivery (ADR-0087 §1).
+ * Passive subscriptions are independent of the primary queue and never acknowledge consumption.
+ * Iterated delivery buffers from construction, before run:started, and owes every event to a later
+ * first pull. Subscribe-only owns no primary buffer and rejects attempted iteration, even after closure.
+ * A late run observer must read persisted run_events separately; live subscription has no replay.
  */
 
 import type { ErrorCode, RunDurability, RunEvent, RunOrSessionEvent } from '@relavium/shared';
@@ -20,6 +13,7 @@ import type { RunEventBus, RunEventListener } from './event-bus.js';
 import {
   BoundedEventStream,
   DEFAULT_STREAM_CAPACITY,
+  type EventConsumption,
   type EventStreamDeliveryState,
 } from './event-stream.js';
 
@@ -48,7 +42,10 @@ export type RunDeparture =
 export interface RunHandle {
   /** The run id (`runId`) this handle observes — the key on every event in its stream. */
   readonly runId: string;
-  /** The canonical event stream — `for await (const event of handle.events)`; completes on a terminal event. */
+  /**
+   * Primary stream in iterated mode; completes after the terminal is delivered. Subscribe-only iteration
+   * throws RunLoopInvariantError (`invalid_consumer_mode`), including after closure.
+   */
   readonly events: AsyncIterable<RunEvent>;
   /** Attach an additional passive observer (cost / UI); returns an idempotent unsubscribe. */
   subscribe: (listener: RunEventListener) => () => void;
@@ -61,15 +58,16 @@ export interface RunHandle {
   /** Join this execution's host use, or retain the same primary reader when real progress is owed. */
   depart: () => Promise<RunDeparture>;
   /**
-   * Resolves when the primary consumer's buffer has room for one more event — ADR-0036's producer-await half.
+   * Readiness below primary capacity, including before the first pull; immediate in subscribe-only mode.
+   * This does not reserve a slot: ADR-0087's concurrent-readiness race remains an explicit residual.
    *
-   * Awaited in two places, bounding two different things: the run loop awaits it once per node, and a
+   * Awaited in two places, pacing two different things: the run loop awaits it once per node, and a
    * streaming agent turn awaits it once per chunk (`CR-30`). The second is the one that matters — a node
    * boundary comes around once per node, while a model can emit thousands of token deltas between two of
    * them.
    */
   whenConsumersReady: () => Promise<void>;
-  /** The per-consumer ceiling (ADR-0036's "bounded per consumer"), exposed so a bound can be ASSERTED. */
+  /** Primary high-water mark; advisory producer readiness is not exact-capacity admission. */
   readonly highWaterMark: number;
   /** Events buffered for the primary consumer right now — the other half of an assertable bound. */
   readonly bufferedCount: number;
@@ -100,7 +98,7 @@ export interface RunHandle {
 }
 
 /**
- * Wire a {@link RunHandle} over a bus. Subscribes the primary stream at construction (before
+ * Wire a {@link RunHandle} over a bus. Subscribes its scoped observer at construction (before
  * `run:started`), and on a terminal event closes the stream and unsubscribes so the `for await`
  * completes exactly once and nothing leaks. Both the primary subscription and the exposed
  * {@link RunHandle.subscribe} are **scoped to this run's `runId`** — so even on a bus shared across
@@ -131,10 +129,11 @@ export function createRunHandle(
   onPrimaryDelivery: (read: () => EventStreamDeliveryState) => void = () => undefined,
   /** Internal owner operation; an unowned standalone handle cannot certify host safety. */
   requestDeparture: () => Promise<RunDeparture> = () => Promise.resolve({ kind: 'continue' }),
+  eventConsumption: EventConsumption = 'iterated',
 ): RunHandle {
   // `onClose: unsubscribe` detaches the bus subscription on ANY close — the terminal event below OR an early
   // consumer abandon (`break`/`return` → BoundedEventStream.return() → close()) — not only on a terminal.
-  const primary = new BoundedEventStream<RunEvent>(capacity, () => unsubscribe());
+  const primary = new BoundedEventStream<RunEvent>(capacity, () => unsubscribe(), eventConsumption);
   // Captured HERE, on the subscription registered at construction, and read after the stream completes —
   // exactly like `durability`. It cannot be captured by a caller's own `subscribe()`: that is a LIVE bus
   // subscription with no replay, and a terminal can be emitted before the caller ever receives the handle
@@ -202,10 +201,18 @@ export function createRunHandle(
  * terminated in a prior process** (1.R `resumeFromCheckpoint` re-delivering a gate decision to a run
  * whose checkpoint is already `completed`/`failed`/`cancelled`). It is a safe idempotent no-op: no event
  * is re-emitted or re-persisted; the `events` iteration completes immediately (the actual terminal
- * outcome is in the persisted `run_events`). `cancel`/`subscribe` are inert (the run is done).
+ * outcome is in the persisted `run_events`). A subscribe-only handle still rejects iteration after
+ * closure. `cancel`/`subscribe` are inert (the run is done).
  */
-export function createClosedRunHandle(runId: string): RunHandle {
-  const primary = new BoundedEventStream<RunEvent>(DEFAULT_STREAM_CAPACITY);
+export function createClosedRunHandle(
+  runId: string,
+  eventConsumption: EventConsumption = 'iterated',
+): RunHandle {
+  const primary = new BoundedEventStream<RunEvent>(
+    DEFAULT_STREAM_CAPACITY,
+    undefined,
+    eventConsumption,
+  );
   primary.close();
   const departure = Promise.resolve<RunDeparture>(
     Object.freeze({ kind: 'closed', moneyDurability: 'durable', effectNeedsAttention: false }),

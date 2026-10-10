@@ -269,3 +269,20 @@ separates §1's no-drop/no-primary-buffer obligation from that existing residual
 mode/default plumbing and its interaction with ADR-0103's primary-delivery authority for
 maintainer review. No implementation or new producer-await decision is claimed here. The
 accepted body and all nine corrections remain historical records.
+
+## W8 §1 implementation — 2026-10-10
+
+The maintainer approved the W8 plan and compatibility default on 2026-10-10. Workflow
+start/checkpoint resume and standalone session handles now fix their consumption mode at
+construction. Iterated streams preserve every publication before their first pull, including
+terminals; subscribe-only streams retain no primary events. Attempted iteration is a typed
+`invalid_consumer_mode` refusal, including after closure, rather than the original decision's
+empty-iteration alternative. CLI workflow drivers select iteration and CLI session builders
+select live subscription before production. Terminal metadata and ADR-0103's actual
+primary-consumption authority remain independent of passive subscribers.
+
+The [canonical consumption contract](../reference/contracts/sse-event-schema.md#primary-stream-consumption-in-process)
+owns these details; the [W8 Step 1 register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-step-1-consumption-modes--2026-10-10)
+owns implementation/review acceptance. This implements §1's consumption repair only. Both
+concurrent-readiness schedules in the preceding correction remain the existing approved
+exact-capacity residual; no emission permit or stronger capacity guarantee is introduced.

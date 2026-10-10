@@ -530,6 +530,34 @@ is the accepted ADR-0096 compatibility rule, also applicable to `effect_needs_at
 
 ## Transport notes
 
+### Primary stream consumption (in-process)
+
+An execution chooses `EventConsumption` once, before event production:
+`'iterated'` (the compatibility default) or `'subscribe-only'`
+([ADR-0087 §1 and its corrections](../../decisions/0087-consumed-streams-size-bounds-and-run-retention.md)).
+`WorkflowEngine.start` and `resumeFromCheckpoint` accept `eventConsumption`; the choice is local
+to that execution, not persisted workflow configuration or inherited resume authority.
+`createSessionHandle` takes the mode after its existing capacity argument. Existing positional
+arguments keep their meaning. A host constructing a standalone `AgentSession` wires the chosen
+handle's `whenConsumersReady` through its `whenReady` dependency.
+
+| Mode | Primary delivery and producer readiness |
+| --- | --- |
+| `iterated` | Every owed event is retained, including a terminal published before the first pull. Readiness waits below capacity even before that first pull. The producer must honour readiness; iteration eventually drains the buffer and observes closure. |
+| `subscribe-only` | No primary events are buffered; depth and legacy `unpulledOverflow` are zero and readiness resolves immediately. Acquiring an iterator or calling `next()` refuses with `RunLoopInvariantError` / `invalid_consumer_mode`, even after closure. Passive subscribers remain live-only. |
+
+The CLI workflow driver explicitly selects `iterated`; fresh, resumed and reseated chat/Home/agent
+sessions explicitly select `subscribe-only`. Session subscribers attach before `start()` or the
+next resumed turn: there is no transient session-event replay. A passive callback never certifies
+primary consumption. Paused run departure without an iterated primary refuses `invalid_departure`;
+actual terminal/fenced closure can still join host work. Construction-time terminal error and
+durability observations remain available independently of primary buffering.
+
+Readiness is advisory rather than a reserved emission permit. Concurrent ready producers and
+finite synchronous lifecycle bursts can exceed capacity; the existing exact-capacity residual
+in [deferred-tasks.md](../../roadmap/deferred-tasks.md) remains open. No event is dropped to hide
+that residual, and subscribe-only iteration never pretends to be clean EOF.
+
 ### Phase 1 — local (in-process on every surface)
 
 - **Desktop**: the engine runs in the WebView's JS runtime ([ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)), so run events are delivered **WebView-side** over the engine's in-process `RunEventBus` — they do **not** cross IPC as `RunEvent`s. The one Rust→WebView channel on the hot path is the delegated LLM egress's typed, backpressure-aware `Channel<StreamChunk>`: if the WebView consumer lags, the Rust sender awaits, throttling the egress without dropping chunks; the adapter folds those chunks into `agent:token` events on the WebView-side bus. See [ipc-contract.md](ipc-contract.md#run-events-are-webview-side).

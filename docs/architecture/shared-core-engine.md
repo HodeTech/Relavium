@@ -143,6 +143,9 @@ the same primary stream. A stable, fully delivered pause returns `detached` only
 registered work, receipts and exact lease release are acknowledged. A terminal or fenced execution
 returns `closed` after its independent host join. Both host-safe results carry final
 `moneyDurability` and `effectNeedsAttention`; neither changes or invents a terminal event.
+The [primary consumption mode](../reference/contracts/sse-event-schema.md#primary-stream-consumption-in-process)
+is fixed at start/checkpoint resume. A subscribe-only paused execution has no primary acknowledgement
+and refuses departure; an actual terminal/fenced closure still joins its host work.
 The primary reader must remain active while departure runs. Early iterator return, a passive
 subscription or terminal delivery alone supplies no host-close certificate.
 

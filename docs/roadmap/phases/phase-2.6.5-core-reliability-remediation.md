@@ -2579,12 +2579,12 @@ than inferred from old line numbers or W7's acceptance.
   parity/ownership evidence, not a static canonical request oracle.
 - Missing/partial usage can become schema-valid zero, and locally observed usage can disappear
   on error/truncation. Budgetless owners and cost readers have no durable usage-completeness
-  account. [Proposed ADR-0104](../../decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md)
+  account. [ADR-0104](../../decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md)
   records the required seam, durable uncertainty, migration, replay and display decision.
 - The testing standard now qualifies actual response-seed/live-smoke coverage; the LLM package
   README no longer calls shipped adapters future work. The event contract no longer calls the
   shipped public departure result unimplemented. Canonical future schemas are not pre-landed
-  while ADR-0104 remains Proposed.
+  before ADR-0104's implementation lands.
 
 #### Decisions to review before implementation
 
@@ -2705,6 +2705,32 @@ ADR-0104 and seven-step execution plan after both new cumulative review rounds. 
 index are now Accepted; implementation is authorized on `development`, with two fresh independent
 review rounds per implementation step. Step 1 starts with ADR-0087 §1. Approval closes the decision
 gate only; CR-81/CR-82, the stream blocker and all implementation acceptance gates remain open.
+
+### W8 Step 1 consumption modes — 2026-10-10
+
+**Author implementation; independent review pending.** Base `8844eb0b`, branch `development`.
+The shared queue and both handles now have immutable `iterated`/`subscribe-only` consumption;
+workflow start and checkpoint resume preserve the selected mode, including closed handles.
+Iterated readiness applies before first pull without dropping publications or terminals.
+CLI workflow drivers explicitly iterate; fresh/resumed/reseated chat builders explicitly
+subscribe before production and retain no primary events. Canonical contract and lifecycle
+guidance land with the source; ADR-0036/0087 receive dated forward notes.
+
+Permanent regressions cover capacity-1 start/resume across human/budget/media/refusal/terminal
+branches, immutable mode through asynchronous admission, terminal metadata, fenced/receipt
+joining, typed iteration misuse and no-primary paused-departure refusal. CLI integration
+delivers 600-token replies live through all three session construction variants. Removing
+the departure-mode guard or the pre-await mode snapshot independently fails its regression;
+exact restoration passes. Queue readiness remains advisory: the approved exact-capacity
+residual remains open. W8, CR-81 and CR-82 remain open; this author checkpoint does not accept
+the step or replace either fresh independent review round.
+
+Author gates pass: `pnpm turbo run lint typecheck test` **23/23** (20 cached on the final
+run), then build **6/6** (5 cached). Core **3,120** and CLI **3,232** tests executed fresh
+during author validation; the other package results were cache replays. The initial lint run
+caught two test-only unsafe asymmetric-matcher arguments; typed error-class assertions fixed
+them before the green run. Relative/archive-link and whitespace checks pass; no dependency,
+vendor-seam or engine-platform import change is introduced. Detailed logs remain external.
 
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High
 A recorded response carries status, content type and body only; replay checks that the request body is parseable

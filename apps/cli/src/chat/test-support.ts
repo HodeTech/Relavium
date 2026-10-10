@@ -1,5 +1,5 @@
 import type { LlmProvider, ProviderId, StreamChunk } from '@relavium/llm';
-import type { SessionStreamHandleEvent } from '@relavium/core';
+import type { SessionHandle, SessionStreamHandleEvent } from '@relavium/core';
 
 import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
 import type { ProviderResolver } from '../engine/providers.js';
@@ -82,11 +82,18 @@ export function unresolvedResolver(): ProviderResolver {
   return { resolveProvider: () => undefined, keyFor: () => 'test-key' };
 }
 
-/** Drain a session handle's event stream to completion (closes on `session:cancelled`). */
-export async function drainHandle(
-  events: AsyncIterable<SessionStreamHandleEvent>,
+/** Attach before production, as CLI consumers do; resolve on the live cancellation boundary. */
+export function collectSubscribedSessionEvents(
+  handle: SessionHandle,
 ): Promise<SessionStreamHandleEvent[]> {
   const collected: SessionStreamHandleEvent[] = [];
-  for await (const event of events) collected.push(event);
-  return collected;
+  return new Promise((resolve) => {
+    const off = handle.subscribe((event) => {
+      collected.push(event);
+      if (event.type === 'session:cancelled') {
+        off();
+        resolve(collected);
+      }
+    });
+  });
 }

@@ -45,6 +45,12 @@ session measurement, atomic compaction and overflow recovery have independent ac
 
 ## Lifecycle
 
+Hosts select primary delivery when constructing the session handle, following the
+[stream consumption contract](sse-event-schema.md#primary-stream-consumption-in-process).
+The CLI attaches live subscribers before production; standalone iterated hosts must drain the
+primary stream and wire its readiness to the session. Session cancellation closes delivery
+without inventing a replayable transient event log.
+
 ```mermaid
 stateDiagram-v2
     [*] --> Idle: start(agentRef, context)

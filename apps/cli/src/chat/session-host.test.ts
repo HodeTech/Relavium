@@ -5,7 +5,12 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { BudgetExceededError, BudgetPauseError, CommitmentDurabilityError } from '@relavium/core';
+import {
+  BudgetExceededError,
+  BudgetPauseError,
+  CommitmentDurabilityError,
+  RunLoopInvariantError,
+} from '@relavium/core';
 import type { SessionStreamHandleEvent } from '@relavium/core';
 import {
   buildServerToolDefs,
@@ -35,7 +40,7 @@ import {
   type ChatBudgetWarning,
 } from './session-host.js';
 import {
-  drainHandle,
+  collectSubscribedSessionEvents,
   scriptedResolver,
   stop,
   textTurn,
@@ -49,13 +54,13 @@ async function buildChatSession(opts: Parameters<typeof buildFreshSession>[0]) {
   const built = await buildFreshSession(opts);
   let key = 0;
   built.attachEffectTurnAllocator(() => ++key);
-  return built;
+  return { ...built, recordedEvents: collectSubscribedSessionEvents(built.handle) };
 }
 async function buildResumedChatSession(opts: Parameters<typeof buildRestoredSession>[0]) {
   const built = await buildRestoredSession(opts);
   let key = 0;
   built.attachEffectTurnAllocator(() => ++key);
-  return built;
+  return { ...built, recordedEvents: collectSubscribedSessionEvents(built.handle) };
 }
 
 /** A tool-call turn that carries JSON args (the `toolUseTurn` helper sends none) — for read_file/write_file. */
@@ -143,6 +148,24 @@ async function build(overrides: Partial<Parameters<typeof buildChatSession>[0]> 
 }
 
 describe('buildChatSession', () => {
+  it('delivers a long reply live without a primary buffer or implicit iterator', async () => {
+    const chunks: StreamChunk[] = Array.from({ length: 600 }, () => ({
+      type: 'text_delta',
+      text: 'x',
+    }));
+    const built = await build({ providers: scriptedResolver([[...chunks, stop()]]) });
+    built.session.start();
+    await built.session.sendMessage('hello');
+    expect(built.handle.bufferedCount).toBe(0);
+    expect(built.handle.unpulledOverflow).toBe(0);
+    await built.handle.whenConsumersReady();
+    expect(() => built.handle.events[Symbol.asyncIterator]()).toThrow(RunLoopInvariantError);
+    built.session.cancel();
+    const events = await built.recordedEvents;
+    expect(events.filter((event) => event.type === 'agent:token')).toHaveLength(600);
+    expect(events.at(-1)?.type).toBe('session:cancelled');
+  });
+
   it('forwards the same configured fallback into the fresh session and its governor', async () => {
     const built = await build({
       chat: { ...EMPTY_CHAT, maxCostMicrocents: 100_000_000, onExceed: 'fail' },
@@ -160,7 +183,7 @@ describe('buildChatSession', () => {
       built.session.start();
       await built.session.sendMessage('hello');
       built.session.cancel();
-      const events = await drainHandle(built.handle.events);
+      const events = await built.recordedEvents;
       expect(seen).toHaveLength(1);
       expect(seen[0]).toMatchObject({ route: 'text', maxTokensEstimate: 17 });
       expect(
@@ -220,7 +243,7 @@ describe('buildChatSession', () => {
     built.session.start();
     await built.session.sendMessage('hi');
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
 
     const types = events.map((e) => e.type);
     expect(types).toContain('session:started');
@@ -245,7 +268,7 @@ describe('buildChatSession', () => {
     built.session.start();
     await built.session.sendMessage('read the file');
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
 
     const types = events.map((e) => e.type);
     expect(types).toContain('agent:tool_call'); // the tool call is annotated on the stream
@@ -269,7 +292,7 @@ describe('buildChatSession', () => {
       built.session.start();
       await built.session.sendMessage('what changed?');
       built.session.cancel();
-      const events = await drainHandle(built.handle.events);
+      const events = await built.recordedEvents;
 
       // The git_status tool call was annotated on the stream (the session routed it to the host)…
       const toolCall = events.find((e) => e.type === 'agent:tool_call');
@@ -307,7 +330,7 @@ describe('buildChatSession', () => {
     await built.session.sendMessage('two');
     await built.session.sendMessage('three — over the cap');
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
 
     const errorCodes = events.flatMap((e) =>
       e.type === 'session:turn_completed' && e.error !== undefined ? [e.error.code] : [],
@@ -329,7 +352,7 @@ describe('buildChatSession', () => {
     await built.session.sendMessage('two');
     await built.session.sendMessage('three');
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
 
     const errorCodes = events.flatMap((e) =>
       e.type === 'session:turn_completed' && e.error !== undefined ? [e.error.code] : [],
@@ -465,7 +488,7 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
     built.session.start();
     await built.session.sendMessage('go');
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
 
     const toolCall = events.find((e) => e.type === 'agent:tool_call');
     expect(toolCall?.type === 'agent:tool_call' && toolCall.toolId).toBe('mcp_fs_read');
@@ -529,7 +552,7 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
     built.session.start();
     await built.session.sendMessage('read both ways');
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
 
     const results = events.flatMap((e) =>
       e.type === 'agent:tool_result' ? [{ id: e.toolId, ok: e.success }] : [],
@@ -630,7 +653,7 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
     built.session.start();
     await built.session.sendMessage('go');
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
     expect(JSON.stringify(events)).not.toContain('ghp_SECRET_SENTINEL');
     await built.closeMcp?.();
   });
@@ -675,6 +698,35 @@ describe('buildResumedChatSession (2.N)', () => {
     });
   }
 
+  it('resumes and reseats with live-only delivery beyond the default queue capacity', async () => {
+    for (const reseat of [false, true]) {
+      const chunks: StreamChunk[] = Array.from({ length: 600 }, () => ({
+        type: 'text_delta',
+        text: 'r',
+      }));
+      const built = await buildResumedChatSession({
+        chat: EMPTY_CHAT,
+        record: record(
+          reseat
+            ? { agentSnapshot: swapAgentModel(RESUME_AGENT, 'claude-haiku-4-5', 'anthropic') }
+            : {},
+        ),
+        messages: [message(0, 'user', 'before'), message(1, 'assistant', 'done')],
+        now: () => Date.parse(ISO),
+        providers: scriptedResolver([[...chunks, stop()]]),
+        consentGate: () => Promise.resolve(new Map()),
+      });
+      await built.session.sendMessage('continue');
+      expect(built.handle.bufferedCount).toBe(0);
+      expect(built.handle.unpulledOverflow).toBe(0);
+      expect(() => built.handle.events[Symbol.asyncIterator]()).toThrow(RunLoopInvariantError);
+      built.session.cancel();
+      const events = await built.recordedEvents;
+      expect(events.filter((event) => event.type === 'agent:token')).toHaveLength(600);
+      expect(events.at(-1)?.type).toBe('session:cancelled');
+    }
+  });
+
   it('rebinds the frozen agent + context and reconstructs the carried-over state', async () => {
     const built = await resume([message(0, 'user', 'hi'), message(1, 'assistant', 'hello')]);
     expect(built.sessionId).toBe('sess-r');
@@ -707,7 +759,7 @@ describe('buildResumedChatSession (2.N)', () => {
     try {
       await built.session.sendMessage('hello again');
       built.session.cancel();
-      const events = await drainHandle(built.handle.events);
+      const events = await built.recordedEvents;
       expect(seen).toHaveLength(1);
       expect(seen[0]).toMatchObject({ route: 'text', maxTokensEstimate: 17 });
       expect(
@@ -784,7 +836,7 @@ describe('buildResumedChatSession (2.N)', () => {
     // A resumed session lands at idle and continues without start(); the next sendMessage runs a turn.
     await built.session.sendMessage('write a file');
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
     const completed = events.find((e) => e.type === 'session:turn_completed');
     expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
       'tool_denied',
@@ -817,7 +869,7 @@ describe('buildResumedChatSession (2.N)', () => {
     control.onModeChange('accept-edits'); // a prompting mode — but nothing can answer on this driver
     await built.session.sendMessage('write a file'); // MUST resolve (deny), never hang
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
     const completed = events.find((e) => e.type === 'session:turn_completed');
     expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
       'tool_denied',
@@ -879,7 +931,7 @@ describe('buildResumedChatSession (2.N)', () => {
     // No start() — AgentSession.resume already landed at idle; sendMessage continues the conversation.
     await built.session.sendMessage('again');
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
 
     const types = events.map((e) => e.type);
     expect(types).not.toContain('session:started'); // resume must not double the lifecycle-open event
@@ -899,7 +951,7 @@ describe('buildResumedChatSession (2.N)', () => {
 
     await built.session.sendMessage('go');
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
     const token = events.find((e) => e.type === 'agent:token');
     expect(token?.type === 'agent:token' && token.nodeId).toBe(RESUME_AGENT.id);
   });
@@ -917,7 +969,7 @@ describe('buildResumedChatSession (2.N)', () => {
     });
     await built.session.sendMessage('again');
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
 
     const errorCodes = events.flatMap((e) =>
       e.type === 'session:turn_completed' && e.error !== undefined ? [e.error.code] : [],
@@ -947,7 +999,7 @@ describe('buildResumedChatSession (2.N)', () => {
     });
     await built.session.sendMessage('again');
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
 
     const errorCodes = events.flatMap((e) =>
       e.type === 'session:turn_completed' && e.error !== undefined ? [e.error.code] : [],
@@ -1005,7 +1057,7 @@ describe('buildResumedChatSession (2.N)', () => {
       // withMcpGrant ran on the snapshot agent (else the call would be denied not_granted).
       await built.session.sendMessage('go');
       built.session.cancel();
-      const events = await drainHandle(built.handle.events);
+      const events = await built.recordedEvents;
       const toolCall = events.find((e) => e.type === 'agent:tool_call');
       expect(toolCall?.type === 'agent:tool_call' && toolCall.toolId).toBe('mcp_fs_read');
       expect(calls).toEqual([{ name: 'read', args: {} }]);
@@ -1315,7 +1367,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     built.session.start();
     await built.session.sendMessage('read note.txt');
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
 
     const result = events.find((e) => e.type === 'agent:tool_result');
     expect(result?.type === 'agent:tool_result' && result.toolId).toBe('read_file');
@@ -1350,7 +1402,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     built.session.start();
     await built.session.sendMessage('write a file');
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
 
     const completed = events.find((e) => e.type === 'session:turn_completed');
     expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
@@ -1374,7 +1426,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     built.session.start();
     await built.session.sendMessage('write a file');
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
     const completed = events.find((e) => e.type === 'session:turn_completed');
     expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
       'tool_denied',
@@ -1424,7 +1476,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     built.session.start();
     await built.session.sendMessage('fetch a url');
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
     const completed = events.find((e) => e.type === 'session:turn_completed');
     expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
       'tool_denied',
@@ -1444,7 +1496,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     built.session.start();
     await built.session.sendMessage('read my clipboard');
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
     const completed = events.find((e) => e.type === 'session:turn_completed');
     expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
       'tool_denied',
@@ -1474,7 +1526,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     store.answerApproval({ outcome: 'approve', scope: 'once' });
     await turn;
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
     expect(existsSync(join(workspace, 'ok.txt'))).toBe(true); // approved ⇒ the write landed
     expect(readFileSync(join(workspace, 'ok.txt'), 'utf8')).toBe('hi');
     // EA5 end-to-end: a real AgentSession turn → real registry confirmDispatch → the emit lands on the handle
@@ -1513,7 +1565,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     store.answerApproval({ outcome: 'reject' });
     await turn;
     built.session.cancel();
-    await drainHandle(built.handle.events);
+    await built.recordedEvents;
     expect(existsSync(join(workspace, '.git', 'config'))).toBe(false);
   });
 
@@ -1543,7 +1595,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     store.answerApproval({ outcome: 'approve', scope: 'once' }); // APPROVE — the fs floor must refuse it anyway
     await turn;
     built.session.cancel();
-    const events = await drainHandle(built.handle.events);
+    const events = await built.recordedEvents;
     const completed = events.find((e) => e.type === 'session:turn_completed');
     expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
       'tool_denied',
@@ -1562,7 +1614,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     built.session.start();
     await built.session.sendMessage('go');
     built.session.cancel();
-    await drainHandle(built.handle.events);
+    await built.recordedEvents;
 
     const advertised = (requests[0]?.tools ?? []).map((t) => t.name);
     expect(advertised).toContain('read_file'); // fs wired ⇒ advertised

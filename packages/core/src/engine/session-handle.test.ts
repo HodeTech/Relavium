@@ -1,6 +1,7 @@
 import { SessionContextSchema } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
+import { RunLoopInvariantError } from './invariant-error.js';
 import { RunEventBus, type RunEventDraft, type SessionEventDraft } from './event-bus.js';
 import {
   createSessionEventSink,
@@ -155,52 +156,45 @@ describe('SessionHandle (1.W) — the long-lived session event stream', () => {
 });
 
 describe('SessionHandle — the producer-await bound (CR-30, ADR-0036)', () => {
-  it('does NOT park a producer when nobody iterates the stream — the CR-30 deadlock', async () => {
-    // **The regression CR-30's first version shipped, caught by its own review round.** Every CLI session
-    // surface attaches with `subscribe()`, which `createSessionHandle` implements as a SEPARATE bus
-    // subscription — it never drains `primary`. So `primary` filled with every session event, nobody ever
-    // pulled, and `whenDrained()` stopped resolving after `capacity`. With the per-chunk await now wired
-    // into the agent turn, that froze `relavium chat` mid-reply, permanently.
-    //
-    // Measured before the fix, with this exact shape: 10 events buffered against a ceiling of 4 and
-    // `whenConsumersReady()` never resolved. Backpressure paces a consumer that EXISTS; parking a producer
-    // on a stream nobody reads is not backpressure.
+  it('subscribe-only does not park a producer and holds no primary buffer', async () => {
     const b = bus();
-    const handle = createSessionHandle(b, 'sess-1', () => undefined, 4);
-    handle.subscribe(() => undefined); // the only consumer, exactly like the CLI persister
-
-    for (let i = 0; i < 10; i += 1) b.emit(turnStarted());
-    // Two properties, and the pair is the point — the first fix held one and broke the other, then the
-    // second held that one and lost the first. The buffer is BOUNDED (an un-pulled stream declines past its
-    // ceiling rather than growing for as long as the model talks) and the producer is NOT PARKED.
-    expect(handle.bufferedCount).toBeLessThanOrEqual(handle.highWaterMark);
-
-    let resolved = false;
-    void handle.whenConsumersReady().then(() => {
-      resolved = true;
-    });
-    for (let i = 0; i < 50; i += 1) await Promise.resolve();
-    expect(resolved).toBe(true);
+    const handle = createSessionHandle(b, 'sess-1', () => undefined, 4, 'subscribe-only');
+    const seen: SessionStreamHandleEvent[] = [];
+    const off = handle.subscribe((event) => seen.push(event));
+    for (let i = 0; i < 200; i += 1) {
+      await handle.whenConsumersReady();
+      b.emit(turnStarted());
+    }
+    b.emit(cancelled());
+    expect(seen).toHaveLength(201);
+    expect(seen.map((event) => event.sequenceNumber)).toEqual(
+      Array.from({ length: 201 }, (_, i) => i),
+    );
+    expect(handle.bufferedCount).toBe(0);
+    expect(handle.unpulledOverflow).toBe(0);
+    off();
   });
 
-  it('an un-pulled stream is BOUNDED, not merely un-parked — CR-30 for the session path', () => {
-    // **The half the deadlock fix lost, and the reason both halves need their own assertion.** Making
-    // `whenDrained` resolve for an un-pulled stream stopped the freeze — and let the buffer grow for as long
-    // as the model talked, which is the memory bound CR-30 exists to close. Every CLI session attaches with
-    // `subscribe()` only, so this IS the production shape, not an edge case.
-    //
-    // An un-pulled stream keeps the EARLIEST `capacity` events and declines the rest: `run:started` and the
-    // opening events are what a consumer attaching in the same tick needs, and a later attacher never had
-    // the declined ones anyway. The `sequenceNumber` jump is ADR-0036's own resync signal.
-    const CEILING = 4;
+  it('iterated mode applies readiness before the first pull and retains its later terminal', async () => {
     const b = bus();
-    const handle = createSessionHandle(b, 'sess-1', () => undefined, CEILING);
-    handle.subscribe(() => undefined);
-
-    for (let i = 0; i < 200; i += 1) b.emit(turnStarted());
-
-    expect(handle.bufferedCount).toBe(CEILING);
-    expect(handle.unpulledOverflow).toBe(200 - CEILING);
+    const handle = createSessionHandle(b, 'sess-1', () => undefined, 1);
+    b.emit(started());
+    let ready = false;
+    const waiting = handle.whenConsumersReady().then(() => {
+      ready = true;
+    });
+    await Promise.resolve();
+    expect(ready).toBe(false);
+    const iterator = handle.events[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toMatchObject({ type: 'session:started' });
+    await waiting;
+    expect(ready).toBe(true);
+    b.emit(turnStarted());
+    b.emit(cancelled());
+    expect((await iterator.next()).value).toMatchObject({ type: 'session:turn_started' });
+    expect((await iterator.next()).value).toMatchObject({ type: 'session:cancelled' });
+    expect((await iterator.next()).done).toBe(true);
+    expect(handle.unpulledOverflow).toBe(0);
   });
 
   it('a fast producer that awaits never exceeds the ceiling, and skips no sequence number', async () => {
@@ -307,5 +301,69 @@ describe('createSessionEventSink (1.W) — AgentSession envelope-free drafts →
     ]);
     expect(events.every((e) => e.sessionId === 'sess-1')).toBe(true);
     expect(events.map((e) => e.sequenceNumber)).toEqual([0, 1, 2]); // it consumed a sequence (was carried)
+  });
+});
+
+describe('SessionHandle — subscribe-only lifecycle (ADR-0087 §1)', () => {
+  it('filters live subscribers, has no replay, and rejects iteration before and after cancellation', async () => {
+    const b = bus();
+    const detached = vi.fn();
+    const realSubscribe = b.subscribe.bind(b);
+    vi.spyOn(b, 'subscribe').mockImplementation((listener) => {
+      const off = realSubscribe(listener);
+      return () => {
+        detached();
+        off();
+      };
+    });
+    const cancel = vi.fn();
+    const handle = createSessionHandle(b, 'sess-1', cancel, 1, 'subscribe-only');
+    expect(() => handle.events[Symbol.asyncIterator]()).toThrow(RunLoopInvariantError);
+    await expect(drain(handle.events)).rejects.toMatchObject({ code: 'invalid_consumer_mode' });
+    const seen: SessionStreamHandleEvent[] = [];
+    const off = handle.subscribe((event) => seen.push(event)); // attach before production
+    b.emit(started());
+    b.emit(started('sess-2'));
+    b.emit(runNodeStarted('run-9'));
+    b.emit(turnCompleted());
+    b.emit(turnStarted()); // per-turn completion does not close the handle
+    b.emit(cancelled());
+    expect(detached).toHaveBeenCalledTimes(1);
+    expect(seen.map((event) => event.type)).toEqual([
+      'session:started',
+      'session:turn_completed',
+      'session:turn_started',
+      'session:cancelled',
+    ]);
+    expect(handle.bufferedCount).toBe(0);
+    expect(handle.unpulledOverflow).toBe(0);
+    await handle.whenConsumersReady();
+    await expect(drain(handle.events)).rejects.toMatchObject({ code: 'invalid_consumer_mode' });
+    const late: SessionStreamHandleEvent[] = [];
+    const lateOff = handle.subscribe((event) => late.push(event));
+    expect(late).toEqual([]); // subscribe-only session delivery is live-only, no durable event replay
+    handle.cancel();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    off();
+    off();
+    lateOff();
+  });
+
+  it('delivers the terminal to a late first iterated pull even above capacity', async () => {
+    const b = bus();
+    const handle = createSessionHandle(b, 'sess-1', () => undefined, 1);
+    b.emit(started());
+    b.emit(turnStarted());
+    b.emit(turnCompleted());
+    b.emit(cancelled());
+    const events = await drain(handle.events);
+    expect(events.map((event) => event.type)).toEqual([
+      'session:started',
+      'session:turn_started',
+      'session:turn_completed',
+      'session:cancelled',
+    ]);
+    expect(events.map((event) => event.sequenceNumber)).toEqual([0, 1, 2, 3]);
+    expect(handle.unpulledOverflow).toBe(0);
   });
 });

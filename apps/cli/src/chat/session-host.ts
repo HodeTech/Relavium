@@ -676,8 +676,8 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     // **The producer-await knob, late-bound (`CR-30`, ADR-0036).** The handle is created FROM the session
     // (it closes over `session.cancel()`), so the session cannot hold it at construction. `whenReady` is
     // only ever called during a turn, long after both exist, so a thunk that reads this slot is safe — and
-    // it resolves immediately while the slot is still empty, which is the correct answer for "no consumer
-    // has attached yet".
+    // production cannot begin before this builder returns. The CLI explicitly uses subscribe-only
+    // delivery; its live subscribers attach before start/next turn, without a hidden primary buffer.
     const attached: { handle?: SessionHandle } = {};
     const whenReady = (): Promise<void> =>
       attached.handle?.whenConsumersReady() ?? Promise.resolve();
@@ -688,7 +688,13 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       context,
       deps: { ...deps, whenReady },
     });
-    const handle = createSessionHandle(bus, sessionId, () => session.cancel());
+    const handle = createSessionHandle(
+      bus,
+      sessionId,
+      () => session.cancel(),
+      undefined,
+      'subscribe-only',
+    );
     attached.handle = handle;
     return {
       session,
@@ -935,7 +941,13 @@ export async function buildResumedChatSession(
       },
       resumeState,
     );
-    const handle = createSessionHandle(bus, record.id, () => session.cancel());
+    const handle = createSessionHandle(
+      bus,
+      record.id,
+      () => session.cancel(),
+      undefined,
+      'subscribe-only',
+    );
     attached.handle = handle;
     // Seed the persister one past the persisted MAX(sequence_number) — a fold (not `Math.max(...spread)`, which
     // would overflow the argument-count limit on a very long transcript) over the durable rows, so it is

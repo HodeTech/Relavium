@@ -134,7 +134,7 @@ import {
   type RunDeparture,
   type RunHandle,
 } from './run-handle.js';
-import type { EventStreamDeliveryState } from './event-stream.js';
+import type { EventConsumption, EventStreamDeliveryState } from './event-stream.js';
 
 /** A vertex's live status in one run. `paused` (at a gate) and `running` are not yet *settled*. */
 type VertexStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'paused';
@@ -222,6 +222,8 @@ const MAX_NODE_RETRY_BACKOFF_MS = 86_400_000;
 
 /** The input to {@link WorkflowEngine.start} — a parsed workflow plus its run inputs and mode. */
 export interface StartInput {
+  /** Primary delivery policy for this execution; defaults to lossless `iterated` delivery (ADR-0087 §1). */
+  readonly eventConsumption?: EventConsumption;
   /** The parsed, validated workflow (the host read the file and called `parseWorkflow`). */
   readonly workflow: WorkflowDefinition;
   /** The run inputs (the `inputs` namespace); a `secret`-typed input is masked in `run:started`. */
@@ -251,6 +253,8 @@ export interface StartInput {
  * not detected, recorded as a limitation in §10.
  */
 export interface ResumeFromCheckpointInput {
+  /** This resumed execution's delivery policy, independent of the recorded execution mode. Defaults to `iterated`. */
+  readonly eventConsumption?: EventConsumption;
   readonly runId: string;
   /** The workflow to resume against — the engine refuses one whose identity differs (workflow_mismatch). */
   readonly workflow: WorkflowDefinition;
@@ -547,6 +551,7 @@ class RunExecution {
   /** The names of `secret`-typed inputs — threaded to handlers so they keep raw secrets out of outputs. */
   readonly #secretInputNames: ReadonlySet<string>;
   readonly #executionMode: ExecutionMode;
+  readonly #eventConsumption: EventConsumption;
   readonly #host: ExecutionHost;
   readonly #executor: NodeExecutor;
   readonly #bus: RunEventBus;
@@ -736,6 +741,7 @@ class RunExecution {
     workflow: WorkflowDefinition;
     inputs: Readonly<Record<string, unknown>>;
     executionMode: ExecutionMode;
+    eventConsumption: EventConsumption;
     host: ExecutionHost;
     executor: NodeExecutor;
     bus: RunEventBus;
@@ -774,6 +780,7 @@ class RunExecution {
     this.#workflow = params.workflow;
     this.#inputs = params.inputs;
     this.#executionMode = params.executionMode;
+    this.#eventConsumption = params.eventConsumption;
     this.#host = params.host;
     this.#executor = params.executor;
     this.#resolverCapabilities = params.resolverCapabilities;
@@ -918,6 +925,7 @@ class RunExecution {
         this.#readPrimary = read;
       },
       () => this.#depart(),
+      this.#eventConsumption,
     );
   }
 
@@ -4443,7 +4451,12 @@ class RunExecution {
 
   #assertDeparturePrimary(): EventStreamDeliveryState {
     const state = this.#readPrimary?.();
-    if (state === undefined || state.hasGap || state.abandoned) {
+    if (
+      this.#eventConsumption !== 'iterated' ||
+      state === undefined ||
+      state.hasGap ||
+      state.abandoned
+    ) {
       throw new EngineStateError(
         'invalid_departure',
         'paused departure requires an intact primary reader',
@@ -5665,6 +5678,7 @@ export class WorkflowEngine {
       // (§7). Mutating the caller's object after `start()` returns cannot reach the run.
       inputs: admitted.inputs,
       executionMode: input.executionMode ?? 'local',
+      eventConsumption: input.eventConsumption ?? 'iterated',
       host: this.#host,
       executor: this.#executor,
       bus,
@@ -5753,6 +5767,8 @@ export class WorkflowEngine {
   //
   // What CAN move out is a message the ordering does not depend on — see `#ownedElsewhereMessage`.
   async resumeFromCheckpoint(input: ResumeFromCheckpointInput): Promise<RunHandle> {
+    // Snapshot before any host await: caller mutation cannot switch the primary delivery policy.
+    const eventConsumption = input.eventConsumption ?? 'iterated';
     assertValidResumeInput(input);
     if (this.#resumingRuns.has(input.runId) || this.#runs.has(input.runId)) {
       throw new EngineStateError(
@@ -5764,7 +5780,7 @@ export class WorkflowEngine {
     const preparingAbort = this.#host.newAbortController();
     this.#resumingRuns.set(input.runId, preparingAbort);
     try {
-      return await this.#resumeCheckpoint(input, preparingAbort.signal);
+      return await this.#resumeCheckpoint(input, preparingAbort.signal, eventConsumption);
     } finally {
       this.#resumingRuns.delete(input.runId);
     }
@@ -5773,6 +5789,7 @@ export class WorkflowEngine {
   async #resumeCheckpoint(
     input: ResumeFromCheckpointInput,
     preparingSignal: AbortSignalLike,
+    eventConsumption: EventConsumption,
   ): Promise<RunHandle> {
     // A gate resume supplies gateId + decision; a media-ONLY resume (1.AG Section D) supplies neither.
     const isGateResume = input.gateId !== undefined && input.decision !== undefined;
@@ -5848,7 +5865,7 @@ export class WorkflowEngine {
       // transient refusal (exit 6) for a full TTL, over a run that has been over for hours, and leave a
       // `run_leases` row per re-delivery that nothing ever deletes.
       await this.#releaseReconcileClaim(input.runId, fence);
-      return createClosedRunHandle(input.runId);
+      return createClosedRunHandle(input.runId, eventConsumption);
     }
     // **The graph's CONTENT, not just its id (ADR-0083 §5).** The surrogate-id guard above catches resuming
     // the wrong workflow entirely; it cannot catch the same slug with edited content, which its own comment
@@ -5932,6 +5949,7 @@ export class WorkflowEngine {
           // the mode, this is the line that has to be right, which is why it is the recorded value and not a
           // default.
           executionMode: identity.executionMode,
+          eventConsumption,
           ownerId: this.#ownerId,
           ...(this.#effectJournalFactory === undefined
             ? {}
