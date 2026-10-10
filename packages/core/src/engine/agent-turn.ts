@@ -1398,7 +1398,17 @@ function observeTurnMoney(
     ...(accountingFailure === undefined
       ? {}
       : { accountingFailure: accountingFailure.bind(money) }),
-    ...(emitCost === undefined ? {} : { emitCost: emitCost.bind(money) }),
+    ...(emitCost === undefined
+      ? {}
+      : {
+          emitCost: (event) => {
+            try {
+              emitCost.call(money, event);
+            } catch (error) {
+              noteObserverFailure(error);
+            }
+          },
+        }),
     join: () => money.join(),
     record: (draft) => {
       try {

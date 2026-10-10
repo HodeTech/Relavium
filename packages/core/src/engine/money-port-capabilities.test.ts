@@ -9,12 +9,14 @@ import {
 } from '@relavium/shared';
 import { makeLlmError, type LlmInvocationOptions, type LlmProvider } from '@relavium/llm';
 import { createOpenAiAdapter } from '@relavium/llm/adapters';
-import { AgentSession } from './agent-session.js';
+import { AgentSession, type SessionStreamEvent } from './agent-session.js';
 import {
+  AgentTurnError,
   captureAgentTurnOutcome,
   DEFAULT_AGENT_TURN_LIMITS,
   type AgentTurnParams,
 } from './agent-turn.js';
+import { BudgetPauseError } from './budget-governor.js';
 import {
   LedgerDurabilityError,
   MoneyDurability,
@@ -121,6 +123,7 @@ function fixture(
   evidence: UsageEvidence,
   pendingFails = false,
   nativeRetry = false,
+  costObserver?: () => void,
 ) {
   const fold = new UsageCoverageFold();
   fold.start('complete');
@@ -162,6 +165,7 @@ function fixture(
     },
     emitCost: (event) => {
       costEvents.push(event);
+      costObserver?.();
     },
   };
   const money =
@@ -237,6 +241,87 @@ function fixture(
     health,
     counts: () => ({ pending, invoked, repaired }),
   };
+}
+
+const observerMarkers = {
+  pause: () => new BudgetPauseError(7, 1, 100),
+  retry: () => new AgentTurnError('provider_unavailable', 'private observer diagnostic', true),
+  error: () => new Error('private observer diagnostic'),
+  null: () => null,
+  undefined: () => undefined,
+};
+
+for (const shape of shapes) {
+  for (const streaming of [false, true]) {
+    for (const [name, makeMarker] of Object.entries(observerMarkers)) {
+      it(`${shape}/${streaming}/${name}: native cost observers retain identity without turn authority`, async () => {
+        const marker = makeMarker();
+        const h = fixture(shape, streaming, cases.positive, false, true, () => {
+          // eslint-disable-next-line @typescript-eslint/only-throw-error -- Public observers may throw any opaque or falsy host value.
+          throw marker;
+        });
+        const outcome = await captureAgentTurnOutcome(h.params);
+        expect(h.counts()).toEqual({ pending: 1, invoked: 1, repaired: 0 });
+        expect(h.costEvents).toHaveLength(1);
+        expect(h.rows).toHaveLength(1);
+        expect(h.rows[0]).toMatchObject({ inputTokens: 3, outputTokens: 2, priced: true });
+        expect(h.fold.snapshot().coverage).toEqual({
+          unverified: false,
+          pendingInvocations: 0,
+          unknownCalls: 0,
+        });
+        expect(outcome.kind).toBe('failed');
+        if (outcome.kind !== 'failed') throw new Error('expected the observer failure');
+        expect(outcome.error).toBe(marker);
+        expect(outcome.failureOrigin).toBe('observer');
+      });
+    }
+  }
+  for (const name of ['pause', 'retry'] as const) {
+    it(`${shape}/${name}: a native cost observer cannot forge a session budget or provider diagnosis`, async () => {
+      const marker = observerMarkers[name]();
+      const h = fixture(shape, true, cases.positive, false, true, () => {
+        throw marker;
+      });
+      const events: SessionStreamEvent[] = [];
+      const session = new AgentSession({
+        sessionId: 'native-cost-observer',
+        agentRef: 'a',
+        agent: AgentSchema.parse({
+          id: 'a',
+          provider: 'openai',
+          model: 'gpt-4o',
+          system_prompt: 'offline',
+        }),
+        context: SessionContextSchema.parse({ workingDir: '/offline', fsScopeTier: 'sandboxed' }),
+        deps: {
+          money: h.money,
+          resolveProvider: () => h.provider,
+          registry: h.params.registry,
+          tools: [],
+          keyFor: () => 'offline',
+          sleep: () => Promise.resolve(),
+          newAbortController: () => new AbortController(),
+          reserveEffectTurnKey: () => 1,
+          autoCompact: false,
+          emit: (event) => events.push(event),
+        },
+      });
+      session.start();
+      await session.sendMessage('hello');
+      expect(h.counts()).toEqual({ pending: 1, invoked: 1, repaired: 0 });
+      expect(h.costEvents).toHaveLength(1);
+      expect(h.rows).toHaveLength(1);
+      expect(events.find((event) => event.type === 'session:turn_completed')).toMatchObject({
+        error: {
+          code: 'internal',
+          retryable: false,
+          message: 'the session turn failed with an unexpected error',
+        },
+      });
+      expect(events.filter((event) => event.type === 'session:turn_completed')).toHaveLength(1);
+    });
+  }
 }
 
 for (const shape of shapes) {
