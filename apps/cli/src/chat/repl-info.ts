@@ -155,7 +155,7 @@ export function compactionNotice(result: CompactionResult): string {
     case 'cancelled':
       return 'Compaction cancelled — the conversation is unchanged.';
     case 'policy_refused':
-      return `Compaction refused: ${result.message}`;
+      return `Compaction refused: ${sanitizeInline(result.message)}`;
   }
 }
 
@@ -167,7 +167,7 @@ export function trimNotice(result: TrimResult): string {
     case 'nothing_to_trim':
       return `Nothing to trim — ${result.messageCount} message(s), already within the bound.`;
     case 'policy_refused':
-      return `Trim refused: ${result.message}`;
+      return `Trim refused: ${sanitizeInline(result.message)}`;
   }
 }
 

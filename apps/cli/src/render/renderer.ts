@@ -37,11 +37,11 @@ export interface RunRenderer {
   /**
    * Optional teardown, awaited by the run core after the event loop ends (even on a throw). The `ink` TUI
    * (2.E) uses it to unmount the live view — restoring the terminal — and write its persistent final
-   * summary. Before publishing that summary, await the optional callback to settle cancellation that
-   * arrived during unmount. The driver retains its event subscription and resources through this barrier.
+   * summary. The driver first acknowledges releaseInput, joins host departure and drains the primary;
+   * it retains its event subscription and resources through those barriers before calling finalize.
    * The line and NDJSON renderers need no teardown and omit it. Shared by 2.G / 2.M.
    */
-  finalize?: (settleBeforeSummary?: () => Promise<void>) => Promise<void> | void;
+  finalize?: () => Promise<void> | void;
 }
 
 /**

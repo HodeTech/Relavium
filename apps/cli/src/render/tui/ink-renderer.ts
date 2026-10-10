@@ -165,13 +165,12 @@ export function createInkRenderer(options: InkRendererOptions): RunRenderer {
         start();
       }
     },
-    finalize: (settleBeforeSummary) => {
+    finalize: () => {
       if (finalized) return Promise.resolve();
       if (finalizing !== undefined) return finalizing;
       const pending = Promise.resolve().then(async () => {
         store.flush();
         await stop();
-        await settleBeforeSummary?.();
         finalized = true;
         // Input and host-safe ACKs precede the irreversible summary. A cosmetic write fault
         // cannot revoke those ACKs or authorize a second summary attempt.

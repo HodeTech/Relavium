@@ -9,14 +9,13 @@ import {
 } from '@relavium/db';
 
 import type { CliIo } from '../process/io.js';
+import { CHECKPOINT_DEFERRED } from '../db/privacy-notice.js';
 
 const RETENTION_FAILED = 'warning: effect-journal retention could not be completed.';
 const DISCLOSURE_FAILED =
   'warning: session effect disclosure could not be completed; audit evidence was retained.';
 const IDENTITY_HISTORY_INVALID =
   'warning: session effect identity history is invalid; audit evidence was retained and effect-turn allocation remains blocked.';
-const CHECKPOINT_DEFERRED =
-  'warning: session effect WAL erasure was deferred by a database reader; it will be retried on the next open or session sweep.';
 
 /** Driver diagnostics, ids and database contents are never interpolated into a warning. */
 async function writeWarning(io: CliIo, text: string): Promise<void> {
@@ -68,8 +67,8 @@ export function reconcileResumedSessionEffects(
   const warning = (text: string): void | Promise<void> => {
     if (!active()) return;
     try {
-      const delivered = options.deliverNotice(text);
-      if (delivered !== undefined) return delivered.catch(() => warn(options.io, text));
+      const warningDelivery = options.deliverNotice(text);
+      if (warningDelivery !== undefined) return warningDelivery.catch(() => warn(options.io, text));
     } catch {
       warn(options.io, text);
     }

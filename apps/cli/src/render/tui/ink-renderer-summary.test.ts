@@ -45,12 +45,13 @@ it('writes one latest summary only after actual input and host acknowledgements'
     }),
   });
   renderer.onEvent(paused);
-  const work = Promise.resolve(
-    renderer.finalize?.(async () => {
-      hostEntered.release();
-      await hostRelease.promise;
-    }),
-  );
+  // Mirror the real driver's ownership order, including events delivered during input release.
+  const work = (async () => {
+    await renderer.releaseInput?.();
+    hostEntered.release();
+    await hostRelease.promise;
+    await renderer.finalize?.();
+  })();
   try {
     await inputEntered.promise;
     expect(unmounts).toBe(1);
@@ -78,8 +79,7 @@ for (const fault of ['unmount', 'wait'] as const) {
     const stopError = new Error('synthetic input release fault');
     const summaries: string[] = [];
     let unmounts = 0,
-      waits = 0,
-      hostJoins = 0;
+      waits = 0;
     const renderer = createInkRenderer({
       color: false,
       writeSummary: (text) => summaries.push(text),
@@ -97,36 +97,21 @@ for (const fault of ['unmount', 'wait'] as const) {
       }),
     });
     renderer.onEvent(paused);
-    await expect(
-      Promise.resolve(
-        renderer.finalize?.(() => {
-          hostJoins++;
-          return Promise.resolve();
-        }),
-      ),
-    ).rejects.toBe(stopError);
-    expect(hostJoins).toBe(0);
+    await expect(Promise.resolve(renderer.finalize?.())).rejects.toBe(stopError);
     expect(summaries).toHaveLength(0);
     const release = renderer.releaseInput;
     if (release === undefined) throw new Error('input release capability required');
     const acknowledged = Promise.resolve(release());
-    const final = Promise.resolve(
-      renderer.finalize?.(() => {
-        hostJoins++;
-        return Promise.resolve();
-      }),
-    );
+    const final = Promise.resolve(renderer.finalize?.());
     try {
       await secondEntered.promise;
       expect(unmounts).toBe(2);
-      expect(hostJoins).toBe(0);
       expect(summaries).toHaveLength(0);
       renderer.onEvent(cancelled);
     } finally {
       secondRelease.release();
       await Promise.all([acknowledged, final]);
     }
-    expect(hostJoins).toBe(1);
     expect(summaries).toHaveLength(1);
     expect(summaries[0]).toContain('run cancelled');
     await renderer.finalize?.();
@@ -137,7 +122,6 @@ for (const fault of ['unmount', 'wait'] as const) {
 it('does not repeat an irreversible summary after a cosmetic write failure following acknowledgements', async () => {
   const writeError = new Error('synthetic summary sink fault');
   let inputAcks = 0,
-    hostAcks = 0,
     writes = 0;
   const renderer = createInkRenderer({
     color: false,
@@ -154,16 +138,9 @@ it('does not repeat an irreversible summary after a cosmetic write failure follo
     },
   });
   renderer.onEvent(cancelled);
-  await expect(
-    Promise.resolve(
-      renderer.finalize?.(() => {
-        hostAcks++;
-        return Promise.resolve();
-      }),
-    ),
-  ).rejects.toBe(writeError);
-  expect({ inputAcks, hostAcks, writes }).toEqual({ inputAcks: 1, hostAcks: 1, writes: 1 });
+  await expect(Promise.resolve(renderer.finalize?.())).rejects.toBe(writeError);
+  expect({ inputAcks, writes }).toEqual({ inputAcks: 1, writes: 1 });
   await renderer.releaseInput?.();
   await renderer.finalize?.();
-  expect({ inputAcks, hostAcks, writes }).toEqual({ inputAcks: 1, hostAcks: 1, writes: 1 });
+  expect({ inputAcks, writes }).toEqual({ inputAcks: 1, writes: 1 });
 });

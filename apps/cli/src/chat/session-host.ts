@@ -143,15 +143,15 @@ export interface BuildChatSessionOptions {
    * agent run --input k=v` (2.Q) populates these; a bare `chat` leaves them unset.
    */
   readonly variables?: Record<string, string>;
+  /** One-shot callers disable only unused after-turn work; active authored summary permission survives. */
+  readonly afterTurnCompaction?: boolean;
+  /** Surface acknowledgement of an unknown-window disclosure before the first admitted call. */
+  readonly onCompactionStart?: SessionDeps['onCompactionStart'];
   /**
    * Sink for an `on_exceed: 'warn'` pre-egress budget warning. A session has no `budget:warning` event in
    * its namespace, so the surface (the REPL) is the warning channel — the command wires this to surface a
    * one-line notice. Absent ⇒ a no-op (the warn stays non-blocking either way).
    */
-  /** One-shot callers disable only unused after-turn work; active authored summary permission survives. */
-  readonly afterTurnCompaction?: boolean;
-  /** Surface acknowledgement of an unknown-window disclosure before the first admitted call. */
-  readonly onCompactionStart?: SessionDeps['onCompactionStart'];
   readonly onBudgetWarning?: (warning: ChatBudgetWarning) => void;
   /**
    * Sink for a turn on an UNPRICED model (ADR-0071 §K7) — the cost cap could not apply to it. Same channel shape as
@@ -248,11 +248,6 @@ export interface BuiltChatSession {
    */
   readonly governor?: GovernorWiring;
   /**
-   * Late-bind the session's durability probe (#W15-4) — the persister is created by the CALLER, after this,
-   * so `preEgress`'s gate cannot take it as an argument. Same shape as `attachConservativeWriter`, and the
-   * persister self-attaches through it exactly as it does for the commitment writer.
-   */
-  /**
    * Attach the durable effect journal (ADR-0080), late-bound because the journal is owned by the persister,
    * which is built AFTER the session — the same constraint `attachConservativeWriter` has for money.
    *
@@ -263,6 +258,11 @@ export interface BuiltChatSession {
     factory: (correlation: EffectCorrelation) => EffectDispatchPort,
   ) => void;
   readonly attachEffectTurnAllocator: (allocator: (sessionId: string) => number) => void;
+  /**
+   * Late-bind the session's durability probe (#W15-4) — the persister is created by the CALLER, after this,
+   * so `preEgress`'s gate cannot take it as an argument. Same shape as `attachConservativeWriter`, and the
+   * persister self-attaches through it exactly as it does for the commitment writer.
+   */
   readonly attachDurabilityProbe: (probe: () => Error | undefined) => void;
   /**
    * Tools dropped at MCP discovery (allowlist / unsupported schema / collision / unsafe id) — a non-fatal
@@ -315,12 +315,6 @@ function buildSessionRuntime(
   host: ToolHost;
   governor: GovernorWiring | undefined;
   /**
-   * Late-bind the session's durability probe (#W15-4). The persister is created by the CALLER, after this
-   * runtime exists, so the gate inside `preEgress` cannot take it as an argument — the same reason
-   * `attachConservativeWriter` is late-bound. Until it is attached the probe reports healthy, which is
-   * correct: nothing has been persisted yet either.
-   */
-  /**
    * Attach the durable effect journal (ADR-0080), late-bound because the journal is owned by the persister,
    * which is built AFTER the session — the same constraint `attachConservativeWriter` has for money.
    *
@@ -329,6 +323,12 @@ function buildSessionRuntime(
    */
   attachEffectJournal: (factory: (correlation: EffectCorrelation) => EffectDispatchPort) => void;
   attachEffectTurnAllocator: (allocator: (sessionId: string) => number) => void;
+  /**
+   * Late-bind the session's durability probe (#W15-4). The persister is created by the CALLER, after this
+   * runtime exists, so the gate inside `preEgress` cannot take it as an argument — the same reason
+   * `attachConservativeWriter` is late-bound. Until it is attached the probe reports healthy, which is
+   * correct: nothing has been persisted yet either.
+   */
   attachDurabilityProbe: (probe: () => Error | undefined) => void;
 } {
   let durabilityProbe: () => Error | undefined = () => undefined;
@@ -1127,6 +1127,7 @@ function sessionContextWindow(agent: AgentDefinition, deps: SessionDeps): number
     const window = provider.contextLimit?.(agent.model);
     return window !== undefined && Number.isSafeInteger(window) && window > 0 ? window : undefined;
   } catch {
+    // Optional host capacity metadata degrades to unknown; the foreground seam still validates requests.
     return undefined;
   }
 }
