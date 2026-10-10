@@ -330,3 +330,19 @@ previously issued invocation identity. The runner explicitly transfers a dedicat
 before entering provider work. That child joins the exact registered producer and receipt promises;
 it does not extend the original executor's ports or borrow an unrelated sibling's lifetime. Late
 cleanup settles only the admission associated with its exact ephemeral pre-attempt identity.
+
+`TurnMoneyPort` is a behavioral interface. Its optional capabilities retain their presence and
+the original receiver through turn capture, including class/prototype and non-enumerable method
+implementations. A decorator must not silently turn a persisted host into a volatile host by
+dropping `beginUsageInvocation`, `claimUsage`, `usageDisposition`, `accountingFailure` or `emitCost`.
+The existing `record` observer classification and `join` barrier remain unchanged; inert request
+data restrictions do not restrict implementations of this host port.
+
+Conservative admission cleanup preserves an established exact primary throwable, including an
+opaque or falsy value. This applies both when actual settlement falls back to retaining the
+estimate and when turn teardown retries an outstanding obligation. Secondary cleanup failures
+are retained through the existing accounting-health port when attached; a failing health callback
+cannot replace the primary. A cleanup failure with no earlier primary remains a failure. None of
+these paths authorizes another provider call, releases an uncertain admission or fabricates a
+successful settlement. The supported host admission callback is the failure boundary; a distinct
+second synchronous cleanup error is not claimed for the current built-in governor.

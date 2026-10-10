@@ -3305,6 +3305,69 @@ These author corrections do not substitute for acceptance. Step 5 requires two N
 cumulative rounds after correction. Step 6's further causal matrix and reviews, CR-82 and whole-W8
 publication remain open. No new policy, dependency, money writer, provider call or deferral is introduced.
 
+#### Step 5 ninth cumulative review — 2026-10-11
+
+Three NEW independent reviewers completed the entire `017b399c..3684faf4` activation and all
+eight corrections. Their combined result is **two High findings**; storage, CLI, readers,
+tooling and documents returned no additional actionable finding. The parent independently
+reproduced both findings against explicit current-source aliases. **This is not a clean round.**
+
+| Finding | Verified boundary and required correction |
+| --- | --- |
+| Turn capture drops class-based money capabilities | A valid `TurnMoneyPort` implemented with prototype methods loses pending, disposition and related capabilities through an own-property spread. Generate/stream controls bypass a rejecting pending writer and leave missing evidence as complete-zero coverage; object-literal controls preserve the protocol. A public session control confirms the same boundary. Forward every supported capability with its original receiver and optional presence, preserving existing observer classification. The current CLI uses object literals; the class trigger is a supported external-host defect. |
+| Conservative cleanup replaces the primary admission error | Final outstanding-admission cleanup and the actual-to-estimate fallback can each replace an exact primary throwable with a distinct secondary callback failure. Preserve the primary while retaining secondary accounting health and continuing owed cleanup. Standalone cleanup failures must still surface. This is supported admission-port reachability; no built-in-governor second synchronous throw, extra paid attempt or amount loss was reproduced. |
+
+The independent core review passed **61 files / 1,893 tests**; the broader LLM/core/shared review
+passed **227 files / 6,168 tests / 11 existing live-provider skips**. These cohorts overlap and
+are not added together. Storage/CLI passed **21 files / 415 permanent tests**, including native
+crash controls, plus private receipt/disposition probes and the actual frozen predecessor
+compatibility harness: **16 strict refusals, two legacy controls, three isolated discriminators
+and eight old-session operations**. Temporary error-precedence probes produced 11 relevant
+identity failures with 11 paired controls; the final class-port probe produced five semantic
+failures with five object controls. Initial incorrect public-session/listener-warning probe
+expectations were corrected and excluded from defect evidence. Developer source stayed frozen
+through every complete review.
+
+The investigated session-close candidate already surfaces the failed turn, retains uncertainty
+and yields a failed one-shot command; a later lifetime-only close resolving is not an additional
+defect. The private exact-key SQL/EXPLAIN probe confirms current production point queries but
+does not substitute for Step 6's planned permanent structural guard. Corrections and author
+gates are pending at this review checkpoint. Step 5 requires two NEW clean complete cumulative
+rounds after correction; Step 6/7, CR-82 and whole-W8 acceptance/publication remain open.
+
+**Author correction:** turn capture now explicitly forwards every optional money capability
+with its original receiver, including prototype/private-field and non-enumerable implementations.
+Required `record`/`join` classification is preserved. Both conservative cleanup sites retain an
+explicit primary-failure carrier, including null/undefined throwables; secondary failures reach
+the existing accounting-health port without replacing that primary. Failed obligations remain
+owed and standalone cleanup failure still surfaces. No additional provider call, uncertain
+release, public export, dependency or actual-money writer is introduced.
+
+Three permanent core suites execute **146** controls: **78** behavioral-port controls, **38**
+cleanup-precedence controls, and the previous **20** late-receipt controls extended by **10**
+second-cleanup-fault cases. Public session main/manual-summary wiring, missing/partial and
+complete positive/zero evidence, exact callback origin, native predecessor cost forwarding and
+throwing diagnostic sinks are covered. The same final test bytes against an exact OS-temporary
+`3684faf4` source copy yield **102 relevant failures / 44 passes**; fixed and byte-exact restored
+copies pass all 146. Reversing only outer-primary protection fails 28, nested protection fails
+26, optional spread or detached receiver forwarding each fails 54, and swallowing standalone
+cleanup fails two. These overlapping failure counts are not added. Developer source is never
+swapped for interventions. The parent independently verified implementation/test/configuration
+hashes, the historical/fixed/restored byte identities and all log counts, and freshly passed
+the 146 controls against actual current source.
+
+Nine disjoint adjacent suites pass **204** additional tests, including the unchanged 38-case
+LLM receipt cohort. Core lint, strict/purity and full-source-overlay typechecks pass. Initial
+test-only typed-join expectations and lint/configuration issues were corrected before rerunning
+the final unchanged causal cohort; they are not product findings or counted defect evidence.
+Fresh forced full-workspace gates pass: lint/typecheck/test **23/23**, none cached, across
+**491 files / 10,486 passed / 11 existing live-provider skips**, including all 57 CLI process
+controls and 100,000 native settlements. Build/format passes **7/7**, none cached. Tools
+lint/typecheck, schema synchronization, seam/purity/dependency/bundle fences, 491-file isolation,
+relative/archive links and whitespace pass. Compiled CLI, overflow-capture and frozen replay
+smokes pass offline. No remote CI, whole-wave coverage or acceptance is claimed. These author
+results do not supply either of Step 5's two NEW clean complete cumulative review rounds.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

@@ -518,3 +518,24 @@ strict, and historical uncertainty remains visible. The canonical
 [database contract](../reference/shared-core/database-schema.md) own these corrections.
 Step 5 still requires two NEW clean complete cumulative reviews. Step 6's further controls
 and reviews, CR-82 and whole-W8 acceptance remain open; no new policy or deferral is introduced.
+
+### W8 behavioral-port and admission-cleanup correction — 2026-10-11
+
+The ninth cumulative activation review reproduced two surviving turn-boundary gaps. A behavioral
+money port can implement its capabilities on a class prototype or use receiver state. Turn capture
+must preserve those methods, their optional presence and their original receiver; copying own
+enumerable fields can silently bypass the pending acknowledgement and lose unknown coverage.
+The public session dependency accepts this interface. The demonstrated class implementation is
+a supported external host; the current CLI's object-literal port is not claimed to exhibit it.
+
+Conservative cleanup must also preserve an established exact primary throwable. Both the
+actual-to-estimate fallback and final cleanup of an outstanding admission can encounter a distinct
+secondary callback failure. That secondary failure retains accounting-health consequences without
+replacing the primary; a failing diagnostic callback cannot change this precedence. Standalone
+cleanup failures still surface. No uncertain admission is released, no successful settlement is
+invented and no additional paid attempt is authorized. This is a supported admission callback
+failure path, not a reproduced distinct-second-throw defect in the current built-in governor.
+The canonical [runner contract](../reference/shared-core/agent-runner.md#usage-evidence-and-durable-coverage)
+owns these behavioral-port and cleanup requirements. Step 5's two NEW clean complete cumulative
+rounds and the further Step 6/whole-W8 gates remain required; this finding-bearing review supplies
+neither acceptance round and introduces no policy change or deferral.
