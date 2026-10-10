@@ -5713,11 +5713,16 @@ describe('WorkflowEngine — API-boundary errors (EngineStateError)', () => {
 
   it('resume on a running run with no pending gate throws run_not_paused', async () => {
     let release: (() => void) | undefined;
+    let markEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
     const engine = engineWith({
       slow: (ctx) =>
         new Promise<NodeOutcome>((resolve) => {
           release = () => resolve({ kind: 'completed', output: null });
           ctx.signal.addEventListener('abort', () => resolve({ kind: 'completed', output: null }));
+          markEntered();
         }),
     });
     const handle = engine.start({
@@ -5735,6 +5740,9 @@ describe('WorkflowEngine — API-boundary errors (EngineStateError)', () => {
     for await (const event of handle.events) {
       events.push(event);
       if (event.type === 'node:started' && event.nodeId === 'slow') {
+        // Publication precedes executor entry. Observe actual readiness before releasing its work;
+        // a fixed number of microtasks is not part of the run_not_paused contract.
+        await entered;
         try {
           await engine.resume(handle.runId, 'g', { decision: 'approved', decidedBy: 't' });
         } catch (error) {

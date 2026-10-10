@@ -2,6 +2,7 @@ import {
   geminiUsage,
   nativeFieldPresent,
   requireMediaUsage,
+  retainUsageObservation,
   missingUsage,
   usageApplicability,
   type UsageApplicability,
@@ -958,10 +959,13 @@ function foldGeminiResponse(response: GeminiResponse, state: GeminiStreamState):
     state.usage = requireMediaUsage(state.usage, state.applicability);
   }
   if (response.usageMetadata) {
-    state.usage = mapUsage(
-      response.usageMetadata,
-      state.applicability,
-      state.sawTerminal || response.candidates?.[0]?.finishReason !== undefined,
+    state.usage = retainUsageObservation(
+      state.usage,
+      mapUsage(
+        response.usageMetadata,
+        state.applicability,
+        state.sawTerminal || response.candidates?.[0]?.finishReason !== undefined,
+      ),
     );
   }
   if (isPromptBlocked(response.promptFeedback)) {

@@ -67,6 +67,15 @@ the maximum on replay. This preserves native separate-endpoint media's missing-p
 without introducing a token-attempt ledger for its authored volume basis. Readers take the maximum
 of this snapshot and legacy unpriced attempt counts, never their sum; a queued boundary may already
 contain a later counter. Historical absence does not establish complete price coverage.
+
+The workflow writer folds each acknowledged coverage transition before delivering it. Subsequent
+durable lifecycle envelopes capture that acknowledged prefix after joining the ordered writer,
+including when preparation or persistence is asynchronous. Durable `cost:` events omit the aggregate
+coverage envelope: their own correlated transition determines the new coverage. This includes
+`cost:attempt_settled`; a pre-settlement snapshot must never overwrite its completion. A live
+`cost:updated` observation can carry its already-folded coverage. Media preparation stays outside the
+append queue and cannot reserve a sequence before producing a durable-safe draft.
+
 Coverage does not estimate an invoice, alter an
 admission estimate, or authorize egress. Invocation correlation contains `producerId`, an
 owner-wide positive `ordinal`, `dispatchId`, zero-based `round` and positive `chainAttempt`.

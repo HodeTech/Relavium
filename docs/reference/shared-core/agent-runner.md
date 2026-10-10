@@ -318,3 +318,9 @@ owns coverage transitions.
 An exact late complete receipt refines usage coverage and records realized money once. It does
 not implicitly release an earlier retained conservative commitment; the existing explicit
 estimate-release policy remains separate from actual receipt accounting.
+
+Every accounting port entry requires its producer's active receipt scope, even when it carries a
+previously issued invocation identity. The runner explicitly transfers a dedicated accounting child
+before entering provider work. That child joins the exact registered producer and receipt promises;
+it does not extend the original executor's ports or borrow an unrelated sibling's lifetime. Late
+cleanup settles only the admission associated with its exact ephemeral pre-attempt identity.

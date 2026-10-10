@@ -3092,6 +3092,41 @@ projection rules. No new policy, dependency, provider call or deferral is introd
 and all 57 real CLI child-process controls are included. Author evidence and isolated causal
 controls do not replace the outstanding independent Step 5 or additional Step 6 review gates.
 
+#### Step 5 third cumulative review and correction — 2026-10-10
+
+Three further NEW independent reviewers inspected the full activation through `93bfc5ae`.
+Deduplicated confirmed findings were **five High and one Medium**. Step 5 remains open;
+this correction again requires two NEW clean complete cumulative review rounds.
+
+| Finding | Verified correction and permanent evidence |
+| --- | --- |
+| A native repair bypassed fresh admission and refunded its prior custom unknown call | Each actual native invocation has its own existing admission, keyed by exact ephemeral pre-attempt identity. Prior conservative/disposition writes join before the next admission. Actual SDK, governor and workflow controls cover exhausted/sufficient caps, official/custom refusal, zero/positive completion, cancellation, write failure and allowance provenance. A repaired zero cannot refund the prior custom exposure. |
+| Late repair pending ACK left a positively uninvoked marker open | The exact allocation stays owned across deadline/cancellation. Its eventual ACK receives one final correlated non-invocation disposition; no second native call starts. Actual generate/stream controls exercise both cancellation sources and held admission/pending ACK. |
+| Issued correlation bypassed an ended receipt scope | Every accounting port checks its own active scope. The runner explicitly transfers a dedicated accounting child and joins exact registered producers and receipts. Stale ports cannot borrow an unrelated live sibling's authority; legitimate transferred late receipts remain supported. |
+| An older workflow envelope erased already-published uncertainty | Media preparation remains outside the append queue. Within the ordered writer, coverage stamping follows the predecessor's ACK/fold; each new coverage transition folds before delivery. Durable cost events omit aggregate coverage. Eight actual three-agent/store controls compare every delivered prefix and present envelope against an independent incremental fold, including held persistence ACKs. All eight reproduce the pre-fix display error. |
+| Session resume combined an older amount with newer complete coverage | Both command and Home resume seed the amount from the same atomic breakdown as coverage. Eight native SQLite controls settle or qualify cost between session construction and view seeding, including positive, explicit-zero, unpriced and incomplete cases. |
+| Later partial/invalid native frames discarded earlier known quantities | OpenAI/DeepSeek and Gemini retain independently known canonical values, replacing valid cumulative observations rather than summing them. A later partial/invalid frame remains incomplete. Eighteen actual SDK stop, truncation and SSE-error controls preserve observations without authorizing complete pricing. |
+
+The writer's changed scheduling also exposed two test-only assumptions: a published node start was
+treated as proof that its executor had entered, and money instrumentation wrapped only the parent
+context. Tests now observe explicit executor readiness and transferred child ports. Their original
+ordering and outcome assertions remain intact; no timeout, case or acceptance requirement is reduced.
+The provider-auth/failed-disposition probe did **not** establish a new precedence defect: the node
+preserves its provider error while the independently failed durable writer owns the run-level internal
+failure and uncertain departure, as ADR-0077 already requires. No additional policy or deferral is added.
+
+**Correction gates:** fresh forced monorepo lint/typecheck/test passed **23/23**, none cached,
+across **475** files / **10,131 passed** / **11 existing live-provider skips**. This includes
+the native 100,000-settlement case and all 57 actual CLI child-process controls. The 28 new LLM
+regressions pass isolated removal controls: late-ACK retirement removal fails four, fresh native
+admission removal fails ten, and cumulative observation removal fails eighteen; each exact restored
+copy passes all 28. Twenty native admission controls include four actual workflow durable-accounting
+cases. These author results do not replace the outstanding Step 5, Step 6 or whole-wave reviews.
+Fresh forced build/format passed **7/7**. Tools lint/typecheck, seam/purity/dependency fences,
+schema synchronization, canonical links, whitespace and the offline CLI/overflow/budget-replay
+smokes passed. Review files remain local and ignored; no source mutation, credential access or
+paid call occurs in these corrections.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

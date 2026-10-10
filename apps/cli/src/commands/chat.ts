@@ -1781,7 +1781,9 @@ function seedResumedWiring(
     {
       agentRef: resumed.agent.id,
       model: resumed.agent.model,
-      cumulativeCostMicrocents: resumed.resumeState.cumulativeCostMicrocents,
+      // A live receipt may settle while the resumed host builds. Display money and its coverage
+      // from the same SQLite snapshot, rather than pairing the older engine seed with fresh coverage.
+      cumulativeCostMicrocents: costs.totalCostMicrocents,
       usageCoverage: costs.coverage,
       unpricedCalls: costs.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
       turnCount: resumed.resumeState.turnCount,

@@ -68,6 +68,43 @@ export function interruptedUsage(evidence: UsageEvidence, authoritative: boolean
   return ownUsageEvidence({ kind: 'partial', known, reason: 'interrupted' });
 }
 
+/** Cumulative frames replace reported quantities, but incomplete frames cannot erase earlier observations. */
+export function retainUsageObservation(
+  previous: UsageEvidence,
+  current: UsageEvidence,
+): UsageEvidence {
+  if (current.kind === 'complete' || previous.kind === 'missing') return current;
+  const before = previous.kind === 'complete' ? previous.usage : previous.known;
+  const after = current.kind === 'partial' ? current.known : {};
+  const { costMicrocents, ...quantities } =
+    previous.kind === 'complete'
+      ? previous.usage
+      : { ...previous.known, costMicrocents: undefined };
+  void costMicrocents;
+  const known: KnownUsageQuantities = { ...quantities, ...after };
+  if (before.mediaUnits !== undefined && after.mediaUnits !== undefined) {
+    known.mediaUnits = [
+      ...before.mediaUnits.filter(
+        (prior) =>
+          !after.mediaUnits?.some(
+            (next) => next.modality === prior.modality && next.direction === prior.direction,
+          ),
+      ),
+      ...after.mediaUnits,
+    ];
+  }
+  // Do not combine a newly observed subtotal with an older incompatible total (or vice versa).
+  if (
+    known.reasoningTokens !== undefined &&
+    known.outputTokens !== undefined &&
+    known.reasoningTokens > known.outputTokens
+  ) {
+    if (after.outputTokens === undefined) delete known.outputTokens;
+    else delete known.reasoningTokens;
+  }
+  return ownUsageEvidence({ kind: 'partial', known, reason: current.reason });
+}
+
 /** Native media presence is accounting evidence even when content projection ignores the field. */
 export function nativeFieldPresent(value: unknown, key: string): boolean {
   if (typeof value !== 'object' || value === null) return false;

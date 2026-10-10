@@ -1627,47 +1627,48 @@ async function driveAgentTurn(
   let coverageRound = 0;
   let coverageAttempt = 0;
   const preEgress = params.preEgress;
-  // A chain executes one provider attempt at a time, so one per-turn slot is sufficient. It is deliberately NOT a
-  // governor-global FIFO: parallel nodes can settle out of order, and a failed/no-usage attempt has no cost event
-  // from which a global queue could infer which reservation to release.
-  let attemptAdmission: BudgetAdmission | undefined;
-  let admissionPending = false;
-  const settleUnreportedAttemptAdmission = (): void => {
-    if (!admissionPending) return;
-    admissionPending = false;
-    const active = attemptAdmission;
-    attemptAdmission = undefined;
-    // A prior true-boundary admission with no matching AttemptRecord means the consumer/iterator failed after the
-    // chain might have handed work to a provider. A release would reopen capacity on an unknown bill; retain the
-    // bounded estimate instead. Proven pre-provider cancellation releases its just-returned admission before this
-    // slot is ever armed (below).
-    // The chain may have handed work to a provider before the consumer/iterator failed, so this is the
-    // conservative retain. NO `attemptNumber`: reaching here means `onAttempt` never fired for this admission, so
-    // there is no `AttemptRecord` and `nonSkippedAttempts` has not counted it. Passing that counter would not just
-    // be imprecise — it would COLLIDE with the number a later real attempt receives, making two commitments
-    // indistinguishable. Absent is the honest answer.
-    //
-    // Covered by "conservatively settles an admission the chain never reported, when the CONSUMER throws
-    // mid-stream": a `params.emit` that throws on an `agent:token` drops out of the drain loop after the provider
-    // has already produced a delta but before the chain records an `AttemptRecord`. Both wrong answers are
-    // mutation-killed there — releasing instead of retaining, and passing the un-incremented counter.
-    active?.settleAtReservedEstimate({ nodeId: params.nodeId });
+  // A native repair may still be awaiting admission when its public deadline settles. Exact
+  // callback identities keep that late lease separate from a newer failover or tool round.
+  type AdmissionSlot = {
+    acquiring: boolean;
+    admission?: BudgetAdmission;
+    settle?: (admission: BudgetAdmission | undefined) => void;
   };
-  const dischargeAttemptAdmission = (
+  const admissions = new WeakMap<PreAttemptInfo, AdmissionSlot>();
+  const outstandingAdmissions = new Set<AdmissionSlot>();
+  const dischargeAdmission = (
+    info: PreAttemptInfo | undefined,
     discharge: (active: BudgetAdmission | undefined) => void,
   ): void => {
-    const active = admissionPending ? attemptAdmission : undefined;
-    // Keep the slot owned until the lease action succeeds. A diagnostic/callback failure then reaches
-    // the outer conservative cleanup with its original admission still available.
-    discharge(active);
-    admissionPending = false;
-    attemptAdmission = undefined;
+    const slot = info === undefined ? undefined : admissions.get(info);
+    if (slot === undefined || slot.settle !== undefined) return;
+    // Do not consume a lease until its action succeeds. A throwing diagnostic leaves the
+    // obligation available to outer conservative cleanup, preserving the original failure.
+    discharge(slot.admission);
+    slot.settle = discharge;
+    delete slot.admission;
+    if (!slot.acquiring) outstandingAdmissions.delete(slot);
+  };
+  const settleUnreportedAttemptAdmission = (): void => {
+    for (const slot of outstandingAdmissions) {
+      if (slot.acquiring || slot.settle !== undefined) continue;
+      // No matching record: a consumer may have failed after egress. Retain the estimate
+      // without inventing an attempt number. Pending acquisitions are disposed by their
+      // exact eventual non-invoked record, never by another invocation's cleanup.
+      slot.admission?.settleAtReservedEstimate({ nodeId: params.nodeId });
+      slot.settle = (active) => active?.settleAtReservedEstimate({ nodeId: params.nodeId });
+      delete slot.admission;
+      outstandingAdmissions.delete(slot);
+    }
   };
 
   const onAttempt = (record: AttemptRecord): void => {
     // A SKIPPED entry (cooldown / capability) was not invoked — it must not become `activeModel`, or
     // the next entry's streamed tokens would be mis-attributed to a provider that never ran.
     if (record.outcome === 'skipped') return;
+    const dischargeAttemptAdmission = (
+      action: (active: BudgetAdmission | undefined) => void,
+    ): void => dischargeAdmission(record.preAttemptInfo, action);
     const evidence = record.usage ?? { kind: 'missing', reason: 'not_reported' };
     const invocation = record.invocation;
     const status = record.error?.status;
@@ -1714,12 +1715,13 @@ async function driveAgentTurn(
             : {}),
         });
     }
-    // Native request repair and raw late receipt settlement carry their own coverage identity,
-    // but cannot consume the admission belonging to the outer chain attempt.
+    // Native repairs own independent admissions; late receipt refinement never consumes a
+    // newer invocation's lease. Proven non-invocation may release its exact pending lease.
     const coverageOnly = record.coverageOnly === true;
+    const lateReceipt = record.receiptFinal === true;
     if (record.receiptFinal !== true && disposition?.kind === 'incomplete')
       usage.unknownCalls = (usage.unknownCalls ?? 0) + 1;
-    if (coverageOnly && evidence.kind !== 'complete') return;
+    if (lateReceipt && record.providerInvoked && evidence.kind !== 'complete') return;
 
     delete usage.overflowAttempt;
     if (
@@ -1740,11 +1742,14 @@ async function driveAgentTurn(
     if (!providerMayHaveEngaged) {
       // A successful pre-attempt check followed by a credential failure/cancellation never reached a provider.
       // Proven pre-provider failure: the held admission is safe to release after the hook returned.
-      if (!coverageOnly) dischargeAttemptAdmission((active) => active?.release());
+      dischargeAttemptAdmission((active) => active?.release());
       return;
     }
     activeModel = record.model;
     if (!coverageOnly) nonSkippedAttempts += 1;
+    // A native predecessor belongs to the current outer chain attempt, whose final record
+    // has not incremented the diagnostic counter yet. Receipt identity remains the money key.
+    const accountingAttempt = nonSkippedAttempts + (coverageOnly && !lateReceipt ? 1 : 0);
     usage.engaged = true; // the provider method was invoked, even if it errored at zero usage
     if (evidence.kind !== 'complete') {
       if (officialRefusal) {
@@ -1757,7 +1762,7 @@ async function driveAgentTurn(
       dischargeAttemptAdmission((active) =>
         active?.settleAtReservedEstimate({
           nodeId: params.nodeId,
-          attemptNumber: nonSkippedAttempts,
+          attemptNumber: accountingAttempt,
         }),
       );
       return;
@@ -1786,13 +1791,13 @@ async function driveAgentTurn(
     // BOTH conditions are spelled out rather than relying on "priced !== false implies cost is defined". That
     // implication holds today, but it is an invariant of a type in another package, and the compiler cannot see
     // it — leaning on it here would be a narrowing that a future chain change could silently invalidate.
-    if (coverageOnly) {
+    if (lateReceipt) {
       // A late charge cannot reacquire or settle another live admission.
     } else if (record.priced === false || record.cost === undefined) {
       dischargeAttemptAdmission((active) =>
         active?.settleAtReservedEstimate({
           nodeId: params.nodeId,
-          attemptNumber: nonSkippedAttempts,
+          attemptNumber: accountingAttempt,
         }),
       );
     } else {
@@ -1806,7 +1811,7 @@ async function driveAgentTurn(
         dischargeAttemptAdmission((active) =>
           active?.settleAtReservedEstimate({
             nodeId: params.nodeId,
-            attemptNumber: nonSkippedAttempts,
+            attemptNumber: accountingAttempt,
           }),
         );
         throw error;
@@ -1823,7 +1828,7 @@ async function driveAgentTurn(
         costMicrocents: record.cost?.costMicrocents ?? 0,
         // Placeholder — the engine owns the run-wide running total and overwrites this authoritatively.
         cumulativeCostMicrocents: 0,
-        attemptNumber: nonSkippedAttempts,
+        attemptNumber: accountingAttempt,
         // ADR-0070 §6. Without this flag, `costMicrocents: 0` with real tokens is ambiguous between "unpriced" and
         // "genuinely free" — and a free-LOOKING row in the /cost breakdown would be a lie.
         //
@@ -1851,7 +1856,7 @@ async function driveAgentTurn(
         ...(invocation === undefined ? {} : { invocation }),
         nodeId: params.nodeId,
         model: record.model,
-        attemptNumber: nonSkippedAttempts,
+        attemptNumber: accountingAttempt,
         inputTokens: evidence.usage.inputTokens,
         outputTokens: evidence.usage.outputTokens,
         costMicrocents: record.cost?.costMicrocents ?? 0,
@@ -1906,6 +1911,9 @@ async function driveAgentTurn(
           preAttempt: async (info: PreAttemptInfo) => {
             delete usage.preAttemptFailure;
             const currentRound = round;
+            const slot: AdmissionSlot = { acquiring: true };
+            admissions.set(info, slot);
+            outstandingAdmissions.add(slot);
             try {
               // **Barrier B1 (ADR-0077)** — before the next egress admission, and before the governor call, so a
               // run whose ledger write did not land admits nothing further. It awaits AND observes: `join()`
@@ -1920,7 +1928,11 @@ async function driveAgentTurn(
               // The money join can suspend a budgetless turn too. Observe cancellation before returning from
               // that branch, so an aborted wait reaches neither credential resolution nor provider egress.
               throwIfAborted(params.signal);
-              if (preEgress === undefined) return;
+              if (preEgress === undefined) {
+                slot.acquiring = false;
+                outstandingAdmissions.delete(slot);
+                return;
+              }
               // This is the only admitting boundary. Re-check after the governor await and release any newly
               // acquired lease before propagating a cancellation during warning durability/admission.
               const { request, inputTokensEstimate } = currentRound;
@@ -1951,11 +1963,19 @@ async function driveAgentTurn(
                 nextAdmission?.release();
                 throwIfAborted(params.signal);
               }
-              if (nextAdmission !== undefined) {
-                attemptAdmission = nextAdmission;
-                admissionPending = true;
-              }
+              slot.acquiring = false;
+              if (nextAdmission !== undefined) slot.admission = nextAdmission;
+              if (slot.settle !== undefined) {
+                const settle = slot.settle;
+                delete slot.settle;
+                settle(slot.admission);
+                slot.settle = settle;
+                delete slot.admission;
+                outstandingAdmissions.delete(slot);
+              } else if (nextAdmission === undefined) outstandingAdmissions.delete(slot);
             } catch (error) {
+              slot.acquiring = false;
+              if (slot.admission === undefined) outstandingAdmissions.delete(slot);
               usage.preAttemptFailure = { error };
               throw error;
             }

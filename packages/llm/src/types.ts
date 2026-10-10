@@ -539,7 +539,7 @@ export interface EstimateTokensInput {
 /** Trusted, process-local lifetime authority, separate from request data and durable records. */
 export interface LlmInvocationOptions {
   readonly retainWork: <T>(factory: () => Promise<T>) => Promise<T>;
-  /** Native parameter repair must settle prior coverage and acknowledge the next call before egress. */
+  /** Native parameter repair must settle prior coverage, re-admit and acknowledge the next call before egress. */
   readonly beforeNativeRetry?: (error: LlmError) => Promise<void>;
   /** Mark an acknowledged repaired invocation only at the next native create. */
   readonly nativeInvocationStarted?: () => void;

@@ -189,7 +189,9 @@ interface InternalAttemptRecord {
   /** Actual usage supplied by a successful or failed processed response; never a reservation. */
   readonly usage?: UsageEvidence;
   readonly invocation?: UsageInvocation;
-  /** Additional native repair/late receipt coverage, not another chain admission. */
+  /** Ephemeral exact admission correlation; never persisted or reconstructed from durable data. */
+  readonly preAttemptInfo?: PreAttemptInfo;
+  /** Additional native repair/late receipt coverage, not another chain attempt. */
   readonly coverageOnly?: true;
   readonly receiptPending?: true;
   readonly receiptFinal?: true;
@@ -860,6 +862,8 @@ export class FallbackChain {
       }
     };
     let invocation: ProviderInvocationWork | undefined;
+    let primaryClosed = false;
+    let nativeBoundaryFailure: { readonly error: unknown } | undefined;
     let providerSucceeded = false;
     let lateReceipt = false;
     const usageReceipt = new UsageReceipt((usage) => this.#settleLateReceipt(record, usage));
@@ -885,7 +889,8 @@ export class FallbackChain {
         entry.provider.id,
         record.customEndpoint ? 'custom' : 'official',
       );
-      const info: PreAttemptInfo = { ...plan, outputCapPlan: plan };
+      const info: PreAttemptInfo = Object.freeze({ ...plan, outputCapPlan: plan });
+      record = { ...record, preAttemptInfo: info };
       await this.#options.preAttempt?.(info);
       const coverage = await this.#options.beginUsageInvocation?.(info);
       if (coverage !== undefined) record = { ...record, invocation: coverage };
@@ -921,6 +926,14 @@ export class FallbackChain {
             (next) => {
               record = next;
             },
+            () => primaryClosed,
+            () => {
+              if (primaryClosed || this.#aborted(request))
+                throw new LlmProviderError(this.#classifyDeadline(deadline, entry.provider.id));
+            },
+            (error) => {
+              nativeBoundaryFailure = { error };
+            },
           ),
         );
       });
@@ -946,7 +959,7 @@ export class FallbackChain {
       // and may fail over, which is rule 7's other half rather than an exception to it.
       const raced = deadline === undefined ? undefined : await deadline.race(call);
       if (raced?.outcome === 'deadline') {
-        if (record.invocation !== undefined) {
+        if (record.providerInvoked && record.invocation !== undefined) {
           lateReceipt = true;
           record = { ...record, receiptPending: true };
         }
@@ -961,10 +974,18 @@ export class FallbackChain {
       retentionFailure = retainedEntryFailure(err);
       const error =
         retentionFailure === undefined
-          ? this.#abortAware(this.#errorOf(err, entry.provider.id), entryReq, entry.provider.id)
+          ? this.#abortAware(
+              this.#errorOf(
+                nativeBoundaryFailure === undefined ? err : nativeBoundaryFailure.error,
+                entry.provider.id,
+              ),
+              entryReq,
+              entry.provider.id,
+            )
           : this.#retentionError(entry.provider.id, retentionFailure.error);
       outcome = { status: 'error', error };
     } finally {
+      primaryClosed = true;
       // A successful response must be owned before another custom host callback can mutate it.
       // Failed provider/admission paths still dispose even if diagnostic normalization throws.
       try {
@@ -1164,13 +1185,16 @@ export class FallbackChain {
     // EVERY exit, and a `let` inside the `try` would not be in scope there.
     let iterator: AsyncIterator<StreamChunk> | undefined;
     let invocation: ProviderInvocationWork | undefined;
+    let primaryClosed = false;
+    let nativeBoundaryFailure: { readonly error: unknown } | undefined;
     try {
       const plan = outputCapPlanForRequest(
         entryReq,
         entry.provider.id,
         record.customEndpoint ? 'custom' : 'official',
       );
-      const info: PreAttemptInfo = { ...plan, outputCapPlan: plan };
+      const info: PreAttemptInfo = Object.freeze({ ...plan, outputCapPlan: plan });
+      record = { ...record, preAttemptInfo: info };
       await this.#options.preAttempt?.(info);
       const coverage = await this.#options.beginUsageInvocation?.(info);
       if (coverage !== undefined) record = { ...record, invocation: coverage };
@@ -1213,6 +1237,14 @@ export class FallbackChain {
             (next) => {
               record = next;
             },
+            () => primaryClosed,
+            () => {
+              if (primaryClosed || this.#aborted(request))
+                throw new LlmProviderError(this.#classifyDeadline(deadline, entry.provider.id));
+            },
+            (error) => {
+              nativeBoundaryFailure = { error };
+            },
           ),
         );
         const verified = verifyStreamGrammar(
@@ -1248,7 +1280,11 @@ export class FallbackChain {
               },
         );
         if (step.kind === 'timeout') {
-          if (record.invocation !== undefined && usage?.kind !== 'complete') {
+          if (
+            record.providerInvoked &&
+            record.invocation !== undefined &&
+            usage?.kind !== 'complete'
+          ) {
             lateReceipt = readReceipt;
             record = { ...record, receiptPending: true };
           }
@@ -1272,12 +1308,20 @@ export class FallbackChain {
       retentionFailure = retainedEntryFailure(err);
       failure =
         retentionFailure === undefined
-          ? this.#abortAware(this.#errorOf(err, entry.provider.id), entryReq, entry.provider.id)
+          ? this.#abortAware(
+              this.#errorOf(
+                nativeBoundaryFailure === undefined ? err : nativeBoundaryFailure.error,
+                entry.provider.id,
+              ),
+              entryReq,
+              entry.provider.id,
+            )
           : this.#retentionError(entry.provider.id, retentionFailure.error);
       // A raced confirming read can replace the diagnostic while the verifier still owns a
       // valid first terminal. Retain that observation; do not account here or invent a clean stop.
       if (usage !== undefined) failure = Object.freeze({ ...failure, usage });
     } finally {
+      primaryClosed = true;
       // Every exit path — success, pre-content failure, surfaced failure, an early consumer `break` that
       // calls this generator's `return()`. Idempotent, so the success path below can be reached having
       // already disposed nothing.
@@ -1958,6 +2002,9 @@ export class FallbackChain {
     info: PreAttemptInfo,
     getRecord: () => InternalAttemptRecord,
     setRecord: (record: InternalAttemptRecord) => void,
+    isClosed: () => boolean,
+    assertActive: () => void,
+    boundaryFailure: (error: unknown) => void,
   ): LlmInvocationOptions {
     const options: LlmInvocationOptions = {
       retainWork:
@@ -1965,6 +2012,7 @@ export class FallbackChain {
           ? <T>(factory: () => Promise<T>) => this.#retainWork(factory)
           : work.retainWork.bind(work),
       nativeInvocationStarted: () => {
+        assertActive();
         setRecord({ ...getRecord(), providerInvoked: true });
       },
       beforeNativeRetry: async (error) => {
@@ -1979,15 +2027,36 @@ export class FallbackChain {
           usage: owned.usage ?? ownUsageEvidence({ kind: 'missing', reason: 'not_reported' }),
         });
         // The old call has settled. A failed new pending acknowledgement must not settle it twice.
-        const next = { ...previous };
+        const nextInfo: PreAttemptInfo = Object.freeze({ ...info });
+        const next = { ...previous, preAttemptInfo: nextInfo, providerInvoked: false };
         delete next.invocation;
-        setRecord({ ...next, providerInvoked: false });
-        const coverage = await this.#options.beginUsageInvocation?.(info);
-        setRecord({
+        setRecord(next);
+        let coverage: UsageInvocation | undefined;
+        try {
+          await this.#options.preAttempt?.(nextInfo);
+          assertActive();
+          coverage = await this.#options.beginUsageInvocation?.(nextInfo);
+        } catch (error) {
+          // Preserve only this explicitly owned host boundary's opaque cause through adapter normalization.
+          boundaryFailure(error);
+          throw error;
+        }
+        const acknowledged = {
           ...next,
-          providerInvoked: false,
           ...(coverage === undefined ? {} : { invocation: coverage }),
-        });
+        };
+        setRecord(acknowledged);
+        if (isClosed() && coverage !== undefined) {
+          // The public timeout/cancellation preceded this durable ACK. No native retry was invoked.
+          this.#emit({
+            ...acknowledged,
+            coverageOnly: true,
+            receiptFinal: true,
+            outcome: 'failed',
+            error: this.#cancelledError(previous.provider),
+          });
+        }
+        assertActive();
       },
     };
     return work === undefined || options.beforeNativeRetry === undefined

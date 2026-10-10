@@ -806,7 +806,8 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         {
           agentRef: built.agent.id,
           model: built.agent.model,
-          cumulativeCostMicrocents: built.resumeState.cumulativeCostMicrocents,
+          // The amount and its qualifiers share this read even if another live host settled during build.
+          cumulativeCostMicrocents: costs.totalCostMicrocents,
           usageCoverage: costs.coverage,
           unpricedCalls: costs.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
           turnCount: built.resumeState.turnCount,

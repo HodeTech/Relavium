@@ -5,6 +5,7 @@ import {
   usageApplicability,
   nativeFieldPresent,
   requireMediaUsage,
+  retainUsageObservation,
   type UsageApplicability,
 } from './native-usage.js';
 import OpenAI, {
@@ -1284,7 +1285,10 @@ async function* streamChunks(
         usage = requireMediaUsage(usage, applicable);
       }
       if (chunk.usage) {
-        usage = mapUsage(chunk.usage, provider === 'deepseek', applicable);
+        usage = retainUsageObservation(
+          usage,
+          mapUsage(chunk.usage, provider === 'deepseek', applicable),
+        );
         authoritativeUsage =
           state.sawTerminal || chunk.choices.some((choice) => choice.finish_reason != null); // the include_usage chunk arrives last, with empty choices
       }

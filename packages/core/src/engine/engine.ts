@@ -833,7 +833,6 @@ class RunExecution {
         });
         if (acknowledgement.kind !== 'persisted')
           throw new DurableAppendNotPersistedError(acknowledgement);
-        this.#usageCoverage.pending(draft.model, invocation);
         return invocation;
       },
       emitUsageDisposition: async (draft) => {
@@ -847,12 +846,6 @@ class RunExecution {
         );
         if (acknowledgement.kind !== 'persisted')
           throw new DurableAppendNotPersistedError(acknowledgement);
-        this.#usageCoverage.disposition(
-          draft.model,
-          draft.invocation,
-          draft.disposition,
-          draft.receiptPending,
-        );
       },
       emit: async (draft, cumulativeCostMicrocents) => {
         // Each required money append observes its own store ACK, independently of earlier failures,
@@ -876,8 +869,6 @@ class RunExecution {
         if (acknowledgement.kind !== 'persisted') {
           throw new DurableAppendNotPersistedError(acknowledgement);
         }
-        if (draft.invocation !== undefined)
-          this.#usageCoverage.complete(draft.model, draft.invocation);
       },
       ...(params.plan.budget === undefined
         ? {}
@@ -1630,7 +1621,6 @@ class RunExecution {
     });
     if (acknowledgement.kind !== 'persisted')
       throw new DurableAppendNotPersistedError(acknowledgement);
-    this.#usageCoverage.start(basis);
   }
 
   #activateCheckpoint(excludedGateId?: string): void {
@@ -2758,11 +2748,14 @@ class RunExecution {
     vertexId: string,
     dispatchId: number,
     port?: EffectDispatchPort,
+    issued = new WeakMap<UsageInvocation, 'pending' | 'claimed' | 'emitted' | 'recorded'>(),
   ): NodeReceiptContext {
-    const issued = new WeakMap<UsageInvocation, 'pending' | 'claimed' | 'emitted' | 'recorded'>();
     return Object.freeze({
       money: {
-        accountingFailure: (error) => this.#money.accountingFailure(error),
+        accountingFailure: (error) => {
+          scope.assertActive();
+          this.#money.accountingFailure(error);
+        },
         beginUsageInvocation: (draft) => {
           scope.assertActive();
           return scope.enter(async () => {
@@ -2775,12 +2768,14 @@ class RunExecution {
           });
         },
         claimUsage: (invocation, kind) => {
+          scope.assertActive();
           if (!issued.has(invocation)) return false;
           const accepted = this.#money.claimUsage(invocation, kind);
           if (accepted && kind === 'complete') issued.set(invocation, 'claimed');
           return accepted;
         },
         emitCost: (event) => {
+          scope.assertActive();
           if (event.invocation === undefined || issued.get(event.invocation) !== 'claimed')
             throw new Error('Usage receipt has not claimed its charge');
           issued.set(event.invocation, 'emitted');
@@ -2788,13 +2783,14 @@ class RunExecution {
           this.#nodeEmit({ ...event, nodeId: vertexId }, live);
         },
         usageDisposition: (draft) => {
+          scope.assertActive();
           if (!issued.has(draft.invocation)) throw new Error('Usage receipt is not registered');
           this.#money.usageDisposition({ ...draft, nodeId: vertexId });
           void this.#hostWork.enter(() => this.#money.waitForWrites());
         },
         record: (draft) => {
-          if (draft.invocation === undefined) scope.assertActive();
-          else {
+          scope.assertActive();
+          if (draft.invocation !== undefined) {
             if (
               issued.get(draft.invocation) !== 'emitted' &&
               issued.get(draft.invocation) !== 'claimed'
@@ -2826,7 +2822,7 @@ class RunExecution {
       continueReceipt: <T>(operation: (receipt: NodeReceiptContext) => Promise<T>): Promise<T> =>
         scope.continue((child) =>
           this.#effectHealth.invocation(() =>
-            operation(this.#receiptContext(child, vertexId, dispatchId, port)),
+            operation(this.#receiptContext(child, vertexId, dispatchId, port, issued)),
           ),
         ),
     } satisfies NodeReceiptContext);
@@ -5134,27 +5130,43 @@ class RunExecution {
       readonly receipt?: boolean;
     },
   ): Promise<DurableAppendAcknowledgement> {
-    return this.#hostWork.invoke(() => this.#writeDurable(draft, opts));
+    return this.#hostWork.invoke(async () => {
+      // Media preparation stays outside the append queue (ADR-0078). A host operation that has
+      // not produced a durable-safe draft must not reserve a sequence or hold up a terminal.
+      let durable: RunEventDraft;
+      try {
+        durable = await this.#deInlineDraft(draft);
+      } catch (error) {
+        // Non-terminal preparation errors reach the existing outcome/begin backstops. A terminal
+        // must still settle with a byte-free payload rather than leak media or leave the run open.
+        if (!TERMINAL_TYPES.has(draft.type)) throw error;
+        durable = stripTerminalMediaPayload(draft);
+      }
+      // Reserve synchronously after preparation. Coverage is read only after the predecessor's
+      // append, accounting fold and delivery, so an older queued draft cannot erase uncertainty.
+      const prior = this.#deliveryTail;
+      const settled = this.#writeDurable(durable, opts, prior);
+      this.#deliveryTail = settled.then(
+        () => undefined,
+        () => undefined,
+      );
+      return await settled;
+    });
   }
 
   async #writeDurable(
-    draft: RunEventDraft,
-    opts?: {
-      readonly handOff?: boolean;
-      /** Only an already-incurred money append can use the retained terminal claim. */
-      readonly receipt?: boolean;
-    },
+    durable: RunEventDraft,
+    opts:
+      | {
+          readonly handOff?: boolean;
+          /** Only an already-incurred money append can use the retained terminal claim. */
+          readonly receipt?: boolean;
+        }
+      | undefined,
+    prior: Promise<void>,
   ): Promise<DurableAppendAcknowledgement> {
+    await prior;
     const handOff = opts?.handOff === true;
-    draft = {
-      ...draft,
-      // Resume's first gate decision must expose the inherited known sum immediately.
-      // Keep an actual receipt's captured total; it belongs to its own settlement.
-      cumulativeCostMicrocents: draft.cumulativeCostMicrocents ?? this.#cumulativeCostMicrocents,
-      cumulativeUnpricedCalls: this.#cumulativeUnpricedCalls,
-    };
-    if (!draft.type.startsWith('cost:usage_') && draft.type !== 'cost:coverage_started')
-      draft = { ...draft, usageCoverage: this.#usageCoverage.snapshot().coverage };
     // **`CR-32`'s durable-event bound, and the terminal is exempt.** A run that cannot publish its terminal
     // is worse in every way than one that wrote an oversized final event: the stream never closes, the lease
     // is never released, and no surface can tell whether the run finished. ADR-0078 §6 draws the same line
@@ -5168,7 +5180,7 @@ class RunExecution {
     // Persist the boundary/terminal event, then deliver (ADR-0036 persist-before-deliver, so a crash
     // can never re-run a completed node or lose its output). This method is **total for store faults**, with
     // TWO deliberate exceptions, both of which re-throw to the #onOutcome/#begin backstops for a NON-terminal
-    // event and are exempt for a terminal: the media de-inline (see MEDIA DE-INLINE) and `CR-32`'s
+    // event and are exempt for a terminal: media preparation in #emitDurable and `CR-32`'s
     // durable-event size bound (below, after the de-inline). A store fault
     // must neither break the exactly-one-terminal-event invariant nor escape as an unhandled rejection
     // out of the fire-and-forget `#loop`. So the `sequenceNumber` is assigned once at the single
@@ -5179,47 +5191,28 @@ class RunExecution {
     // log lacks); a terminal whose write fails is still delivered in-process, and `reconcile()` repairs
     // the durable record on restart.
     //
-    // DELIVERY IS ORDERED BY sequenceNumber, not by persist-resolution order. The media de-inline runs
-    // first (the `await` below), THEN `#bus.next` assigns the seq and the per-run `#deliveryTail` capture
-    // happens — with NO `await` between them, so seq-assignment-and-delivery-chaining stays atomic per
-    // event; chaining each deliver onto the single tail makes a higher-seq event wait for the lower-seq
-    // event's deliver. **The tail now serializes the ASK, the WRITE and the DELIVERY** (ADR-0078 §1) — it
+    // DELIVERY IS ORDERED BY sequenceNumber, not by persist-resolution order. The tail was reserved
+    // after media preparation and joined above. Coverage stamping, sequence assignment, append
+    // and delivery belong to that same slot. In particular, a queued node lifecycle event cannot
+    // capture complete coverage before a predecessor's pending write receives its ACK.
+    // **The tail serializes the ASK, the WRITE and the DELIVERY** (ADR-0078 §1) — it
     // once serialized delivery only, with each `persistEvent` started before the previous was joined, and
-    // "persists stay concurrent" is the sentence ADR-0078's Context quotes as the defect. (The de-inline `await`
-    // moves WHEN the seq is assigned relative to other emits — gap-free + monotonic still hold, since the
-    // counter only advances on a successful `next`, and concurrent events have no canonical order.)
+    // "persists stay concurrent" is the sentence ADR-0078's Context quotes as the defect. The counter still
+    // advances only on a successful next(), and preparation failure does not block the next reserved slot.
     // Without the tail, two concurrent leaf nodes under an ASYNC store (1.R SQLite, cloud) could resolve
     // out of order — delivering a later node:completed (or the terminal) first, closing the stream, and
     // dropping the earlier event (a gap-free / no-drop violation). InMemoryRunStore resolves
     // synchronously, which masks it; the seam exists precisely so an async store plugs in.
     //
-    // MEDIA DE-INLINE (1.AF, ADR-0042 §2): run `deInlineMedia` on the draft FIRST — before `#bus.next`
-    // stamps + validates and before the durable write + delivery below — so the numbered, persisted,
-    // delivered event is handle-only (I3); the durable schema's typed media positions are handle-only and
-    // would reject in-flight base64 at validation. This single `await` is the only addition; the
-    // synchronous seq-assign / persist-before-deliver / `#deliveryTail` ordering below is unchanged, and a
-    // no-media draft pays only a cheap cycle-safe scan (no store round-trip). Secret masking already
-    // happened upstream (input masking at run setup; per-node output masking via `secretInputNames`), so
-    // de-inline is the sole emit-time transform here and composes with masking only by sequence.
-    let durable: RunEventDraft;
-    try {
-      durable = await this.#deInlineDraft(draft);
-    } catch (error) {
-      // The de-inline could not make this draft durable-safe — a missing MediaStore, a `store.put`
-      // rejection (disk full / transient IO), an un-re-hosted url, a non-canonical byte carrier, or
-      // invalid base64. For a NON-terminal event, re-throw — the #onOutcome / #begin backstops map it to
-      // a single run:failed. For a TERMINAL event the run MUST still settle (exactly-one-terminal-event
-      // is sacred), so strip its best-effort media payload to empty (stripTerminalMediaPayload yields a
-      // byte-free draft) rather than block the terminal forever (a hang + unhandled rejection out of the
-      // catch-less #loop) or leak inline bytes (I3). This rescues ANY de-inline failure on a terminal,
-      // not only the missing-store one; the run:failed error (set when the first media-bearing
-      // node:completed threw and #onOutcome caught it) states the cause.
-      if (TERMINAL_TYPES.has(draft.type)) {
-        durable = stripTerminalMediaPayload(draft);
-      } else {
-        throw error;
-      }
-    }
+    durable = {
+      ...durable,
+      // An actual receipt retains its captured sum; other events expose the current known sum.
+      cumulativeCostMicrocents: durable.cumulativeCostMicrocents ?? this.#cumulativeCostMicrocents,
+      cumulativeUnpricedCalls: this.#cumulativeUnpricedCalls,
+      ...(!durable.type.startsWith('cost:')
+        ? { usageCoverage: this.#usageCoverage.snapshot().coverage }
+        : {}),
+    };
     // **`CR-32`'s durable-event bound, measured on the DE-INLINED draft.** Measuring `draft` here was the
     // same mistake as measuring a node's raw output: an in-flight media part is base64 until this point and
     // a `media://` handle after it, so the pre-de-inline size is not the size anything writes or receives.
@@ -5251,7 +5244,6 @@ class RunExecution {
     // evidence this process still owns the run: a CAS pin may finish after another owner settles it.
     // NOTE: the terminal media reclaim used to sit here, before the write. It now runs only after the
     // terminal's persist SUCCEEDS — see the write below (ADR-0078 §1 re-timing ADR-0042 §4).
-    const prior = this.#deliveryTail;
     const terminal = TERMINAL_TYPES.has(event.type);
     const guarded = !terminal;
     // This closure's branch count is NOT extractable, and the reason is written throughout it:
@@ -5260,10 +5252,6 @@ class RunExecution {
     // reordered the log once already, and the `held`/`unclaimed` fast path exists specifically to AVOID that
     // hop. A metric is not worth re-opening the race this function was written to close (CR-10, CR-92).
     const settled = (async (): Promise<DurableAppendAcknowledgement> => {
-      // `await prior` moved ABOVE the persist. Below it, the previous event's write had already been
-      // STARTED but not joined, so two events for one run overlapped — nothing but the store's timing kept
-      // the log a prefix. The same single tail now serializes the ask, the write and the delivery.
-      await prior;
       // This check precedes ownership reconciliation and head mutation: neither a recovered store nor
       // a retained claim can make a later receipt poison original terminal-outbox recovery (ADR-0103).
       if (this.#terminalAppendFailure !== undefined) {
@@ -5361,6 +5349,9 @@ class RunExecution {
         }
       }
       if (acknowledgement.kind === 'persisted') {
+        // Fold accounting before any observer sees this ACKed event or the next writer stamps its
+        // envelope. Caller continuations run later and must not own publication's coverage state.
+        this.#usageCoverage.apply(event);
         // Post-ACK observers/retention cannot turn a successful store append into an outbox failure.
         this.#recordProducedMedia(durable);
         if (handOff && !terminal) {
@@ -5378,10 +5369,6 @@ class RunExecution {
       this.#wakeDeparture();
       return acknowledgement;
     })();
-    this.#deliveryTail = settled.then(
-      () => undefined,
-      () => undefined,
-    );
     return await settled;
   }
 

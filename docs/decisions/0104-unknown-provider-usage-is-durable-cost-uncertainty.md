@@ -427,3 +427,18 @@ rounds, whole-wave checks and documentation reconciliation are complete.
   rather than inventing a backfill.
 - An incomplete attempt may retain an overestimate and show unknown actual spend. Keep the
   established explicit estimate-release surface and explain the two independent facts.
+
+### W8 activation review correction — 2026-10-10
+
+The third cumulative activation review reproduced native repair, receipt-scope and live publication
+gaps. Each potentially billed repair now obtains its own existing admission after settling and joining
+the prior invocation; a custom unknown call retains its exposure when a later call reports zero.
+Late pending acknowledgement must retire a positively uninvoked repair with its exact correlation.
+Receipt identity never bypasses an ended producer scope; the runner explicitly transfers accounting
+work and joins its registered raw producers. Cumulative native observations retain independently known
+quantities without promoting incomplete evidence. The ordered workflow writer folds acknowledged
+coverage before publication; session views seed amount and coverage from one atomic breakdown.
+The canonical [seam](../reference/shared-core/llm-provider-seam.md),
+[runner](../reference/shared-core/agent-runner.md) and
+[event contract](../reference/contracts/sse-event-schema.md) own these implementation details.
+Step 5 acceptance, Step 6's additional review gates and whole-wave closure remain open at this correction.

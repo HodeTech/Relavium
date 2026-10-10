@@ -1170,6 +1170,11 @@ The exported Zod schemas remain direct data validators and may expose Zod diagno
 callers handling untrusted values use the owned boundary. This adds no durable `ErrorCode`,
 request contract, invocation authority or pricing path for partial/missing evidence.
 
+Incomplete cumulative OpenAI/DeepSeek and Gemini usage frames retain earlier independently known
+canonical quantities. Valid newly reported quantities replace their predecessors, never sum with
+them; a partial or invalid later frame remains incomplete even if retained fields fill its gaps.
+Missing Gemini thoughts cannot be treated as zero to derive a new combined output count.
+
 #### Invocation correlation, repairs and late receipts
 
 `FallbackChainOptions.beginUsageInvocation(info: PreAttemptInfo): Promise<UsageInvocation>`
@@ -1181,13 +1186,19 @@ A failed acknowledgement prevents provider invocation. Skipped entries require n
 
 OpenAI-compatible parameter repair preserves the existing bounded temperature/reasoning fallback.
 Before each additional native create, `LlmInvocationOptions.beforeNativeRetry` reports the prior
-classified failure through a `coverageOnly: true` record and awaits a fresh pending acknowledgement.
-The host joins the prior disposition barrier before permitting that next marker/call. The
-`nativeInvocationStarted` callback marks the repaired call only after body construction and the
-last cancellation check, so cancellation after acknowledgement can still prove non-invocation. These
-coverage-only records do not create another budget admission or change the chain attempt number.
-An official pre-content refusal can release its coverage; a custom endpoint's prior call remains
-unknown. Successful final complete usage follows the existing sole actual-cost writer.
+classified failure through a `coverageOnly: true` record, runs fresh admission through `preAttempt`,
+and awaits the next pending acknowledgement. The host settles the prior admission and joins its
+disposition/conservative-write barrier before admitting that next call. An official pre-content
+refusal can release its estimate; a custom endpoint's unknown prior call retains conservative
+exposure, and a later zero cannot refund it. Repair never drops an output cap: only temperature and
+reasoning effort are repairable, so every retry uses the same central `outputCapPlan`.
+`AttemptRecord.preAttemptInfo` carries the exact fresh frozen admission-info object for each native
+call. It is ephemeral correlation, never durable data or billing authority, and prevents late cleanup
+from releasing a newer fallback admission. `nativeInvocationStarted` marks the repaired call only
+after body construction and the last activity check. If pending acknowledgement arrives after the
+public attempt has closed, a final correlated proven-non-invoked record retires that marker without
+starting the native call. Repair does not change the chain attempt number. Successful final complete
+usage follows the existing sole actual-cost writer.
 
 A deadline with a still-live correlated producer marks its incomplete record `receiptPending: true`.
 The exact raw promise remains retained; a separate registered retained continuation owns late
