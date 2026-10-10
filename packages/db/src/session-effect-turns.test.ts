@@ -139,6 +139,7 @@ describe('durable session effect-turn high-water mark (ADR-0098)', () => {
     expect(store.reserveEffectTurnKey('idle-199')).toBe(1);
   });
 
+  // Native on-disk setup/teardown can exceed 5s on Windows; semantic assertions stay unchanged.
   it('seeds evidence across batch boundaries and keeps encoded identities independent', () => {
     runMigrations(client.db);
     const store = createSessionStore(client.db);
@@ -185,7 +186,7 @@ describe('durable session effect-turn high-water mark (ADR-0098)', () => {
       expect(store.reserveEffectTurnKey(id)).toBe(index + 3);
     }
     expect(store.reserveEffectTurnKey('batch-258')).toBe(1);
-  });
+  }, 30_000);
 
   it('propagates operational database failures instead of treating them as corrupt session history', () => {
     runMigrations(client.db);
