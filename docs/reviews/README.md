@@ -11,6 +11,9 @@ added.
 
 ## Records
 
+- [2026-10-10 — W7 post-closure Step 2, author verification](2026-10-10T12-25-00-w7-post-closure-step-2-author-review.md):
+  CLI/DB corrections verified; two new complete independent rounds required.
+
 - [2026-10-10 — W7 post-closure Step 1, round 3](2026-10-10T12-18-00-w7-post-closure-step-1-round-3-review.md):
   second new clean complete cumulative round; core corrections accepted within scope.
 

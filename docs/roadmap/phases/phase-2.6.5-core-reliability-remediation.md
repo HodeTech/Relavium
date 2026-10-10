@@ -4860,3 +4860,8 @@ The [third core-increment review](../../reviews/2026-10-10T12-18-00-w7-post-clos
 accepts the complete core correction after two NEW clean rounds. Both independent source runs pass
 321 cases; Parent audits reports, artifacts and the exact frozen sixteen-path composition after
 release. CLI/DB and tooling/document corrections remain open; no paid operation or user decision is pending.
+
+The [CLI/DB author verification](../../reviews/2026-10-10T12-25-00-w7-post-closure-step-2-author-review.md) records deferred-opening notices,
+metadata-only session audits and bounded surface corrections with nine new permanent cases.
+Two NEW complete independent review rounds remain required for this increment; tooling/docs
+and final new whole-tree gates remain open.

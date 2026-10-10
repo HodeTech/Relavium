@@ -352,7 +352,8 @@ contract does not make it. The hash is SHA-256 over a canonical JSON serializati
 whitespace) of the redacted projection, using a vetted implementation — never a hand-rolled one.
 
 A **session** row's `result_json` is always SQL NULL; even a supplied result whose serializer throws is never
-examined. A matching prepare refuses rather than replaying, and readers suppress legacy results before parsing.
+examined. A matching prepare refuses rather than replaying, and session audit readers omit the stored
+result column entirely; run readers retain replay results.
 A **run** row retains its bounded result until the terminal sweep, preserving §4's replay contract.
 
 Open-time high-water backfill isolates invalid legacy identity/history evidence to its affected
@@ -369,6 +370,12 @@ an owned `BEGIN IMMEDIATE` data update clears every legacy session result, inclu
 one-shot rows, without changing their other fields. The clear and every session sweep are followed **after
 commit** by `wal_checkpoint(TRUNCATE)`. After a successful checkpoint, bytes freed from the upgrade onward
 survive in neither the main database nor WAL; acceptance scans both files while the connection remains open.
+
+The CLI surfaces a fixed stderr warning when opening maintenance reports a deferred checkpoint,
+as session retention already does. A diagnostic sink failure does not revoke a successful database
+open or repeat maintenance. Later opens and sweeps retry the checkpoint even when no row changes;
+logical suppression alone cannot certify that an earlier reader released sensitive WAL bytes.
+
 A busy reader defers physical erasure (old bytes can remain in the main file **and** WAL) until the next
 successful open/sweep checkpoint. Pages freed before the upgrade are not retroactively zeroed; no `VACUUM`
 is performed. These two accepted residuals remain in [deferred-tasks.md](../../roadmap/deferred-tasks.md).
