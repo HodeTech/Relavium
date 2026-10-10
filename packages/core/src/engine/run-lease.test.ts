@@ -447,14 +447,10 @@ describe('ADR-0079 §4/§5 — a parked process cannot speak for a run it gave u
     expect(store.eventsFor(runId).map((event) => event.type)).toContain('run:cancelled');
   });
 
-  it('an INLINE resume that lands the instant run:paused is delivered is not fenced by the park', async () => {
-    // The mirror of the bug above, and it bit on the happy path. `#emitDurable` DELIVERS to consumers, and
-    // an inline prompter (`relavium gate`'s interactive re-pause) resumes synchronously on `run:paused` —
-    // before `#emitPausedOnce` continues. When the claim was dropped after the emit, that resume saw
-    // `#owned === true`, skipped its re-acquire, and then had the lease row deleted out from under it: its
-    // next `node:started` was fenced and a perfectly healthy run died `uncertain`.
+  it('retains the exact fence for synchronous inline resume, then releases on acknowledged departure', async () => {
     const store = new InMemoryRunStore();
-    const host = createInMemoryHost({ store });
+    const leases = createInMemoryRunLeases();
+    const host = createInMemoryHost({ store, runLeases: leases });
     const engine = new WorkflowEngine({
       host,
       executor: new Stub({
@@ -462,23 +458,30 @@ describe('ADR-0079 §4/§5 — a parked process cannot speak for a run it gave u
       }),
     });
     const handle = engine.start({ workflow: GATED });
-    // Through `subscribe`, not the `for await` loop, and the difference is the whole test. A subscriber runs
-    // SYNCHRONOUSLY inside `#emitDurable`'s delivery, so the resume lands strictly between the pause being
-    // observable and `#emitPausedOnce` continuing — which is precisely the window. Resuming from the async
-    // iterator instead lands a microtask later, after the surrender, and passes either way.
+    let pausedFence: RunFence | undefined;
+    let terminalFence: RunFence | undefined;
+    let resumed: Promise<void> | undefined;
+    // Synchronous delivery enters a registered resume before the pause writer/scheduler settle.
+    // This is behavioral coverage of ADR-0103 retention, not proof of an obsolete early-park path.
     handle.subscribe((event) => {
       if (event.type === 'run:paused') {
-        void engine.resume(handle.runId, event.gateIds[0] ?? '', {
+        pausedFence = leases.peek(handle.runId);
+        resumed = engine.resume(handle.runId, event.gateIds[0] ?? '', {
           decision: 'approved',
           decidedBy: 'inline',
         });
       }
+      if (event.type === 'run:completed') terminalFence = leases.peek(handle.runId);
     });
     const events: RunEvent[] = [];
     for await (const event of handle.events) events.push(event);
-
+    await resumed;
+    expect(pausedFence).toBeDefined();
+    expect(terminalFence).toEqual(pausedFence);
     expect(events.at(-1)?.type).toBe('run:completed');
     expect(handle.durability()).toBe('durable');
+    expect((await handle.depart()).kind).toBe('closed');
+    expect(leases.peek(handle.runId)).toBeUndefined();
   });
 });
 

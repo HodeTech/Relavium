@@ -144,7 +144,8 @@ export interface DeadlineScope {
   ) => Promise<{ outcome: 'settled'; value: T } | { outcome: 'deadline' }>;
   /** Which side ended it, resolved at CLASSIFICATION time so the answer is a contract, not a race. */
   classify: () => DeadlineOutcome;
-  /** Disarm the timer and detach the caller listener. Idempotent; safe on every exit path. */
+  /** Disarm the timer, detach the caller listener and wake waiters. Idempotent; attempts all cleanup.
+   * Rethrows the first cleanup fault. Callers must preserve an already established primary failure. */
   dispose: () => void;
 }
 

@@ -475,10 +475,13 @@ export class BudgetGovernor {
 
   /** Update the governor with the engine's durable running cumulative cost. Conservative unknown-usage debits stay separate. */
   updateCost(cumulativeCostMicrocents: number): void {
+    // A stale or invalid producer snapshot cannot erase realized spend, including an admission
+    // settlement which reached this governor before the engine's cumulative fold.
+    if (!Number.isSafeInteger(cumulativeCostMicrocents) || cumulativeCostMicrocents < 0) return;
     if (cumulativeCostMicrocents > this.#cumulativeCostMicrocents) {
       this.#warningArmed = true;
+      this.#cumulativeCostMicrocents = cumulativeCostMicrocents;
     }
-    this.#cumulativeCostMicrocents = cumulativeCostMicrocents;
   }
 
   /** Trusted engine ownership activation; Step 10 supplies this only after observed authorization ACK. */

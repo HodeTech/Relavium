@@ -2183,13 +2183,27 @@ class RunExecution {
   }
 
   async #loop(): Promise<void> {
+    let failed = false;
     try {
       do {
         this.#rerun = false;
         await this.#step();
       } while (this.#rerun && !this.#settled);
+    } catch {
+      // Lifetime observation handles the raw rejection, but does not supply its semantic outcome.
+      // A failed skip/publication must re-enter settlement without external cancel or a grace tick.
+      this.#failure ??= {
+        error: {
+          code: 'internal',
+          message: 'the run scheduler failed unexpectedly',
+          retryable: false,
+        },
+      };
+      failed = true;
+      this.#abort.abort();
     } finally {
       this.#scheduling = false;
+      if (failed) this.#schedule();
     }
   }
 
@@ -3731,6 +3745,8 @@ class RunExecution {
     deadline: DeadlineScope,
     submission: MediaJobSubmission,
   ): Promise<MediaJobStatus> {
+    let cleanupFailure: { readonly error: unknown } | undefined;
+    let status: MediaJobStatus;
     try {
       const pollMediaJob = this.#executor.pollMediaJob?.bind(this.#executor);
       if (pollMediaJob === undefined) throw new Error('the executor implements no pollMediaJob');
@@ -3747,10 +3763,17 @@ class RunExecution {
           `the media-job poll did not respond within its ${String(MEDIA_JOB_POLL_DEFAULTS.pollCallTimeoutMs)}ms bound`,
         );
       }
-      return raced.value;
+      status = raced.value;
     } finally {
-      deadline.dispose();
+      try {
+        deadline.dispose();
+      } catch (error) {
+        cleanupFailure = { error };
+      }
     }
+    // A primary throw skips this arm; cleanup cannot mask it through an unsafe finally override.
+    if (cleanupFailure !== undefined) throw cleanupFailure.error;
+    return status;
   }
 
   /** Route one `MediaJobStatus` to: re-arm (pending) / complete (done) / fail (failed). */
@@ -3968,26 +3991,11 @@ class RunExecution {
     // on, and would make the second decision of a two-gate workflow fail against this process's own stale
     // claim. Whichever process resumes re-acquires (ADR-0079 §4).
     //
-    // **Defence in depth, not the sole protection** — measured, and worth stating so a future refactor judges
-    // the risk correctly. Two other mechanisms already cover this: `#emitDurable` re-reads the ownership
-    // state at WRITE time rather than caching it, and `#schedule`'s single-flight guard means a post-gate
-    // dispatch cannot begin until the `#step()` containing this whole function has unwound. A reviewer moved
-    // the hand-off back after the emit AND injected a real delay to force the race, and the suite stayed
-    // green. The ordering is kept because it makes the invariant true by construction rather than by two
-    // coincidences, but it is not load-bearing alone.
-    //
-    // For a QUIET gate park the claim drops before pause delivery and the row is deleted after. Registered
-    // raw/child/entered receipts instead retain the same claim until #parkAfterReceipts observes idle.
-    // The quiet handoff's two ordering halves are
-    // forced, in opposite directions. The row must go last because `run:paused` is itself a fence-guarded
-    // write — deleting first would make the run's own pause event fail its own guard. But `#owned` must drop
-    // FIRST, because `#emitDurable` delivers to consumers, and an inline prompter (`relavium gate`'s
-    // interactive re-pause) resumes the instant it sees `run:paused` — synchronously, before this function
-    // continues. Dropping `#owned` after the emit let that resume observe `#owned === true`, skip its
-    // re-acquire, and then have the row deleted out from under it; its very next `node:started` was fenced
-    // and the run died `uncertain` on the happy path. Deleting the row late is safe because `release` is
-    // scoped to `(ownerId, generation)`: if a resume already re-acquired, the generation has moved and this
-    // delete matches nothing.
+    // ADR-0103 retains the exact claim while registered actors or receipts can still use the host.
+    // This scheduler and the pause writer are themselves registered, so publication precedes quiet
+    // handoff. An inline resume registers before its first await and clears the pause episode before
+    // dispatch. The idle park rechecks that episode after joining every actor, and cannot release
+    // ownership beneath that resume. Lease deletion is always scoped to the captured exact fence.
     await this.#emitDurable(
       {
         type: 'run:paused',
@@ -4699,10 +4707,8 @@ class RunExecution {
   /**
    * Drop the ownership CLAIM synchronously, returning the fence whose row still needs deleting.
    *
-   * Split from the row delete so the two can straddle an await — see `#emitPausedOnce`, where dropping the
-   * claim must happen before the pause is observable while the delete must happen after the pause is
-   * durable. `#fence` is deliberately KEPT: clearing it would make a subsequent write unguarded (an absent
-   * fence is a pass, not a refusal), which is the failure this pair of fields exists to close.
+   * Called only after registered actors/receipts become quiet. Keep the fence for guarded late
+   * writes and scope the subsequent row deletion to that exact generation (ADR-0103/ADR-0079).
    */
   #park(): RunFence | undefined {
     if (this.#ownership !== 'held') return undefined;
@@ -5171,15 +5177,12 @@ class RunExecution {
         // Post-ACK observers/retention cannot turn a successful store append into an outbox failure.
         this.#recordProducedMedia(durable);
         if (handOff && !terminal) {
-          if (this.#hostWork.isIdle) this.#park();
-          else this.#beginParkAfterReceipts();
+          this.#beginParkAfterReceipts();
         }
         if (terminal) this.#reclaimRunMedia();
       }
-      // A quiet run releases before terminal delivery. A run with registered raw/receipt work publishes
-      // its bounded primary outcome now and retains the exact fence until that work actually settles.
-      // A fenced terminal returns above and cannot release a successor.
-      if (terminal && this.#hostWork.isIdle) await this.#releaseOwnership();
+      // This writer and its calling actor are still registered. Publish the bounded outcome now;
+      // host retirement releases the exact fence only after all actors and receipts actually settle.
       this.#bus.deliver(event); // still in seq order — `prior` is now awaited above, before the write
       if (event.type === 'run:paused' && acknowledgement.kind === 'persisted') {
         this.#pauseGeneration += 1;

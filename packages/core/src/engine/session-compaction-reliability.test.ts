@@ -179,6 +179,88 @@ function fixture(
 }
 
 describe('W7 measured atomic compaction and active-entry budget outcomes', () => {
+  for (const cancel of [false, true])
+    it(`rolls back a rejected completion boundary without undoing cancellation (${cancel})`, async () => {
+      const events: SessionStreamEvent[] = [];
+      const owner: { session?: AgentSession } = {};
+      let rejectCompletion = true;
+      const h = fixture({
+        auto: false,
+        window: 12000,
+        deps: {
+          emit: (event) => {
+            if (event.type === 'session:compacted' && rejectCompletion) {
+              rejectCompletion = false;
+              if (cancel) owner.session?.cancel();
+              throw new Error('synthetic completion rejection');
+            }
+            events.push(event);
+          },
+        },
+      });
+      owner.session = h.session;
+      await expect(h.session.compact()).rejects.toThrow('synthetic completion rejection');
+      expect(events.filter((e) => e.type === 'session:compacted')).toHaveLength(0);
+      expect(events.filter((e) => e.type === 'session:compaction_failed')).toHaveLength(
+        cancel ? 0 : 1,
+      );
+      expect(events.filter((e) => e.type === 'session:cancelled')).toHaveLength(cancel ? 1 : 0);
+      if (cancel)
+        await expect(h.session.sendMessage('later')).rejects.toMatchObject({ code: 'not_active' });
+      else {
+        await h.session.sendMessage('probe next');
+        const next = h.requests.at(-1);
+        if (next === undefined) throw new Error('missing next request');
+        expect(body(next)).not.toContain('SUMMARY');
+        expect(body(next)).toContain('old old');
+        // The restored completed-turn spans must still admit a whole fold on retry.
+        expect((await h.session.compact()).kind).toBe('compacted');
+      }
+    });
+
+  it('does not open or close a compaction moment when its start sink refuses', async () => {
+    const events: SessionStreamEvent[] = [];
+    const h = fixture({
+      auto: false,
+      window: 12000,
+      deps: {
+        emit: (event) => {
+          if (event.type === 'session:compacting') throw new Error('synthetic start rejection');
+          events.push(event);
+        },
+      },
+    });
+    await expect(h.session.compact()).rejects.toThrow('synthetic start rejection');
+    expect(h.counts().summaryCalls).toBe(0);
+    expect(
+      events.filter(
+        (e) => e.type === 'session:compacting' || e.type === 'session:compaction_failed',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('keeps a successfully accepted completion when its observer cancels reentrantly', async () => {
+    const owner: { session?: AgentSession } = {};
+    const events: SessionStreamEvent[] = [];
+    const h = fixture({
+      auto: false,
+      window: 12000,
+      deps: {
+        emit: (event) => {
+          events.push(event);
+          if (event.type === 'session:compacted') owner.session?.cancel();
+        },
+      },
+    });
+    owner.session = h.session;
+    expect((await h.session.compact()).kind).toBe('compacted');
+    expect(
+      events
+        .filter((e) => e.type === 'session:compacted' || e.type === 'session:cancelled')
+        .map((e) => e.type),
+    ).toEqual(['session:compacted', 'session:cancelled']);
+  });
+
   it('measures and compacts before the main request, keeping latest completed and pending users distinct', async () => {
     const h = fixture({ window: 12000, threshold: 0.7 });
     await h.session.sendMessage('pending');

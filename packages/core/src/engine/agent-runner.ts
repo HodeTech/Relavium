@@ -888,6 +888,7 @@ async function executeGenerativeMedia(
     // surface to let the engine bound a media call — and would couple two budgets answering different
     // questions. Equal today, independent by construction; the reasoning lives with the constant.
     const deadline = openGenerativeDeadline(deps, ctx.signal);
+    let cleanupFailure: { readonly error: unknown } | undefined;
     try {
       // From this call onward the provider may have accepted/billed the generation even if its SDK throws or omits
       // a terminal payload. Preserve the bounded reservation in those uncertain paths; only credential resolution
@@ -915,8 +916,15 @@ async function executeGenerativeMedia(
       admission?.settleAtReservedEstimate({ nodeId: node.id });
       return mapGenerateMediaError(err, primary);
     } finally {
-      deadline?.dispose();
+      try {
+        deadline?.dispose();
+      } catch (error) {
+        cleanupFailure = { error };
+      }
     }
+    // Primary throws/refusal returns above retain precedence. A cleanup-only fault still uses the
+    // existing host-failure path and conservative reservation, outside the finally block.
+    if (cleanupFailure !== undefined) throw cleanupFailure.error;
 
     // A cancel that landed WHILE generateMedia was in-flight (a non-cooperative adapter that ignored the signal,
     // or one that resolved just as the run cancelled) must win: skip BOTH the async park / sync media outcome AND

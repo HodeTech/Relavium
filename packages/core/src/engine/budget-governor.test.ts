@@ -294,6 +294,33 @@ describe('BudgetGovernor', () => {
     });
   });
 
+  it('merges cumulative snapshots monotonically without admitting invalid money', () => {
+    const { governor } = makeGovernor({
+      budget: { max_cost_microcents: 1_000_000, on_exceed: 'fail' },
+    });
+    governor.updateCost(1_000_000);
+    for (const value of [
+      0,
+      -1,
+      Number.NaN,
+      Infinity,
+      -Infinity,
+      0.5,
+      Number.MAX_SAFE_INTEGER + 1,
+      1_000_000,
+    ]) {
+      governor.updateCost(value);
+      const verdict = governor.evaluatePreEgress(requestInfo(governor, 'claude-haiku-4-5', 1));
+      expect(verdict.kind).toBe('fail');
+      if (verdict.kind !== 'fail') throw new Error('expected cap refusal');
+      expect(verdict.error.spentMicrocents).toBe(1_000_000);
+    }
+    governor.updateCost(1_000_001);
+    const verdict = governor.evaluatePreEgress(requestInfo(governor, 'claude-haiku-4-5', 1));
+    if (verdict.kind !== 'fail') throw new Error('expected cap refusal');
+    expect(verdict.error.spentMicrocents).toBe(1_000_001);
+  });
+
   it('allows a call whose estimate stays within the cap', async () => {
     const { governor, warnings } = makeGovernor();
     governor.updateCost(0);
@@ -408,9 +435,8 @@ describe('BudgetGovernor', () => {
     await expect(Promise.all([first, second])).rejects.toThrow('durable warning sink failed');
     expect(emits).toBe(1);
 
-    // Both failed callers released their separate reservations. A below-cap retry must not see a ghost lease.
-    governor.updateCost(0);
-    const retry = await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000));
+    // Keep realized spend; a smaller below-cap request must not inherit either failed reservation.
+    const retry = await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1));
     expect(retry).toBeDefined();
     retry?.release();
   });
@@ -1000,13 +1026,10 @@ describe('BudgetGovernor', () => {
       governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1000)),
     ).rejects.toThrow('durable warning sink failed');
 
-    // Restore a below-cap authoritative state. A leaked reservation would turn this otherwise-allowed call back
-    // into warn mode and invoke the sink a second time.
+    // A smaller request fits without erasing realized spend. A leaked reservation would turn this
+    // otherwise-allowed call back into warn mode and invoke the sink a second time.
     shouldFail = false;
-    governor.updateCost(0);
-    const admission = await governor.checkPreEgress(
-      requestInfo(governor, 'claude-haiku-4-5', 1000),
-    );
+    const admission = await governor.checkPreEgress(requestInfo(governor, 'claude-haiku-4-5', 1));
     expect(emits).toBe(1);
     admission?.release();
   });

@@ -1053,6 +1053,43 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
       resolvedAgent: AGENT,
     });
 
+  for (const providerFailure of [false, true])
+    it(`preserves a media provider refusal over secondary deadline cleanup (${providerFailure})`, async () => {
+      let disarms = 0;
+      const p = generativeProvider(
+        providerFailure
+          ? {
+              throws: new LlmProviderError(
+                makeLlmError({
+                  provider: 'openai',
+                  kind: 'auth',
+                  message: 'synthetic media authentication refusal',
+                }),
+              ),
+            }
+          : undefined,
+      );
+      const executor = createAgentNodeExecutor(
+        genDeps(p, {
+          newAbortController: createInMemoryHost().newAbortController,
+          setTimer: () => () => {
+            disarms++;
+            throw new Error('PRIVATE-DISARM-FAULT');
+          },
+        }),
+      );
+      const pending = executor.execute(ctxFor(genVertex()).ctx);
+      if (providerFailure) {
+        const outcome = await pending;
+        expect(outcome).toMatchObject({ kind: 'failed', error: { code: 'provider_auth' } });
+        expect(JSON.stringify(outcome)).not.toContain('PRIVATE-DISARM-FAULT');
+      } else {
+        // The executor retains the original host diagnostic for its engine boundary to classify.
+        await expect(pending).rejects.toThrow('PRIVATE-DISARM-FAULT');
+      }
+      expect(disarms).toBe(1);
+    });
+
   it('carries a primary-only generative quote with token zeros and one attempt before credentials', async () => {
     let keys = 0;
     const p = generativeProvider();

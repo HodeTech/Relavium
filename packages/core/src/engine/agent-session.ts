@@ -139,7 +139,7 @@ export interface MemoryPolicyRefusal {
 
 /**
  * The classified result of a {@link AgentSession.compact} (ADR-0062). `compacted` carries inspectable
- * deltas and summary; `nothing_to_compact` has no earlier exchange; `failed` is a secret-free
+ * deltas and summary; `nothing_to_compact` has no effective fold (including an automatic unknown-window skip); `failed` is a secret-free
  * summarisation fault; `cancelled` is an Esc/cancel mid-summary; `policy_refused` performs no work.
  */
 export type CompactionResult =
@@ -1469,14 +1469,14 @@ export class AgentSession {
             try {
               checkCancelled();
               if (!opened) {
-                opened = true;
-                await observe(() =>
+                await observe(() => {
                   this.#deps.emit({
                     type: 'session:compacting',
                     reason,
                     ...(windows.unknown ? { windowUnknown: true } : {}),
-                  }),
-                );
+                  });
+                  opened = true;
+                });
                 // The surface owns visible delivery; a failed acknowledgement admits no provider call.
                 await awaitCompactionDisclosure(signal, () =>
                   observe(() =>
@@ -1530,24 +1530,38 @@ export class AgentSession {
         }),
       );
       checkCancelled();
+      const priorSummary = this.#compactionSummary;
+      const priorMessages = [...this.#messages];
+      const priorSpans = [...this.#completedTurnSpans];
       this.#compactionSummary = running;
       this.#replaceHistory(split.kept);
-      closed = true;
-      await observe(() =>
-        this.#emitProjectionEvent({
-          type: 'session:compacted',
-          reason,
-          summary,
-          keptMessageCount: split.kept.length,
-          // Legacy retained exchange slots belong in the durable boundary; a pending user never does.
-          keptTurnCount: split.kept.filter(
-            (message) => message.role === 'user' && message !== this.#pendingUser,
-          ).length,
-          tokensBefore,
-          tokensAfter,
-          tokensUsed: usage,
-        }),
-      );
+      try {
+        await observe(() => {
+          this.#emitProjectionEvent({
+            type: 'session:compacted',
+            reason,
+            summary,
+            keptMessageCount: split.kept.length,
+            // Legacy retained exchange slots belong in the durable boundary; a pending user never does.
+            keptTurnCount: split.kept.filter(
+              (message) => message.role === 'user' && message !== this.#pendingUser,
+            ).length,
+            tokensBefore,
+            tokensAfter,
+            tokensUsed: usage,
+          });
+          closed = true;
+        });
+      } catch (error) {
+        // The synchronous sink must accept the boundary before the replacement is committed.
+        // Restore only the projection: reentrant cancellation and already-billed usage remain real.
+        this.#compactionSummary = priorSummary;
+        this.#messages.length = 0;
+        this.#messages.push(...priorMessages);
+        this.#completedTurnSpans.length = 0;
+        this.#completedTurnSpans.push(...priorSpans);
+        throw error;
+      }
       return {
         kind: 'compacted',
         reason,
@@ -1665,7 +1679,9 @@ export class AgentSession {
       trigger = this.#compactionDecision(prepared, params) === 'compact';
     } catch {
       return;
-    } // Optional metadata cannot reject an already completed user turn.
+    } // This whole preparation is best-effort after a committed turn, including request ownership and
+    // optional metadata. A later foreground send still validates its own request and refuses loudly;
+    // failure here cannot rewrite the completed turn or invent a compaction lifecycle moment.
     if (!trigger || this.#status !== 'idle') return;
     let result: CompactionResult;
     try {

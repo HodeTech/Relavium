@@ -87,3 +87,70 @@ for (const width of [1, 3])
         await drained;
       }
     });
+
+for (const inject of [false, true])
+  it(`settles a skip-publication fault without external cancellation (${inject})`, async () => {
+    const base = createInMemoryHost();
+    let armed = false,
+      faults = 0;
+    const host: typeof base = {
+      ...base,
+      clock: {
+        now: () => {
+          if (armed) {
+            armed = false;
+            faults++;
+            throw new Error('PRIVATE-SKIP-CLOCK');
+          }
+          return base.clock.now();
+        },
+      },
+    };
+    const handle = new WorkflowEngine({
+      host,
+      executor: {
+        execute: () =>
+          Promise.resolve({
+            kind: 'failed',
+            error: { code: 'validation', message: 'original node failure', retryable: false },
+          }),
+      },
+    }).start({
+      workflow: parseWorkflow(
+        JSON.stringify({
+          schema_version: '1.0',
+          workflow: {
+            id: 'skip-publication-failure',
+            nodes: [
+              { id: 'a', type: 'input' },
+              { id: 'b', type: 'output' },
+            ],
+            edges: [{ from: 'a', to: 'b' }],
+          },
+        }),
+      ),
+    });
+    const unsubscribe = handle.subscribe((event) => {
+      if (inject && event.type === 'node:failed') armed = true;
+    });
+    const events: RunEvent[] = [];
+    const drained = (async () => {
+      for await (const event of handle.events) events.push(event);
+    })();
+    try {
+      for (let turn = 0; turn < 1000 && !events.some((e) => e.type === 'run:failed'); turn++)
+        await Promise.resolve();
+      expect(faults).toBe(inject ? 1 : 0);
+      expect(events.at(-1)).toMatchObject({
+        type: 'run:failed',
+        error: { code: 'validation', message: 'original node failure' },
+      });
+      expect(events.filter((e) => e.type === 'run:failed')).toHaveLength(1);
+      expect(JSON.stringify(events)).not.toContain('PRIVATE-SKIP-CLOCK');
+    } finally {
+      handle.cancel();
+      await drained;
+      await handle.depart();
+      unsubscribe();
+    }
+  });
