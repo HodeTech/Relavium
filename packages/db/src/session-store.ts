@@ -11,6 +11,7 @@ import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
 
 import type { Db } from './client.js';
 import { withBusyRetry } from './retry.js';
+import { withSessionUsageWrite } from './session-usage-write.js';
 import {
   agentSessions,
   sessionMessages,
@@ -541,40 +542,40 @@ export function createSessionStore(db: Db): SessionStore {
     reserveEffectTurnKey: (sessionId) => reserveSessionEffectTurnKey(db, sessionId),
     reserveOneShotEffectTurnKey: (sessionId, now) =>
       reserveOneShotSessionEffectTurnKey(db, sessionId, now),
-    // The three single-statement session writers below go through `withBusyRetry` (#228). They are NOT wrapped
-    // in a transaction — a lone INSERT/UPDATE already takes the write lock immediately, so `BEGIN IMMEDIATE`
-    // would buy nothing, which is why `database-schema.md` exempts single-statement writes from it. The retry
-    // is the orthogonal half: `busy_timeout` waits 5 s and then *fails*, and for these three writers a failure
-    // is a lost chat turn plus — before this — a dead process, because the chat persister calls them from
-    // inside a `RunEventBus` subscriber whose throw became an unhandled rejection.
+    // ADR-0104: even a single business statement now joins entry-taint classification and final
+    // revision acknowledgement in one outer retryable transaction. Generic creation stays unverified.
     createSession: (record) => {
-      withBusyRetry(() => db.insert(agentSessions).values(toAgentSessionRow(record)).run());
+      withSessionUsageWrite(db, [record.id], (tx) => {
+        tx.insert(agentSessions).values(toAgentSessionRow(record)).run();
+      });
     },
     writeTurn: ({ messages, session }) => {
       // ONE IMMEDIATE transaction for the whole turn. `BEGIN IMMEDIATE` takes the write lock up front (never
       // a DEFERRED read→write upgrade race) and `withBusyRetry` waits out residual cross-process contention —
       // the ADR-0064 §2.5.I convention, now covering the transcript the way it already covered the cost row.
-      withBusyRetry(() =>
-        db.transaction(
-          (tx) => {
-            for (const { message, meta } of messages) {
-              tx.insert(sessionMessages).values(toSessionMessageRow(message, meta)).run();
-            }
-            if (session !== undefined) {
-              tx.update(agentSessions)
-                .set(mutableSessionColumns(session))
-                .where(eq(agentSessions.id, session.id))
-                .run();
-            }
-          },
-          { behavior: 'immediate' },
-        ),
+      withSessionUsageWrite(
+        db,
+        [
+          ...messages.map(({ message }) => message.sessionId),
+          ...(session === undefined ? [] : [session.id]),
+        ],
+        (tx) => {
+          for (const { message, meta } of messages) {
+            tx.insert(sessionMessages).values(toSessionMessageRow(message, meta)).run();
+          }
+          if (session !== undefined) {
+            tx.update(agentSessions)
+              .set(mutableSessionColumns(session))
+              .where(eq(agentSessions.id, session.id))
+              .run();
+          }
+        },
       );
     },
 
     updateSession: (record) => {
-      withBusyRetry(() =>
-        db
+      withSessionUsageWrite(db, [record.id], (tx) =>
+        tx
           .update(agentSessions)
           .set(mutableSessionColumns(record))
           .where(eq(agentSessions.id, record.id))
@@ -585,53 +586,48 @@ export function createSessionStore(db: Db): SessionStore {
     recordSessionCost: (entry) => {
       // ONE transaction, TWO additive writes. `BEGIN IMMEDIATE` takes the write lock up front (never a DEFERRED
       // read→write upgrade race) and `withBusyRetry` waits out residual contention — the ADR-0064 §2.5.I convention.
-      withBusyRetry(() =>
-        db.transaction(
-          (tx) => {
-            tx.insert(sessionCosts)
-              .values({
-                id: entry.id, // discarded on conflict — the target is the unique index, never the PK
-                sessionId: entry.sessionId,
-                model: entry.model,
-                modelCatalogId: entry.modelCatalogId ?? null,
-                inputTokens: entry.inputTokens,
-                outputTokens: entry.outputTokens,
-                costMicrocents: entry.costMicrocents,
-                // Every egress counts once, priced or not; `unpricedCalls` is the SUBSET that could not be priced,
-                // which is what lets `/cost` say "price unknown for N of M calls".
-                callCount: 1,
-                unpricedCalls: entry.priced ? 0 : 1,
-                // A real egress is NEVER legacy. This is not decoration: it rides in the conflict target below, so a
-                // live cost event cannot fold into the 0009 backfill's aggregate row — not even one whose model
-                // string is literally LEGACY_COST_SENTINEL. Real money can never merge into the un-attributable
-                // bucket, and the bucket can never grow.
-                isLegacy: false,
-                createdAt: entry.ts,
-                updatedAt: entry.ts,
-              })
-              .onConflictDoUpdate({
-                target: [sessionCosts.sessionId, sessionCosts.model, sessionCosts.isLegacy],
-                set: {
-                  inputTokens: sql`${sessionCosts.inputTokens} + ${entry.inputTokens}`,
-                  outputTokens: sql`${sessionCosts.outputTokens} + ${entry.outputTokens}`,
-                  costMicrocents: sql`${sessionCosts.costMicrocents} + ${entry.costMicrocents}`,
-                  callCount: sql`${sessionCosts.callCount} + 1`,
-                  unpricedCalls: sql`${sessionCosts.unpricedCalls} + ${entry.priced ? 0 : 1}`,
-                  updatedAt: entry.ts,
-                },
-              })
-              .run();
-            tx.update(agentSessions)
-              .set({
-                totalCostMicrocents: sql`${agentSessions.totalCostMicrocents} + ${entry.costMicrocents}`,
-                updatedAt: entry.ts,
-              })
-              .where(eq(agentSessions.id, entry.sessionId))
-              .run();
-          },
-          { behavior: 'immediate' },
-        ),
-      );
+      withSessionUsageWrite(db, [entry.sessionId], (tx) => {
+        tx.insert(sessionCosts)
+          .values({
+            id: entry.id, // discarded on conflict — the target is the unique index, never the PK
+            sessionId: entry.sessionId,
+            model: entry.model,
+            modelCatalogId: entry.modelCatalogId ?? null,
+            inputTokens: entry.inputTokens,
+            outputTokens: entry.outputTokens,
+            costMicrocents: entry.costMicrocents,
+            // Every egress counts once, priced or not; `unpricedCalls` is the SUBSET that could not be priced,
+            // which is what lets `/cost` say "price unknown for N of M calls".
+            callCount: 1,
+            unpricedCalls: entry.priced ? 0 : 1,
+            // A real egress is NEVER legacy. This is not decoration: it rides in the conflict target below, so a
+            // live cost event cannot fold into the 0009 backfill's aggregate row — not even one whose model
+            // string is literally LEGACY_COST_SENTINEL. Real money can never merge into the un-attributable
+            // bucket, and the bucket can never grow.
+            isLegacy: false,
+            createdAt: entry.ts,
+            updatedAt: entry.ts,
+          })
+          .onConflictDoUpdate({
+            target: [sessionCosts.sessionId, sessionCosts.model, sessionCosts.isLegacy],
+            set: {
+              inputTokens: sql`${sessionCosts.inputTokens} + ${entry.inputTokens}`,
+              outputTokens: sql`${sessionCosts.outputTokens} + ${entry.outputTokens}`,
+              costMicrocents: sql`${sessionCosts.costMicrocents} + ${entry.costMicrocents}`,
+              callCount: sql`${sessionCosts.callCount} + 1`,
+              unpricedCalls: sql`${sessionCosts.unpricedCalls} + ${entry.priced ? 0 : 1}`,
+              updatedAt: entry.ts,
+            },
+          })
+          .run();
+        tx.update(agentSessions)
+          .set({
+            totalCostMicrocents: sql`${agentSessions.totalCostMicrocents} + ${entry.costMicrocents}`,
+            updatedAt: entry.ts,
+          })
+          .where(eq(agentSessions.id, entry.sessionId))
+          .run();
+      });
     },
 
     recordSessionConservativeCommitment: (entry) => {
@@ -643,57 +639,52 @@ export function createSessionStore(db: Db): SessionStore {
       // Note what it does NOT touch: `cost_microcents`, `total_cost_microcents`, `call_count`, `input_tokens`,
       // `output_tokens`. A conservative commitment is an ESTIMATE, not a call and not spend, so ADR-0070's
       // `SUM(cost_microcents) == total_cost_microcents` holds by construction rather than by care.
-      withBusyRetry(() =>
-        db.transaction(
-          (tx) => {
-            tx.insert(sessionCosts)
-              .values({
-                id: entry.id, // discarded on conflict — the target is the unique index, never the PK
-                sessionId: entry.sessionId,
-                model: entry.model,
-                modelCatalogId: entry.modelCatalogId ?? null,
-                inputTokens: 0,
-                outputTokens: 0,
-                costMicrocents: 0,
-                conservativeMicrocents: entry.estimateMicrocents,
-                // NOT a call: `callCount` stays 0 so `/cost`'s "N of M calls" arithmetic is unaffected by an
-                // estimate. A commitment describes an attempt whose usage we could not trust, and counting it
-                // would inflate the denominator with something that produced no attributable usage at all.
-                callCount: 0,
-                unpricedCalls: 0,
-                // Never legacy, for the same reason a real cost row never is: it rides the conflict target, so a
-                // live commitment cannot fold into the 0009 backfill's un-attributable aggregate row.
-                isLegacy: false,
-                createdAt: entry.ts,
-                updatedAt: entry.ts,
-              })
-              .onConflictDoUpdate({
-                target: [sessionCosts.sessionId, sessionCosts.model, sessionCosts.isLegacy],
-                set: {
-                  conservativeMicrocents: sql`${sessionCosts.conservativeMicrocents} + ${entry.estimateMicrocents}`,
-                  // Fill the catalog id in when THIS write resolved one and the row has none — a model can be
-                  // catalogued mid-session (2.6.Q). Never overwrite an existing value with NULL: an unresolved
-                  // lookup is "we don't know", not "there is none".
-                  ...(entry.modelCatalogId === undefined
-                    ? {}
-                    : {
-                        modelCatalogId: sql`coalesce(${sessionCosts.modelCatalogId}, ${entry.modelCatalogId})`,
-                      }),
-                  updatedAt: entry.ts,
-                },
-              })
-              .run();
-            tx.update(agentSessions)
-              .set({
-                totalConservativeMicrocents: sql`${agentSessions.totalConservativeMicrocents} + ${entry.estimateMicrocents}`,
-                updatedAt: entry.ts,
-              })
-              .where(eq(agentSessions.id, entry.sessionId))
-              .run();
-          },
-          { behavior: 'immediate' },
-        ),
-      );
+      withSessionUsageWrite(db, [entry.sessionId], (tx) => {
+        tx.insert(sessionCosts)
+          .values({
+            id: entry.id, // discarded on conflict — the target is the unique index, never the PK
+            sessionId: entry.sessionId,
+            model: entry.model,
+            modelCatalogId: entry.modelCatalogId ?? null,
+            inputTokens: 0,
+            outputTokens: 0,
+            costMicrocents: 0,
+            conservativeMicrocents: entry.estimateMicrocents,
+            // NOT a call: `callCount` stays 0 so `/cost`'s "N of M calls" arithmetic is unaffected by an
+            // estimate. A commitment describes an attempt whose usage we could not trust, and counting it
+            // would inflate the denominator with something that produced no attributable usage at all.
+            callCount: 0,
+            unpricedCalls: 0,
+            // Never legacy, for the same reason a real cost row never is: it rides the conflict target, so a
+            // live commitment cannot fold into the 0009 backfill's un-attributable aggregate row.
+            isLegacy: false,
+            createdAt: entry.ts,
+            updatedAt: entry.ts,
+          })
+          .onConflictDoUpdate({
+            target: [sessionCosts.sessionId, sessionCosts.model, sessionCosts.isLegacy],
+            set: {
+              conservativeMicrocents: sql`${sessionCosts.conservativeMicrocents} + ${entry.estimateMicrocents}`,
+              // Fill the catalog id in when THIS write resolved one and the row has none — a model can be
+              // catalogued mid-session (2.6.Q). Never overwrite an existing value with NULL: an unresolved
+              // lookup is "we don't know", not "there is none".
+              ...(entry.modelCatalogId === undefined
+                ? {}
+                : {
+                    modelCatalogId: sql`coalesce(${sessionCosts.modelCatalogId}, ${entry.modelCatalogId})`,
+                  }),
+              updatedAt: entry.ts,
+            },
+          })
+          .run();
+        tx.update(agentSessions)
+          .set({
+            totalConservativeMicrocents: sql`${agentSessions.totalConservativeMicrocents} + ${entry.estimateMicrocents}`,
+            updatedAt: entry.ts,
+          })
+          .where(eq(agentSessions.id, entry.sessionId))
+          .run();
+      });
     },
 
     releaseSessionConservativeCommitments: (sessionId, ts) =>
@@ -708,24 +699,19 @@ export function createSessionStore(db: Db): SessionStore {
       //
       // Returns the amount released, read INSIDE the transaction, so the number reported to the user is the
       // number that was actually cleared rather than a re-read that a concurrent commitment could have moved.
-      withBusyRetry(() =>
-        db.transaction(
-          (tx) => {
-            const released = loadSession(sessionId, tx)?.totalConservativeMicrocents ?? 0;
-            if (released === 0) return 0; // nothing held — do not touch `updated_at` for a no-op
-            tx.update(sessionCosts)
-              .set({ conservativeMicrocents: 0, updatedAt: ts })
-              .where(eq(sessionCosts.sessionId, sessionId))
-              .run();
-            tx.update(agentSessions)
-              .set({ totalConservativeMicrocents: 0, updatedAt: ts })
-              .where(eq(agentSessions.id, sessionId))
-              .run();
-            return released;
-          },
-          { behavior: 'immediate' },
-        ),
-      ),
+      withSessionUsageWrite(db, [sessionId], (tx) => {
+        const released = loadSession(sessionId, tx)?.totalConservativeMicrocents ?? 0;
+        if (released === 0) return 0; // nothing held — do not touch `updated_at` for a no-op
+        tx.update(sessionCosts)
+          .set({ conservativeMicrocents: 0, updatedAt: ts })
+          .where(eq(sessionCosts.sessionId, sessionId))
+          .run();
+        tx.update(agentSessions)
+          .set({ totalConservativeMicrocents: 0, updatedAt: ts })
+          .where(eq(agentSessions.id, sessionId))
+          .run();
+        return released;
+      }),
 
     loadSessionCosts: (sessionId) => readCostRows(sessionId),
 
@@ -743,9 +729,9 @@ export function createSessionStore(db: Db): SessionStore {
     loadSession,
     listSessions,
     appendMessage: (message, meta) => {
-      withBusyRetry(() =>
-        db.insert(sessionMessages).values(toSessionMessageRow(message, meta)).run(),
-      );
+      withSessionUsageWrite(db, [message.sessionId], (tx) => {
+        tx.insert(sessionMessages).values(toSessionMessageRow(message, meta)).run();
+      });
     },
     loadMessages,
     loadFull: (sessionId) =>

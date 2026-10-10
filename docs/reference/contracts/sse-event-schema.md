@@ -39,6 +39,26 @@ interface BaseEvent {
 
 ## The `RunEvent` union
 
+**W8 Step 4 staging (2026-10-10).** [ADR-0104](../../decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md)
+has accepted the coverage protocol; this foundation does **not** activate its events yet.
+`@relavium/shared` exports strict payload schemas for a coverage basis (`complete` or
+`legacy_unverified`), a model-attributed pending invocation, and its disposition. Coverage
+has three independent fields: `unverified`, `pendingInvocations` and `unknownCalls`.
+All must be clear before a total can be presented as complete; coverage never changes realized
+money or an admission estimate. Invocation correlation comprises `producerId`, a positive
+producer-wide `ordinal`, `dispatchId`, a zero-based `round` and positive `chainAttempt`.
+This identity grants no invocation/receipt authority and does not replace existing money keys.
+The pending and disposition payloads carry `model` and `invocation`; disposition distinguishes
+incomplete [usage evidence](../shared-core/llm-provider-seam.md#w8-usage-evidence-foundation-inert-step-4),
+proven non-invocation and official pre-content refusal. Complete settlement remains the sole
+existing actual-money writer. Counts and ordinals are safe integers; identifiers and model
+attribution are bounded, and extra fields are rejected.
+
+`cost:coverage_started`, `cost:usage_pending` and `cost:usage_disposition` are **not** members
+of the current `RunEvent` union or durable-event classification in this commit. Their production
+writers, replay folds, acknowledgement barriers and all total readers activate together in the
+following W8 steps. These schemas alone provide no crash-persistence or CR-82 closure claim.
+
 ```ts
 export type RunEvent =
   | RunStartedEvent

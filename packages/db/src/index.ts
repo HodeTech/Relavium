@@ -20,6 +20,8 @@ export {
   runCosts,
   agentSessions,
   sessionMessages,
+  sessionUsageCoverage,
+  sessionUsageInvocations,
   mediaObjects,
   mediaReferences,
 } from './schema.js';
@@ -78,6 +80,14 @@ export {
   type SessionMessageMeta,
   LEGACY_COST_SENTINEL,
 } from './session-store.js';
+
+export {
+  createSessionUsageStore,
+  type FreshSessionSeed,
+  type SessionUsageSnapshot,
+  type SessionUsageStore,
+} from './session-usage-store.js';
+export { SessionUsageError } from './session-usage-write.js';
 
 export { SessionEffectTurnError } from './session-effect-turns.js';
 

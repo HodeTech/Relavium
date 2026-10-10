@@ -1103,6 +1103,58 @@ Two streaming subtleties the adapters must handle:
 > [../shared-core/database-schema.md](../shared-core/database-schema.md). Every other
 > document links here rather than restating the unit.
 
+#### W8 usage-evidence foundation (inert Step 4)
+
+[ADR-0104](../../decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md)
+is accepted, with activation staged after this foundation. `@relavium/shared` now owns the
+single canonical `UsageSchema` / `Usage` and `MediaUnitsEntrySchema` / `MediaUnitsEntry`;
+`@relavium/llm` re-exports the same definitions. Existing complete-usage parsing and
+complete-only pricing remain compatible. `LlmResult`, `StreamChunk`, `LlmError` and
+`AttemptRecord` still carry their existing `Usage` contract. No production boundary wraps
+an existing plain usage record as complete evidence, and this foundation does not close CR-82.
+
+Both packages additionally export `UsageEvidenceSchema`, `UsageEvidence`, the three named
+arm schemas (`CompleteUsageEvidenceSchema`, `PartialUsageEvidenceSchema`,
+`MissingUsageEvidenceSchema`), `KnownUsageQuantitiesSchema` / `KnownUsageQuantities`,
+`UsageEvidenceReasonSchema` / `UsageEvidenceReason`, and `ownUsageEvidence`:
+
+```ts
+type UsageEvidence =
+  | { kind: 'complete'; usage: Usage }
+  | { kind: 'partial'; known: KnownUsageQuantities; reason: UsageEvidenceReason }
+  | { kind: 'missing'; reason: UsageEvidenceReason };
+```
+
+Complete evidence requires input/output counts and validates every present count, including
+Relavium's optional computed `costMicrocents`, as a nonnegative safe integer. Partial evidence
+permits only known `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`,
+`reasoningTokens` and `mediaUnits`; it never contains guessed money. It requires at least one
+numeric observation or one media entry. An empty media array alone supplies no known quantity.
+An explicitly reported zero is preserved; absent fields stay absent and explicit `undefined`
+properties are rejected. Reasoning cannot exceed output when both are known. Missing evidence
+contains no quantities. The fixed reasons allowed on either incomplete arm are `not_reported`,
+`missing_fields`, `invalid_fields`, `contradictory_fields` and `interrupted`; no free-form reason,
+raw provider object or extra field is accepted on any arm or nested quantity object.
+
+Inline media keeps the existing integer-unit semantics and disjoint axes: at most six entries,
+one per image/audio/video × input/output pair. Entry objects are strict and units are
+nonnegative safe integers. The separate-endpoint native-media fractional-duration types and
+accounting basis are unchanged. Adapter-specific omission/default rules will land with the
+atomic adapter/consumer activation; this schema does not infer applicability or invent cache zero.
+
+`ownUsageEvidence(value: unknown)` snapshots descriptor-first, accepts only inert own plain or
+null-prototype record data and ordinary dense arrays, and deeply freezes the resulting arm,
+quantities, media array and media entries before returning. It rejects accessors without calling
+them, symbol/non-enumerable properties, exotic prototypes, cycles, sparse arrays and unsupported
+values. The pre-parse traversal is bounded to 16 containers, four levels, eight own keys per
+container, six array elements and 32 characters per key/string; unsupported oversized graphs
+are rejected rather than traversed without a bound. Reflection failures, including hostile or
+revoked proxies, and all validation failures produce only `InvalidUsageEvidenceError` with
+`code: 'invalid_usage_evidence'`, message `Invalid usage evidence` and no input-derived cause.
+The exported Zod schemas remain direct data validators and may expose Zod diagnostics;
+callers handling untrusted values use the owned boundary. This adds no durable `ErrorCode`,
+request contract, invocation authority or pricing path for partial/missing evidence.
+
 #### Stricter usage-capture rules in managed mode (Phase 2)
 
 In Phase 1 (BYOK), missing usage affects the local cost ledger and budget capacity; the

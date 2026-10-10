@@ -205,3 +205,20 @@ We **reject** the proposed `(unattributed)` residual-row trick (attributing `cum
 - **Tokens do not reconcile** (§3.4) and the invariant is **not** the provider's invoice (§3.1–3.2). Both are disclosed in the ADR, in `database-schema.md`, and in `/cost`'s own labelling — the honest posture, but it means a user diffing a provider bill will find Relavium's total an **under**-estimate.
 - **A deliberate divergence from `run_costs`** (a NOT NULL raw-string key; a written `model_catalog_id`; an aggregate rather than append-only rows). Recorded here precisely so a future reviewer does not "correct" it back toward the older, buggier table — and leaving `run_costs.model_id`'s dead column as a separate, untouched item.
 - **Touchpoints that will redden CI if missed**: `EXPECTED_TABLES` in [client.test.ts](../../packages/db/src/client.test.ts) (thirteen → fourteen, plus the comment), its index-subset assertion, the new `0009` DDL snapshot, the `sessionCosts` + `SessionCostRow`/`NewSessionCostRow` exports from [index.ts](../../packages/db/src/index.ts), and the `database-schema.md` edits (the new `#### session_costs` section, the `/cost` query pattern, the §session_messages column drop, the §Secrets and §Concurrency notes). Any doc or test naming the migration must be written **after** `pnpm --filter @relavium/db db:generate` emits the real `0009_<words>.sql` — the filename is drizzle-kit's, not ours.
+
+### W8 session-coverage foundation — 2026-10-10
+
+[ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) narrowly refines §3's
+rejection of a trigger: migration `0018_windy_rhodey.sql` introduces mutation-metadata triggers,
+with no SQL pricing or second money writer. Existing session business writers latch an entry
+revision mismatch as sticky uncertainty and acknowledge their final revision in one outer
+`BEGIN IMMEDIATE` transaction, with whole-transaction busy retry. Reads never acknowledge or
+clear uncertainty. Only explicit, physically new empty-owner creation can establish complete
+zero coverage; generic creation and migrated rows remain unverified. The mechanism and
+column inventory live in [database-schema.md](../reference/shared-core/database-schema.md).
+
+This is an inert foundation. It preserves existing complete-only arithmetic, attribution and
+money keys; provider pending/settlement and qualified total readers activate in subsequent W8
+steps. ADR-0104's coverage refinements to §3 exceptions **1, 2 and 5** remain staged until that
+end-to-end path lands. A metadata revision cannot reconstruct an older executable's unobserved
+provider calls, and no provider-invoice reconciliation is claimed.

@@ -3,6 +3,7 @@ import { and, eq, gte, inArray, lt, or } from 'drizzle-orm';
 
 import type { Db } from './client.js';
 import { withBusyRetry } from './retry.js';
+import { withSessionUsageWrite } from './session-usage-write.js';
 import { agentSessions, runEffects, sessionMessages } from './schema.js';
 
 type Executor = Db | Parameters<Parameters<Db['transaction']>[0]>[0];
@@ -194,39 +195,32 @@ export function reserveOneShotSessionEffectTurnKey(db: Db, sessionId: string, no
   if (db.$client.inTransaction) throw new SessionEffectTurnError('transaction_active');
   if (sessionId.length === 0 || !Number.isSafeInteger(now) || now < 0)
     throw new SessionEffectTurnError('history_invalid');
-  return withBusyRetry(() =>
-    db.transaction(
-      (tx) => {
-        const prefix = `session:${encodeURIComponent(sessionId)}:`;
-        if (
-          tx
-            .select({ id: agentSessions.id })
-            .from(agentSessions)
-            .where(eq(agentSessions.id, sessionId))
-            .get() !== undefined ||
-          tx
-            .select({ scope: runEffects.scope })
-            .from(runEffects)
-            .where(
-              and(gte(runEffects.scope, prefix), lt(runEffects.scope, `${prefix.slice(0, -1)};`)),
-            )
-            .get() !== undefined
-        )
-          throw new SessionEffectTurnError('history_invalid');
-        tx.insert(agentSessions)
-          .values({
-            id: sessionId,
-            agentSlug: 'one-shot',
-            status: 'ended',
-            effectTurnHighWater: 1,
-            deletedAt: now,
-            createdAt: now,
-            updatedAt: now,
-          })
-          .run();
-        return 1;
-      },
-      { behavior: 'immediate' },
-    ),
-  );
+  return withSessionUsageWrite(db, [sessionId], (tx) => {
+    const prefix = `session:${encodeURIComponent(sessionId)}:`;
+    if (
+      tx
+        .select({ id: agentSessions.id })
+        .from(agentSessions)
+        .where(eq(agentSessions.id, sessionId))
+        .get() !== undefined ||
+      tx
+        .select({ scope: runEffects.scope })
+        .from(runEffects)
+        .where(and(gte(runEffects.scope, prefix), lt(runEffects.scope, `${prefix.slice(0, -1)};`)))
+        .get() !== undefined
+    )
+      throw new SessionEffectTurnError('history_invalid');
+    tx.insert(agentSessions)
+      .values({
+        id: sessionId,
+        agentSlug: 'one-shot',
+        status: 'ended',
+        effectTurnHighWater: 1,
+        deletedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .run();
+    return 1;
+  });
 }

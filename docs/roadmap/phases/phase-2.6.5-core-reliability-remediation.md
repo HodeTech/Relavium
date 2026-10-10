@@ -2915,6 +2915,42 @@ causal controls close the wire-oracle obligation, without claiming every provide
 live behavior. Proceed to Step 4's inert ADR-0104 evidence/database foundations. CR-82,
 Steps 4–7, whole-W8 publication and existing approved residuals remain open.
 
+### W8 Step 4 usage-evidence and session-coverage foundations — 2026-10-10
+
+**Implementation complete; independent reviews pending.** One shared complete
+quantity definition is re-exported through the LLM seam, preserving its current API and arithmetic.
+The new strict complete/partial/missing evidence schemas, descriptor-first bounded owned guard,
+coverage metadata and correlation payload schemas are inert. Existing result, stop, error and
+attempt boundaries still carry their prior `Usage` contract; the three coverage events are not
+recognized or emitted yet.
+
+Generated additive migration `0018_windy_rhodey.sql` adds session coverage, structured unresolved
+invocation storage and metadata-only mutation triggers. Existing business writers classify an
+entry revision mismatch before writing and acknowledge their final revision in one outer
+retryable immediate transaction, preserving prior taint. Generic inserts and migrated sessions
+remain unverified. A separate explicit fresh-empty-owner API is implemented and tested but is
+not called by shipping hosts yet. The canonical [database transition table](../../reference/shared-core/database-schema.md),
+[seam foundation](../../reference/shared-core/llm-provider-seam.md#w8-usage-evidence-foundation-inert-step-4)
+and [event staging contract](../../reference/contracts/sse-event-schema.md#the-runevent-union)
+state these boundaries; ADR-0005/0070 receive append-only foundation notes.
+
+Step 4 does not certify a provider invocation, persist pending writes, resolve usage receipts,
+qualify production totals or close CR-82. The next atomic activation covers both Steps 5 and 6
+acceptance matrices; neither can label adapter-fabricated legacy zero as complete evidence.
+
+**Author validation:** fresh monorepo lint/typecheck/test passed **23/23** tasks (none cached),
+including shared **865**, DB **576**, LLM **1,752 / 11 existing skips**, core **3,122**, MCP
+**220** and CLI **3,232** passing tests. Build passed **6/6** (five cached). The 34 evidence
+controls include absence versus real zero, unsafe quantities, strict media axes, compile-time
+complete-only pricing, mutation ownership and hostile reflection. Twelve coverage/correlation
+controls reject invented money/authority and pin each uncertainty axis. Native DB controls cover
+all 19 parent business columns, child DML/reparenting, recursive-trigger exclusions, every new
+writer, rollback/overflow, a real 0017 upgrade and separate-process before/after-ACK/commit cuts.
+Lock-release tests release only after observed `SQLITE_BUSY`; exhaustion proves the bounded
+whole-transaction retry count. Removing the parent, message or cost UPDATE trigger separately
+breaks old-write → new-write sticky-taint verification; exact trigger restoration passes each.
+These foundation controls do not replace Step 6's actual predecessor executable matrix.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

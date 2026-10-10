@@ -42,3 +42,5 @@ export * from './session-content.js';
 export * from './session-history.js';
 export * from './run.js';
 export * from './config.js';
+export * from './usage-evidence.js';
+export * from './usage-coverage.js';
