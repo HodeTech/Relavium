@@ -3368,6 +3368,59 @@ relative/archive links and whitespace pass. Compiled CLI, overflow-capture and f
 smokes pass offline. No remote CI, whole-wave coverage or acceptance is claimed. These author
 results do not supply either of Step 5's two NEW clean complete cumulative review rounds.
 
+#### Step 5 tenth cumulative review — 2026-10-11
+
+Three NEW independent reviewers completed the entire `017b399c..3656b163` activation and all
+nine corrections. The combined result is **one Medium finding**; LLM and storage/CLI reviews
+returned no additional unique finding. **This is not a clean round.** Developer source remained
+frozen until all three full reports and final source/index checks were complete.
+
+Checkpoint reconstruction restored missing-price counts only from the new optional envelope.
+A schema-valid historical `cost:attempt_settled` with `priced: false` therefore restored zero,
+and actual ordinary-gate resume into the fresh shipping run store lost its known price-gap
+qualification. A new unpriced call after resume reported one instead of two. The parent
+independently reproduced both zero/nonzero and mixed variants; paired genuinely priced-zero
+controls passed. Known money and `usage unverified` were preserved: no free claim, extra paid
+call or admission bypass was reproduced. These synthetic legacy projections are not an
+executable-predecessor or process-death claim.
+
+The money/core review independently passed **73 disjoint files / 2,284 tests**. The broader
+LLM/core/shared review passed **229 files / 6,294 tests / 11 existing live-provider skips**,
+plus a separate 24-case behavioral-port probe. These overlapping cohorts are not added.
+Storage/CLI independently passed **30 disjoint files / 635 tests**, a native receipt/query-plan
+probe, all 65 source-bound child-process controls and the actual frozen predecessor harness:
+**16 strict refusals, two legacy controls, three isolated discriminators and eight old-session
+operations**. An initial reviewer-only TypeScript loader configuration failure was corrected;
+only the final complete run receives green credit. ADR prefix, retired-review/archive and
+standards audits passed. No live provider call, credential, dependency or new policy is involved.
+
+**Author correction:** reconstruction retains explicit ledger price gaps and reconciles them
+with absolute snapshots without double counting or dropping native-media snapshot-only gaps.
+Fourteen permanent core controls and seven actual SQLite/checkpointer/CLI-host/reader scenarios
+cover zero/nonzero quantities, independent usage uncertainty, missing/new price envelopes, new
+calls, retained positive money and a second physical reopen/resume. The same **seven whole
+files / 91 tests** against an exact OS-temporary `3656b163` checkpoint yield **nine semantic
+failures / 82 passes**; fixed and byte-exact restored copies pass all 91. Isolated addition of
+ledger and snapshot fails ten, last-present-snapshot fails one, and ledger-only fails three,
+including the existing native-image resume control. These overlapping failure counts are not
+added. All importer bindings select the same physical checkpoint; developer source is never
+swapped. The parent independently verified historical/current/restored bytes, test/configuration
+hashes, whole-file counts and semantic failure logs. Direct current-source execution passes 91.
+Resolver logs are binding evidence, not a separate module-evaluation or child-process witness.
+
+An initial test-only optional-access type error and an omitted placeholder-package alias were
+corrected before the final unchanged cohort; only the final all-root-alias runs receive credit.
+Core and CLI strict checks, core purity, lint and formatting pass. Fresh forced workspace
+lint/typecheck/test passes **23/23**, none cached: **493 files / 10,507 passed / 11 existing
+live-provider skips**, including 100,000 native settlements and all 57 CLI process controls.
+Build passes **6/6** and full formatting **1/1**, none cached. Tools lint/typecheck, schema
+synchronization, seam/purity/dependency/bundle fences, 493-file isolation, relative/archive links
+and whitespace pass. Compiled CLI, overflow capture and the frozen replay harness pass offline.
+No remote CI or whole-wave coverage is claimed. These author checks replace neither of Step 5's
+two NEW clean complete cumulative reviews. Step 6's further matrix and reviews, CR-82, Step 7 and
+whole-W8 acceptance/publication remain open; the register stays **48/51** on `development`,
+**47/51** on `main`. No new deferral is introduced.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

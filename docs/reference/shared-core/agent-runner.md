@@ -315,6 +315,13 @@ fence; host closure joins those writes. The [LLM seam](llm-provider-seam.md#6-us
 evidence contract and the [event contract](../contracts/sse-event-schema.md#the-runevent-union)
 owns coverage transitions.
 
+Workflow checkpoint reconstruction preserves explicitly unpriced historical attempt rows even
+when they predate the cumulative missing-price envelope. Reconcile their count with absolute
+envelope snapshots without adding already included observations twice; separate-endpoint native
+media can supply a snapshot without a token-attempt row. Resume carries this known price gap
+into the fresh live reader independently of legacy/unverified usage coverage. Neither kind of
+uncertainty changes the known actual-money sum or fabricates historical calls.
+
 An exact late complete receipt refines usage coverage and records realized money once. It does
 not implicitly release an earlier retained conservative commitment; the existing explicit
 estimate-release policy remains separate from actual receipt accounting.

@@ -539,3 +539,15 @@ The canonical [runner contract](../reference/shared-core/agent-runner.md#usage-e
 owns these behavioral-port and cleanup requirements. Step 5's two NEW clean complete cumulative
 rounds and the further Step 6/whole-W8 gates remain required; this finding-bearing review supplies
 neither acceptance round and introduces no policy change or deferral.
+
+### W8 historical workflow missing-price correction — 2026-10-11
+
+The tenth cumulative activation review reproduced a checkpoint compatibility gap: an explicit
+historical unpriced attempt could retain its known money and unverified usage while losing its
+independent missing-price count on resume. Reconstruction must retain that recorded price gap
+without adding an already inclusive absolute snapshot twice. Native-media snapshot-only gaps
+remain intact, and genuinely priced zero does not acquire an invented price gap. The canonical
+[runner contract](../reference/shared-core/agent-runner.md#usage-evidence-and-durable-coverage)
+owns this clarification. No actual-money arithmetic, admission policy, writer or public seam
+changes. This finding-bearing round supplies no clean acceptance; Step 5 still requires two NEW
+complete clean cumulative reviews, followed by the further Step 6 and whole-W8 gates.
