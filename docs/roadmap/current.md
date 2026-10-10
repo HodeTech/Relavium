@@ -40,12 +40,17 @@ and Wave 0 is merged (PR #82), as is Wave 1 (PR #83). The interlude's `W2` (core
 merged too (PR #85, 2026-08-28).
 
 
-> **W7 integration checkpoint, 2026-10-10:** consolidated ADR-0103 host integration is accepted
-> after [two clean complete cumulative rounds](../reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md) and Parent artifact/source audits.
-> MCP startup/custom-provider descendants, all actors, final receipts, original clocks, public departure
-> and shipping CLI teardown are covered. Step 8 measured atomic compaction/recovery is accepted after two fresh clean complete cumulative rounds;
-> final whole-wave Step 12 remains required. All six W7 items remain OPEN (41/51 closed), PR #90 remains draft/unmerged.
-> No user approval, billing setup, credential or provider capture is pending.
+> **W7 closing checkpoint, 2026-10-10:** Steps 1–11, all five genuine overflow records,
+> production request ownership and consolidated host lifetimes have independent acceptance.
+> Final Step 12 is under review; all six W7 items remain open (41/51 closed) until that gate.
+> The [closing register](phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
+> joins all twelve steps, six causal controls and every submitted systematic finding.
+> PR #90 remains draft/unmerged. No user decision, credential, billing or capture is pending.
+
+## Historical W7 implementation checkpoints
+
+Dated W7 checkpoints throughout this page retain their original pending states. The closing checkpoint above
+and its register control current W7 status; a historical acceptance does not supersede a later finding.
 
 > **Prior complete composition review:** [host-closure round 5](../reviews/2026-10-10T00-38-24-w7-host-closure-round-5-review.md)
 > finds no new confirmed actionable issue across all 126 paths / 364 hunks. This is the first
@@ -413,7 +418,7 @@ flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
     LEDGER["#W15-1 — realized-cost ledger ✅<br/>ADR-0076 + ADR-0077"]
-    P265["Phase 2.6.5 — Core reliability<br/>51 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094<br/>W7 unblocked — ADR-0095–0098 accepted"]
+    P265["Phase 2.6.5 — Core reliability<br/>51 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094<br/>W7 implemented — final acceptance pending"]
     W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
@@ -793,7 +798,7 @@ the exit rule and the execution order, and added two items (`CR-17` resume ident
 docs-only); `CR-64` came from the Batch 1 triage, `CR-21b` from ADR-0082 §10 and `CR-21c` from the `W2`
 document review on 2026-08-25, which is why the total has moved since the list was first written.
 
-> **Live status — 41 of 51 closed (updated 2026-09-18; at W6's merge it was 39 of 48 — see the register for why not 43: W5 was counted twice). `W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with one reproduced BLOCKER and nine verified findings open — see the `W3` residuals in [deferred-tasks.md](deferred-tasks.md). `W4` MERGED 2026-09-01 (PR #87) behind [ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md): a systematic review of the branch found five merge blockers — an orphaned MCP child on a signal, an optional validated `fetch`, a bypassable transport byte bound, discovery paging past its budget, and two cloud-metadata endpoints reachable through the local opt-in — all reproduced and fixed before it merged. `W5` MERGED 2026-09-02 (PR #88) behind
+> **Historical phase checkpoint — 41 of 51 closed (updated 2026-09-18; at W6's merge it was 39 of 48 — see the register for why not 43: W5 was counted twice). `W0`–`W2` merged clean; `W3` merged 2026-08-30 (PR #86) with one reproduced BLOCKER and nine verified findings open — see the `W3` residuals in [deferred-tasks.md](deferred-tasks.md). `W4` MERGED 2026-09-01 (PR #87) behind [ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md): a systematic review of the branch found five merge blockers — an orphaned MCP child on a signal, an optional validated `fetch`, a bypassable transport byte bound, discovery paging past its budget, and two cloud-metadata endpoints reachable through the local opt-in — all reproduced and fixed before it merged. `W5` MERGED 2026-09-02 (PR #88) behind
 > [ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) +
 > [ADR-0090](../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md): all six of
 > `CR-50`–`CR-55` closed, two of them for one half of a two-part obligation and saying so in their own

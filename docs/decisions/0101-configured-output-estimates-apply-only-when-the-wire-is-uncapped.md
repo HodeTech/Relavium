@@ -341,3 +341,10 @@ This is the adapter/chain integration increment, not closure of the measured-req
 exact first measured/quoted-round reuse, pre-attempt closure and Step 8 summariser/context recovery
 remain open and require their own production controls and fresh independent acceptance. Implementation
 of this increment does not assert that those later obligations have landed.
+
+### W7 implementation landing — 2026-10-10
+
+The approved W7 implementation and scoped independent reviews are complete. Final whole-wave
+acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
+the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+This dated note preserves the earlier decision and status history; W8 and the phase remain open.

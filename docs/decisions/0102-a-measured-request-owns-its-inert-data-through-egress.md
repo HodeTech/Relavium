@@ -368,3 +368,10 @@ SDK RequestInit, quotes or history. This does not extend this ADR's inert-data g
 separate-endpoint MediaGenRequest, introduce a provider preparation API or replace cap authority.
 The controlled OpenAI-compatible and raw media-poll increment requires its own fresh reviews;
 other descendants and W7 remain open.
+
+### W7 implementation landing — 2026-10-10
+
+The approved W7 implementation and scoped independent reviews are complete. Final whole-wave
+acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
+the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+This dated note preserves the earlier decision and status history; W8 and the phase remain open.

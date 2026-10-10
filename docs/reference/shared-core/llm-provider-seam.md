@@ -97,9 +97,8 @@ observable. Separate-endpoint `MediaGenRequest`/generation/polling remains outsi
 **W7 integration boundary:** the controlled adapters and chain implement this ownership handoff.
 Core now captures its first round before measurement, reuses the factory request for quote/execution
 with only the live signal overlaid, and closes each pre-attempt check over that round before money waits.
-Real tool results create fresh owned rounds from owned static fields and working history. This core
-increment awaits fresh independent acceptance; the ownership High and Step 8's owned summariser/
-pre-send/recovery integration remain open.
+Real tool results create fresh owned rounds from owned static fields and working history. Core ownership and Step 8's owned summariser/pre-send/recovery integration have independent acceptance;
+final wave acceptance is tracked by the [closing register](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
 
 ## The core interface
 
@@ -1264,3 +1263,11 @@ third-party TS library behind the **same seam** — but only on a named trigger
 via a follow-up ADR, and **never the Vercel AI SDK**. See
 [ADR-0011](../../decisions/0011-internal-llm-abstraction.md) for the migration
 stance and the named triggers.
+
+### W7 implementation landing — 2026-10-10
+
+The earlier dated W7 status is historical. Measured request reuse, atomic multi-pass compaction,
+pre-send and single pre-content overflow recovery, finite frozen allowances and the CLI resume surface
+are implemented with scoped independent acceptance. The
+[closing register](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
+tracks final whole-wave acceptance and approved limits; CR-82 and W8 remain open.

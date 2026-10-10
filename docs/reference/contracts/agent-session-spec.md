@@ -39,8 +39,9 @@ Request data handed to the controlled provider chain follows the
 The shared turn core captures before admission/money awaits and reuses its owned round through
 pre-attempt hooks and dispatch, retaining live cancellation and creating fresh owned tool rounds.
 The factory-measured first request can be reused by exact identity as described in the
-[runner contract](../shared-core/agent-runner.md#pre-egress-injection-contract). Fresh core acceptance
-and Step 8's session measurement, atomic compaction and overflow recovery remain open.
+[runner contract](../shared-core/agent-runner.md#pre-egress-injection-contract). Core reuse and Step 8's
+session measurement, atomic compaction and overflow recovery have independent acceptance;
+[final wave review](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10) remains separate.
 
 ## Lifecycle
 

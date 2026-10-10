@@ -114,7 +114,7 @@ before parsing the subcommand).
 
 ## Commands
 
-The command set below is the confirmed surface. Commands ship **per workstream**: `run` (2.D), `gate` + `gate list` (2.G/2.I), `provider` (2.C), the read commands `list` / `logs` / `status` (2.I), the whole agent-first chat family — **`chat`** (2.M), **`chat-resume`** (2.N), **`chat-list`** (2.O), **`chat-export`** (2.P), and **`chat --json` + `agent run`** (2.Q) — and the YAML-lifecycle authoring commands **`create`** / **`import`** / **`export`** (2.J) are all **live**; `budget resume` ships in W7 ([ADR-0097](../../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md)). Invoking a not-yet-shipped command exits with a clean "not available yet (lands in …)" message. Subcommands marked _(planned)_ are intended but not yet locked.
+The command set below is the confirmed surface. Commands ship **per workstream**: `run` (2.D), `gate` + `gate list` (2.G/2.I), `provider` (2.C), the read commands `list` / `logs` / `status` (2.I), the whole agent-first chat family — **`chat`** (2.M), **`chat-resume`** (2.N), **`chat-list`** (2.O), **`chat-export`** (2.P), and **`chat --json` + `agent run`** (2.Q) — and the YAML-lifecycle authoring commands **`create`** / **`import`** / **`export`** (2.J) are all **live**; `budget resume` is live under W7 ([ADR-0097](../../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md)). Invoking a not-yet-shipped command exits with a clean "not available yet (lands in …)" message. Subcommands marked _(planned)_ are intended but not yet locked.
 
 | Command | Purpose |
 |---------|---------|

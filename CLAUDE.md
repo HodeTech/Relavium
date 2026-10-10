@@ -117,73 +117,14 @@ refusing adapter satisfies too, so it passed either way — the finding under th
 and the `W3` live blocker with it, while its §3 turned out to have shipped in `W5` under a different item
 number.
 
-**`W7` is unblocked (2026-09-14).** The maintainer settled its open decisions, and four ADRs record them, all
-**Accepted**. Implementation is in progress on `development`; the complete step/review status is
-[recorded in the roadmap](docs/roadmap/current.md):
-
-- [ADR-0095](docs/decisions/0095-what-an-agent-session-remembers-across-turns.md) decides that a session
-  persists the *structure* of its tool history and never its content, defers carrying tool history into the
-  model's context, and implements the authored `memory` policy. Structural transcript/export, policy
-  projection and session effect privacy are implemented in accepted Steps 2–5; carrying stays deferred.
-- [ADR-0096](docs/decisions/0096-a-request-is-measured-before-it-is-sent.md) decides that a request is measured
-  before it is sent, that a context overflow is classified and recovered only before any tool runs, and that input
-  is priced. Step 6 implements per-request input/output admission under the accepted shared reservation
-  rules. Step 7's fixture-pinned overflow classification is accepted after four cumulative review
-  rounds; production request ownership is accepted. Step 8 measured/recovery compaction is
-  accepted after two fresh clean complete cumulative review rounds.
-- [ADR-0097](docs/decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) decides that a budget
-  approval grants a dispatch-owned, shown, durable allowance. Steps 9–10 implement and accept the
-  governor/debit and strict replay barrier; Step 11's CLI surface is accepted after three independent review rounds.
-- [ADR-0098](docs/decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md) decides that a session's
-  effect row holds no tool result and never replays. Accepted Steps 2–4 implement durable identities,
-  disclosure/retention and qualified physical clearing; the canonical at-rest security sitting states
-  the busy-WAL and pre-upgrade freed-page limits.
-
-Supplemental [ADR-0099](docs/decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md),
-[ADR-0100](docs/decisions/0100-budget-authorization-is-durable-state-with-a-replay-barrier.md) and
-[ADR-0101](docs/decisions/0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md)
-were accepted on 2026-10-02 after maintainer review. Acceptance of completed steps does not close the
-six W7 register items. All five required live provider records are complete as of 2026-10-08;
-[Step 7 round 4](docs/reviews/2026-10-08T22-30-10-w7-step-7-round-4-review.md) accepts its complete
-46-path scope. The maintainer approved the latest
-[ADR-0102](docs/decisions/0102-a-measured-request-owns-its-inert-data-through-egress.md) and
-[ADR-0103](docs/decisions/0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md)
-clarifications on 2026-10-08. Their internal foundations and controlled adapter/chain increment
-are accepted; exact core measured rounds are accepted after two fresh cumulative review rounds.
-ADR-0103 append/receipt integration is accepted after two fresh cumulative review rounds.
-Shipping provider/native integration is accepted after two fresh cumulative review rounds,
-including the confirmed public-return correction and 28 permanent cases. HTTP descendants
-are accepted with 23 new permanent cases, passing root CI, two fresh complete cumulative review
-rounds and Parent artifact/freeze audits. Invocation-local provider/raw-poll lifetimes are accepted
-after three cumulative rounds, including getter/receiver corrections and 57 permanent cases;
-[the complete round-3 record](docs/reviews/2026-10-09T07-06-28-w7-provider-invocation-round-3-review.md)
-includes Parent's artifact and whole-shared-tree audits. MCP transport/handler/fetch lifetimes
-are accepted after five cumulative rounds and 77 permanent cases; [round 5](docs/reviews/2026-10-09T13-37-00-w7-mcp-lifetime-round-5-review.md)
-includes Parent's complete artifact audit and qualified shared-tree comparison. Fresh-start
-and interpolation lifetimes are accepted after two cumulative rounds and fourteen permanent
-additions; [round 2](docs/reviews/2026-10-09T14-55-12-w7-startup-lifetime-round-2-review.md)
-includes Parent's complete artifact and unchanged shared-tree audits. Consolidated startup/MCP/custom-provider/all-actor ownership, final receipt health, original
-clocks, public departure and shipping CLI teardown are accepted after two clean complete cumulative
-rounds and Parent artifact/source audits. Step 8 measured atomic compaction/recovery is accepted after two fresh clean complete cumulative rounds; final
-whole-wave Step 12 remains open; all six W7 register items remain open, and PR #90 remains draft.
-
-
-The first six review rounds shaped these ADRs, and they surfaced two shipping defects, opened as `CR-96` and
-`CR-97`, both open, non-deferrable and scheduled into `W7`.
-
-A **seventh round on 2026-09-18** then reviewed the four ADRs against the tree before any code was written — eight
-dimensions, each finding adversarially verified — and returned 113 findings plus seventeen maintainer decisions.
-Each ADR carries a dated note of that date, and `W7` gained `CR-98` (ADR-0096's three prerequisites, which had no
-register item), `relavium budget resume` (moved from 2.6.K, so an approval has a non-TTY surface) and a fifth
-security sitting, `history.db` at rest. ADR-0087 §1, the `W3` live blocker that belonged to no wave, is scheduled
-into `W8`. `CR-96`: a crash after a budget decision resumes the agent as complete,
-with an invented output. `CR-97`: session effect rows keep tool output at rest and can replay a stale result. After the fifth round, the maintainer
-had the ADRs restated as decisions, invariants and acceptance tests, because every round's defects were in the
-previous round's fixes.
-
-[Complete host round 6](docs/reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md) records the scoped ADR-0103 acceptance,
-corrected factual review artifacts and qualified evidence. Step 8 is accepted after two fresh clean complete cumulative rounds; Step 12 remains open.
-No user decision, billing setup, credential or provider capture is pending.
+**W7's approved implementation is complete on `development`; final whole-wave Step 12 is under review.**
+Steps 1–11, all five genuine overflow records, owned measured requests and consolidated provider/MCP/host
+lifetimes have independent acceptance. ADR-0095–ADR-0103 are Accepted. The six W7 register items remain open
+until the final gate (41/51 closed); PR #90 remains draft/unmerged. The
+[closing register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
+joins the accepted scopes, causal controls and systematic-review dispositions. Existing approved deferrals
+stay in [deferred-tasks.md](docs/roadmap/deferred-tasks.md); W8 and the phase remain open. No user decision,
+billing setup, credential or provider capture is pending.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);

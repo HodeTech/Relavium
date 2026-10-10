@@ -216,3 +216,10 @@ marker remain; terminal accounting joins that explicit completion before taking 
 Known actual stays actual and retained E stays conservative. These repair the existing
 consumer obligations without changing authorization or claiming recovery from permanently
 broken hosts. See the [runner contract](../reference/shared-core/agent-runner.md#dispatch-allowance-foundation).
+
+### W7 implementation landing — 2026-10-10
+
+The approved W7 implementation and scoped independent reviews are complete. Final whole-wave
+acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
+the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+This dated note preserves the earlier decision and status history; W8 and the phase remain open.

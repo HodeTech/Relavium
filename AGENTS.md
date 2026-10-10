@@ -29,15 +29,12 @@ Phase 2.6.5 (Core reliability remediation) — running between remediation Waves
 41 of 51 items closed (`CR-96` and `CR-97` were opened 2026-09-14, `CR-98` on 2026-09-18; `W7` is unblocked, with ADR-0095–ADR-0098
 accepted) — all eight P0 blockers (ADR-0078–ADR-0084, merged 2026-08-24), the `W2`
 liveness-and-deadlines wave (ADR-0085, merged 2026-08-28 as PR #85), `W3` resource governance and bounds (ADR-0086), merged 2026-08-30 as PR #86 **with a live blocker and nine open findings** — see the `W3` residuals in docs/roadmap/deferred-tasks.md — and `W4`, the hostile MCP boundary (ADR-0088), merged 2026-09-01 as PR #87 — a systematic review of the branch found five merge blockers, all reproduced and fixed before it merged. `W5`, media correctness (ADR-0089 + ADR-0090), **merged 2026-09-02 as PR #88** — a systematic review of that branch returned six merge blockers, all reproduced and fixed before the merge. `W6`, authoring correctness (ADR-0091–ADR-0094), **MERGED 2026-09-04 as PR #89** — `merge_strategy: first` means first DECLARED, a widened tool grant is refused when the plan is BUILT, an expression sees only its transitive closure with a literal out-of-closure read refused at parse, and an `output_schema` is compiled at parse and enforced at run time with **no new dependency**. Seven internal review rounds found that most defects were in the FIXES rather than the code they repaired; a systematic maintainer review then returned two merge blockers, both breaking a headline claim of the wave, plus eight further High findings — all reproduced and fixed before the merge. Each is a dated correction inside its own ADR.
-**W7 implementation is in progress on `development`**: Steps 1–7 and 9–11 have scoped
-independent acceptance. All five genuine overflow records are complete; supplemental ADR-0099–ADR-0103
-are Accepted. ADR-0102 adapters/chain and exact measured-core reuse are accepted. Consolidated
-ADR-0103 startup/MCP/custom-provider/all-actor ownership, receipt health, original clocks, public
-departure and shipping CLI teardown are accepted after two clean complete cumulative rounds;
-[round 6](docs/reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md) records the independent reviews and Parent audit.
-Step 8 measured atomic compaction/recovery is accepted after two fresh clean complete cumulative
-rounds; final whole-wave Step 12 remains open.
-All six W7 register items remain open (41/51 closed); PR #90 remains draft/unmerged.
+**W7 implementation is complete on `development`; final whole-wave Step 12 is under review.**
+Steps 1–11, all five genuine overflow records, ADR-0102 request ownership and consolidated ADR-0103
+host integration have independent acceptance. ADR-0095–ADR-0103 are Accepted. All six W7 register
+items remain open until the final gate (41/51 closed); PR #90 remains draft/unmerged. The
+[closing register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
+joins evidence and every submitted review disposition. W8 and existing approved deferrals remain open.
 No user decision, billing setup, credential or provider capture is pending.
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 

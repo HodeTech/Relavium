@@ -332,3 +332,10 @@ See the [canonical engine lifecycle](../architecture/shared-core-engine.md#inter
 and [CLI exit/remedy contract](../reference/cli/commands.md#exit-codes). Consolidated independent
 acceptance is tracked in [current.md](../roadmap/current.md); Step 8 and final whole-wave
 validation remain open. The accepted body above is preserved.
+
+### W7 implementation landing — 2026-10-10
+
+The approved W7 implementation and scoped independent reviews are complete. Final whole-wave
+acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
+the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+This dated note preserves the earlier decision and status history; W8 and the phase remain open.

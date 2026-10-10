@@ -177,3 +177,11 @@ A node may override the agent's `model`, `temperature`, and `max_tokens` for tha
 
 - Validated against `AgentSchema` (Zod) at load; invalid agents fail fast.
 - Agents **never** contain API keys. Provider credentials are resolved from the secret store at call time and are never written to the agent file, logs, or event payloads. See [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
+
+### W7 implementation landing — 2026-10-10
+
+The earlier dated W7 status is historical. Measured request reuse, atomic multi-pass compaction,
+pre-send and single pre-content overflow recovery, finite frozen allowances and the CLI resume surface
+are implemented with scoped independent acceptance. The
+[closing register](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
+tracks final whole-wave acceptance and approved limits; CR-82 and W8 remain open.

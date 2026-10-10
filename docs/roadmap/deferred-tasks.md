@@ -372,7 +372,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 - [ ] **Carrying tool history into the model's context (`CR-70`).** *High (product).* **Decided and deferred on
       2026-09-13** by the maintainer, in
-      [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2. Once `W7` lands, a session persists the *structure* of its tool history (ADR-0095 §1). Today and after `W7`, it carries no prior turn's tool rounds into the next request, so a coding agent re-reads a file it read the turn before.
+      [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2. `W7` implements a session that persists the *structure* of its tool history (ADR-0095 §1). It carries no prior turn's tool rounds into the next request, so a coding agent re-reads a file it read the turn before.
       - **The claim it narrows.** [agent-session-spec.md](../reference/contracts/agent-session-spec.md) had implied
         that the transcript carries tool messages across turns. It now says they are not carried.
       - **Trigger.** [ADR-0096](../decisions/0096-a-request-is-measured-before-it-is-sent.md)'s measurement and
@@ -406,7 +406,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
       the persister writes no row, so a turn that dispatched a tool and then failed leaves no transcript trace at
       all — only its effect row, which ADR-0098 discloses on the next resume.
       - **The claim it narrows.** [agent-session-spec.md](../reference/contracts/agent-session-spec.md)'s durable
-        transcript is "completed exchanges only"; after `W7` it carries the STRUCTURE of every completed turn, and
+        transcript is "completed exchanges only"; under `W7` it carries the STRUCTURE of every completed turn, and
         still nothing of a turn that failed or was aborted.
       - **Trigger.** The first surface that needs to show, or resume from, what a failed turn did — a coding
         assistant replaying a half-finished edit, or an audit view over a session's tool use.
@@ -1392,9 +1392,9 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
 > cost-event persistence (below) — those are workstreams, tracked in
 > [phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), not deferred items.
 
-- [ ] **Faithful cross-turn transcript (tool + reasoning history) → 1.X/1.Z.** **Superseded 2026-09-14:** persistence and
+- [x] **Structural transcript/export implemented in W7; carrying stays separately deferred (`CR-70`).** **Superseded 2026-09-14:** persistence and
   export are decided by [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md) §1 and §3
-  (`CR-71`, scheduled `W7`), and carrying is deferred under the `CR-70` record in the Phase 2.6.5 deferrals section.
+  (`CR-71`, implemented in `W7`), and carrying is deferred under the `CR-70` record in the Phase 2.6.5 deferrals section.
   Reasoning is never carried (ADR-0030). The original note follows. 1.V appends only the final
   assistant **text** across turns: the turn core keeps the within-turn `tool_use`/`tool_result` pairs internal
   (so the transcript carries no orphaned `tool_use` and stays protocol-valid), and reasoning is dropped (a
@@ -2114,20 +2114,13 @@ future test cannot silently re-acquire it.
   (`packages/mcp`, `packages/core`, and the trigger schema all exist today) and simply has no home.
   *(medium · packages/mcp, packages/core, docs/reference/shared-core/mcp-integration.md; #141)*
 
-- [ ] **Agent memory policy (`memory: none|window|summary`) has no owner.**
-  [agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md) documents `memory.type`
-  (`none`/`window`/`summary`) as operational behavior, and `packages/shared/src/agent.ts`'s `MemorySchema`
-  validates it on `AgentSchema.memory`, so an authored `.agent.yaml` with
-  `memory: { type: window, window_size: 10 }` parses cleanly — but nothing in
-  `packages/core/src/engine` or `apps/cli/src` consumes the field anywhere; the unrelated
-  `[chat].max_messages` / ADR-0062 auto-compaction is a separate, session-level mechanism. A user configures
-  a windowing/summary policy and silently gets the full unbounded transcript every turn, with no warning. The
-  doc fix (mark the field reserved/inert, the `node-types.md` `loop`/`best_of_n` pattern) is scheduled →
-  2.5.5.F. **Owned since 2026-09-13: `CR-72`, decided by [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md)
-  §4 and scheduled into Phase 2.6.5 `W7`** — an authored `memory` decides the request and compaction at every
-  automatic entry point, and this entry is checked off when `W7` lands. It is no longer unowned.
-  *(medium · packages/core/src/engine, packages/shared/src/agent.ts,
-  docs/reference/contracts/agent-yaml-spec.md; #142, `CR-72`)*
+- [x] **Agent memory policy (`memory: none|window|summary`) implemented in W7 (`CR-72`).**
+  The shared projection consumes frozen authored memory before folding, including empty completed turns
+  and restored summary exclusion. The same policy controls after-turn, pre-send and overflow recovery.
+  Workflow nodes have no cross-turn session memory. See the
+  [canonical memory contract](../reference/contracts/agent-session-spec.md#request-projection-and-history-operations)
+  and [W7 closing review](phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+  This closes the old ownership/implementation follow-up; tool-history carrying remains CR-70.
 
 ### Declined findings (closed — recorded for the record, never actionable)
 

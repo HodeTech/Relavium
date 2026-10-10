@@ -1,6 +1,6 @@
 # `relavium chat` — Agent Session REPL
 
-> Last updated: 2026-10-04 — structural export/reseat status aligned; live overflow and revised compaction remain pending
+> Last updated: 2026-10-10 — W7 compaction/recovery implemented; final wave review is tracked in the roadmap.
 
 - **Status**: Reference — the whole chat family is live: the interactive REPL + `--agent`, `/exit`/`/cancel`, exit code 4, durable persistence (**2.M**); `chat-resume` (**2.N**); `chat-list` (**2.O**); `chat-export` + the in-REPL `/export` (**2.P**); `chat --json` + `agent run` (+ `--fixture`) (**2.Q**); the chat modes + fail-closed per-tool approval (**2.5.E**); and the mid-chat **`/models` reseat** + per-message `modelId` attribution + the `/effort` control (**2.5.G**) — this page is the reseat's behaviour home
 - **Surface**: CLI (`relavium chat`)

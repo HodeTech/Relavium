@@ -1989,7 +1989,7 @@ correction inside its own ADR rather than a rewrite, so the wrong reasoning stay
 
 ### W7 pre-implementation review and proposed execution plan — 2026-10-02
 
-**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–6 and 9–11 obtained scoped independent acceptance, but the 2026-10-04 systematic PR review reopens Step 6 request ownership and adjacent session/CLI, replay-tool and document obligations. Previous acceptance records remain historical. Step 6's configured-output-estimate precedence follows ADR-0101, approved on 2026-10-02. All five live captures exist as of 2026-10-08, including Anthropic's separate native context-stop response. Step 7 obtained fresh complete acceptance on 2026-10-08 after four cumulative rounds. Approved ADR-0102/0103 production integration is accepted. Step 8 is accepted after two fresh clean complete cumulative rounds; whole Step 12 remains open. All remaining systematic corrections require fresh independent acceptance.**
+**Status: the maintainer-approved implementation and Steps 1–11 have scoped independent acceptance. All five live records, request ownership and consolidated host lifetimes are complete. Final Step 12 is under review; six W7 items remain open until its gate. See the [closing register](#w7-closing-register--2026-10-10). The following pre-implementation plan and dated checkpoints retain their historical context.**
 The four Accepted ADRs retain their decisions. Three verified gaps were explicitly resolved before code:
 manual compaction with an unknown window and the budget outcome of idle compaction
 ([ADR-0099](../../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md)),
@@ -2450,23 +2450,22 @@ changes — some named by an ADR's landing obligations, several by none. Every o
 against ONE list rather than five. These repeat the ADRs' obligations and add the rest; the ADRs' own lists still
 stand.
 
-| Document | What changes |
-|---|---|
-| [config-spec.md](../../reference/contracts/config-spec.md) | `[chat].auto_compact` / `compact_threshold`: the trigger measures the PROJECTED next request against the first attemptable entry's window, it covers all three automatic entry points, and an authored `memory` overrides it (ADR-0095 §4) |
-| [workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md) | the cost-cap formula `cumulative + worstCaseNextEstimate(maxTokens)` prices input too (ADR-0096 §6); an approved step runs under an allowance, not uncapped (ADR-0097) |
-| [agent-runner.md](../../reference/shared-core/agent-runner.md) | the `context_overflow` row in the error map, and `PreEgressHook.inputTokensEstimate` — this is the hook's canonical home, not llm-provider-seam.md |
-| [database-schema.md](../../reference/shared-core/database-schema.md) | the structural tool rows (ADR-0095 §1); `run_effects.result_json` always NULL for a session scope; negative `!`-command slots; the corrected retention sentence; the new session-row turn-key column ·  its two at-rest security paragraphs — "the file holds no credentials" and "the engine masks secrets at the bus" — **narrowed 2026-09-18**, ahead of the code, because [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)'s 2026-09-14 note had already falsified both |
-| [keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md) | the same two claims in its CLI at-rest paragraph — the security reference a reader reaches first — **narrowed 2026-09-18**; when `W7` lands, the session-effect sentence drops its "until ADR-0098 lands" qualifier |
-| [ADR-0029](../../decisions/0029-tool-policy-hardening.md) | rule (c)'s at-rest premise: its 2026-07-07 note fixed the ENCRYPTION half only, so a dated note of **2026-09-18** carries the ADR-0050 correction. Nothing further is owed at landing |
-| [effect-journal.md](../../reference/shared-core/effect-journal.md) | §2 (the attempt id's new role), §4 (a `replay` verdict is run-scope only), §8–§9 (the disclosure predicate, the sweep bound, `agent run`'s rows), §11 (what a session row may hold), §12 (the new crash cases), §14 (the `!`-command limitation, retired) |
-| [llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md) | `context_overflow` and the attempt record; the "pre-first-turn FALLBACK only" framing of `estimateTokens`; the per-modality media ceilings with their sources; what each dialect's classification keys on |
-| [error-handling.md](../../standards/error-handling.md) | `context_overflow` in the `ErrorCode` list, and the false claim that the chain "records the failed attempt's usage" (the same sentence sits in `llm-error.ts`) |
-| [sse-event-schema.md](../../reference/contracts/sse-event-schema.md) | the structural field and the turn-identified boundary; the `reason` values `pre-send` and `overflow-recovery`; the additive `session:compaction_failed` terminal and the "no terminal for a failed manual `/compact`" sentence it retires; the budget pause/approval fields; that a new `ErrorCode` member is NOT additive for stored rows; the persistence sentence that still says tool messages are stored |
-| [chat-session.md](../../reference/cli/chat-session.md) | what a turn appends and what the export carries; the `/compact` and `/trim` rows and the compaction section (linking to the `memory` row), including the "`session:compacting` may have no terminal" sentence that `session:compaction_failed` retires and what a multi-pass fold bills; the overflow hint, which becomes code-based with a policy-dependent remedy; the context-fullness indicator as an approximation; the reseat paragraph's text-only replay and its "Phase-3 persister" attribution, which ADR-0095 §2 and `CR-70`'s deferral now own; the resume effect-disclosure sentence, which no user-facing document carries today |
-| [commands.md](../../reference/cli/commands.md) | the inline budget gate card shows the frozen allowance and takes no input; `relavium budget resume` documents `--gate` and `--approve-amount`, and says how a run with two pending budget gates is addressed — `gate` and `gate list` still filter budget gates out |
-| [agent-session-spec.md](../../reference/contracts/agent-session-spec.md) · [agent-yaml-spec.md](../../reference/contracts/agent-yaml-spec.md) · [agent-sessions.md](../../architecture/agent-sessions.md) | as ADR-0095 and ADR-0096 already list, plus §"Session messages" (the persisted content type and the `LlmMessage` projection), the `memory` row's workflow-node sentence, and step 1's claim that a turn projects the persisted rows |
-| [execution-model.md](../../architecture/execution-model.md) | blanket retry-key idempotency and end-of-run-only cost persistence were corrected in the 2026-10-02 preflight under ADR-0080 and ADR-0076/0077; keep these descriptions consistent with the budget crash/resume work |
-
+| Document | What changes | Landing verification |
+|---|---|---|
+| [config-spec.md](../../reference/contracts/config-spec.md) | `[chat].auto_compact` / `compact_threshold`: the trigger measures the PROJECTED next request against the first attemptable entry's window, it covers all three automatic entry points, and an authored `memory` overrides it (ADR-0095 §4) | Implemented; final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md) | the cost-cap formula `cumulative + worstCaseNextEstimate(maxTokens)` prices input too (ADR-0096 §6); an approved step runs under an allowance, not uncapped (ADR-0097) | Implemented; final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [agent-runner.md](../../reference/shared-core/agent-runner.md) | the `context_overflow` row in the error map, and `PreEgressHook.inputTokensEstimate` — this is the hook's canonical home, not llm-provider-seam.md | Implemented; final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [database-schema.md](../../reference/shared-core/database-schema.md) | the structural tool rows (ADR-0095 §1); `run_effects.result_json` always NULL for a session scope; negative `!`-command slots; the corrected retention sentence; the new session-row turn-key column ·  its two at-rest security paragraphs — "the file holds no credentials" and "the engine masks secrets at the bus" — **narrowed 2026-09-18**, ahead of the code, because [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)'s 2026-09-14 note had already falsified both | Implemented; final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [keychain-and-secrets.md](../../reference/desktop/keychain-and-secrets.md) | the same two claims in its CLI at-rest paragraph — the security reference a reader reaches first — **narrowed 2026-09-18**; when `W7` lands, the session-effect sentence drops its "until ADR-0098 lands" qualifier | Implemented; final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [ADR-0029](../../decisions/0029-tool-policy-hardening.md) | rule (c)'s at-rest premise: its 2026-07-07 note fixed the ENCRYPTION half only, so a dated note of **2026-09-18** carries the ADR-0050 correction. Nothing further is owed at landing | Corrected 2026-09-18; nothing further owed |
+| [effect-journal.md](../../reference/shared-core/effect-journal.md) | §2 (the attempt id's new role), §4 (a `replay` verdict is run-scope only), §8–§9 (the disclosure predicate, the sweep bound, `agent run`'s rows), §11 (what a session row may hold), §12 (the new crash cases), §14 (the `!`-command limitation, retired) | Implemented; final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [llm-provider-seam.md](../../reference/shared-core/llm-provider-seam.md) | `context_overflow` and the attempt record; the "pre-first-turn FALLBACK only" framing of `estimateTokens`; the per-modality media ceilings with their sources; what each dialect's classification keys on | Implemented; final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [error-handling.md](../../standards/error-handling.md) | `context_overflow` in the `ErrorCode` list, and the false claim that the chain "records the failed attempt's usage" (the same sentence sits in `llm-error.ts`) | Implemented; final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [sse-event-schema.md](../../reference/contracts/sse-event-schema.md) | the structural field and the turn-identified boundary; the `reason` values `pre-send` and `overflow-recovery`; the additive `session:compaction_failed` terminal and the "no terminal for a failed manual `/compact`" sentence it retires; the budget pause/approval fields; that a new `ErrorCode` member is NOT additive for stored rows; the persistence sentence that still says tool messages are stored | Implemented; final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [chat-session.md](../../reference/cli/chat-session.md) | what a turn appends and what the export carries; the `/compact` and `/trim` rows and the compaction section (linking to the `memory` row), including the "`session:compacting` may have no terminal" sentence that `session:compaction_failed` retires and what a multi-pass fold bills; the overflow hint, which becomes code-based with a policy-dependent remedy; the context-fullness indicator as an approximation; the reseat paragraph's text-only replay and its "Phase-3 persister" attribution, which ADR-0095 §2 and `CR-70`'s deferral now own; the resume effect-disclosure sentence, which no user-facing document carries today | Implemented; final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [commands.md](../../reference/cli/commands.md) | the inline budget gate card shows the frozen allowance and takes no input; `relavium budget resume` documents `--gate` and `--approve-amount`, and says how a run with two pending budget gates is addressed — `gate` and `gate list` still filter budget gates out | Implemented; final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [agent-session-spec.md](../../reference/contracts/agent-session-spec.md) · [agent-yaml-spec.md](../../reference/contracts/agent-yaml-spec.md) · [agent-sessions.md](../../architecture/agent-sessions.md) | as ADR-0095 and ADR-0096 already list, plus §"Session messages" (the persisted content type and the `LlmMessage` projection), the `memory` row's workflow-node sentence, and step 1's claim that a turn projects the persisted rows | Implemented; final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
+| [execution-model.md](../../architecture/execution-model.md) | blanket retry-key idempotency and end-of-run-only cost persistence were corrected in the 2026-10-02 preflight under ADR-0080 and ADR-0076/0077; keep these descriptions consistent with the budget crash/resume work | Implemented; final wave review tracked in [closing register](#w7-closing-register--2026-10-10) |
 ---
 
 ## W8 — Provider and conformance
@@ -4656,3 +4655,137 @@ cumulative round after the current-attempt correction, following clean round 3. 
 covers all 45 paths / 140 hunks independently; Parent reads every report and coverage row and
 verifies the scoped freeze before acceptance. Step 8 measured atomic compaction/recovery is
 accepted. Final Step 12 and all six W7 register items remain open (41/51); PR #90 stays draft.
+
+## W7 closing register — 2026-10-10
+
+**Final Step 12 candidate; acceptance pending.** Steps 1–11 and all systematic corrections have
+scoped independent acceptance. Two fresh final cross-surface review rounds remain required.
+The six W7 headings remain open until that gate; closure will produce 47/51 (46 checked headings
+plus CR-95's short-term half), leaving CR-70, CR-81, CR-82 and CR-93 open. PR #90 stays draft/unmerged.
+Approved residuals are unchanged; W8 and the phase remain open.
+
+### Per-item code and acceptance
+
+| Item | Closing code and permanent regression | Causal evidence and independent acceptance |
+|---|---|---|
+| CR-71 | `apps/cli/src/chat/persister.ts` stages a completed exchange atomically, including engine-assigned content-free tool rows and an explicit empty assistant terminal. `packages/core/src/export/serializer.ts` derives grants from completed structural turns. `serializer.test.ts` covers interrupted exchanges, empty finals, split tool loops and export grants; `compaction-persistence.test.ts` checks native SQLite pending/legacy/empty-final boundaries. | [Step 3 round 5](../../reviews/2026-10-02T06-48-45-w7-step-3-round-5-review.md) and [Step 4 round 6](../../reviews/2026-10-02T10-57-58-w7-step-4-round-6-review.md), supplemented by final Step 8. Earlier defect controls fail before their corrections; final native persistence asserts the stored sequence boundary, not just UI counts. |
+| CR-72 | `packages/core/src/engine/turn-messages.ts` applies frozen authored memory before folding; `agent-session.ts` uses the same permission at after-turn, pre-send and recovery. `turn-messages.test.ts`, policy cases in `agent-session.test.ts`, and `session-compaction-reliability.test.ts` cover empty finals, restored summary exclusion, completed windows and all entry points. | [Step 5 round 2](../../reviews/2026-10-02T12-21-33-w7-step-5-round-2-review.md) binds exact pre-step policy failures to current positive controls. Step 8's causal removals discriminate measured trigger, first eligible window, floor, cancellation and one-shot after-turn disable. |
+| CR-98 | `packages/llm/src/request-estimator.ts` and `output-cap.ts` measure owned actual requests and resolve native/configured caps; core `agent-turn.ts` forwards per-attempt input and owns the same round through dispatch. Adapter overflow normalization is fixture-pinned; `agent-session.ts` compacts atomically and recovers once before content/tools. `request-owned-round.test.ts`, `overflow.conformance.test.ts` and compaction reliability tests exercise these boundaries. | [Step 6 round 8](../../reviews/2026-10-02T22-44-01-w7-step-6-round-8-review.md), [Step 7 round 4](../../reviews/2026-10-08T22-30-10-w7-step-7-round-4-review.md), [owned core round 2](../../reviews/2026-10-09T01-00-00-w7-owned-core-round-2-review.md), and final Step 8. Five immutable actual provider records are complete. Removal of ownership or recovery guards fails corresponding SDK/core controls; errors from admission cannot mint provider evidence. |
+| CR-94 | `budget-allowance.ts`, `dispatch-allowance.ts`, `budget-governor.ts` and `engine.ts` freeze/show an amount and provenance, synchronously debit only its dispatch and reconcile actual/refunded/conservative costs. CLI `budget resume` requires that exact amount and rejects stale quotes. `budget-allowance.test.ts`, `budget-authorization-live.test.ts` and actual CLI gate cases cover exclusions, primary retry/fallback, exhaustion and parallel ownership. | [Step 9 round 4](../../reviews/2026-10-03T02-40-53-w7-step-9-round-4-review.md), [Step 10 round 8](../../reviews/2026-10-03T17-50-23-w7-step-10-round-8-review.md), [Step 11 round 3](../../reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) and [Group 2a round 14](../../reviews/2026-10-06T17-49-28-w7-systematic-group-2a-round-14-review.md). Accounting-join removal changes durable 47 to 21; combined approved retry/fallback executes without a second pause. |
+| CR-96 | `packages/core/src/engine/checkpoint.ts` restores approved budget agents as pending without invented output or restored remainder; rejection retains `budget_exceeded`. Shared suspension reduction/strict durable authorization joins reject conflicting companions and downgrade replay. `budget-authorization-replay.test.ts` checks legacy approval/rejection and ordinary sibling decisions; required `smoke:budget-replay` runs the immutable predecessor. | [Step 10 round 8](../../reviews/2026-10-03T17-50-23-w7-step-10-round-8-review.md), [portable harness acceptance](../../reviews/2026-10-08T11-44-55-w7-systematic-group-5-round-2-review.md) and [consolidated host round 6](../../reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md). Companion-comparison removal fails; twelve predecessor refusal prefixes and two genuine legacy controls discriminate the barrier. |
+| CR-97 | `packages/db/src/effect-journal-store.ts` retains/replays results only for run scope; `session-effect-turns.ts` allocates durable monotonic identities. `client.ts` clears legacy session results with secure deletion and qualified WAL checkpoint. CLI disclosure uses a full-history snapshot and acknowledged visible delivery before sweep. `session-effect-privacy.test.ts` checks actual planted main/WAL bytes, busy readers and 0016 upgrades; native disclosure/signal/turn-key suites cover crash and two-process paths. | [Step 4 round 6](../../reviews/2026-10-02T10-57-58-w7-step-4-round-6-review.md), [Group 4 round 4](../../reviews/2026-10-07T09-10-29-w7-systematic-group-4-round-4-review.md) and [host round 6](../../reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md). Negative privacy/disclosure controls fail without their guards; successful checkpoint byte scans retain run results as a positive control. The [at-rest sitting](../../standards/security-review.md#sitting-historydb-at-rest--cr-71-cr-97-2026-10-02) states physical limits. |
+
+### Systematic PR review disposition
+
+The following 35 rows reconstruct every submitted reference from both maintainer reports,
+including the trailing-whitespace observation. The duplicate replay-smoke and count findings
+are joined explicitly. This is a published submission-to-resolution map, not an assertion that
+an unavailable private 35-key register was independently audited. The separately found portable
+JSON recursion fixture is included after the table. Historical review verdicts retain their
+original dates; the later scoped acceptance named here closes the earlier obligation.
+
+| # | Submitted reference | Resolution and operative acceptance |
+|---|---|---|
+| 1 | First report 1: admitted request differs from dispatch | ADR-0102 owns every text request field except signal/prepared caps; actual SDK generate/stream payloads consume that same construction. [Owned core round 2](../../reviews/2026-10-09T01-00-00-w7-owned-core-round-2-review.md) plus final Step 8 close session/summarizer integration. |
+| 2 | First report 2: notice invisible before sweep | Explicit Ink route, active controller/viewport ownership and checked published acknowledgement precede deletion. [Rendering round 2](../../reviews/2026-10-04T12-00-00-w7-rendering-round-2-review.md) and later [host round 6](../../reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md). |
+| 3 | First report 3: Turbo cooling period | Exact cooled 2.11.4 pin, lockfile and required harness accepted in [Group 5 round 2](../../reviews/2026-10-08T11-44-55-w7-systematic-group-5-round-2-review.md). No exception is invented. |
+| 4 | First report 4: CI-mode failures | Interactive route/Ink mode tests align; full required CI and coverage are checked at final source. Rendering acceptance above and final gates apply. |
+| 5 | First report 5 / second H1: replay smoke absent | Required GitHub CI runs `pnpm smoke:budget-replay`; immutable portable predecessor archive/provenance and actual worker closure are accepted by Group 5. |
+| 6 | First report 6: MCP flag docs | `commands.md` documents gate/budget resume consent and `--allow-mcp-stdio`; [Group 6 round 3](../../reviews/2026-10-08T15-45-57-w7-systematic-group-6-round-3-review.md). |
+| 7 | First report 7 / second L17: 50 vs 51 | Diagram/register agree on 51; closure changes the closed count to 47, not the denominator. Group 6 and final document review. |
+| 8 | First report 8: hook privacy wording | Canonical runner distinguishes in-process request access from body-free durable quotes; Group 6 and final owned-request/session contracts. |
+| 9 | First report trailing blank line | Changed review whitespace corrected; final full-wave `git diff --check` verifies it. Historical substantive conclusions remain intact. |
+| 10 | M1: malformed legacy scope bricks open | Startup quarantines malformed identity evidence and preserves trusted floors; allocation/cleanup refuse unsafe reuse. [Group 4 round 4](../../reviews/2026-10-07T09-10-29-w7-systematic-group-4-round-4-review.md). |
+| 11 | M2: exclusions never rendered | Budget discovery/cards show redacted, quoted, escaped and truncated exclusion notices; typed amounts remain authoritative. Group 3 and consolidated host acceptance. |
+| 12 | M3: predecessor uses live dependency tree | Immutable portable bytes and pinned edges replace reliance on current installed versions; Group 5. |
+| 13 | M4: self-asserted Git provenance | Manifest blobs independently verified against the baseline; Group 5's 143 actual predecessor files and tamper controls. |
+| 14 | M5: one corrupt run hides all discovery | Validate relevant rows, retain damaged run with unavailable gate detail, refuse strict replay, share reference/SQLite corruption errors. Group 4; no unsafe skip-and-replay policy adopted. |
+| 15 | M6: four vs five security sittings | Exit criterion and recorded fifth at-rest sitting reconciled; Group 6 and final checklist. |
+| 16 | L1: duplicate DB opens | Dispatch/resolver/gate construction order and shared ownership corrected; consolidated host acceptance includes actual CLI teardown. |
+| 17 | L2: invalid JSON tool result duplicate calls | One classified nonretryable tool failure, no duplicate call or raw durable name. Map/Set controls stay valid. [Group 2a round 14](../../reviews/2026-10-06T17-49-28-w7-systematic-group-2a-round-14-review.md); alleged durable raw-ID leak was not reproduced. |
+| 18 | L3: stale quote timeout disarms forever | Gate/deadline refusal retains coherent pending authority and original clocks; consolidated host rounds 5–6 are the operative acceptance after Group 3's narrow repair remained insufficient. |
+| 19 | L4: invalid cap becomes internal | Typed local construction refusal maps through existing fatal validation taxonomy before key/provider entry; Group 2a, subsequently accepted ADR-0102 integration. |
+| 20 | L5: budget resume accepts resolved human gate | Type/identity validation precedes idempotent success; ordinary-gate mismatch is refused. Group 3 and consolidated host integration. |
+| 21 | L6: stale quote checked after startup | Early refusal precedes credential/MCP construction; complete quote is rechecked at engine authority boundary. Consolidated host acceptance includes all startup actors. |
+| 22 | L7: shown-gate set never prunes | Resolution retires presentation bookkeeping; Group 3, with final lifecycle acceptance. |
+| 23 | L8: strict read rejects legacy metadata | Legacy-compatible reads plus strict current writes preserve structural privacy; Group 4 native controls. |
+| 24 | L9: zero high-water scans repeat | Bounded initializer batches and durable trusted/quarantined floors; Group 4. Total history work is explicitly not claimed constant. |
+| 25 | L10: obsolete effect docblock | Snapshot disclosure ownership documented at its actual reader; Group 6. |
+| 26 | L11: rejected authorization projection untested | Rejected durable decision keeps correct fatal budget state; Group 4 projection/reconciliation tests. |
+| 27 | L12: optional retained-turn producer | Current producers require `keptTurnCount`; persisted legacy events remain readable. Group 4; Step 8 verifies exact native boundary. |
+| 28 | L13: combined approved failover missing | Permanent actual-engine primary retry then fallback success under one finite approval; Group 2a. This was a coverage gap, not a reproduced loop bug. |
+| 29 | L14: terminal approvals retained | Refuted by current normal/fenced settlement cleanup; [intake](../../reviews/2026-10-04T10-35-00-w7-systematic-review-intake-review.md). No unnecessary patch. |
+| 30 | L15: stale inline decision parks forever | Invalid decision stops prompts, preserves pending gate, joins all local actors/writes and returns resumable status; final consolidated ADR-0103 host acceptance closes the Group 3 High. |
+| 31 | L16: rejected gate reconciles as internal | Genuine rejected budget authorization reconciles as `budget_exceeded`; ordinary decisions remain distinct. Group 4. |
+| 32 | L18: fifth sitting described as future | Dated actual sitting recorded, status corrected; Group 6 and final landing. |
+| 33 | L19: broken sandbox anchor | Correct direct-negative-case anchor; Group 6 and final relative target/fragment checks. |
+| 34 | L20: wall-clock isolation probes | Explicit ownership/lifecycle synchronization and qualified watchdog replace unsupported timing proof; actual guard controls accepted in Group 5. No deterministic scheduler guarantee is invented. |
+| 35 | L21: replay evidence retained without bound | Owned diagnostic retention/retirement preserves unknown objects, closes actual children, and reports cleanup failures; Group 5. No broad deletion of unrelated evidence. |
+
+Supplemental intake JSON portability: valid deeply nested JSON is not rejected solely because a
+worker has a different recursion limit; the fixture distinguishes actual serializer behavior.
+Group 2a accepts the classified tool-result correction and its positive Map/Set controls.
+
+### Fresh per-item causal controls
+
+At source `b68188fe`, six separate external projections remove only the corresponding
+mechanism and fail actual permanent assertions: CR-71 export grants (4), CR-72 window selection (1),
+CR-98 input measurement (11), CR-94 debit (7), CR-96 pending replay (1), and CR-97 session-result
+noninspection (1). Restoring all six passes 59 cases in six suites. These are targeted mechanism
+removals, not historical full-source builds. The first diagnostic projection lacked a resolvable
+`yaml` alias and is excluded; only the corrected runs with real assertion failures are credited.
+Only twelve named files are projected; imports point to projected peers or current repository
+sources. Recorded original and projected hashes distinguish that import redirection. The repository
+source tree is never modified by this diagnostic.
+
+### Approved limits and next phase
+
+No new W7 work is deferred at closure. Existing decisions remain visible in
+[deferred-tasks.md](../deferred-tasks.md): CR-70 carrying needs measurement/recovery observed in a
+release plus a consuming surface; failed/aborted transcripts stay completed-exchange-only;
+post-tool/content overflow continuation and estimator calibration remain deferred. CR-94 model
+binding/expiry remain behind complete stale-quote refusal. Session physical erasure requires a
+successful WAL checkpoint and excludes pre-upgrade freed pages; run tool I/O/user content can
+still be sensitive at rest. CR-95's long continuation and CR-93 tenant scoping remain separate.
+
+CR-81, CR-82 and ADR-0087 §1 belong to W8. Its existing un-pulled-stream gap-free blocker remains
+open; completing W7 does not claim the full Phase 2.6.5 exit criteria or merge/release readiness.
+
+
+### Twelve-step acceptance map
+
+Earlier scoped acceptances are joined with subsequent systematic corrections above. Step 8 and
+consolidated host acceptance supersede their earlier open integration boundaries.
+
+| Step | Operative scoped review |
+|---|---|
+| 1 | [Final scoped review](../../reviews/2026-10-02T03-50-35-w7-step-1-round-5-review.md) |
+| 2 | [Final scoped review](../../reviews/2026-10-02T04-41-54-w7-step-2-round-2-review.md) |
+| 3 | [Final scoped review](../../reviews/2026-10-02T06-48-45-w7-step-3-round-5-review.md) |
+| 4 | [Final scoped review](../../reviews/2026-10-02T10-57-58-w7-step-4-round-6-review.md) |
+| 5 | [Final scoped review](../../reviews/2026-10-02T12-21-33-w7-step-5-round-2-review.md) |
+| 6 | [Final scoped review](../../reviews/2026-10-02T22-44-01-w7-step-6-round-8-review.md) |
+| 7 | [Final scoped review](../../reviews/2026-10-08T22-30-10-w7-step-7-round-4-review.md) |
+| 8 | [Final scoped review](../../reviews/2026-10-10T02-10-00-w7-step-8-round-4-review.md) |
+| 9 | [Final scoped review](../../reviews/2026-10-03T02-40-53-w7-step-9-round-4-review.md) |
+| 10 | [Final scoped review](../../reviews/2026-10-03T17-50-23-w7-step-10-round-8-review.md) |
+| 11 | [Final scoped review](../../reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) |
+| 12 | Pending two fresh final cross-surface rounds; no closure is inferred from this candidate. |
+
+### Canonical-document landing check
+
+Every row of [W7's checklist](#w7s-canonical-document-checklist-recorded-2026-09-18) is reconciled:
+configuration, workflow/agent/session contracts, runner, schema, effect journal, LLM seam, error handling,
+events, chat/commands and architecture describe implemented behaviour. ADR-0029 already carried the
+required security correction; no additional edit is owed. Dated notes in ADR-0026/0028/0050/0062/0074/0080
+and ADR-0095–0103 link this landing without rewriting earlier decisions. Existing CR-82 usage and
+ADR-0087 gap-free-stream limits remain W8 obligations; no blanket at-rest secrecy is claimed.
+
+### Final source gates
+
+At `b68188fe`, `pnpm run ci` exits 0 and `pnpm coverage` exits 0: 446 files, 9,462 passed,
+11 existing skips; global line/statement coverage 96.05%, branch 92.68%, function 96.44%.
+Required remote CI, coverage and SonarCloud pass at that source. One push Windows advisory hit
+two default-5-second native fixture timeouts while the same-source PR Windows run passed.
+The final harness correction and final documentation checks are recorded by Step 12; the failed
+run is not erased or represented as a pass. Offline smokes make no new paid request.

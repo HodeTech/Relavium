@@ -488,3 +488,10 @@ and [event contract](../reference/contracts/sse-event-schema.md#session-event-na
 current mechanics and shapes: all-candidate measured bounds, four-pass atomic installation,
 acknowledged unknown-window disclosure, balanced moments and distinct idle/active budget outcomes.
 No accepted policy is superseded; this dated landing note leaves the historical body intact.
+
+### W7 implementation landing — 2026-10-10
+
+The approved W7 implementation and scoped independent reviews are complete. Final whole-wave
+acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
+the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+This dated note preserves the earlier decision and status history; W8 and the phase remain open.

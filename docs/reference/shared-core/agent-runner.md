@@ -155,9 +155,11 @@ fallback and turn limit. The generative fork supplies only its primary and autho
 The governor freezes scalar `AllowanceQuoteResult` onto `BudgetPauseError`/`GateRequest`; raw
 requests, native options, cap plans, provider objects and closures never enter that quote.
 
-`AgentTurnError` retains an internal `recoverableOverflow` fact only for classified overflow
-before any tool round and before any committed content. It is not an event field and does not
-itself retry or compact; session recovery lands in W7 step 8. A later tool-round overflow ends
+`AgentTurnError.recoverableOverflow` is diagnostic, not recovery authority. Session recovery requires
+private evidence joined by exact error identity to the current failed, invoked official provider
+attempt, before any tool round or received content. Admission/credential faults and an earlier
+capture cannot supply that evidence. It is not an event field; the session owns the once-only
+compaction and fresh retry. A later tool-round overflow ends
 the turn without redispatching tools. Generative media paths never acquire session recovery;
 their overflow mapping also uses fixed facts and preserves custom-endpoint authority.
 
@@ -292,3 +294,11 @@ Legacy approval likewise grants no allowance. The durable protocol and join rule
 review rounds. Step 11's safe CLI surface is accepted after three independent review rounds;
 automatic session pre-send/summary handoff remains Step 8. See the
 [W7 execution plan](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md).
+
+### W7 implementation landing — 2026-10-10
+
+The earlier dated W7 status is historical. Measured request reuse, atomic multi-pass compaction,
+pre-send and single pre-content overflow recovery, finite frozen allowances and the CLI resume surface
+are implemented with scoped independent acceptance. The
+[closing register](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
+tracks final whole-wave acceptance and approved limits; CR-82 and W8 remain open.
