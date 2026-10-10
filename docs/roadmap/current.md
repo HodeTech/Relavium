@@ -68,13 +68,15 @@ closes all twelve steps and CR-71/72/94/96/97/98 on `main`. At reviewed head `69
 five-job GitHub CI runs and SonarCloud passed; all four supplemental Sonar labels closed.
 This evidence belongs to the reviewed head, not to a future W8 change.
 
-**W8 — Provider and conformance: Step 1 accepted on `development`; Step 2 is in progress.**
+**W8 — Provider and conformance: Steps 1–2 accepted on `development`; Step 3 is in progress.**
 The [seven-step plan](phases/phase-2.6.5-core-reliability-remediation.md#w8-preflight-and-proposed-execution-plan--2026-10-10)
 and [Accepted ADR-0104](../decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md)
 were approved by the maintainer on 2026-10-10. The submitted ADR review is dispositioned;
 two fresh complete cumulative rounds returned zero actionable findings at `292ccccd` before approval.
 Detailed review records are now local and Git-ignored; acceptance remains in the linked plan.
-Step 1 addresses the existing W3 blocker, followed by the two remaining provider items:
+The consumption-mode obligation and strict exchange substrate are accepted; the actual-SDK
+request matrix and unknown-usage integration remain open. [The Step 2 register](phases/phase-2.6.5-core-reliability-remediation.md#w8-step-2-expected-exchange-substrate--2026-10-10)
+records three complete cumulative review rounds and their verified corrections. The obligations are:
 
 1. **ADR-0087 §1:** declare primary-stream consumption for run and session handles; an
    un-pulled stream must preserve its terminal, and a subscribe-only handle must buffer nothing.

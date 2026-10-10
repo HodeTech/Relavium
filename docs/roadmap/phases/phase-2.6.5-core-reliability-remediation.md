@@ -2554,8 +2554,8 @@ remains approved and open; `main` publication follows the whole-W8 gate.
 
 ### W8 preflight and proposed execution plan — 2026-10-10
 
-**Status: preflight complete, plan and ADR-0104 approved on 2026-10-10; Step 1 accepted on `development`.**
-Steps 2–7 and whole-W8 publication remain open.
+**Status: preflight complete, plan and ADR-0104 approved on 2026-10-10; Steps 1–2 accepted on `development`.**
+Steps 3–7 and whole-W8 publication remain open.
 The maintainer requests implementation on `development`, an implementation commit followed by
 two fresh independent cumulative review rounds per step, confirmed fixes committed between
 rounds, and approval of any new decision before dependent work. W7 and PR #91 are merged;
@@ -2776,7 +2776,7 @@ Step 2's strict expected-exchange replay. CR-81/82 and whole-W8 acceptance remai
 
 ### W8 Step 2 expected-exchange substrate — 2026-10-10
 
-**Implementation checkpoint; independent acceptance remains pending.** Base `577e0300`.
+**Accepted on `development` after round 3; whole-W8 publication remains pending.** Base `577e0300`.
 The internal [conformance harness](../../../packages/llm/src/conformance/README.md)
 now compares independently authored method, origin, path, credential-free query, protocol
 headers and structural JSON against the effective native Fetch request. No-body and JSON
@@ -2844,6 +2844,25 @@ cumulative round follows the correction; Step 2 and whole W8 remain open until a
 Final corrected author gates pass **23/23** lint/typecheck/test (8 cached) and **6/6** build
 (5 cached), with 1,728 passing LLM tests and 11 existing skips. Relative/archive links and
 whitespace pass. Genuine overflow artifacts and public exports remain unchanged.
+
+
+**Round 3 — reviewed head `6b24864b347ffbd3576a5a1801c78c379e6d560a`:** two further NEW
+read-only reviewers, GPT-6-astra/high and GPT-6.1-sol/high, reviewed all nine cumulative paths
+against `577e0300`, including every prior correction. Both returned **zero actionable findings**.
+Each freshly passed **111/111** focused controls, LLM typecheck and changed-file lint; the
+integration reviewer also freshly passed the full LLM suite (**1,728 passing / 11 existing skips**,
+50 files). Independent offline probes passed 24 boundary assertions and three integration
+assertions covering native Fetch normalization, ownership, sticky refusals, credentials and
+SSE framing. No source, branch, provider artifact or network call changed during review.
+
+Fresh author LLM coverage also passes: statements/lines **97.51%**, branches **93.77%**,
+functions **98.20%**; the strict exchange module reaches **98.24%** statements/lines,
+**90.50%** branches and **100%** functions. This is package coverage, not whole-W8 coverage.
+
+**Step 2 is accepted.** Its substrate controls and all verified review findings are closed.
+This documentation-only checkpoint changes no runtime source. Proceed to Step 3's actual
+installed-SDK static request matrix and independent production-lowering mutations. CR-81/82,
+Steps 3–7 and whole-W8 publication remain open.
 
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High
 A recorded response carries status, content type and body only; replay checks that the request body is parseable
