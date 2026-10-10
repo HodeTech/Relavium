@@ -55,10 +55,11 @@ merged too (PR #85, 2026-08-28).
 > W7 has no implementation, provider, credential, billing or user-decision prerequisite left.
 > PR #90 is ready for maintainer review and unmerged; W8 and existing approved limits remain open.
 
-> **Publication quality-gate follow-up, 2026-10-10:** both five-job GitHub CI runs pass at `a733bdba`.
-> [Four new Sonar labels](../reviews/2026-10-10T13-22-20-w7-publication-sonar-author-review.md) have bounded tool corrections and causal controls;
-> two NEW complete clean cumulative rounds and the next published-head gates remain required.
-> No provider/user prerequisite or shipping-runtime change is involved.
+> **Publication tool corrections accepted, 2026-10-10:** [two NEW complete clean cumulative rounds](../reviews/2026-10-10T13-35-14-w7-publication-sonar-round-2-review.md)
+> independently verify all four Sonar-label dispositions, preserved UTF-16 ordering and OS-owned Git
+> dispatch with PATH-trap causal controls. Shipping production/tests remain unchanged. Final local CI
+> and exact published-head GitHub/Sonar checks are reported in PR #90; the prior failed analysis stays recorded.
+> W7 has no implementation, capture, credential, billing or user-decision prerequisite left.
 
 ## Historical W7 implementation checkpoints
 

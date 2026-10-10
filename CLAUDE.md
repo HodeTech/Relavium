@@ -127,7 +127,8 @@ stay in [deferred-tasks.md](docs/roadmap/deferred-tasks.md); W8 and the phase re
 billing setup, credential or provider capture is pending.
 
 **Post-closure corrections are independently accepted, 2026-10-10:** core, CLI/DB and tooling/docs
-each have two NEW clean complete cumulative review rounds. The [post-closure register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
+each have two NEW clean complete cumulative review rounds. The supplemental publication-tool
+correction also has two NEW complete clean rounds. The [post-closure register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
 joins every report disposition, new permanent/causal evidence and current gates. Published-head checks
 are reported in PR #90, which remains ready for review and unmerged. No W7 implementation, provider,
 billing, key or user decision is pending.

@@ -4912,3 +4912,18 @@ exact new published-head gates are required before this supplemental increment i
 The [publication correction cumulative round 1](../../reviews/2026-10-10T13-29-08-w7-publication-sonar-round-1-review.md) records first NEW clean complete cumulative round; another NEW round and published-head gates remain required.
 
 The [publication correction cumulative round 2](../../reviews/2026-10-10T13-35-14-w7-publication-sonar-round-2-review.md) records second NEW clean complete cumulative round accepts the publication correction; exact published-head gates remain required.
+
+#### Publication correction acceptance — 2026-10-10
+
+[Round 2](../../reviews/2026-10-10T13-35-14-w7-publication-sonar-round-2-review.md) accepts the complete supplemental tool increment after two NEW
+complete clean cumulative rounds, each with two independent agents and Parent artifact/freeze audits.
+Every one of the four exact Sonar keys has a source-level disposition; no issue is bulk waived. The
+explicit comparison preserves UTF-16 ordering. The actual diagnostic bypasses inherited Git lookup;
+separate external removal enters the PATH trap and fails. Six causal interventions/restored 59 cases,
+all eleven replay guards and reordered positives independently pass. Shipping production/tests and
+fresh 447-file / 9,512-pass / eleven-existing-skip coverage remain unchanged; tools are separately tested.
+
+The failed `a733bdba` Sonar analysis remains evidence, alongside its two successful five-job CI runs.
+Final local CI and exact next published-head checks are recorded in PR #90, never inferred from an old
+head. W7 and all correction increments are accepted on `development`; no new W7 task is deferred.
+PR #90 is ready for maintainer review and unmerged. No provider/key/billing operation is needed.
