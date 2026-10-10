@@ -354,8 +354,8 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         // the natural home and is the wrong one: it wraps the MESSAGE and TOKEN writes, while the session COST is
         // real even for a failed or aborted turn (the engine never decrements it). A cost write behind that gate
         // would silently break the invariant on every errored turn. Writing per event also closes a live hole: a
-        // manual `/compact` whose summariser BILLED and then FAILED emits no compaction/turn terminal at all, so its
-        // real spend would otherwise sit unflushed forever.
+        // manual `/compact` can bill and then fail without a user-turn terminal. Its failed-compaction
+        // event closes the visible moment, while this per-attempt write preserves the actual spend.
         persistDurably(() => {
           deps.store.recordSessionCost({
             id: deps.uuid(),

@@ -401,6 +401,8 @@ export interface SessionDeps {
   readonly onCompactionStart?: (info: {
     readonly reason: SessionCompactionReason;
     readonly windowUnknown: boolean;
+    /** The current operation only; a queued surface publication must check it before rendering. */
+    readonly signal: AbortSignalLike;
   }) => void | Promise<void>;
   /** The auto-compaction trigger fraction (`[chat].compact_threshold`; absent ⇒ {@link DEFAULT_COMPACT_THRESHOLD}). */
   readonly compactThreshold?: number;
@@ -1476,8 +1478,14 @@ export class AgentSession {
                   }),
                 );
                 // The surface owns visible delivery; a failed acknowledgement admits no provider call.
-                await observe(() =>
-                  this.#deps.onCompactionStart?.({ reason, windowUnknown: windows.unknown }),
+                await awaitCompactionDisclosure(signal, () =>
+                  observe(() =>
+                    this.#deps.onCompactionStart?.({
+                      reason,
+                      windowUnknown: windows.unknown,
+                      signal,
+                    }),
+                  ),
                 );
               }
               checkCancelled();
@@ -2019,6 +2027,29 @@ function tailFromUserBoundary(messages: readonly LlmMessage[], maxKeep: number):
     if (messages[i]?.role === 'user') return messages.slice(i);
   }
   return [];
+}
+
+/** Cancellation releases an unused admission without waiting for a blocked terminal write/flush.
+ * Promise.race observes the late acknowledgement too; its completion cannot resume provider entry. */
+async function awaitCompactionDisclosure(
+  signal: AbortSignalLike,
+  publish: () => Promise<void>,
+): Promise<void> {
+  let onAbort = (): void => undefined;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(new AgentTurnError('cancelled', 'compaction cancelled', false));
+    signal.addEventListener('abort', onAbort);
+  });
+  try {
+    const acknowledgement = Promise.resolve().then(() => {
+      if (signal.aborted) throw new AgentTurnError('cancelled', 'compaction cancelled', false);
+      return publish();
+    });
+    if (signal.aborted) onAbort();
+    await Promise.race([acknowledgement, cancelled]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
 }
 
 /**

@@ -115,4 +115,42 @@ describe('W7 compaction presentation and authoritative footer window', () => {
     expect(captured.err()).toContain('summarizing');
     expect(captured.err()).toContain('budget refused');
   });
+
+  it('reports the actual fallback trim after failed summarisation on plain and interactive surfaces', () => {
+    const captured = captureIo(),
+      print = makePlainPrinter(captured.io);
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    store.apply(started);
+    const events = [
+      event({ type: 'session:compacting', reason: 'auto-threshold', sequenceNumber: 1 }),
+      event({
+        type: 'session:compaction_failed',
+        reason: 'auto-threshold',
+        sequenceNumber: 2,
+        error: { code: 'provider_unavailable', message: 'safe', retryable: false },
+      }),
+      event({
+        type: 'session:trimmed',
+        reason: 'auto-fallback',
+        sequenceNumber: 3,
+        droppedMessageCount: 4,
+        keptMessageCount: 2,
+        keptTurnCount: 1,
+      }),
+    ];
+    for (const item of events) {
+      print(item);
+      store.apply(item);
+    }
+    expect(captured.out()).toBe('');
+    expect(captured.err()).toContain('trimmed 4 older message(s) instead (keeping the last 2)');
+    expect(captured.err()).not.toContain('unchanged');
+    const notices = store
+      .getSnapshot()
+      .state.transcript.filter((item) => item.role === 'notice')
+      .map((item) => item.text)
+      .join('\n');
+    expect(notices).toContain('trimmed 4');
+    expect(notices).not.toContain('unchanged');
+  });
 });

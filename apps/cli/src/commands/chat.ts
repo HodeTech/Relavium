@@ -499,19 +499,21 @@ export const defaultReplLifecycle: ReplLifecycle = {
  * the view store, so a notice pushed there would vanish silently ({@link liveNoticeSinkFor}).
  */
 let liveSessionNotice: ((text: string) => void) | undefined;
-let liveCompactionNotice: ((text: string) => Promise<void>) | undefined;
+let liveCompactionNotice: ((text: string, isCancelled: () => boolean) => Promise<void>) | undefined;
 
 function compactionStartNotice(
   io: CliIo,
 ): NonNullable<BuildChatSessionOptions['onCompactionStart']> {
-  return async ({ reason, windowUnknown }) => {
+  return async ({ reason, windowUnknown, signal }) => {
+    if (signal.aborted) return;
     if (windowUnknown) {
       if (liveCompactionNotice !== undefined)
-        await liveCompactionNotice(COMPACTION_UNKNOWN_WINDOW_NOTICE);
+        await liveCompactionNotice(COMPACTION_UNKNOWN_WINDOW_NOTICE, () => signal.aborted);
       else await io.writeErrAcknowledged(`${COMPACTION_UNKNOWN_WINDOW_NOTICE}\n`);
     }
-    // Slash commands run outside the plain turn-event iterator. Announce their actual admission here;
-    // automatic paths use that iterator, and interactive surfaces already observe the engine moment.
+    if (signal.aborted) return;
+    // Manual progress is acknowledged here, including drivers without an idle event subscription.
+    // The plain printer leaves that manual moment to this callback; automatic events remain there.
     if (reason === 'manual' && liveCompactionNotice === undefined)
       await io.writeErrAcknowledged('compacting: summarizing the conversation…\n');
   };
@@ -2099,14 +2101,16 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       startSession,
       onActivated: async (isActive, flushNotice) => {
         liveCompactionNotice = interactive
-          ? async (text) => {
+          ? async (text, isCancelled) => {
+              if (isCancelled()) return;
               if (!isActive() || flushNotice === undefined)
                 throw new Error('The chat renderer is not ready.');
               await flushNotice(() => {
+                if (isCancelled()) return;
                 if (!isActive()) throw new Error('The chat renderer is not ready.');
                 store.notice(text);
               });
-              if (!isActive()) throw new Error('The chat renderer is not ready.');
+              if (!isCancelled() && !isActive()) throw new Error('The chat renderer is not ready.');
             }
           : undefined;
         await wiring.onActivated?.(isActive, flushNotice);
@@ -2665,14 +2669,14 @@ export function makePlainPrinter(
         return;
       }
       case 'session:compacting':
-        io.writeErr('compacting: summarizing the conversation…\n');
+        if (event.reason !== 'manual') io.writeErr('compacting: summarizing the conversation…\n');
         return;
       case 'session:compaction_failed':
         if (event.reason !== 'manual')
           io.writeErr(
             event.error.code === 'budget_exceeded'
               ? 'Compaction budget refused — the conversation is unchanged.\n'
-              : 'Compaction did not complete — the conversation is unchanged.\n',
+              : 'Compaction did not complete — no summary was installed.\n',
           );
         return;
       case 'session:compaction_budget_refused':
@@ -2684,6 +2688,13 @@ export function makePlainPrinter(
         if (event.reason !== 'manual')
           io.writeErr(
             `Context compacted — ~${event.tokensBefore} → ~${event.tokensAfter} tokens.\n`,
+          );
+        return;
+      case 'session:trimmed':
+        if (event.reason === 'auto-fallback')
+          io.writeErr(
+            `Auto-compaction summary failed — trimmed ${event.droppedMessageCount} older message(s) instead ` +
+              `(keeping the last ${event.keptMessageCount}).\n`,
           );
         return;
       case 'session:turn_completed': {

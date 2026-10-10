@@ -313,8 +313,6 @@ export interface AgentTurnResult {
  * the run-path adapter maps it to a `NodeOutcome.failed`. The internal correlation id rides the
  * event, never this message.
  */
-const recoverableOverflowEntries = new WeakMap<object, FallbackPlanEntry>();
-
 export class AgentTurnError extends Error {
   override readonly name = 'AgentTurnError';
   /**
@@ -683,13 +681,7 @@ async function streamOneTurn(
     await params.whenReady?.();
     foldChunk(chunk, acc, params, getModel);
     if (chunk.type === 'error') {
-      throwMappedChainError(
-        chunk.error,
-        turnCommitted,
-        usage.preAttemptFailure,
-        params,
-        getModel(),
-      );
+      throwMappedChainError(chunk.error, turnCommitted, usage, params, getModel());
     }
     if (chunk.type === 'stop') stopReason = chunk.stopReason;
   }
@@ -710,7 +702,7 @@ async function generateOneTurn(
   request: LlmRequest,
   params: AgentTurnParams,
   wasObserverFailure: (error: unknown) => boolean,
-  preAttemptFailure: () => { readonly error: unknown } | undefined,
+  usage: TurnUsageAccumulator,
   getModel: () => string,
 ): Promise<{ content: ContentPart[]; stopReason: StopReason }> {
   try {
@@ -727,7 +719,7 @@ async function generateOneTurn(
       throw err;
     }
     if (diagnostic !== undefined)
-      throwMappedChainError(diagnostic, false, preAttemptFailure(), params, getModel());
+      throwMappedChainError(diagnostic, false, usage, params, getModel());
     throw err;
   }
 }
@@ -735,14 +727,15 @@ async function generateOneTurn(
 /** Map a chain failure — a streamed `error` chunk or a thrown `generate()` error — into the turn taxonomy. */
 function throwMappedChainError(
   error: LlmError,
-  turnCommitted = false,
-  preAttemptFailure: { readonly error: unknown } | undefined,
+  turnCommitted: boolean,
+  usage: TurnUsageAccumulator,
   params: AgentTurnParams,
   model: string,
 ): never {
   // Preserve host/money identities without letting hostile prototype or diagnostic access replace them.
   // Shared commitment/realised barriers retain the failing writer's node, rather than this observer's node.
   const cause = error.cause;
+  const preAttemptFailure = usage.preAttemptFailure;
   let mapped:
     | { readonly kind: 'original' }
     | { readonly kind: 'budget'; readonly message: string }
@@ -780,7 +773,7 @@ function throwMappedChainError(
     );
     mapped.recoverableOverflow = !turnCommitted && error.contentCommitted !== true;
     if (entry !== undefined && mapped.recoverableOverflow)
-      recoverableOverflowEntries.set(mapped, entry);
+      usage.overflow = { error: mapped, entry };
     throw mapped;
   }
   throw new AgentTurnError(
@@ -1487,9 +1480,11 @@ export async function captureAgentTurnOutcome(
       input: acc.input + (acc.observedStopUsage?.input ?? 0),
       output: acc.output + (acc.observedStopUsage?.output ?? 0),
     };
+    // An error returned by an earlier call may be rethrown by a current host hook. Only this
+    // capture's private mapping can authorise recovery; public class/identity metadata cannot.
     const overflowEntry =
-      (typeof error === 'object' && error !== null) || typeof error === 'function'
-        ? recoverableOverflowEntries.get(error)
+      acc.overflow !== undefined && Object.is(acc.overflow.error, error)
+        ? acc.overflow.entry
         : undefined;
     return {
       kind: 'failed',
@@ -1560,6 +1555,8 @@ interface TurnUsageAccumulator {
   attemptFailure?: { readonly error: unknown };
   /** Exact escape from this turn's current pre-attempt budget/money boundary. */
   preAttemptFailure?: { readonly error: unknown };
+  /** Provider-origin overflow mapped during this exact capture, never shared across invocations. */
+  overflow?: { readonly error: AgentTurnError; readonly entry: FallbackPlanEntry };
   /** A terminal usage chunk observed before readiness/folding, not yet consumed by onAttempt. */
   observedStopUsage?: { readonly input: number; readonly output: number };
 }
@@ -1876,7 +1873,7 @@ async function driveAgentTurn(
         (error) =>
           (usage.attemptFailure !== undefined && Object.is(usage.attemptFailure.error, error)) ||
           (usage.observerFailure !== undefined && Object.is(usage.observerFailure.error, error)),
-        () => usage.preAttemptFailure,
+        usage,
         () => activeModel,
       );
       throwIfAborted(params.signal); // cancel-wins independent of adapter cooperation (mirrors the stream path)

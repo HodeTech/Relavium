@@ -543,7 +543,7 @@ export function reduceSessionEvent(
               base,
               event.error.code === 'budget_exceeded'
                 ? 'Compaction budget refused — the conversation is unchanged.'
-                : 'Compaction did not complete — the conversation is unchanged.',
+                : 'Compaction did not complete — no summary was installed.',
             )),
         compacting: false,
       };

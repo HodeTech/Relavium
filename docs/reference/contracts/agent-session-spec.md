@@ -138,7 +138,11 @@ pending user, so the persister advances only the dropped completed-history bound
 For manual unknown/mixed-window compaction, each pass additionally respects the fixed 16,384-token
 soft input bound. This is an operational bound, not model metadata or a fit guarantee. The
 surface acknowledges a fixed unknown-window disclosure through `SessionDeps.onCompactionStart`
-before the first admitted call can egress. A failed acknowledgement sends nothing. Automatic
+before the first admitted call can egress. A failed acknowledgement sends nothing. The callback
+receives the current operation's signal and checks it before queued publication. Cancellation
+races a pending acknowledgement, releases unused admission and returns the session to idle
+without waiting for the terminal sink. Late acknowledgement/rejection is observed and grants
+no egress authority. Automatic
 paths never use the soft bound. All opened moments end with success, one failed-moment event,
 or terminal session cancellation; first-admission refusal opens no moment.
 
@@ -169,7 +173,8 @@ provider-authored message. The engine names the attempted model, its authoritati
 fact is true only before any tool round or committed content; it is not persisted or emitted.
 Before content/tool commitment, one genuine overflow may invoke compaction and one fresh measured
 retry when automatic permission and an authoritative applicable window allow it. Observer failures
-cannot forge this private identity-bound evidence. A failed/skipped prior pre-send operation suppresses
+cannot forge this private invocation-bound evidence, even by rethrowing a genuine error from a
+previous call. A failed/skipped prior pre-send operation suppresses
 recovery. Nothing to fold or ordinary recovery failure retains the original overflow; budget refusal
 settles `budget_exceeded`. Retry overflow is final. Main-attempt usage is accumulated across the two
 attempts; summariser spend remains separate and never consumes a user-turn slot. A turn

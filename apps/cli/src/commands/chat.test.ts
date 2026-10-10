@@ -33,7 +33,8 @@ import { selectChatDriver } from '../render/tui/chat-ink.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
 import { formatTurnSummary, errorRecoveryHint } from '../render/tui/chat-projection.js';
-import { captureIo, parseNdjson } from '../test-support.js';
+import { captureIo, parseNdjson, OwnedTtyOutput } from '../test-support.js';
+import { processIo } from '../process/io.js';
 import {
   DISABLE_MOUSE,
   ENABLE_MOUSE,
@@ -596,6 +597,113 @@ describe('chatCommand', () => {
     // The append-only marker was persisted (role:'system', role-filtered boundary), full transcript intact.
     const marker = store.loadFull(sessionId)?.messages.find((m) => m.role === 'system');
     expect(marker?.compaction).toEqual({ droppedThroughSequence: 1 });
+  });
+
+  it('announces one manual progress line through the actual plain event driver', async () => {
+    const { d, err } = deps([], [textTurn('a1'), textTurn('a2'), textTurn('summary')]);
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        drive: drivePlain,
+        io: { ...d.io, stdin: Readable.from(['q1\nq2\n/compact\n/exit\n']) },
+      },
+    );
+    expect(err().match(/compacting: summarizing/g)).toHaveLength(1);
+  });
+
+  it('Esc releases shipping manual compaction before a held native warning ACK and the next message works', async () => {
+    class HeldOutput extends OwnedTtyOutput {
+      complete: (() => void) | undefined;
+      override _write(
+        _chunk: unknown,
+        _encoding: BufferEncoding,
+        callback: (error?: Error | null) => void,
+      ): void {
+        this.complete = () => {
+          this.complete = undefined;
+          callback();
+        };
+      }
+    }
+    const stderr = new HeldOutput();
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'stderr');
+    if (descriptor === undefined) throw new Error('expected stderr descriptor');
+    const native = (() => {
+      try {
+        Object.defineProperty(process, 'stderr', { configurable: true, get: () => stderr });
+        return processIo();
+      } finally {
+        Object.defineProperty(process, 'stderr', descriptor);
+      }
+    })();
+    const { d } = deps([], [textTurn('first'), textTurn('second'), textTurn('next')]);
+    const providers = d.providers;
+    if (providers === undefined) throw new Error('expected offline resolver');
+    const provider = providers.resolveProvider('anthropic');
+    if (provider === undefined) throw new Error('expected offline provider');
+    let reached = (): void => undefined,
+      calls = 0;
+    const entered = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    try {
+      await chatCommand(
+        { agent: undefined },
+        {
+          ...d,
+          providers: {
+            keyFor: providers.keyFor,
+            resolveProvider: () => ({
+              ...provider,
+              customEndpoint: true,
+              stream: (...args) => {
+                calls++;
+                return provider.stream(...args);
+              },
+            }),
+          },
+          io: {
+            ...d.io,
+            writeErrAcknowledged: (text) => {
+              const pending = native.writeErrAcknowledged(text);
+              reached();
+              return pending;
+            },
+          },
+          drive: async (ctx) => {
+            ctx.startSession();
+            await ctx.onActivated?.(() => !ctx.shouldStop());
+            await ctx.processLine('one');
+            await ctx.processLine('two');
+            let settled = false;
+            const compaction = ctx.processLine('/compact').then(() => {
+              settled = true;
+            });
+            try {
+              await entered;
+              ctx.onAbort?.();
+              await new Promise<void>((resolve) => setImmediate(resolve));
+              expect(settled).toBe(true);
+              expect(calls).toBe(2);
+              await ctx.processLine('next');
+              expect(calls).toBe(3);
+            } finally {
+              stderr.complete?.();
+              await compaction;
+            }
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            expect(stderr.listenerCount('error')).toBe(0);
+            expect(stderr.listenerCount('close')).toBe(0);
+            await ctx.processLine('/exit');
+            return { kind: 'exit' };
+          },
+        },
+      );
+    } finally {
+      stderr.complete?.();
+      stderr.destroy();
+    }
   });
 
   it('/trim takes a single FREE positional value — rejects `/trim 2 3` (ADR-0062)', async () => {

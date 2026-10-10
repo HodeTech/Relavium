@@ -9,8 +9,9 @@ import {
   type StreamChunk,
 } from '@relavium/llm';
 import { AgentSession, type SessionDeps, type SessionStreamEvent } from './agent-session.js';
-import { createAbortController } from './execution-host.js';
+import { createAbortController, createInMemoryEffectJournalStore } from './execution-host.js';
 import { BudgetPauseError } from './budget-governor.js';
+import { captureAgentTurnOutcome, DEFAULT_AGENT_TURN_LIMITS } from './agent-turn.js';
 
 const text = (value: string): LlmMessage => ({
   role: 'user',
@@ -165,7 +166,14 @@ function fixture(
       conservativeCostMicrocents: 0,
     },
   );
-  return { session, events, requests, counts: () => ({ summaryCalls, mainCalls, passes }) };
+  return {
+    session,
+    events,
+    requests,
+    provider,
+    deps,
+    counts: () => ({ summaryCalls, mainCalls, passes }),
+  };
 }
 
 describe('W7 measured atomic compaction and active-entry budget outcomes', () => {
@@ -358,6 +366,26 @@ describe('W7 compaction authority, policy and atomic recovery controls', () => {
       h.events.some((e) => e.type === 'session:compacting' && e.reason === 'auto-threshold'),
     ).toBe(false);
   });
+  for (const enabled of [false, true])
+    it(`after-turn disable preserves a real next-request threshold, enabled=${enabled}`, async () => {
+      const h = fixture({
+        history: [text('x'.repeat(17600)), text('y'.repeat(17600))],
+        window: 12000,
+        threshold: 0.8,
+        memory: { type: 'summary' },
+        afterTurn: enabled,
+        mainText: 'a'.repeat(4000),
+      });
+      await h.session.sendMessage('pending');
+      expect(h.requests[0]?.maxTokens).toBe(64);
+      expect(h.counts()).toMatchObject({ mainCalls: 1, summaryCalls: enabled ? 2 : 0 });
+      expect(h.events.some((e) => e.type === 'session:compacting' && e.reason === 'pre-send')).toBe(
+        false,
+      );
+      expect(
+        h.events.some((e) => e.type === 'session:compacted' && e.reason === 'auto-threshold'),
+      ).toBe(enabled);
+    });
   for (const pass of [1, 2])
     it(`empty summary pass ${pass} leaves old history installed and closes exactly one moment`, async () => {
       const h = fixture({
@@ -565,7 +593,9 @@ describe('W7 acknowledged disclosure, cap priority and hard turn boundaries', ()
       auto: false,
       deps: {
         onCompactionStart: async (info) => {
-          expect(info).toEqual({ reason: 'manual', windowUnknown: true });
+          expect(info.reason).toBe('manual');
+          expect(info.windowUnknown).toBe(true);
+          expect(info.signal.aborted).toBe(false);
           entered();
           await delivered;
         },
@@ -574,6 +604,9 @@ describe('W7 acknowledged disclosure, cap priority and hard turn boundaries', ()
     const running = h.session.compact();
     try {
       await shown;
+      // Drain provider-entry microtasks while the acknowledgement is still held. Checking in
+      // the callback's own microtask would also pass if the engine accidentally stopped awaiting it.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
       expect(h.counts().summaryCalls).toBe(0);
     } finally {
       acknowledge();
@@ -657,4 +690,130 @@ describe('W7 acknowledged disclosure, cap priority and hard turn boundaries', ()
       error: { code: 'turn_limit' },
     });
   });
+});
+
+describe('W7 current-invocation overflow authority and cancellable disclosure', () => {
+  it('does not borrow a previous genuine overflow when a current admission rethrows its error', async () => {
+    const old = fixture({ history: [text('old')], window: 10000, overflow: true });
+    const outcome = await captureAgentTurnOutcome({
+      nodeId: 'earlier-call',
+      messages: [text('earlier')],
+      planEntries: [{ provider: old.provider, model: 'compaction-fixture', maxAttempts: 1 }],
+      chainCapabilities: { keyFor: old.deps.keyFor, sleep: old.deps.sleep },
+      emit: () => undefined,
+      signal: createAbortController().signal,
+      registry: old.deps.registry,
+      dispatchContext: {
+        nodeId: 'earlier-call',
+        grantedToolIds: new Set(),
+        config: {},
+        toolPolicy: {},
+        fsScope: 'sandboxed',
+        gateApproved: false,
+        effects: createInMemoryEffectJournalStore().for({
+          kind: 'session',
+          sessionId: 'earlier-call',
+          turn: 1,
+        }),
+        effectSlot: 0,
+      },
+      limits: DEFAULT_AGENT_TURN_LIMITS,
+    });
+    expect(outcome.kind).toBe('failed');
+    if (outcome.kind !== 'failed') throw new Error('expected prior genuine overflow');
+    expect(outcome.overflowEntry).toBeDefined();
+    expect(outcome.overflowEntry?.provider.contextLimit?.('compaction-fixture')).toBe(10000);
+    const h = fixture({
+      history: [text('old'), text('middle'), text('latest')],
+      window: 10000,
+      deps: {
+        preEgress: (info) => {
+          if (info.maxTokens !== 4096) throw outcome.error;
+        },
+      },
+    });
+    await h.session.sendMessage('current');
+    expect(h.requests).toHaveLength(0);
+    expect(h.events.some((e) => e.type === 'session:compacting')).toBe(false);
+    expect(h.events.find((e) => e.type === 'session:turn_completed')).toMatchObject({
+      error: { code: 'context_overflow' },
+    });
+  });
+
+  for (const entry of ['manual', 'pre-send', 'recovery', 'after-turn'] as const)
+    for (const terminal of [false, true])
+      for (const rejectLate of [false, true])
+        it(`${entry} held disclosure ${terminal ? 'cancel' : 'Esc'} releases admission before late ${rejectLate ? 'rejection' : 'acknowledgement'}`, async () => {
+          let enter = (): void => undefined,
+            finish = (): void => undefined;
+          const entered = new Promise<void>((resolve) => {
+            enter = resolve;
+          });
+          const held = new Promise<void>((resolve, reject) => {
+            finish = () => (rejectLate ? reject(new Error('late surface refusal')) : resolve());
+          });
+          let released = 0,
+            notifications = 0,
+            settled = false;
+          const after = entry === 'after-turn';
+          const h = fixture({
+            history: after
+              ? [text('x'.repeat(17600)), text('y'.repeat(17600))]
+              : [text('x'.repeat(17600)), text('middle'), text('latest')],
+            window: 12000,
+            threshold: entry === 'pre-send' ? 0.3 : after ? 0.8 : 1,
+            afterTurn: after,
+            mainText: after ? 'a'.repeat(4000) : 'reply',
+            overflow: entry === 'recovery' ? 1 : false,
+            deps: {
+              preEgress: (info) =>
+                info.maxTokens === 4096
+                  ? {
+                      settle: () => undefined,
+                      settleAtReservedEstimate: () => undefined,
+                      release: () => {
+                        released++;
+                      },
+                    }
+                  : undefined,
+              onCompactionStart: async ({ signal }) => {
+                if (++notifications > 1) return;
+                enter();
+                await held;
+                expect(signal.aborted).toBe(true);
+              },
+            },
+          });
+          const running = (
+            entry === 'manual' ? h.session.compact() : h.session.sendMessage('pending-unique')
+          ).then(() => {
+            settled = true;
+          });
+          try {
+            await entered;
+            if (terminal) h.session.cancel();
+            else h.session.abort();
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            expect(settled).toBe(true);
+            expect(released).toBe(1);
+            expect(h.counts().summaryCalls).toBe(0);
+            expect(
+              h.events.some((e) => e.type === 'session:compacted' || e.type === 'session:trimmed'),
+            ).toBe(false);
+            expect(h.events.filter((e) => e.type === 'session:compaction_failed')).toHaveLength(
+              terminal ? 0 : 1,
+            );
+          } finally {
+            finish();
+            await running;
+          }
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          expect(h.counts().summaryCalls).toBe(0);
+          if (!terminal) {
+            await h.session.sendMessage('next-unique');
+            expect(
+              h.events.filter((e) => e.type === 'session:turn_completed').at(-1),
+            ).toMatchObject({ stopReason: 'stop' });
+          }
+        });
 });
