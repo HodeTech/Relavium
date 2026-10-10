@@ -444,9 +444,11 @@ export function createCheckpointReconstructor(): {
     nodeLife: new NodeLifeClockReducer(),
   };
 
-  let cumulativeUnpricedCalls = 0;
+  let ledgerUnpricedCalls = 0;
+  let snapshotUnpricedCalls = 0;
   const apply = (event: RunEvent): void => {
-    cumulativeUnpricedCalls = Math.max(cumulativeUnpricedCalls, event.cumulativeUnpricedCalls ?? 0);
+    if (event.type === 'cost:attempt_settled' && event.priced === false) ledgerUnpricedCalls++;
+    snapshotUnpricedCalls = Math.max(snapshotUnpricedCalls, event.cumulativeUnpricedCalls ?? 0);
     coverage.apply(event);
     acc.lastSequenceNumber = Math.max(acc.lastSequenceNumber, event.sequenceNumber);
     if (event.type === 'cost:updated') {
@@ -508,7 +510,9 @@ export function createCheckpointReconstructor(): {
       .map(([id]) => id);
     return {
       usageCoverage: coverage.snapshot(),
-      cumulativeUnpricedCalls,
+      // Legacy rows carry explicit price gaps without an envelope; native media may have only a snapshot.
+      // A queued snapshot may already include later ledger rows, so never add these two counts.
+      cumulativeUnpricedCalls: Math.max(ledgerUnpricedCalls, snapshotUnpricedCalls),
       schemaVersion: CHECKPOINT_SCHEMA_VERSION,
       runStatus: acc.runStatus,
       workflowId: acc.workflowId,
