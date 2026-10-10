@@ -4789,3 +4789,11 @@ Required remote CI, coverage and SonarCloud pass at that source. One push Window
 two default-5-second native fixture timeouts while the same-source PR Windows run passed.
 The final harness correction and final documentation checks are recorded by Step 12; the failed
 run is not erased or represented as a pass. Offline smokes make no new paid request.
+
+### Final Step 12 — first independent round, 2026-10-10
+
+[Round 1](../../reviews/2026-10-10T02-30-00-w7-step-12-round-1-review.md) independently joins all six CRs, thirty-five submitted
+review references and the full canonical checklist. No new scoped material finding is established.
+The baseline MCP fragment is corrected after freeze release. The same-head required PR CI
+stress/RPC failure and bounded unchanged-source rerun remain explicitly qualified; final gate
+resolution and the second fresh complete review are required before closing the six items.
