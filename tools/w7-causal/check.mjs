@@ -7,8 +7,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { systemTool } from '../budget-replay-compat/system-tools.mjs';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const gitExecutable = systemTool('git');
 const owned = mkdtempSync(join(tmpdir(), 'relavium-w7-causal-'));
 console.log(`W7 scoped causal evidence: ${owned}`);
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -96,11 +98,14 @@ writeFileSync(
   join(owned, 'source-manifest.json'),
   `${JSON.stringify(
     {
-      head: execFileSync('git', ['rev-parse', 'HEAD'], {
+      head: execFileSync(gitExecutable, ['rev-parse', 'HEAD'], {
         cwd: repository,
         encoding: 'utf8',
       }).trim(),
-      status: execFileSync('git', ['status', '--porcelain'], { cwd: repository, encoding: 'utf8' }),
+      status: execFileSync(gitExecutable, ['status', '--porcelain'], {
+        cwd: repository,
+        encoding: 'utf8',
+      }),
       files: inventory,
     },
     null,

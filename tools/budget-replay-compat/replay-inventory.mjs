@@ -23,11 +23,16 @@ const requiredControls = [
   'actual-ordinary-legacy-gate-positive-control',
 ];
 const key = ({ label, cut }) => JSON.stringify([label, cut]);
+function compareKeys(left, right) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
 function exactUnique(actual, required, label) {
   assert.equal(new Set(actual).size, actual.length, `${label}: duplicate coverage`);
   assert.deepEqual(
-    [...actual].sort(),
-    [...required].sort(),
+    [...actual].sort(compareKeys),
+    [...required].sort(compareKeys),
     `${label}: incomplete or unexpected coverage`,
   );
 }
