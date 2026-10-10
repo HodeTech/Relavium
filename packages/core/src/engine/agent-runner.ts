@@ -37,10 +37,13 @@ import {
   LlmConfigError,
   ProviderInvocationWork,
   LlmProviderError,
+  MediaGenResultSchema,
+  MediaJobStatusSchema,
   ResponseFormatSchema,
   ToolDefSchema,
   estimateMediaCost,
   makeLlmError,
+  snapshotLlmError,
   type FallbackPlanEntry,
   type LlmMessage,
   type LlmInvocationOptions,
@@ -333,9 +336,11 @@ async function pollMediaJobThroughDeps(
   }
   const work = options === undefined ? undefined : new ProviderInvocationWork(options, signal);
   let status: MediaJobStatus;
+  let primaryFailure = false;
   try {
     // Aggregate transfer can synchronously cancel; the captured provider has not been entered yet.
     if (signal.aborted) {
+      primaryFailure = true;
       return {
         state: 'failed',
         error: makeLlmError({
@@ -345,11 +350,24 @@ async function pollMediaJobThroughDeps(
         }),
       };
     }
-    status = await (work === undefined
-      ? poll(job.jobId, key, signal)
-      : poll(job.jobId, key, signal, work));
+    const captured = MediaJobStatusSchema.safeParse(
+      await (work === undefined
+        ? poll(job.jobId, key, signal)
+        : poll(job.jobId, key, signal, work)),
+    );
+    if (!captured.success)
+      throw new AgentTurnError(
+        'internal',
+        'media poll returned an unrecognized job state or invalid payload',
+        false,
+      );
+    status = captured.data;
+    primaryFailure = status.state === 'failed';
+  } catch (error) {
+    primaryFailure = true;
+    throw captureProviderFailure(error);
   } finally {
-    work?.retire();
+    retireProviderInvocation(work, primaryFailure);
   }
   if (
     status.state === 'failed' &&
@@ -367,6 +385,31 @@ async function pollMediaJobThroughDeps(
     };
   }
   return status;
+}
+
+/** Detach typed diagnostics before caller cleanup; opaque host failures retain their exact identity. */
+function captureProviderFailure(error: unknown): unknown {
+  try {
+    return error instanceof LlmProviderError
+      ? new LlmProviderError(snapshotLlmError(error.llmError))
+      : error;
+  } catch {
+    // Reflection cannot replace the original unclassified failure.
+    return error;
+  }
+}
+
+function retireProviderInvocation(
+  work: ProviderInvocationWork | undefined,
+  primaryFailure: boolean,
+): void {
+  try {
+    work?.retire();
+  } catch (error) {
+    // Retirement has still aborted and positively joined quiet work. An established provider/
+    // cancellation diagnosis stays primary; a standalone cleanup fault remains loud and internal.
+    if (!primaryFailure) throw error;
+  }
 }
 
 // The agent arm's local `failed` factory — the parallel of the canonical one in
@@ -939,9 +982,9 @@ function mapGenerateMediaError(err: unknown, primary: FallbackPlanEntry): NodeOu
 
 /**
  * Validate a resolved `generateMedia` result against the seam contract and build the node outcome. The
- * adapter result is NOT re-parsed at this boundary, so the `MediaGenResult` exactly-one-of refine is enforced
- * explicitly: BOTH present would let the async `jobId` branch silently DISCARD `media`, NEITHER would leave no
- * output — both are a misbehaving/hand-built adapter result (internal), not an authoring error. An async
+ * submission captures the schema-validated result before retirement; these guards also enforce the
+ * `MediaGenResult` exactly-one-of invariant: BOTH present would let the async `jobId` branch silently
+ * DISCARD `media`, NEITHER would leave no output — both are a misbehaving/hand-built adapter result (internal), not an authoring error. An async
  * `jobId` → the engine's media-job handoff (Section D); a sync `media` part → the de-inlined `{ text:'', media }`
  * output plus the lone realized `cost:updated` (ADR-0045 §5).
  */
@@ -1366,6 +1409,7 @@ async function submitGenerativeMedia(
     }
   };
   let invocation: ProviderInvocationWork | undefined;
+  let primaryFailure = false;
   let stopped: { readonly error: Error; readonly outcome: NodeOutcome } | undefined;
   const invoke = (): Promise<MediaGenResult> => {
     invocation =
@@ -1396,17 +1440,27 @@ async function submitGenerativeMedia(
       ? generateMedia(request, key)
       : generateMedia(request, key, invocation);
   };
+  const captureResult = (
+    result: MediaGenResult,
+  ): { kind: 'ok'; result: MediaGenResult } | { kind: 'refused'; outcome: NodeOutcome } => {
+    const captured = MediaGenResultSchema.safeParse(result);
+    if (captured.success) return { kind: 'ok', result: captured.data };
+    primaryFailure = true;
+    return {
+      kind: 'refused',
+      outcome: failed('internal', 'generateMedia returned an invalid media/job result', false),
+    };
+  };
   try {
     const call = retain(invoke);
-    if (deadline === undefined) {
-      return { kind: 'ok', result: await call };
-    }
+    if (deadline === undefined) return captureResult(await call);
     const raced = await deadline.race(call);
     if (raced.outcome !== 'deadline') {
-      return { kind: 'ok', result: raced.value };
+      return captureResult(raced.value);
     }
     // `classify()` owns the label: a caller cancel that beat the timer stays `cancelled`, the same cancel-wins
     // precedence ADR-0036 gives the run and ADR-0082 §7 gives an attempt.
+    primaryFailure = true;
     return {
       kind: 'refused',
       outcome:
@@ -1423,11 +1477,12 @@ async function submitGenerativeMedia(
             ),
     };
   } catch (error) {
+    primaryFailure = true;
     if (stopped !== undefined && Object.is(error, stopped.error))
       return { kind: 'refused', outcome: stopped.outcome };
-    throw error;
+    throw captureProviderFailure(error);
   } finally {
-    invocation?.retire();
+    retireProviderInvocation(invocation, primaryFailure);
   }
 }
 

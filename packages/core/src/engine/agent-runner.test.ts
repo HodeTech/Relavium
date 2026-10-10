@@ -1454,8 +1454,8 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
   });
 
   it('fails internal on a BOTH-media-and-jobId result — the XOR is enforced, media is never silently discarded', async () => {
-    // The seam refine (MediaGenResultSchema) forbids both, but the adapter result is not re-parsed at the
-    // executor boundary; a hand-built result with both must fail loud (the async jobId branch would otherwise
+    // The seam refine (MediaGenResultSchema) forbids both, and capture at the
+    // executor boundary enforces it; a hand-built result with both must fail loud (the async jobId branch would otherwise
     // win and silently DROP the media), not produce a handle-less media_job nor a discarded image.
     const exec = createAgentNodeExecutor(
       genDeps(generativeProvider({ result: { media: image, jobId: 'job-x', raw: {} } })),

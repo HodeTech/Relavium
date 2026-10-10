@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { CostTracker } from './cost-tracker.js';
+import { ProviderInvocationWork } from './adapters/invocation-work.js';
 import { FallbackChain, type AttemptRecord, type FallbackChainOptions } from './fallback-chain.js';
 import { LlmProviderError, makeLlmError } from './llm-error.js';
 import type {
@@ -745,3 +747,127 @@ for (const mode of ['generate', 'stream'] as const)
       expect(attempts[0]?.providerInvoked).toBe(stopAt === 'live');
       if (stopAt !== 'live') expect(attempts[0]?.usage).toBeUndefined();
     });
+
+for (const mode of ['generate', 'stream'] as const)
+  for (const failed of [false, true])
+    for (const cleanup of ['live', 'mutate', 'throw'] as const)
+      it(`${mode} owns response evidence and joins retirement: failed=${failed}, cleanup=${cleanup}`, async () => {
+        const text = { type: 'text' as const, text: 'owned before cleanup' };
+        const counts = { inputTokens: 3, outputTokens: 2 };
+        const original = makeLlmError({
+          provider: 'openai',
+          kind: 'context_overflow',
+          message: 'original provider refusal',
+        });
+        const cleanupFailure = new Error('private caller cleanup failure');
+        let releases = 0;
+        const signal = {
+          aborted: false,
+          addEventListener: () => undefined,
+          removeEventListener: () => {
+            releases++;
+            if (cleanup === 'throw') throw cleanupFailure;
+            if (cleanup === 'mutate') {
+              text.text = 'cleanup mutation';
+              counts.inputTokens = 0;
+              counts.outputTokens = 0;
+            }
+          },
+        };
+        const tracked = tracking();
+        const attempts: AttemptRecord[] = [];
+        const p = source({
+          generate: () =>
+            failed
+              ? Promise.reject(new LlmProviderError({ ...original, usage: counts }))
+              : Promise.resolve({ content: [text], usage: counts, stopReason: 'stop' }),
+          stream: async function* () {
+            await Promise.resolve();
+            if (failed) yield { type: 'error', error: { ...original, usage: counts } };
+            else {
+              yield { type: 'text_delta', text: text.text };
+              yield { type: 'stop', stopReason: 'stop', usage: counts };
+            }
+          },
+        });
+        const c = chain(p, {
+          costTracker: new CostTracker(),
+          retainWork: tracked.retain,
+          onAttempt: (attempt) => {
+            attempts.push(attempt);
+          },
+        });
+        let errorKind: string | undefined;
+        if (mode === 'generate') {
+          try {
+            const output = await c.generate({ ...request, signal });
+            expect(output.content).toEqual([{ type: 'text', text: 'owned before cleanup' }]);
+            expect(output.usage).toEqual({ inputTokens: 3, outputTokens: 2 });
+          } catch (error) {
+            if (!(error instanceof LlmProviderError)) throw error;
+            errorKind = error.llmError.kind;
+          }
+        } else {
+          const chunks = await collect(c.stream({ ...request, signal }));
+          const error = chunks.find((chunk) => chunk.type === 'error');
+          if (error?.type === 'error') errorKind = error.error.kind;
+          if (!failed) {
+            expect(chunks.find((chunk) => chunk.type === 'text_delta')).toMatchObject({
+              text: 'owned before cleanup',
+            });
+            expect(chunks.find((chunk) => chunk.type === 'stop')).toMatchObject({
+              usage: { inputTokens: 3, outputTokens: 2 },
+            });
+          }
+        }
+        expect(errorKind).toBe(
+          failed ? 'context_overflow' : cleanup === 'throw' ? 'unknown' : undefined,
+        );
+        expect(releases).toBe(1);
+        expect(attempts).toHaveLength(1);
+        expect(attempts[0]).toMatchObject({
+          providerInvoked: true,
+          contentReceived: mode === 'generate' || !failed,
+          usage: { inputTokens: 3, outputTokens: 2 },
+        });
+        expect(attempts[0]?.cost?.costMicrocents).toBeGreaterThan(0);
+        await until(() => tracked.pending.size === 0);
+        expect(tracked.pending.size).toBe(0);
+      });
+
+it('captures generated content and accountable usage before invocation abort observers', async () => {
+  const text = { type: 'text' as const, text: 'original output' };
+  const usage = { inputTokens: 3, outputTokens: 2 };
+  let aborted = 0;
+  const tracked = tracking();
+  const attempts: AttemptRecord[] = [];
+  const c = chain(
+    source({
+      generate: (_request, _key, work) => {
+        if (!(work instanceof ProviderInvocationWork)) throw new Error('missing invocation scope');
+        work.signal.addEventListener('abort', () => {
+          aborted++;
+          text.text = 'abort mutation';
+          usage.inputTokens = 0;
+          usage.outputTokens = 0;
+        });
+        return Promise.resolve({ content: [text], usage, stopReason: 'stop' });
+      },
+    }),
+    {
+      retainWork: tracked.retain,
+      costTracker: new CostTracker(),
+      onAttempt: (attempt) => {
+        attempts.push(attempt);
+      },
+    },
+  );
+  const output = await c.generate(request);
+  expect(aborted).toBe(1);
+  expect(output.content).toEqual([{ type: 'text', text: 'original output' }]);
+  expect(output.usage).toEqual({ inputTokens: 3, outputTokens: 2 });
+  expect(attempts).toHaveLength(1);
+  expect(attempts[0]?.usage).toEqual(output.usage);
+  expect(attempts[0]?.cost?.costMicrocents).toBeGreaterThan(0);
+  await until(() => tracked.pending.size === 0);
+});

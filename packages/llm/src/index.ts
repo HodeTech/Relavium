@@ -128,6 +128,7 @@ export {
   isRetryable,
   kindFromHttpStatus,
   makeLlmError,
+  snapshotLlmError,
   LlmProviderError,
   // The defense-in-depth secret backstop `makeLlmError` already applies to every adapter error. Exported so a
   // SURFACE can run it on arbitrary text it is about to print — a CLI failure path can carry a provider

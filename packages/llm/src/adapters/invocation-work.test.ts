@@ -196,3 +196,79 @@ describe('invocation-local SDK producer lifetime', () => {
     await work.done;
   });
 });
+
+it.each([false, true])(
+  'acknowledges retired work after a caller detach fault, held=%s',
+  async (held) => {
+    const raw = deferred<void>();
+    const failure = new Error('private caller detach failure');
+    let removals = 0;
+    const work = new ProviderInvocationWork(undefined, {
+      aborted: false,
+      addEventListener: () => undefined,
+      removeEventListener: () => {
+        removals++;
+        throw failure;
+      },
+    });
+    if (held) void work.retainWork(() => raw.promise);
+    let acknowledged = false;
+    void work.done.then(() => {
+      acknowledged = true;
+    });
+    expect(() => work.retire()).toThrow(failure);
+    expect(work.signal.aborted).toBe(true);
+    expect(() => work.retainWork(() => Promise.resolve())).toThrow('cancelled');
+    work.retire();
+    expect(removals).toBe(1);
+    await tick();
+    expect(acknowledged).toBe(!held);
+    raw.resolve();
+    await work.done;
+    expect(acknowledged).toBe(true);
+  },
+);
+
+it.each(['parent', 'attach'] as const)(
+  'retires a partially constructed invocation after %s setup refuses',
+  async (where) => {
+    const original = new Error('original setup failure');
+    const detach = new Error('secondary detach failure');
+    let admitted: Promise<unknown> | undefined;
+    let removed = 0;
+    let observed: unknown;
+    try {
+      new ProviderInvocationWork(
+        {
+          retainWork: (factory) => {
+            const raw = factory();
+            admitted = raw;
+            if (where === 'parent') throw original;
+            return raw;
+          },
+        },
+        {
+          aborted: false,
+          addEventListener: () => {
+            if (where === 'attach') throw original;
+          },
+          removeEventListener: () => {
+            removed++;
+            throw detach;
+          },
+        },
+      );
+    } catch (error) {
+      observed = error;
+    }
+    expect(observed).toBe(original);
+    expect(removed).toBe(where === 'attach' ? 1 : 0);
+    if (admitted === undefined) throw new Error('missing transferred invocation');
+    let quiet = false;
+    void admitted.then(() => {
+      quiet = true;
+    });
+    await tick();
+    expect(quiet).toBe(true);
+  },
+);

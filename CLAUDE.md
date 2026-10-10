@@ -186,7 +186,9 @@ Dispatch round 9's first-start publication High is corrected with six paired cas
 Complete host-closure round 1 verifies three further lifecycle High findings and a shipping
 acceptance gap; Parent corrections add eighteen permanent cases. Complete round 2 confirms
 due-budget departure starvation and provider entry after synchronous cancellation. Nineteen
-additional permanent cases cover the corrections, which require fresh complete review.
+additional permanent cases cover those corrections. Complete round 3 confirms retirement
+callbacks can mutate returned data or strand acknowledgement on failure. Parent corrections
+add thirty-two permanent cases; fresh complete review remains required.
 Step 8 and final Step 12 remain open; no user approval or provider capture is pending.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical

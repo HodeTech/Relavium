@@ -1165,3 +1165,15 @@ Refused timeout approval still terminates through the existing `run_timeout` pat
 approval, timeout or wire policy is introduced. Adjacent canonical references now link the
 current final-health priority and public departure. Fresh complete review, Step 8 and final
 Step 12 remain required; no provider capture or maintainer decision is pending.
+
+## 2026-10-10 — Retirement preserves response evidence and completion
+
+[Complete host-closure round 3](../reviews/2026-10-09T23-56-41-w7-host-closure-round-3-review.md) identifies two
+implementation violations at synchronous invocation retirement. Response data and accountable
+usage must be owned before caller cleanup runs; listener-removal failure must still attempt
+abort and quiet acknowledgement. Known usage and an established provider diagnosis survive
+secondary cleanup faults. Parent corrects text, separate media and poll boundaries under the
+accepted policy, with thirty-two permanent cases. The
+[provider seam](../reference/shared-core/llm-provider-seam.md#the-per-attempt-deadline) owns
+these mechanics; no media request-ownership extension or new wire policy is introduced.
+Fresh complete review, Step 8 and final Step 12 remain required.

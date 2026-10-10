@@ -625,7 +625,13 @@ pure `ProviderInvocationWork` helper, including custom implementations. A comple
 aborted or returned invocation retires its own future `retainWork` factories before fallback or
 public outcome delivery. Already admitted descendants remain owed independently, including when
 a stream's `next()` or `return()` is held. Each poll gets fresh authority; reusable providers and
-siblings never inherit another invocation's retainer. Standalone calls keep the optional seam.
+siblings never inherit another invocation's retainer. Standalone calls keep the optional seam. Typed generated output, successful usage and media result/status are copied before
+retirement can invoke caller listener removal or abort observers. Raw diagnostic `cause`/`raw`
+identities remain opaque. Retirement attempts abort and quiet acknowledgement even if caller
+listener removal throws; admitted descendants still hold their own completion. Partially failed
+setup retires its transferred aggregate without replacing the original entry error. An existing
+provider/cancellation diagnosis stays primary over cleanup; a standalone cleanup fault remains
+loud, without retry authority, and text attempts account known usage exactly once.
 
 The controlled OpenAI-compatible adapter transfers one aggregate lifetime before SDK construction
 or entry. It binds that invocation's work and retirement signal into its own client fetch closure,

@@ -4587,3 +4587,14 @@ paired cases and repairing adjacent canonical-documentation drift. Accepted ADR-
 is unchanged; fresh complete review is required. Step 8 and final Step 12 remain open, all six
 W7 items remain open (41/51 closed), and PR #90 remains draft/unmerged. No provider capture,
 paid call or user approval is pending.
+
+### W7 host closure — round 3 corrections, 2026-10-10
+
+[Complete round 3](../../reviews/2026-10-09T23-56-41-w7-host-closure-round-3-review.md) confirms two Highs at
+invocation retirement: synchronous cleanup can mutate a returned response before ownership,
+and throwing listener removal can suppress accounting and permanently strand acknowledgement.
+Parent reproduces the original six-case source probe and corrects text/media/poll ownership,
+all-path retirement and primary-failure preservation, with thirty-two permanent additions.
+Fresh complete independent review remains required. Step 8 and final Step 12 remain open;
+all six W7 items remain open (41/51 closed), PR #90 remains draft/unmerged, and no paid call,
+credential or approval is pending.

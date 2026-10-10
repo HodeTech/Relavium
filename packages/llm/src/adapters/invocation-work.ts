@@ -49,6 +49,7 @@ export class ProviderInvocationWork {
   #pending = 0;
   #sealed = false;
   #complete = false;
+  #callerAttached = false;
 
   constructor(options: LlmInvocationOptions | undefined, caller: AbortSignalLike | undefined) {
     this.#caller = caller;
@@ -59,12 +60,20 @@ export class ProviderInvocationWork {
     // capable of reflecting a host's opaque thrown value has entered if this transfer refuses.
     try {
       void options?.retainWork(() => this.#done);
+      if (caller !== undefined) {
+        // Registration can throw after installing the listener; retirement still owns removal.
+        this.#callerAttached = true;
+        caller.addEventListener('abort', this.#onAbort);
+        if (caller.aborted) this.#onAbort();
+      }
     } catch (error) {
-      this.retire();
+      try {
+        this.retire();
+      } catch {
+        // The original entry failure stays primary; retirement has still aborted and joined quiet work.
+      }
       throw error;
     }
-    caller?.addEventListener('abort', this.#onAbort);
-    if (caller?.aborted === true) this.#onAbort();
   }
 
   readonly #onAbort = (): void => {
@@ -119,9 +128,16 @@ export class ProviderInvocationWork {
   retire(): void {
     if (this.#sealed) return;
     this.#sealed = true;
-    this.#caller?.removeEventListener('abort', this.#onAbort);
-    this.#controller.abort();
-    this.#acknowledgeIfQuiet();
+    try {
+      if (this.#callerAttached) this.#caller?.removeEventListener('abort', this.#onAbort);
+    } finally {
+      try {
+        this.#controller.abort();
+      } finally {
+        // A foreign listener-removal fault cannot strand an otherwise positively completed scope.
+        this.#acknowledgeIfQuiet();
+      }
+    }
   }
 
   #finish(): void {

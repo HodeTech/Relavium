@@ -802,11 +802,14 @@ export class FallbackChain {
       try {
         deadline?.dispose();
       } catch (error) {
-        cleanupFailure = { error };
+        cleanupFailure ??= { error };
       }
     };
     let invocation: ProviderInvocationWork | undefined;
     let providerSucceeded = false;
+    let knownUsage: Usage | undefined;
+    let projection: GeneratedResultProjection | undefined;
+    let captureFailure: { readonly error: unknown } | undefined;
     let retentionFailure: { readonly error: unknown } | undefined;
     let outcome: GenerateAttempt;
     try {
@@ -850,6 +853,16 @@ export class FallbackChain {
       }
       outcome = { status: 'success', result: raced === undefined ? await call : raced.value };
       providerSucceeded = true;
+      // Retirement invokes caller code synchronously. Own quantities and output before that boundary,
+      // but defer capture faults so the normal post-provider path still charges known valid usage.
+      try {
+        const resultUsage = outcome.result.usage;
+        if (resultUsage !== undefined)
+          knownUsage = snapshotAccountableUsage(entry.model, resultUsage);
+        projection = captureGeneratedResult(outcome.result, knownUsage ?? resultUsage);
+      } catch (error) {
+        captureFailure = { error };
+      }
     } catch (err) {
       retentionFailure = retainedEntryFailure(err);
       const error =
@@ -860,7 +873,11 @@ export class FallbackChain {
     } finally {
       // A successful response must be owned before another custom host callback can mutate it.
       // Failed provider/admission paths still dispose even if diagnostic normalization throws.
-      invocation?.retire();
+      try {
+        invocation?.retire();
+      } catch (error) {
+        cleanupFailure = { error };
+      }
       if (!providerSucceeded) disposeDeadline();
     }
     // All observers run outside the provider catch, including abort/deadline/failure observations.
@@ -878,29 +895,18 @@ export class FallbackChain {
       if (retentionFailure !== undefined) throw retentionFailure.error;
       return { status: 'error', error: received.contentReceived ? committed(error) : error };
     }
-    const result = outcome.result;
     // A returned generation, even empty, was processed. Guard accounting separately from the
     // provider attempt so a tracker/observer cannot forge a refundable HTTP refusal or cause retries.
     const receivedRecord = { ...record, contentReceived: true };
     let usage: Usage | undefined;
-    let knownUsage: Usage | undefined;
     let folded: FoldedUsage | undefined;
     let captured: LlmResult;
     try {
-      // Read the custom result once. Capture valid quantities before a host pricing callback can
-      // fail or mutate its own response; never copy invalid counts into failed-attempt accounting.
-      const resultUsage = result.usage;
-      usage = resultUsage;
-      if (usage !== undefined) {
-        knownUsage = snapshotAccountableUsage(entry.model, usage);
-        usage = knownUsage;
-      }
-      // The host's pricing lookup can mutate the original response too. Capture output first,
-      // but defer a projection fault until pricing has charged its already known quantities.
-      // If both fail, accounting remains primary and cannot grant retry or refund authority.
-      const projection = captureGeneratedResult(result, knownUsage ?? resultUsage);
+      usage = knownUsage;
       folded =
         knownUsage === undefined ? { unpriced: false } : this.#foldUsage(entry.model, knownUsage);
+      if (captureFailure !== undefined) throw captureFailure.error;
+      if (projection === undefined) throw new Error('generated response capture is missing');
       if (!projection.ok) throw projection.error;
       captured = projection.result;
     } catch (cause) {
@@ -933,7 +939,7 @@ export class FallbackChain {
     disposeDeadline();
     // The observer is consumer code: its exception propagates once, outside the provider catch.
     if (cleanupFailure !== undefined) {
-      const error = this.#deadlineCleanupError(entry.provider.id, cleanupFailure.error);
+      const error = this.#attemptCleanupError(entry.provider.id, cleanupFailure.error);
       this.#emit({
         ...receivedRecord,
         ...(knownUsage === undefined
@@ -1158,7 +1164,11 @@ export class FallbackChain {
       // In the `finally` rather than per branch so a future exit cannot miss it, and best-effort without an
       // unbounded await for the same reason `#raceStep`'s teardown is: caller liveness, not resource
       // termination (ADR-0082 §5). `return()` on an already-completed iterator is a no-op.
-      invocation?.retire();
+      try {
+        invocation?.retire();
+      } catch (error) {
+        cleanupFailure ??= { error };
+      }
       const returnFailure = this.#closeIterator(iterator);
       // Actual provider/deadline diagnosis stays primary. A standalone host-entry fault escapes only
       // after the attempt observer has accounted any terminal usage already observed by the verifier.
@@ -1207,7 +1217,7 @@ export class FallbackChain {
     record = { ...record, contentReceived: state.committed };
     if (usage === undefined) {
       if (cleanupFailure !== undefined) {
-        const error = this.#deadlineCleanupError(entry.provider.id, cleanupFailure.error);
+        const error = this.#attemptCleanupError(entry.provider.id, cleanupFailure.error);
         this.#emit({ ...record, outcome: 'failed', error });
         yield { type: 'error', error: state.committed ? committed(error) : error };
         return undefined;
@@ -1244,7 +1254,7 @@ export class FallbackChain {
       return undefined;
     }
     if (cleanupFailure !== undefined) {
-      const error = this.#deadlineCleanupError(entry.provider.id, cleanupFailure.error);
+      const error = this.#attemptCleanupError(entry.provider.id, cleanupFailure.error);
       this.#emit({
         ...record,
         usage,
@@ -1261,11 +1271,11 @@ export class FallbackChain {
   }
 
   /** Cleanup is a host fault, with no authority to retry, pause or attribute a money writer. */
-  #deadlineCleanupError(provider: ProviderId, cause: unknown): LlmError {
+  #attemptCleanupError(provider: ProviderId, cause: unknown): LlmError {
     return makeLlmError({
       provider,
       kind: 'unknown',
-      message: 'the provider attempt deadline could not be disposed',
+      message: 'the provider attempt cleanup could not be completed',
       cause,
     });
   }

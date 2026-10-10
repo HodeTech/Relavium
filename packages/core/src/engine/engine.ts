@@ -87,6 +87,7 @@ import type { WorkflowDefinition } from '../parser.js';
 import { resolveAndValidateWorkflowInputs } from './input-admission.js';
 import { verifyFrozenWorkflowContent, verifyResumeIdentity } from './resume-identity.js';
 import { EngineStateError } from './errors.js';
+import { AgentTurnError } from './agent-turn.js';
 import { HostWorkRegistry, type HostWorkScope } from './host-work-registry.js';
 import { EffectReceiptHealth } from './effect-receipt-health.js';
 import { RunEventBus, type RunEventDraft } from './event-bus.js';
@@ -3636,7 +3637,7 @@ class RunExecution {
       const pollDeadline = this.#openPollDeadline(job);
       try {
         status = await this.#racePoll(pollDeadline, submission);
-      } catch {
+      } catch (error) {
         // A cancel (the abort surfaced as a throw) / terminal / cleared job → return silently; the #settle
         // path emits run:cancelled. Only a genuine poll fault on a live job settles node:failed.
         if (this.#settled || this.#abort.signal.aborted || !this.#pendingMediaJobs.has(nodeId)) {
@@ -3644,6 +3645,17 @@ class RunExecution {
           // (ADR-0074 §3). The abort listener above is the primary guarantee; this covers the
           // job-already-cleared case, where no abort fires at all.
           this.#budgetGovernor?.clearLegacyMediaJob(nodeId);
+          return;
+        }
+        // A schema-invalid provider reply is a programmer/protocol failure, as the closed-state
+        // switch below already specifies. Capturing it before invocation retirement cannot turn it
+        // into a retryable transport fault or expose a schema diagnostic containing response data.
+        if (error instanceof AgentTurnError && error.code === 'internal') {
+          await this.#settleMediaJobFailed(vertex, job, {
+            code: 'internal',
+            message: 'media poll returned an unrecognized job state or invalid payload',
+            retryable: false,
+          });
           return;
         }
         // A raw throw escaping the executor poll on a LIVE job (the missing-adapter + credential cases are

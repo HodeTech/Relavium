@@ -1,6 +1,12 @@
 import { expect, it } from 'vitest';
 import { unwiredEffectJournal, type ContentPart, type RunEvent } from '@relavium/shared';
-import type { LlmInvocationOptions, LlmProvider, LlmResult, MediaGenResult } from '@relavium/llm';
+import type {
+  LlmInvocationOptions,
+  LlmProvider,
+  LlmResult,
+  MediaGenResult,
+  MediaJobStatus,
+} from '@relavium/llm';
 import { createOpenAiAdapter } from '@relavium/llm/adapters';
 import { LlmProviderError, makeLlmError } from '@relavium/llm';
 import { parseWorkflow } from '../parser.js';
@@ -560,4 +566,148 @@ for (const mode of ['generateMedia', 'pollMediaJob'] as const)
       }
       await Promise.allSettled(captured);
       expect(calls).toBe(cancel ? 0 : 1);
+    });
+
+for (const state of ['pending', 'done', 'failed'] as const)
+  for (const cleanup of ['live', 'mutate', 'throw'] as const)
+    it(`poll owns ${state} before invocation cleanup: ${cleanup}`, async () => {
+      const failure = new Error('private cleanup fault');
+      const diagnostic = {
+        provider: 'openai' as const,
+        kind: 'auth' as const,
+        message: 'original refusal',
+        retryable: false,
+      };
+      const data = { kind: 'base64' as const, data: 'AQ==' };
+      const status: MediaJobStatus =
+        state === 'done'
+          ? { state, media: { type: 'media', mimeType: 'image/png', source: data } }
+          : state === 'failed'
+            ? { state, error: diagnostic }
+            : { state, progress: 0.25 };
+      let removed = 0;
+      const signal = {
+        aborted: false,
+        addEventListener: () => undefined,
+        removeEventListener: () => {
+          removed++;
+          if (cleanup === 'throw') throw failure;
+          if (cleanup === 'mutate') {
+            diagnostic.message = 'private mutation';
+            data.data = 'Ag==';
+            if (status.state === 'pending') status.progress = 0.75;
+          }
+        },
+      };
+      const retained: Promise<unknown>[] = [];
+      const runner = createAgentNodeExecutor({
+        resolveProvider: () => provider({ pollMediaJob: () => Promise.resolve(status) }),
+        registry,
+        tools: [],
+        keyFor: () => 'offline-placeholder',
+        sleep: () => Promise.resolve(),
+      });
+      if (runner.pollMediaJob === undefined) throw new Error('missing actual poll');
+      const operation = runner.pollMediaJob(
+        { jobId: 'offline-job', provider: 'openai', model: 'gpt-4o', modality: 'image', units: 1 },
+        signal,
+        {
+          retainWork: (factory) => {
+            const raw = factory();
+            retained.push(raw);
+            return raw;
+          },
+        },
+      );
+      if (cleanup === 'throw' && state !== 'failed') await expect(operation).rejects.toBe(failure);
+      else {
+        const outcome = await operation;
+        expect(outcome).toMatchObject(
+          state === 'done'
+            ? { state, media: { source: { data: 'AQ==' } } }
+            : state === 'failed'
+              ? { state, error: { kind: 'auth', message: 'original refusal' } }
+              : { state, progress: 0.25 },
+        );
+      }
+      expect(removed).toBe(1);
+      let quiet = false;
+      void Promise.allSettled(retained).then(() => {
+        quiet = true;
+      });
+      await until(() => quiet);
+      expect(quiet).toBe(true);
+    });
+
+for (const failed of [false, true])
+  for (const cleanup of ['live', 'mutate', 'throw'] as const)
+    it(`submission owns its result and primary diagnosis before cleanup: failed=${failed}, ${cleanup}`, async () => {
+      const cleanupFailure = new Error('private media cleanup fault');
+      const diagnostic = {
+        provider: 'openai' as const,
+        kind: 'auth' as const,
+        message: 'original media refusal',
+        retryable: false,
+      };
+      const submission = { jobId: 'original-job', raw: {} };
+      let removed = 0;
+      const signal = {
+        aborted: false,
+        addEventListener: () => undefined,
+        removeEventListener: () => {
+          removed++;
+          if (cleanup === 'throw') throw cleanupFailure;
+          if (cleanup === 'mutate') {
+            submission.jobId = 'mutated-job';
+            diagnostic.message = 'private mutation';
+          }
+        },
+      };
+      const runner = createAgentNodeExecutor({
+        resolveProvider: () =>
+          provider({
+            generateMedia: () =>
+              failed
+                ? Promise.reject(new LlmProviderError(diagnostic))
+                : Promise.resolve(submission),
+          }),
+        registry,
+        tools: [],
+        keyFor: () => 'offline-placeholder',
+        sleep: () => Promise.resolve(),
+        resolveMediaSurface: () => 'generative',
+      });
+      const host = createInMemoryHost();
+      let checked = false;
+      const handle = new WorkflowEngine({
+        host,
+        executor: {
+          execute: async (ctx) => {
+            const operation = runner.execute({ ...ctx, signal });
+            if (!failed && cleanup === 'throw')
+              await expect(operation).rejects.toBe(cleanupFailure);
+            else {
+              const outcome = await operation;
+              expect(outcome).toMatchObject(
+                failed
+                  ? {
+                      kind: 'failed',
+                      error: { code: 'provider_auth', message: 'original media refusal' },
+                    }
+                  : { kind: 'media_job', job: { jobId: 'original-job' } },
+              );
+            }
+            checked = true;
+            return { kind: 'completed', output: 'checked owned submission' };
+          },
+        },
+      }).start({ workflow: workflow(true) });
+      const events: RunEvent[] = [];
+      for await (const event of handle.events) events.push(event);
+      expect(checked).toBe(true);
+      expect(removed).toBe(1);
+      expect(events.at(-1)?.type).toBe('run:completed');
+      expect((await handle.depart()).kind).toBe('closed');
+      expect(await host.runLeases.read(handle.runId)).toBeUndefined();
+      expect(host.armedCount() + host.deadlineCount() + host.livenessCount()).toBe(0);
     });
