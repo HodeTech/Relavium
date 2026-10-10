@@ -114,24 +114,27 @@ It runs in two modes:
   logged). A nightly failure is the early-warning signal that a provider changed its
   contract under us. New model ids and pricing-table entries are validated here.
 
-**Implementation qualification — 2026-10-10:** the preceding request/response and same-suite
-descriptions are the intended discipline, not the current harness's complete coverage.
-The ordinary offline fixtures are hand-authored response seeds; replay currently validates
-JSON syntax without matching a canonical request, and Gemini's shared suite bypasses SDK HTTP
-through a transport double. Live cases are separate smoke/effort probes, not execution of
-the complete offline scenario matrix or an automatic fixture recorder. W8 / CR-81 closes
-the offline request-contract gap with independent static request expectations, actual SDK
-HTTP and causal lowering mutations. Genuine captured W7 overflow artifacts retain their
-distinct immutable provenance. This qualification authorizes no live calls and does not
-turn a synthetic seed into a captured provider response.
+**Implementation qualification — 2026-10-10:** the ordinary shared response suites use
+hand-authored synthetic seeds; Gemini's older suite uses a transport double. W8 adds a
+separate 24-case [canonical installed-SDK HTTP matrix](../../packages/llm/src/conformance/canonical-wire.test.ts)
+for Anthropic, OpenAI, DeepSeek and Gemini: generate/stream structured output, named tools and
+two-turn continuations, including applicable signatures. Independently authored static request
+expectations verify method, endpoint, query, protocol headers and structural JSON. Its internal
+[exchange harness](../../packages/llm/src/conformance/README.md) owns projection, sequence,
+recording and credential safeguards. The ordinary LLM test task runs this matrix in required CI.
 
-**W8 Step 2 substrate checkpoint — 2026-10-10:** the internal
-[expected-exchange harness](../../packages/llm/src/conformance/README.md) now owns strict
-request matching and immutable, credential-filtered recording projections. Its unit tests
-exercise effective Fetch inputs, sequence completion and content-free refusals. Existing
-response-only suites retain the qualification above until Step 3 migrates the canonical
-scenario matrix to actual installed SDK HTTP and proves independent lowering mutations.
-This substrate alone does not close CR-81 or authorize live calls.
+`pnpm check:wire-mutations` independently changes three actual production-lowering sites in
+isolated byte copies and requires wire mismatches, then exact restoration and a passing full
+matrix after each change. The [runner guide](../../tools/wire-conformance/README.md) owns its
+procedure and report format. This explicit offline author/reviewer command supplements the
+ordinary CI matrix; it does not authorize provider calls.
+
+Live cases remain separate smoke/effort probes, not execution of the complete offline matrix or
+an automatic fixture recorder. Synthetic protocol seeds are reviewed as authored test code;
+the earlier regeneration rule applies to genuine captured evidence. The five genuine W7 overflow
+artifacts retain distinct immutable provenance. Neither these tests nor their synthetic fixtures
+claim complete live-provider coverage or unknown-usage accounting acceptance. The W8 register
+records staged review and acceptance rather than inferring closure from test count.
 
 ## End-to-end tests — Playwright
 

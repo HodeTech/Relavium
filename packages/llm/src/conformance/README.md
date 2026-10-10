@@ -3,9 +3,9 @@
 This directory contains offline provider fixtures and internal harness helpers. The
 [testing standard](../../../../docs/standards/testing.md#per-provider-conformance-tests)
 owns the coverage policy; the [W8 plan](../../../../docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-preflight-and-proposed-execution-plan--2026-10-10)
-owns staged acceptance. Step 2 adds the strict exchange substrate. The canonical
-SDK HTTP scenario matrix and its lowering mutation controls belong to Step 3;
-adding this helper alone does not establish that coverage or close CR-81/82.
+owns staged acceptance. Step 2 supplies the strict exchange substrate; Step 3 adds
+the canonical installed-SDK HTTP matrix below. Unknown-usage integration and
+whole-W8 acceptance remain separate obligations.
 
 ## Strict expected exchanges
 
@@ -128,3 +128,39 @@ pattern checks. Do not treat this recorder as permission to publish arbitrary
 live traffic. The existing `replay.ts` response-only helpers and the genuine
 [W7 overflow artifacts](fixtures/overflow/README.md) remain separate and unchanged
 in format and bytes; the new exchange oracle does not rewrite them.
+
+
+## Canonical installed-SDK matrix
+
+[canonical-wire.test.ts](canonical-wire.test.ts) runs 24 offline cases: Anthropic,
+OpenAI, DeepSeek and Gemini, each through generate and stream, for three scenarios:
+
+- Populated system instructions and structured JSON output, with temperature,
+  output cap and stop sequences.
+- Advertised tool descriptions and schemas with a named tool choice.
+- Two-turn tool continuation using literal-checked returned IDs and parsed arguments;
+  Anthropic and Gemini additionally round-trip signed reasoning, and Gemini its
+  distinct tool-call signature.
+
+The 32 expected HTTP exchanges are static synthetic literals in
+[fixtures/canonical-wire.ts](fixtures/canonical-wire.ts), independently authored
+from production lowering and recording. Every case pins method, origin, path,
+query, protocol headers and the complete structural body. Gemini uses the actual
+installed SDK HTTP/SSE path through global fetch interception, rather than the
+older transport double. The other adapters likewise use their installed SDKs.
+Canonical output, stop reasons and usage are checked; continuation sends the
+actual returned canonical parts after their literal assertions. Final consumption
+assertions run even when an SDK catches a replay refusal.
+
+`pnpm check:wire-mutations` supplies reproducible independent production-lowering
+controls, including byte-exact restoration and a passing full matrix after each
+mutation. Its [runner guide](../../../../tools/wire-conformance/README.md) documents
+isolation, pinned case counts and report output. The ordinary matrix runs in the
+required LLM package test task; mutation checking is an explicit author/reviewer
+command, not a paid or nightly task.
+
+This matrix supplements the broader response-normalization, grammar, ownership,
+media and overflow suites. Those older response-only helpers keep their narrower
+scope; arbitrary provider options and every model-specific behavior are not
+claimed here. All new seeds are synthetic, not captured provider traffic. The
+five genuine W7 overflow artifacts retain their immutable bytes and provenance.

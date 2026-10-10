@@ -18,7 +18,8 @@ remain reversible, and vendor types remain confined to them.
 The Anthropic, OpenAI-compatible (OpenAI + DeepSeek) and Gemini adapters, `FallbackChain`,
 `CostTracker` and offline conformance suite are implemented. W7's request ownership and
 overflow work is merged. W8's internal [expected-exchange harness](src/conformance/README.md)
-provides strict request matching; its canonical actual-SDK scenario matrix and honest
-missing/partial usage accounting remain open. See
+provides strict request matching and a 24-case canonical actual-SDK HTTP matrix, with
+reproducible production-lowering mutation controls. Independent Step 3 acceptance and
+honest missing/partial usage integration remain open. See
 [current work](../../docs/roadmap/current.md#next-work--phase-265-w8).
 Existing response fixtures alone do not prove the request wire contract.

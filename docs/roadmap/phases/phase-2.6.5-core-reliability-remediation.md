@@ -2489,7 +2489,7 @@ stand.
 
 ## W8 — Provider and conformance
 
-**Plan and ADR-0104 approved on 2026-10-10; Step 1 accepted on `development`; Step 2 is next.**
+**Plan and ADR-0104 approved on 2026-10-10; Steps 1–2 accepted on `development`; Step 3 is in progress.**
 ADR-0087 §1 has scoped implementation acceptance; CR-81/82 and whole-W8 publication remain open.
 CR-80 below was already closed before W7. Current execution order is in
 [current.md](../current.md#next-work--phase-265-w8).
@@ -2863,6 +2863,34 @@ functions **98.20%**; the strict exchange module reaches **98.24%** statements/l
 This documentation-only checkpoint changes no runtime source. Proceed to Step 3's actual
 installed-SDK static request matrix and independent production-lowering mutations. CR-81/82,
 Steps 3–7 and whole-W8 publication remain open.
+
+### W8 Step 3 canonical SDK HTTP matrix — 2026-10-10
+
+**Implementation checkpoint; independent acceptance remains pending.** Base `d6d88b0c`.
+The [permanent canonical matrix](../../../packages/llm/src/conformance/canonical-wire.test.ts)
+adds **24 cases / 32 expected HTTP exchanges**: four providers, generate/stream, populated
+system and structured-output fields, named tool schemas, and two-turn tool continuations.
+Anthropic and Gemini also round-trip signed reasoning; Gemini's function-call signature is
+independently distinct. All paths use the actual installed SDK HTTP parser/serializer,
+including Gemini SSE. Static expected wire literals are independent of production lowering
+and recording; canonical returned IDs, arguments and signatures are asserted before reuse.
+The exact projection and narrower older response suites are documented in the harness;
+synthetic seeds are not represented as provider captures.
+
+The committed `pnpm check:wire-mutations` [runner](../../../tools/wire-conformance/README.md)
+reproduces three separately applied production-source mutations in isolated OS temporary
+copies, using the same installed dependencies. Anthropic system lowering fails **6** cases,
+OpenAI/DeepSeek tool-result identity fails **4**, and Gemini tool-call signature fails **2**,
+each with `request_mismatch`. The full **24/24** matrix passes before mutation and after each
+byte-exact restoration. Source SHA-256 digests and exact failed names are reported; original
+developer adapter files remain unchanged. No provider, credential or paid call is involved.
+The matrix runs in required package tests; mutation checking is an explicit offline command.
+
+Author lint/typecheck/test gates pass **23/23** (8 cached); build **6/6**. Fresh test execution
+includes LLM **1,752 passing / 11 existing skips**, core **3,122**, MCP **220** and CLI **3,232**;
+shared/DB results replay caches. Tools lint/typecheck, formatting, whitespace and relative/
+archive-link checks pass. Independent review acceptance, CR-81 closure, CR-82 integration and
+whole-W8 publication remain pending; no broader model/option or live-provider claim is made.
 
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High
 A recorded response carries status, content type and body only; replay checks that the request body is parseable
