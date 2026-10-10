@@ -1,5 +1,5 @@
 import { UsageCoverageSchema, UsageModelSchema, type UsageCoverage } from '@relavium/shared';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 
 import type { TxDb } from './client.js';
 import { agentSessions, sessionCosts, sessionUsageCoverage } from './schema.js';
@@ -7,7 +7,7 @@ import { validateUsageRevision } from './session-usage-write.js';
 
 export interface SessionUsageSnapshot {
   readonly coverage: UsageCoverage;
-  /** Union of money and coverage models; every model inherits owner-level historical uncertainty. */
+  /** Union of attributable money and coverage models; legacy aggregates are not model identities. */
   readonly models: readonly { readonly model: string; readonly coverage: UsageCoverage }[];
 }
 
@@ -36,7 +36,7 @@ export function readSessionCoverage(tx: TxDb, sessionId: string): SessionUsageSn
   for (const row of tx
     .select({ model: sessionCosts.model })
     .from(sessionCosts)
-    .where(eq(sessionCosts.sessionId, sessionId))
+    .where(and(eq(sessionCosts.sessionId, sessionId), eq(sessionCosts.isLegacy, false)))
     .all()) {
     models.set(UsageModelSchema.parse(row.model), {
       unverified,

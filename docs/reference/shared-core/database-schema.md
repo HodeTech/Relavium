@@ -887,6 +887,12 @@ keeps pending markers out of `session_costs.call_count` and preserves coverage i
 an old writer's monetary child deletion. Pending admission, disposition and complete settlement update
 aggregate and model counters atomically, without changing the sole actual-cost writer or money arithmetic.
 
+The model breakdown joins this coverage table with **non-legacy** `session_costs` models.
+An `is_legacy` aggregate represents unattributable historical money, not a model or a
+zero-cost usage-only call. Its amount and unavailable-breakdown disclosure remain visible
+in the monetary rows. The discriminator is the flag, never the model string: a real money
+or coverage model literally named like the legacy sentinel remains attributable.
+
 | Column | Type | Constraints |
 | --- | --- | --- |
 | `session_id` | TEXT | NOT NULL REFERENCES `agent_sessions(id)` ON DELETE CASCADE |
