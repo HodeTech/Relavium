@@ -56,7 +56,7 @@ browsers, competitor-breadth tools, settings/theming/`en`+`tr` localization, and
 run-ops resume follow-up.
 
 **An interlude is running between Wave 1 and Wave 2 of the remediation: Phase 2.6.5 (Core reliability),
-47 of 51 items closed on `development`; W7 closes `CR-96`/`CR-97` and restores the non-deferrable
+47 of 51 items closed on `main`; W7 closes `CR-96`/`CR-97` and restores the non-deferrable
 criterion** — `W0` (PR #82, 2026-08-11), `W1`, the eight P0 blockers plus `CR-92`, merged
 2026-08-24 (PR #83) behind [ADR-0078](docs/decisions/0078-ordered-durable-append-and-the-terminal-outbox.md)–[ADR-0084](docs/decisions/0084-consent-before-a-local-mcp-spawn.md):
 ordered durable append, cross-process run ownership, the durable effect journal, untrusted compaction summaries,
@@ -117,10 +117,10 @@ refusing adapter satisfies too, so it passed either way — the finding under th
 and the `W3` live blocker with it, while its §3 turned out to have shipped in `W5` under a different item
 number.
 
-**W7 is complete and independently accepted on `development`, including final whole-wave Step 12.**
+**W7 merged to `main` on 2026-10-10 as PR #90, including final whole-wave Step 12.**
 Steps 1–11, all five genuine overflow records, owned measured requests and consolidated provider/MCP/host
 lifetimes have independent acceptance. ADR-0095–ADR-0103 are Accepted. The six W7 register items are closed
-(47/51 closed); PR #90 is ready for maintainer review and unmerged. The
+(47/51 closed); PR #90 is merged (`46a6a701`); W7 has no open implementation or review gate. The
 [closing register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
 joins the accepted scopes, causal controls and systematic-review dispositions. Existing approved deferrals
 stay in [deferred-tasks.md](docs/roadmap/deferred-tasks.md); W8 and the phase remain open. No user decision,
@@ -130,8 +130,9 @@ billing setup, credential or provider capture is pending.
 each have two NEW clean complete cumulative review rounds. The supplemental publication-tool
 correction also has two NEW complete clean rounds. The [post-closure register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
 joins every report disposition, new permanent/causal evidence and current gates. Published-head checks
-are reported in PR #90, which remains ready for review and unmerged. No W7 implementation, provider,
-billing, key or user decision is pending.
+passed at reviewed head `69ac80b0` before PR #90 merged. No W7 implementation, provider,
+billing, key or user decision is pending. The [merge checkpoint](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-merge-checkpoint--2026-10-10)
+records closure. Next is W8: ADR-0087 §1, CR-81 and CR-82; Phase 2.6.5 remains open.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);

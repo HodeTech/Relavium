@@ -40,12 +40,12 @@ and Wave 0 is merged (PR #82), as is Wave 1 (PR #83). The interlude's `W2` (core
 merged too (PR #85, 2026-08-28).
 
 
-> **W7 complete on `development`, 2026-10-10:** all twelve steps, five genuine overflow records,
+> **W7 merged to `main`, 2026-10-10 (PR #90, `46a6a701`):** all twelve steps, five genuine overflow records,
 > production request ownership and consolidated host lifetimes have independent acceptance.
 > All six W7 items are closed; Phase 2.6.5 stands at **47/51**. The
 > [closing register](phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
 > joins per-item causal controls, both final review rounds and every submitted systematic finding.
-> PR #90 is ready for maintainer review and unmerged. W8 and approved deferrals remain open.
+> PR #90 merged at 13:57:47 UTC. W8 and approved deferrals remain open.
 > No implementation, user decision, credential, billing or provider capture is pending for W7.
 
 > **Post-closure corrections accepted, 2026-10-10:** the [new correction register](phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
@@ -53,7 +53,7 @@ merged too (PR #85, 2026-08-28).
 > cumulative review rounds. Fresh unchanged-production coverage passes 447 files / 9,512 cases /
 > eleven existing capability/key-gated LLM skips. Published-head checks are reported in PR #90.
 > W7 has no implementation, provider, credential, billing or user-decision prerequisite left.
-> PR #90 is ready for maintainer review and unmerged; W8 and existing approved limits remain open.
+> The corrections merged with PR #90; W8 and existing approved limits remain open.
 
 > **Publication tool corrections accepted, 2026-10-10:** [two NEW complete clean cumulative rounds](../reviews/2026-10-10T13-35-14-w7-publication-sonar-round-2-review.md)
 > independently verify all four Sonar-label dispositions, preserved UTF-16 ordering and OS-owned Git
@@ -61,10 +61,38 @@ merged too (PR #85, 2026-08-28).
 > and exact published-head GitHub/Sonar checks are reported in PR #90; the prior failed analysis stays recorded.
 > W7 has no implementation, capture, credential, billing or user-decision prerequisite left.
 
+## Next work — Phase 2.6.5 W8
+
+The [W7 merge checkpoint](phases/phase-2.6.5-core-reliability-remediation.md#w7-merge-checkpoint--2026-10-10)
+closes all twelve steps and CR-71/72/94/96/97/98 on `main`. At reviewed head `69ac80b0`, both
+five-job GitHub CI runs and SonarCloud passed; all four supplemental Sonar labels closed.
+This evidence belongs to the reviewed head, not to a future W8 change.
+
+**Next is [W8 — Provider and conformance](phases/phase-2.6.5-core-reliability-remediation.md#w8--provider-and-conformance), not yet started.**
+Begin with the existing W3 blocker, then the two remaining provider items:
+
+1. **ADR-0087 §1:** declare primary-stream consumption for run and session handles; an
+   un-pulled stream must preserve its terminal, and a subscribe-only handle must buffer nothing.
+   Review the accepted ADR and its corrections against W7's current lifetime contracts before implementation.
+2. **CR-81:** make conformance cassettes verify the canonical wire request, including method,
+   path, headers and body; prove at least three distinct lowering mutations fail the suite.
+3. **CR-82:** preserve missing or partial provider usage as unknown on every cost-total path.
+
+The register remains **47/51**: CR-81/82 are W8 work; CR-70 (cross-turn tool-history carrying)
+and CR-93 (tenant-scoped catalog/learning) retain their approved triggers in
+[deferred-tasks.md](deferred-tasks.md).
+ADR-0087 §1 is an additional obligation outside that 51-item denominator. Existing scoped
+residuals, including CR-95's long continuation, remain recorded there. No new deferral is created.
+
+After W8, certify the full Phase 2.6.5 exit gate before opening
+[Wave 2 — Shut the doors](#wave-2--shut-the-doors) of the 2.5.5/2.6 execution order.
+W7 completion has no credential, capture, billing or maintainer-decision prerequisite left.
+
 ## Historical W7 implementation checkpoints
 
 Dated W7 checkpoints throughout this page retain their original pending states. The closing checkpoint above
-and its later post-closure register control current W7 status; a historical acceptance does not supersede a later finding.
+and its later post-closure and merge checkpoints control current W7 status; historical pending/draft
+wording describes the checkpoint when it was written.
 
 > **Prior complete composition review:** [host-closure round 5](../reviews/2026-10-10T00-38-24-w7-host-closure-round-5-review.md)
 > finds no new confirmed actionable issue across all 126 paths / 364 hunks. This is the first
@@ -432,7 +460,7 @@ flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
     LEDGER["#W15-1 — realized-cost ledger ✅<br/>ADR-0076 + ADR-0077"]
-    P265["Phase 2.6.5 — Core reliability<br/>51 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094<br/>W7 accepted on development — PR #90 draft"]
+    P265["Phase 2.6.5 — Core reliability<br/>51 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094<br/>W7 merged — PR #90 · W8 next"]
     W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
