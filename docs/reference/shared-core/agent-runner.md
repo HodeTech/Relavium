@@ -319,6 +319,12 @@ An exact late complete receipt refines usage coverage and records realized money
 not implicitly release an earlier retained conservative commitment; the existing explicit
 estimate-release policy remains separate from actual receipt accounting.
 
+Historical receipts retain their original within-chain diagnostic attempt and refine only their own
+local unknown-call contribution once. They cannot change the current response's model, overflow or
+terminal-observation ownership. A complete receipt joined before outcome construction can refine
+that outcome's usage coverage; a later receipt cannot mutate the already published result. Exact
+ephemeral pre-attempt metadata retires at the final receipt, without a completed-ID history.
+
 Every accounting port entry requires its producer's active receipt scope, even when it carries a
 previously issued invocation identity. The runner explicitly transfers a dedicated accounting child
 before entering provider work. That child joins the exact registered producer and receipt promises;

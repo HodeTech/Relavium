@@ -442,3 +442,19 @@ The canonical [seam](../reference/shared-core/llm-provider-seam.md),
 [runner](../reference/shared-core/agent-runner.md) and
 [event contract](../reference/contracts/sse-event-schema.md) own these implementation details.
 Step 5 acceptance, Step 6's additional review gates and whole-wave closure remain open at this correction.
+
+### W8 acknowledgement and late-receipt correction — 2026-10-11
+
+The fourth cumulative activation review reproduced premature public completion before an actual
+writer acknowledgement, resumed session totals overwritten by a stale construction-time counter,
+and late receipts borrowing a newer fallback's model and diagnostic attempt. Coverage completion
+follows the existing sole actual writer's ACK. Failed workflow accounting asks remain observable
+under ADR-0078 with unchanged qualified coverage; they do not advance a live reader's correlation.
+Persisted session totals publish the atomic durable amount/price/coverage tuple after the direct
+write, while streamed content reuses the cached tuple. A post-ACK projection failure stays distinct
+from persistence failure and cannot fabricate complete coverage or repeat the charge. Exact live
+receipt metadata retains only its historical diagnostic attempt and local uncertainty contribution;
+it cannot reseat another response or mutate an already published outcome. The canonical
+[event contract](../reference/contracts/sse-event-schema.md) owns publication details and the
+[runner contract](../reference/shared-core/agent-runner.md) owns receipt ownership.
+Step 5 acceptance and the further Step 6/whole-wave gates remain open at this correction.

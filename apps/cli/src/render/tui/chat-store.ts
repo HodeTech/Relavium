@@ -202,9 +202,13 @@ export function createChatStore(
             ...('usageCoverage' in event && event.usageCoverage !== undefined
               ? { usageCoverage: event.usageCoverage }
               : {}),
+            ...(event.cumulativeCostMicrocents === undefined
+              ? {}
+              : { cumulativeCostMicrocents: event.cumulativeCostMicrocents }),
             unpricedCalls:
+              event.cumulativeUnpricedCalls ??
               (state.unpricedCalls ?? 0) +
-              (event.type === 'cost:updated' && event.priced === false ? 1 : 0),
+                (event.type === 'cost:updated' && event.priced === false ? 1 : 0),
           }
         : next;
       if (HIGH_FREQUENCY_EVENTS.has(event.type)) {

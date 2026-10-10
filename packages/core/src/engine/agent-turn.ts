@@ -1635,6 +1635,12 @@ async function driveAgentTurn(
     settle?: (admission: BudgetAdmission | undefined) => void;
   };
   const admissions = new WeakMap<PreAttemptInfo, AdmissionSlot>();
+  // Live receipt metadata only: the exact primary callback owns its diagnostic attempt and
+  // local uncertainty. Durable correlation is not authority, nor is a later chain counter.
+  const pendingReceipts = new WeakMap<
+    PreAttemptInfo,
+    { readonly attemptNumber: number; readonly unknown: boolean }
+  >();
   const outstandingAdmissions = new Set<AdmissionSlot>();
   const dischargeAdmission = (
     info: PreAttemptInfo | undefined,
@@ -1666,6 +1672,14 @@ async function driveAgentTurn(
     // A SKIPPED entry (cooldown / capability) was not invoked — it must not become `activeModel`, or
     // the next entry's streamed tokens would be mis-attributed to a provider that never ran.
     if (record.outcome === 'skipped') return;
+    const lateReceipt = record.receiptFinal === true;
+    const receipt =
+      lateReceipt && record.preAttemptInfo !== undefined
+        ? pendingReceipts.get(record.preAttemptInfo)
+        : undefined;
+    // The non-invoked final ACK of a timed-out native repair still releases its exact lease.
+    // An invoked receipt instead needs the original live callback, even without a money port.
+    if (lateReceipt && record.providerInvoked && receipt === undefined) return;
     const dischargeAttemptAdmission = (
       action: (active: BudgetAdmission | undefined) => void,
     ): void => dischargeAdmission(record.preAttemptInfo, action);
@@ -1718,13 +1732,15 @@ async function driveAgentTurn(
     // Native repairs own independent admissions; late receipt refinement never consumes a
     // newer invocation's lease. Proven non-invocation may release its exact pending lease.
     const coverageOnly = record.coverageOnly === true;
-    const lateReceipt = record.receiptFinal === true;
-    if (record.receiptFinal !== true && disposition?.kind === 'incomplete')
+    if (lateReceipt && record.preAttemptInfo !== undefined)
+      pendingReceipts.delete(record.preAttemptInfo);
+    if (!lateReceipt && disposition?.kind === 'incomplete')
       usage.unknownCalls = (usage.unknownCalls ?? 0) + 1;
     if (lateReceipt && record.providerInvoked && evidence.kind !== 'complete') return;
 
-    delete usage.overflowAttempt;
+    if (!lateReceipt) delete usage.overflowAttempt;
     if (
+      !lateReceipt &&
       record.outcome === 'failed' &&
       record.providerInvoked &&
       !record.customEndpoint &&
@@ -1745,11 +1761,19 @@ async function driveAgentTurn(
       dischargeAttemptAdmission((active) => active?.release());
       return;
     }
-    activeModel = record.model;
-    if (!coverageOnly) nonSkippedAttempts += 1;
+    if (!lateReceipt) activeModel = record.model;
+    if (!coverageOnly && !lateReceipt) nonSkippedAttempts += 1;
     // A native predecessor belongs to the current outer chain attempt, whose final record
     // has not incremented the diagnostic counter yet. Receipt identity remains the money key.
-    const accountingAttempt = nonSkippedAttempts + (coverageOnly && !lateReceipt ? 1 : 0);
+    const accountingAttempt =
+      receipt?.attemptNumber ?? nonSkippedAttempts + (coverageOnly && !lateReceipt ? 1 : 0);
+    if (!lateReceipt && record.receiptPending === true && record.preAttemptInfo !== undefined)
+      pendingReceipts.set(record.preAttemptInfo, {
+        attemptNumber: accountingAttempt,
+        unknown: disposition?.kind === 'incomplete',
+      });
+    if (lateReceipt && receipt?.unknown === true)
+      usage.unknownCalls = (usage.unknownCalls ?? 0) - 1;
     usage.engaged = true; // the provider method was invoked, even if it errored at zero usage
     if (evidence.kind !== 'complete') {
       if (officialRefusal) {
@@ -1769,7 +1793,7 @@ async function driveAgentTurn(
     }
     // This AttemptRecord consumes the stop chunk's quantities exactly once. A host failure before
     // the record retains the observed quantities separately, without inventing an attempt or price.
-    delete usage.observedStopUsage;
+    if (!lateReceipt) delete usage.observedStopUsage;
     usage.input += evidence.usage.inputTokens;
     usage.output += evidence.usage.outputTokens;
     // The chain already folded this attempt's usage into our `costTracker` and put the per-attempt

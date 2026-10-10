@@ -1,3 +1,4 @@
+import type { SessionHandle, SessionStreamHandleEvent } from '@relavium/core';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -25,6 +26,7 @@ const timestamp = '2026-10-10T00:00:00.000Z';
 const model = 'claude-sonnet-4-6';
 type Outcome = 'positive' | 'zero' | 'unpriced' | 'incomplete';
 const outcomes: Outcome[] = ['positive', 'zero', 'unpriced', 'incomplete'];
+const cases = outcomes.flatMap((outcome) => [0, 10].map((tokens) => ({ outcome, tokens })));
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 function fixture() {
@@ -107,10 +109,25 @@ function expectAtomicSeed(state: SessionViewState, outcome: Outcome) {
   if (outcome !== 'zero') expect(footer).not.toContain('free');
 }
 
-describe('atomic resumed session display seed', () => {
-  it.each(outcomes)(
-    'actual chat-resume seeds %s after another exact receipt changes during the build',
-    async (outcome) => {
+function assertPublished(
+  events: readonly SessionStreamHandleEvent[],
+  durable: ReturnType<ReturnType<typeof createSessionStore>['loadSessionCostBreakdown']>,
+) {
+  const actualIndex = events.findIndex((event) => event.type === 'cost:updated');
+  expect(actualIndex).toBeGreaterThan(0);
+  for (const event of events.slice(actualIndex)) {
+    expect(event.cumulativeCostMicrocents).toBe(durable.totalCostMicrocents);
+    expect(event.usageCoverage).toEqual(durable.coverage);
+    expect(event.cumulativeUnpricedCalls).toBe(
+      durable.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
+    );
+  }
+}
+
+describe('atomic resumed session display after first subsequent attempt', () => {
+  it.each(cases)(
+    'actual chat-resume preserves $outcome after another exact receipt and a $tokens-token next call',
+    async ({ outcome, tokens }) => {
       const f = fixture();
       try {
         f.usage.createFreshSession({
@@ -126,17 +143,54 @@ describe('atomic resumed session display seed', () => {
           { sessionId: 'session' },
           {
             ...f,
-            providers: scriptedResolver([]),
+            providers: scriptedResolver([
+              [
+                { type: 'text_delta', text: 'next' },
+                {
+                  type: 'stop',
+                  stopReason: 'stop',
+                  usage: { kind: 'complete', usage: { inputTokens: tokens, outputTokens: tokens } },
+                },
+              ],
+            ]),
             buildResumedSession: async (options) => {
               const built = await buildResumedChatSession(options);
               expect(built.resumeState.cumulativeCostMicrocents).toBe(0);
               f.settle('session', receipt, outcome);
               return built;
             },
-            drive: (context) => {
+            drive: async (context) => {
               inspected = true;
               expectAtomicSeed(context.store.getSnapshot().state, outcome);
-              return Promise.resolve({ kind: 'exit' });
+              const observed: SessionStreamHandleEvent[] = [];
+              const off = context.handle.subscribe((event) => {
+                context.store.apply(event);
+                observed.push(event);
+              });
+              context.startSession();
+              await context.processLine('next');
+              context.store.flush();
+              expect(observed.filter((event) => event.type === 'cost:updated')).toHaveLength(1);
+              expect(
+                observed.every(
+                  (event) =>
+                    event.cumulativeCostMicrocents !== undefined &&
+                    event.usageCoverage !== undefined &&
+                    event.cumulativeUnpricedCalls !== undefined,
+                ),
+              ).toBe(true);
+              expect(f.store.loadSessionCostBreakdown('session').totalCostMicrocents).toBe(
+                (outcome === 'positive' ? 100000000 : 0) + tokens * 1800,
+              );
+              assertPublished(observed, f.store.loadSessionCostBreakdown('session'));
+              expect(formatSessionFooter(context.store.getSnapshot().state)).not.toContain(
+                'usage pending',
+              );
+              expect(context.store.getSnapshot().state.cumulativeCostMicrocents).toBe(
+                f.store.loadSessionCostBreakdown('session').totalCostMicrocents,
+              );
+              off();
+              return { kind: 'exit' };
             },
           },
         );
@@ -148,32 +202,40 @@ describe('atomic resumed session display seed', () => {
     },
   );
 
-  it.each(outcomes)(
-    'actual Home model reseat seeds %s after another exact receipt changes during the build',
-    async (outcome) => {
+  it.each(cases)(
+    'actual Home model reseat preserves $outcome after another exact receipt and a $tokens-token next call',
+    async ({ outcome, tokens }) => {
       const f = fixture();
       let captured: RootAppProps | undefined;
       let receipt: SessionUsageReceipt | undefined;
       let resumed = false;
+      let resumedHandle: SessionHandle | undefined;
       const done = driveHome({
         ...f,
         io: { ...f.io, stdoutIsTty: true, stdinIsTty: true },
-        providers: scriptedResolver([
-          [
+        providers: scriptedResolver(
+          Array.from({ length: 2 }, (_, index) => [
             { type: 'text_delta', text: 'offline' },
             {
               type: 'stop',
               stopReason: 'stop',
-              usage: { kind: 'complete', usage: { inputTokens: 0, outputTokens: 0 } },
+              usage: {
+                kind: 'complete',
+                usage: {
+                  inputTokens: index === 0 ? 0 : tokens,
+                  outputTokens: index === 0 ? 0 : tokens,
+                },
+              },
             },
-          ],
-        ]),
+          ]),
+        ),
         buildResumedSession: async (options) => {
           const built = await buildResumedChatSession(options);
           expect(built.resumeState.cumulativeCostMicrocents).toBe(0);
           if (receipt === undefined) throw new Error('receipt must predate the resume load');
           f.settle(built.sessionId, receipt, outcome);
           resumed = true;
+          resumedHandle = built.handle;
           return built;
         },
         render: (props) => {
@@ -234,6 +296,34 @@ describe('atomic resumed session display seed', () => {
         expect(current?.sessionId).toBe(original.sessionId);
         if (current === undefined) throw new Error('reseated session absent');
         expectAtomicSeed(current.store.getSnapshot().state, outcome);
+        const observed: SessionStreamHandleEvent[] = [];
+        if (resumedHandle === undefined) throw new Error('resumed handle absent');
+        const off = resumedHandle.subscribe((event) => observed.push(event));
+        type('next');
+        props.controller.handleKey('', { return: true });
+        await flush();
+        current.store.flush();
+        off();
+        expect(observed.filter((event) => event.type === 'cost:updated')).toHaveLength(1);
+        expect(
+          observed.every(
+            (event) =>
+              event.cumulativeCostMicrocents !== undefined &&
+              event.usageCoverage !== undefined &&
+              event.cumulativeUnpricedCalls !== undefined,
+          ),
+        ).toBe(true);
+        expect(f.store.loadSessionCostBreakdown(current.sessionId).totalCostMicrocents).toBe(
+          (outcome === 'positive' ? 100000000 : 0) + tokens * 3000,
+        );
+        assertPublished(observed, f.store.loadSessionCostBreakdown(current.sessionId));
+        expect(formatSessionFooter(current.store.getSnapshot().state)).not.toContain(
+          'usage pending',
+        );
+        expect(current.store.getSnapshot().state.turnCount).toBe(2);
+        expect(current.store.getSnapshot().state.cumulativeCostMicrocents).toBe(
+          f.store.loadSessionCostBreakdown(current.sessionId).totalCostMicrocents,
+        );
       } finally {
         captured?.controller.handleKey('c', { ctrl: true });
         await flush();

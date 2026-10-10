@@ -93,7 +93,14 @@ export function createRunStore(color: boolean): RunStoreController {
         event.sequenceNumber > state.lastSequenceNumber
       ) {
         const before = localCoverage;
-        coverage.apply(event);
+        // Successful workflow accounting ACKs are envelope-free transitions. A failed/refused
+        // ask is still delivered (ADR-0078), qualified with the unchanged authoritative snapshot;
+        // it must not consume local correlation before a subsequent real ACK.
+        const unacknowledgedAccounting =
+          event.type.startsWith('cost:') &&
+          event.type !== 'cost:updated' &&
+          event.usageCoverage !== undefined;
+        if (!unacknowledgedAccounting) coverage.apply(event);
         const after = event.type.startsWith('cost:') ? coverage.snapshot().coverage : before;
         localCoverage = after;
         // A resumed primary stream begins after the historical invocation markers. Its

@@ -462,3 +462,9 @@ conversational text, including `!` output and `@` file injection, remains user d
 ## Usage coverage through session lifetime
 
 A shipping persisted host attaches a required usage writer independently of its optional cost governor. Fresh creation alone establishes a complete-zero basis; resume/reseat explicitly adopt the existing owner and preserve pending, unknown and historical uncertainty. Pending acknowledgement precedes conversational, tool-round and summariser invocation. Complete actual money and coverage resolve atomically through one direct writer, rather than a second bus subscriber. The CLI waits for retained producers and accounting writes before closing that writer or SQLite. One-shot agent runs use an opaque hidden owner without a transcript or resume privilege.
+
+Public cost completion follows that direct writer's acknowledgement. The persisted host refreshes the
+amount, missing-price count and coverage together at accounting and lifecycle boundaries, including
+the next turn after resume/reseat; construction-time counters cannot overwrite a newer durable sum.
+Content frames reuse the cached projection. The [event contract](sse-event-schema.md#the-runevent-union)
+owns the acknowledgement, projection-failure and uncertainty rules.

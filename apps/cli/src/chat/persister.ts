@@ -593,6 +593,15 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
   // already lost stops spending instead of carrying on above a transcript that fell behind.
   deps.attachUsageWriter({
     initialCoverage: () => initialUsageCoverage,
+    readSnapshot: () => {
+      const snapshot = deps.store.loadSessionCostBreakdown(deps.sessionId);
+      totalCostMicrocents = snapshot.totalCostMicrocents;
+      return {
+        cumulativeCostMicrocents: snapshot.totalCostMicrocents,
+        cumulativeUnpricedCalls: snapshot.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
+        usageCoverage: snapshot.coverage,
+      };
+    },
     begin: async (draft) => {
       if (!started || closed || durabilityFailure !== undefined)
         throw new Error('session persistence is unavailable');
@@ -622,14 +631,14 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         }
       });
     },
-    record: (draft, cumulative) => {
+    record: (draft) => {
       const receipt =
         draft.invocation === undefined ? undefined : usageReceipts.get(draft.invocation);
       if (receipt === undefined)
         throw new Error('session actual cost requires a live usage receipt');
       const catalogId = deps.resolveModelCatalogId?.(draft.model);
       persistDurably(() => {
-        deps.store.recordSessionCost({
+        const accepted = deps.store.recordSessionCost({
           id: deps.uuid(),
           sessionId: deps.sessionId,
           model: draft.model,
@@ -641,9 +650,9 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
           ts: deps.now(),
           usageReceipt: receipt,
         });
+        if (!accepted) throw new Error('session actual cost acknowledgement refused');
         usageReceipts.delete(receipt.invocation);
       });
-      totalCostMicrocents = cumulative;
     },
   });
   deps.attachDurabilityProbe(() => persister.durabilityFailure);

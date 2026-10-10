@@ -72,8 +72,15 @@ The workflow writer folds each acknowledged coverage transition before deliverin
 durable lifecycle envelopes capture that acknowledged prefix after joining the ordered writer,
 including when preparation or persistence is asynchronous. Durable `cost:` events omit the aggregate
 coverage envelope: their own correlated transition determines the new coverage. This includes
-`cost:attempt_settled`; a pre-settlement snapshot must never overwrite its completion. A live
-`cost:updated` observation can carry its already-folded coverage. Media preparation stays outside the
+`cost:attempt_settled`; a pre-settlement snapshot must never overwrite its completion. A workflow's
+live `cost:updated` observation carries the last acknowledged coverage and omits `invocation`;
+only the private actual-money port retains its exact settlement identity. Observing complete usage
+before the actual write acknowledges cannot complete public coverage. Under ADR-0078 a failed or
+refused nonterminal accounting ask can still be delivered in-process. That nonpersisted delivery
+keeps its type, sequence and payload but carries the unchanged authoritative `usageCoverage`.
+A workflow live reader projects that qualified snapshot without applying its correlated transition;
+successful durable accounting ACKs remain envelope-free. Strict replay only folds stored rows.
+Media preparation stays outside the
 append queue and cannot reserve a sequence before producing a durable-safe draft.
 
 Coverage does not estimate an invoice, alter an
@@ -89,6 +96,15 @@ retire into aggregate counts. `cost:attempt_settled.invocation` correlates run c
 `cost:updated.invocation` does so on live session streams, after the direct actual write. Terminal
 closure never reopens the primary stream for late receipts. The append-only disk ledger keeps its
 existing run retention policy; bounded fold state does not imply a global disk cap.
+
+Persisted session hosts publish one `cost:updated` after the direct actual writer acknowledges.
+Its amount, unpriced-call count and coverage come from one atomic durable breakdown, including
+historical receipts settled since construction or resume. Pending/disposition and session lifecycle
+boundaries refresh this tuple; token/tool frames reuse it without another database read. A failed
+actual write publishes no completion and retains pending coverage. A projection or observer failure
+after a successful write cannot undo its ACK or become a second actual write. Unavailable projection
+data remains qualified as unverified until a successful refresh; the host retains the distinct
+publication failure for admission and safe-close reporting.
 
 The executable predecessor harness refuses each new discriminator independently before executing
 or reading credentials, including the ordinary-gate prefix. The session downgrade defence uses

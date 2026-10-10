@@ -5028,16 +5028,18 @@ class RunExecution {
         return;
       case 'cost:updated':
         if (event.priced === false) this.#cumulativeUnpricedCalls++;
-        if (event.invocation !== undefined)
-          this.#usageCoverage.complete(event.model, event.invocation);
         // The FOLD is unconditional: it is what keeps `#cumulativeCostMicrocents` a truthful record of money
         // the provider actually took, and what `TurnMoneyPort.record` stamps onto the durable ledger row.
         this.#cumulativeCostMicrocents += event.costMicrocents;
         this.#budgetGovernor?.updateCost(this.#cumulativeCostMicrocents);
         // The DELIVERY is not: a straggler must not re-announce a total the terminal already published.
         if (deliver) {
+          // Workflow completion belongs to the actual ledger ACK. Keep exact invocation authority
+          // on the private money port, not on this earlier live observation (sessions use a direct ACK).
+          const observation = { ...event };
+          delete observation.invocation;
           this.#bus.emit({
-            ...event,
+            ...observation,
             runId,
             cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
             usageCoverage: this.#usageCoverage.snapshot().coverage,
@@ -5278,7 +5280,7 @@ class RunExecution {
         if (!settledClaim && !(await this.#authorizeWrite())) {
           // Refused. A TERMINAL is not delivered either: `handle.subscribe` observers outlive the stream
           // close, and telling them the run ended is §5's "durable lie" in delivered form.
-          if (!terminal) this.#bus.deliver(event);
+          if (!terminal) this.#deliverDurableAsk(event, false);
           return { kind: 'refused' };
         }
         // Derive the head at append time, after the predecessor's ACK. A guarded failed ask still
@@ -5361,7 +5363,7 @@ class RunExecution {
       }
       // This writer and its calling actor are still registered. Publish the bounded outcome now;
       // host retirement releases the exact fence only after all actors and receipts actually settle.
-      this.#bus.deliver(event); // still in seq order — `prior` is now awaited above, before the write
+      this.#deliverDurableAsk(event, acknowledgement.kind === 'persisted');
       if (event.type === 'run:paused' && acknowledgement.kind === 'persisted') {
         this.#pauseGeneration += 1;
         this.#pausePublication = this.#readPrimary?.().publishedCount ?? 0;
@@ -5370,6 +5372,15 @@ class RunExecution {
       return acknowledgement;
     })();
     return await settled;
+  }
+
+  /** A failed accounting ask remains observable under ADR-0078, but is not a coverage ACK. */
+  #deliverDurableAsk(event: RunEvent, acknowledged: boolean): void {
+    this.#bus.deliver(
+      !acknowledged && event.type.startsWith('cost:')
+        ? { ...event, usageCoverage: this.#usageCoverage.snapshot().coverage }
+        : event,
+    );
   }
 
   /**

@@ -3127,6 +3127,40 @@ schema synchronization, canonical links, whitespace and the offline CLI/overflow
 smokes passed. Review files remain local and ignored; no source mutation, credential access or
 paid call occurs in these corrections.
 
+#### Step 5 fourth cumulative review and correction — 2026-10-11
+
+Three NEW independent reviewers inspected the complete `017b399c..2f14728a` activation.
+The deduplicated result was **three High** findings; this was not a clean round. Each was
+independently reproduced by the parent before correction. Step 5 still requires two NEW clean
+complete cumulative review rounds after this material correction.
+
+| Finding | Verified correction and permanent evidence |
+| --- | --- |
+| Public workflow/session coverage completed before the actual write ACK | Workflow coverage now completes only in the acknowledged ordered writer. Its earlier live cost observation keeps known money but cannot resolve correlation. Failed accounting asks retain unchanged qualified coverage and do not advance the workflow reader's local fold. Persisted session hosts publish the sole actual-cost event after the direct writer ACK. Actual SDK/native SQLite held/refused zero/positive workflow controls, reopened history, all four failed workflow accounting transition types and native session ACK controls pin these boundaries. |
+| A resumed session's next attempt overwrote its corrected initial amount | Every persisted session publication uses one atomic durable amount/coverage/unpriced tuple, including chat and Home after zero/positive next calls. Sixteen actual entry-point cases preserve concurrent historical receipts instead of overwriting them with the earlier construction-time absolute. `Math.max` alone is not used as an increment substitute. |
+| A late receipt borrowed a newer fallback's model and diagnostic attempt | Exact ephemeral pre-attempt metadata retains the original diagnostic attempt and local uncertainty contribution. Late completion refines only that invocation once, preserving the active model, overflow and terminal observation, and the already published outcome. Four permanent schedule controls include the installed SDK with an offline deferred response. |
+
+The native session controls also distinguish observer/projection failure after a committed actual
+write from ledger failure, keep unavailable projections qualified, and prove that 40 content frames
+do not trigger additional database snapshot reads. No second money writer, completed-ID history,
+new compatibility policy, paid call or deferral is introduced. The canonical contracts and dated
+ADR-0104 correction record these mechanics. Detailed review notes stay local and ignored.
+
+**Correction gates:** fresh forced monorepo lint/typecheck/test passed **23/23**, none cached,
+across **478** files / **10,158 passed** / **11 existing live-provider skips**, including the
+native 100,000-settlement case and all 57 actual CLI child-process controls. The workflow's eight
+new regressions pass on isolated corrected/restored copies; restoring both preceding engine and
+reader fails all eight, and restoring only the reader fails its four correlation controls. Developer
+sources are never swapped. The four permanent late-receipt regressions fail before the correction;
+the independent full probe changes from nine pass/four fail to all 13 pass. These author controls
+do not replace new independent acceptance. Step 6's additional matrix and whole-W8 publication
+remain open. The register stays **48/51** until the outstanding CR-82 gates finish.
+
+Fresh forced build/format passed **7/7**. Tools lint/typecheck, seam/purity/dependency fences,
+schema synchronization, canonical links and whitespace passed. Offline CLI/overflow/replay smokes
+and test-isolation (**478** files) passed before committing this correction; no remote CI or
+whole-wave coverage result is claimed here.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

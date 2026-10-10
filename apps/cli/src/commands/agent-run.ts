@@ -249,6 +249,14 @@ export async function agentRunCommand(
     };
     built.attachDurabilityProbe(() => failure);
     built.attachUsageWriter({
+      readSnapshot: () => {
+        const snapshot = journalStore.store.loadSessionCostBreakdown(owner.sessionId);
+        return {
+          cumulativeCostMicrocents: snapshot.totalCostMicrocents,
+          cumulativeUnpricedCalls: snapshot.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
+          usageCoverage: snapshot.coverage,
+        };
+      },
       initialCoverage: () => {
         const snapshot = usageStore.loadCoverage(owner.sessionId);
         if (snapshot === undefined) throw new Error('One-shot usage owner unavailable');
@@ -289,7 +297,7 @@ export async function agentRunCommand(
         if (receipt === undefined)
           throw new Error('One-shot actual cost requires its live receipt');
         write(() => {
-          journalStore.store.recordSessionCost({
+          const accepted = journalStore.store.recordSessionCost({
             id: randomUUID(),
             sessionId: owner.sessionId,
             model: draft.model,
@@ -300,6 +308,7 @@ export async function agentRunCommand(
             ts: now(),
             usageReceipt: receipt,
           });
+          if (!accepted) throw new Error('One-shot actual cost acknowledgement refused');
           receipts.delete(receipt.invocation);
         });
       },

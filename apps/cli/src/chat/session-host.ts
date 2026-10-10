@@ -201,7 +201,15 @@ export interface ChatBudgetWarning {
   readonly thresholdPct: number;
 }
 
+export interface SessionAccountingSnapshot {
+  readonly cumulativeCostMicrocents: number;
+  readonly cumulativeUnpricedCalls: number;
+  readonly usageCoverage: import('@relavium/shared').UsageCoverage;
+}
+
 export interface SessionUsageWriter {
+  /** Atomic durable projection; absent only on reference in-memory writers. */
+  readonly readSnapshot?: () => SessionAccountingSnapshot;
   readonly initialCoverage: () => UsageCoverageSnapshot | undefined;
   readonly begin: (draft: PendingUsageDraft) => Promise<UsageInvocation>;
   readonly disposition: (draft: UsageDispositionDraft) => void | Promise<void>;
@@ -453,42 +461,79 @@ function buildSessionRuntime(
   };
   const hostWork = new HostWorkRegistry(sessionId);
   let cumulativeCost = 0;
+  let accountingSnapshot: SessionAccountingSnapshot | undefined;
+  let publicationFailure: Error | undefined;
+  let publicationUncertain = false;
+  const refreshAccounting = (): void => {
+    accountingSnapshot = usageWriter?.readSnapshot?.();
+    publicationUncertain = false;
+  };
+  const accountingFields = () => {
+    const snapshot = accountingSnapshot ?? {
+      usageCoverage: usageCoverage?.snapshot().coverage ?? {
+        unverified: true,
+        pendingInvocations: 0,
+        unknownCalls: 0,
+      },
+    };
+    return publicationUncertain
+      ? { ...snapshot, usageCoverage: { ...snapshot.usageCoverage, unverified: true } }
+      : snapshot;
+  };
+  // A committed write stays committed even if its projection/read/stamper fails. Retain that
+  // distinct host failure for close/admission; never reject the actual writer's ACK as a ledger fault.
+  const publishAcknowledged = (publish: () => void): void => {
+    try {
+      refreshAccounting();
+      publish();
+    } catch (cause) {
+      publicationUncertain = true;
+      publicationFailure ??= new Error('session accounting publication failed', { cause });
+    }
+  };
   const money = new MoneyDurability({
     beginUsageInvocation: async (draft) => {
       const invocation = await requiredUsageWriter().begin(draft);
-      usageCoverage?.pending(draft.model, invocation);
-      emit({
-        type: 'cost:usage_pending',
-        nodeId: draft.nodeId,
-        model: draft.model,
-        invocation,
-        usageCoverage: usageCoverage?.snapshot().coverage ?? {
-          unverified: true,
-          pendingInvocations: 0,
-          unknownCalls: 0,
-        },
+      publishAcknowledged(() => {
+        usageCoverage?.pending(draft.model, invocation);
+        emit({
+          type: 'cost:usage_pending',
+          nodeId: draft.nodeId,
+          model: draft.model,
+          invocation,
+          ...accountingFields(),
+        });
       });
       return invocation;
     },
     emitUsageDisposition: async (draft) => {
       await requiredUsageWriter().disposition(draft);
-      usageCoverage?.disposition(
-        draft.model,
-        draft.invocation,
-        draft.disposition,
-        draft.receiptPending,
-      );
-      emit({
-        ...draft,
-        type: 'cost:usage_disposition',
-        usageCoverage: usageCoverage?.snapshot().coverage ?? {
-          unverified: true,
-          pendingInvocations: 0,
-          unknownCalls: 0,
-        },
+      publishAcknowledged(() => {
+        usageCoverage?.disposition(
+          draft.model,
+          draft.invocation,
+          draft.disposition,
+          draft.receiptPending,
+        );
+        emit({
+          ...draft,
+          type: 'cost:usage_disposition',
+          ...accountingFields(),
+        });
       });
     },
-    emit: (draft, cumulative) => requiredUsageWriter().record(draft, cumulative),
+    emit: async (draft, cumulative) => {
+      await requiredUsageWriter().record(draft, cumulative);
+      publishAcknowledged(() => {
+        if (draft.invocation !== undefined) usageCoverage?.complete(draft.model, draft.invocation);
+        emit({
+          ...draft,
+          type: 'cost:updated',
+          cumulativeCostMicrocents: cumulative,
+          ...accountingFields(),
+        });
+      });
+    },
     ...(governor === undefined
       ? {}
       : { flushConservative: () => governor.flushBudgetCommitments() }),
@@ -562,17 +607,13 @@ function buildSessionRuntime(
     emit: (event) => {
       if (usageWriter !== undefined) requiredUsageWriter();
       if (event.type === 'cost:updated') {
+        // The engine/governor still owns its attempt-time counter. Public session money is
+        // published exactly once by the direct writer above, after its transaction ACK.
         cumulativeCost = event.cumulativeCostMicrocents;
-        if (event.invocation !== undefined) usageCoverage?.complete(event.model, event.invocation);
+        return;
       }
-      emit({
-        ...event,
-        usageCoverage: usageCoverage?.snapshot().coverage ?? {
-          unverified: true,
-          pendingInvocations: 0,
-          unknownCalls: 0,
-        },
-      });
+      if (event.type.startsWith('session:')) refreshAccounting();
+      emit({ ...event, ...accountingFields() });
     },
     // The chat-default `ToolPolicy` comes from the factory (ADR-0055's single source), not an implicit engine
     // default: today it is `{}` (gated tools deny-all; `run_command` disabled via empty allowedCommands — a
@@ -604,6 +645,7 @@ function buildSessionRuntime(
     // persister latches a write failure, no further egress is admitted. It composes with the governor rather
     // than replacing it, and it runs FIRST — a session whose record is already lost must not spend more.
     preEgress: (info) => {
+      if (publicationFailure !== undefined) throw publicationFailure;
       const failure = durabilityProbe();
       if (failure !== undefined) {
         // A plain Error, deliberately: the chain classifies a `preAttempt` throw as a fatal (non-retryable)
@@ -638,6 +680,7 @@ function buildSessionRuntime(
       await hostWork.join();
       await money.waitForWrites();
       await money.join();
+      if (publicationFailure !== undefined) throw publicationFailure;
     },
     bus,
     deps,
