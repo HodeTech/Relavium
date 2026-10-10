@@ -270,7 +270,8 @@ export async function agentRunCommand(
               sessionId: owner.sessionId,
               model: draft.model,
               producerId,
-              dispatchId: `${draft.nodeId}:${++dispatch}`,
+              // The producer scopes this ordinal; authored agent IDs are unbounded business identity.
+              dispatchId: String(++dispatch),
               round: draft.round,
               chainAttempt: draft.chainAttempt,
             },

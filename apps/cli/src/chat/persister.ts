@@ -611,7 +611,8 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
           sessionId: deps.sessionId,
           model: draft.model,
           producerId,
-          dispatchId: `${draft.nodeId}:${++dispatchOrdinal}`,
+          // The producer scopes this ordinal; authored agent IDs are unbounded business identity.
+          dispatchId: String(++dispatchOrdinal),
           round: draft.round,
           chainAttempt: draft.chainAttempt,
         });
