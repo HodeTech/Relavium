@@ -109,9 +109,47 @@ parts before host cost callbacks, refuses invalid metadata with `SessionStateErr
 `invalid_resume_state`, and copies the admitted state. A compact/trim rebases surviving whole spans;
 a failed, aborted or cancelled turn creates none.
 
-**W7 step 5, 2026-10-02:** request projection and policy permission/refusals are implemented on
-`development`. The later measured pre-send/recovery entry points and revised multi-pass/budget
-compaction outcomes remain staged; this section does not claim they have landed.
+### Measured compaction and one-shot recovery
+
+Automatic work is permitted by the resolved memory policy, independently of funding. Pre-send
+and after-turn triggers measure the actual next owned request (system, projected history, tools,
+kept exchange and pending user), using the first attemptable entry's authoritative window and
+shared output reservation. Billed input/cache/tool-round usage does not drive the trigger.
+Unknown/custom windows and providers managing their own context skip automatic work. A trigger
+compares input with `compactThreshold × window`, and input plus output reservation with the full
+window. The irreducible kept exchange/pending user, tools, system and maximum summary wrapper
+are compared with the full window; if they cannot fit, pre-send compaction is skipped and that
+turn cannot start another recovery cycle. A failed/skipped pre-send operation sends the original
+owned request. Budget refusal or cancellation sends no main request and settles the active turn.
+`SessionDeps.afterTurnCompaction: false` disables only unused after-turn work; the CLI one-shot
+uses it while retaining explicit summary permission at active entry points.
+
+One inner operation shares the active turn's signal; idle `compact()` owns its own controller.
+It greedily folds older whole messages through at most four budget-gated passes, keeping the
+latest completed exchange, following legacy text and the explicit pending user verbatim.
+Every summariser construction fits every known attemptable entry's measured input-plus-output
+bound. An individually oversized foldable message uses disclosed head-and-tail truncation;
+system text, running summary, kept exchange and pending user are never truncated. All passes
+must succeed with nonempty text before one summary/history replacement and one boundary event.
+Cancellation, refusal or failure installs no partial summary; engaged spend remains accounted.
+`keptTurnCount` includes retained legacy user slots and empty-final exchanges, excluding the
+pending user, so the persister advances only the dropped completed-history boundary.
+
+For manual unknown/mixed-window compaction, each pass additionally respects the fixed 16,384-token
+soft input bound. This is an operational bound, not model metadata or a fit guarantee. The
+surface acknowledges a fixed unknown-window disclosure through `SessionDeps.onCompactionStart`
+before the first admitted call can egress. A failed acknowledgement sends nothing. Automatic
+paths never use the soft bound. All opened moments end with success, one failed-moment event,
+or terminal session cancellation; first-admission refusal opens no moment.
+
+`CompactionResult` distinguishes `budget_refused {message, momentOpened}` from ordinary `failed`,
+`cancelled`, `nothing_to_compact` and policy refusal. Manual refusal returns its safe cap message
+without a turn terminal. After-turn refusal preserves the successful reply and all history;
+first-pass refusal emits a standalone side notice, later refusal closes the open moment once.
+Budget refusal never trims. Ordinary after-turn failure retains the configured deterministic
+trim fallback; cancellation does not trim. Active pre-send/recovery refusal settles one
+`budget_exceeded` turn terminal naming the cap. Event shapes have one home in
+[sse-event-schema.md](sse-event-schema.md#session-event-namespace).
 
 ### Financial request inputs
 
@@ -121,15 +159,20 @@ no budget governor exists. The shared turn core estimates every current tool rou
 reasoning stripping and forwards required cap-plan/request identity, input estimate and the same frozen
 fallback to admission. The canonical estimator, cap precedence, handoff and failure-evidence contract
 lives in [llm-provider-seam.md](../shared-core/llm-provider-seam.md#current-request-estimates-and-bound-output-caps).
-Measured session context and multi-pass compaction remain later W7 step 8 work.
+The same owned construction and cap authority govern measured session context and each compaction pass.
 
 ### Classified context-window failures
 
-An official, fixture-matched overflow settles the turn with `context_overflow`, never a
+An unrecovered official, fixture-matched overflow settles the turn with `context_overflow`, never a
 provider-authored message. The engine names the attempted model, its authoritative window
 (or fixed `size unknown` wording) and whether tools already ran. The internal recoverability
 fact is true only before any tool round or committed content; it is not persisted or emitted.
-Step 7 carries this evidence; automatic compaction/recovery remains W7 step 8 work. A turn
+Before content/tool commitment, one genuine overflow may invoke compaction and one fresh measured
+retry when automatic permission and an authoritative applicable window allow it. Observer failures
+cannot forge this private identity-bound evidence. A failed/skipped prior pre-send operation suppresses
+recovery. Nothing to fold or ordinary recovery failure retains the original overflow; budget refusal
+settles `budget_exceeded`. Retry overflow is final. Main-attempt usage is accumulated across the two
+attempts; summariser spend remains separate and never consumes a user-turn slot. A turn
 that already dispatched tools is never restarted by this classification. Native Anthropic
 context stops retain their actual usage through the failed turn and money ledger. The
 [LLM seam](../shared-core/llm-provider-seam.md#classified-context-overflow) owns the dialect

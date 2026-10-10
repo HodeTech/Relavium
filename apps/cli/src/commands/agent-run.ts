@@ -133,6 +133,7 @@ export async function agentRunCommand(
   const built = await (async (): Promise<BuiltChatSession> => {
     const b = await (deps.buildSession ?? buildChatSession)({
       chat: config.chat,
+      afterTurnCompaction: false, // One-shot output has no next turn; retain active summary permission.
       ...(config.maxTokensEstimate === undefined
         ? {}
         : { maxTokensEstimate: config.maxTokensEstimate }),

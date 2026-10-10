@@ -24,6 +24,7 @@ import {
   catalogNotice,
   clearedNotice,
   compactionNotice,
+  COMPACTION_UNKNOWN_WINDOW_NOTICE,
   costNotice,
   modelSwitchNotice,
   trimNotice,
@@ -498,6 +499,23 @@ export const defaultReplLifecycle: ReplLifecycle = {
  * the view store, so a notice pushed there would vanish silently ({@link liveNoticeSinkFor}).
  */
 let liveSessionNotice: ((text: string) => void) | undefined;
+let liveCompactionNotice: ((text: string) => Promise<void>) | undefined;
+
+function compactionStartNotice(
+  io: CliIo,
+): NonNullable<BuildChatSessionOptions['onCompactionStart']> {
+  return async ({ reason, windowUnknown }) => {
+    if (windowUnknown) {
+      if (liveCompactionNotice !== undefined)
+        await liveCompactionNotice(COMPACTION_UNKNOWN_WINDOW_NOTICE);
+      else await io.writeErrAcknowledged(`${COMPACTION_UNKNOWN_WINDOW_NOTICE}\n`);
+    }
+    // Slash commands run outside the plain turn-event iterator. Announce their actual admission here;
+    // automatic paths use that iterator, and interactive surfaces already observe the engine moment.
+    if (reason === 'manual' && liveCompactionNotice === undefined)
+      await io.writeErrAcknowledged('compacting: summarizing the conversation…\n');
+  };
+}
 
 /**
  * The live-notice sink for a session, or `undefined` to keep the raw-`io` fallback. ONLY the interactive (ink) driver
@@ -573,6 +591,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     mcpRegistrations: config.mcpServers,
     ...(resolvePrice === undefined ? {} : { resolvePrice }),
     onBudgetWarning: (warning) => emitLiveNotice(deps.io, budgetWarningText(warning)),
+    onCompactionStart: compactionStartNotice(deps.io),
     // ADR-0071 §6: a tier the bound model does not take is WITHHELD at send — and said out loud. Without this the
     // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
     // why the knob they set did nothing.
@@ -768,6 +787,7 @@ export async function chatResumeCommand(
       mcpRegistrations: config.mcpServers,
       resolvePrice,
       onBudgetWarning: (warning) => emitLiveNotice(deps.io, budgetWarningText(warning)),
+      onCompactionStart: compactionStartNotice(deps.io),
       // ADR-0071 §6: a tier the bound model does not take is WITHHELD at send — and said out loud. Without this the
       // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
       // why the knob they set did nothing.
@@ -1123,6 +1143,8 @@ export function createChatLineHandler(
 ): ChatLineHandler {
   const { built, opened, store, persister, doctorProbes } = wiring;
   store.setMemoryPolicy(built.session.memoryPolicy);
+  if (Object.hasOwn(built, 'contextWindowTokens'))
+    store.setContextWindow?.(built.contextWindowTokens);
   let stop = false;
   let cancelled = false;
   // Set by `/clear` (ADR-0062 §7): the loop stopped to SWAP the session, not to end the REPL — `stopReason` reports
@@ -1392,11 +1414,9 @@ export function createChatLineHandler(
         emitOutput(compactionNotice(refusal));
         return;
       }
-      // The engine emits `session:compacting` at the start (ADR-0062 §7): on an INTERACTIVE surface the store
-      // renders a labeled "Summarizing…" moment off it, so no pre-notice is needed; on a plain/`--json` surface
-      // (no live spinner) keep a one-line stderr progress note so the multi-second summary isn't a silent pause.
-      // Either way `session:compacted` (→ the persister writes the boundary marker) fires and we report the RESULT.
-      if (!interactive) emitOutput('compacting: summarizing the conversation…');
+      // Actual first admission opens the engine moment; interactive stores observe it and the
+      // onCompactionStart acknowledgement renders plain manual progress outside the turn iterator.
+      // A first-pass budget refusal opens none and is reported by this command's typed result.
       try {
         emitOutput(compactionNotice(await built.session.compact('manual')));
       } catch {
@@ -1404,10 +1424,7 @@ export function createChatLineHandler(
         // the REPL (the discipline every slash command obeys); surface a static, secret-free notice instead.
         emitOutput('compaction failed unexpectedly — the conversation is unchanged.');
       } finally {
-        // ALWAYS reset the moment: a failed/cancelled/no-op /compact (and an unclassified throw) emits NO
-        // session:compacted|trimmed terminal, so without this the store's `compacting` flag (set by
-        // session:compacting) would latch and a later slash command would render a stale "Summarizing…" spinner.
-        // A SUCCESSFUL compact already cleared it via session:compacted, making this an idempotent no-op there.
+        // Idempotent fallback for a command/observer fault; admitted engine work closes its own moment.
         store.clearCompacting();
       }
     },
@@ -1558,6 +1575,7 @@ interface FreshChatWiringDeps {
   readonly opened: OpenedSessionStore;
   readonly buildSession: typeof buildChatSession;
   readonly onBudgetWarning: NonNullable<BuildChatSessionOptions['onBudgetWarning']>;
+  readonly onCompactionStart?: BuildChatSessionOptions['onCompactionStart'];
   /** Withheld-tier sink (ADR-0071 §6) — threaded exactly like {@link FreshChatWiringDeps.onBudgetWarning}, because a
    *  `/clear` rebuild binds a NEW session and a session with no sink withholds a tier in silence. */
   readonly onEffortWithheld: NonNullable<BuildChatSessionOptions['onEffortWithheld']>;
@@ -1588,6 +1606,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     ...(deps.mcpRegistrations === undefined ? {} : { mcpRegistrations: deps.mcpRegistrations }),
     ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     onBudgetWarning: deps.onBudgetWarning,
+    ...(deps.onCompactionStart === undefined ? {} : { onCompactionStart: deps.onCompactionStart }),
     onEffortWithheld: deps.onEffortWithheld,
     onListenerError: deps.onListenerError,
     onUnpriced: deps.onUnpriced,
@@ -1716,6 +1735,7 @@ function createClearRebuild(params: {
     buildSession: params.buildSession,
     altScreen: params.altScreen,
     onBudgetWarning: (warning) => emitLiveNotice(params.io, budgetWarningText(warning)),
+    onCompactionStart: compactionStartNotice(params.io),
     onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(params.io, note)),
     onListenerError: (note: string) => emitLiveNotice(params.io, note),
     onUnpriced: (note) => emitLiveNotice(params.io, note),
@@ -1805,6 +1825,7 @@ interface ReseatWiringDeps {
   readonly opened: OpenedSessionStore;
   readonly buildResumedSession: typeof buildResumedChatSession;
   readonly onBudgetWarning: NonNullable<BuildChatSessionOptions['onBudgetWarning']>;
+  readonly onCompactionStart?: BuildChatSessionOptions['onCompactionStart'];
   /** Withheld-tier sink (ADR-0071 §6) — a `/models` reseat binds a DIFFERENT model, which is precisely when a tier
    *  that was fine a moment ago stops being accepted. Threaded like {@link ReseatWiringDeps.onBudgetWarning}. */
   readonly onEffortWithheld: NonNullable<BuildChatSessionOptions['onEffortWithheld']>;
@@ -1868,6 +1889,7 @@ async function buildReseatWiring(
     ...(deps.mcpRegistrations === undefined ? {} : { mcpRegistrations: deps.mcpRegistrations }),
     ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     onBudgetWarning: deps.onBudgetWarning,
+    ...(deps.onCompactionStart === undefined ? {} : { onCompactionStart: deps.onCompactionStart }),
     onEffortWithheld: deps.onEffortWithheld,
     onListenerError: deps.onListenerError,
     onUnpriced: deps.onUnpriced,
@@ -1978,6 +2000,7 @@ function createReseatRebuild(params: {
     buildResumedSession: params.buildResumedSession,
     altScreen: params.altScreen,
     onBudgetWarning: (warning) => emitLiveNotice(params.io, budgetWarningText(warning)),
+    onCompactionStart: compactionStartNotice(params.io),
     onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(params.io, note)),
     onUnpriced: (note) => emitLiveNotice(params.io, note),
   };
@@ -2074,7 +2097,20 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     liveSessionNotice = liveNoticeSinkFor(interactive, store);
     const outcome = await (deps.drive ?? drivePlain)({
       startSession,
-      ...(wiring.onActivated === undefined ? {} : { onActivated: wiring.onActivated }),
+      onActivated: async (isActive, flushNotice) => {
+        liveCompactionNotice = interactive
+          ? async (text) => {
+              if (!isActive() || flushNotice === undefined)
+                throw new Error('The chat renderer is not ready.');
+              await flushNotice(() => {
+                if (!isActive()) throw new Error('The chat renderer is not ready.');
+                store.notice(text);
+              });
+              if (!isActive()) throw new Error('The chat renderer is not ready.');
+            }
+          : undefined;
+        await wiring.onActivated?.(isActive, flushNotice);
+      },
       processLine,
       shouldStop,
       stopReason,
@@ -2127,6 +2163,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     // A `/models` reseat attaches the captured target here (the one place holding the line handler); see the helper.
     return finalizeReseatOutcome(outcome, reseatTarget);
   } finally {
+    liveCompactionNotice = undefined;
     liveSessionNotice = undefined; // the session is ending — never route a notice to a torn-down store
     cancelOnce(); // emit the terminal even on /exit, /clear, or EOF (idempotent); flips the row to 'ended'
     // Attempt EVERY teardown step (a reject in one must not skip the next) and never let a cleanup fault mask the
@@ -2627,6 +2664,28 @@ export function makePlainPrinter(
         io.writeOut(`\n${annotation}\n`);
         return;
       }
+      case 'session:compacting':
+        io.writeErr('compacting: summarizing the conversation…\n');
+        return;
+      case 'session:compaction_failed':
+        if (event.reason !== 'manual')
+          io.writeErr(
+            event.error.code === 'budget_exceeded'
+              ? 'Compaction budget refused — the conversation is unchanged.\n'
+              : 'Compaction did not complete — the conversation is unchanged.\n',
+          );
+        return;
+      case 'session:compaction_budget_refused':
+        io.writeErr(
+          'Compaction budget refused — the completed reply and conversation are unchanged.\n',
+        );
+        return;
+      case 'session:compacted':
+        if (event.reason !== 'manual')
+          io.writeErr(
+            `Context compacted — ~${event.tokensBefore} → ~${event.tokensAfter} tokens.\n`,
+          );
+        return;
       case 'session:turn_completed': {
         if (event.error === undefined) {
           io.writeOut('\n');

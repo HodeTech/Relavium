@@ -402,11 +402,15 @@ describe('independent compaction caller challenge', () => {
         await h.session.sendMessage('still usable');
         expect(h.calls()).toBe(site === 'start' ? 3 : 4);
       });
-  it('genuine compaction admission still returns a failed result without another provider call', async () => {
+  it('genuine compaction admission returns the distinct budget refusal without another provider call', async () => {
     const marker = new BudgetPauseError(17, 23, 100);
     const h = compactFixture(marker, true, 'admission');
     await h.prepare();
-    expect(await h.session.compact()).toMatchObject({ kind: 'failed', message: marker.message });
+    expect(await h.session.compact()).toMatchObject({
+      kind: 'budget_refused',
+      message: 'the summarisation request would exceed the cap of 23 micro-cents (spent 17)',
+      momentOpened: false,
+    });
     expect(h.calls()).toBe(2);
   });
   it('ordinary unclassified compaction observer still rejects the exact error', async () => {

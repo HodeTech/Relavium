@@ -148,6 +148,10 @@ export interface BuildChatSessionOptions {
    * its namespace, so the surface (the REPL) is the warning channel — the command wires this to surface a
    * one-line notice. Absent ⇒ a no-op (the warn stays non-blocking either way).
    */
+  /** One-shot callers disable only unused after-turn work; active authored summary permission survives. */
+  readonly afterTurnCompaction?: boolean;
+  /** Surface acknowledgement of an unknown-window disclosure before the first admitted call. */
+  readonly onCompactionStart?: SessionDeps['onCompactionStart'];
   readonly onBudgetWarning?: (warning: ChatBudgetWarning) => void;
   /**
    * Sink for a turn on an UNPRICED model (ADR-0071 §K7) — the cost cap could not apply to it. Same channel shape as
@@ -191,6 +195,8 @@ export interface ChatBudgetWarning {
 }
 
 export interface BuiltChatSession {
+  /** Host-authoritative base-model window; present undefined for custom/unknown metadata. */
+  readonly contextWindowTokens?: number | undefined;
   readonly session: AgentSession;
   readonly handle: SessionHandle;
   readonly sessionId: string;
@@ -276,6 +282,8 @@ type SessionRuntimeOptions = Pick<
   | 'now'
   | 'providers'
   | 'toolHost'
+  | 'afterTurnCompaction'
+  | 'onCompactionStart'
   | 'onBudgetWarning'
   | 'onUnpriced'
   | 'onEffortWithheld'
@@ -491,9 +499,13 @@ function buildSessionRuntime(
     // rides ONLY the AgentSession chat/Home/one-shot surfaces, never the run-engine's AgentRunner.
     limits: { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true },
     ...(opts.chat.maxTurns === undefined ? {} : { maxTurns: opts.chat.maxTurns }),
-    // Context compaction (ADR-0062): auto_compact / compact_threshold gate the after-turn auto-compaction, and
+    // Context compaction (ADR-0062): auto_compact / compact_threshold govern measured automatic compaction, and
     // max_messages is both the `/trim` bound and the auto-compaction failure-degrade target. Absent ⇒ the
     // engine defaults (enabled / 0.8 / no fallback trim). Threaded, not hardcoded, so the config is not re-dead.
+    ...(opts.afterTurnCompaction === undefined
+      ? {}
+      : { afterTurnCompaction: opts.afterTurnCompaction }),
+    ...(opts.onCompactionStart === undefined ? {} : { onCompactionStart: opts.onCompactionStart }),
     ...(opts.chat.autoCompact === undefined ? {} : { autoCompact: opts.chat.autoCompact }),
     ...(opts.chat.compactThreshold === undefined
       ? {}
@@ -684,6 +696,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       sessionId,
       agent,
       context,
+      contextWindowTokens: sessionContextWindow(agent, deps),
       tools: deps.tools,
       emitSessionEvent: emit,
       mcpSkipped: mcp?.skipped ?? [],
@@ -776,7 +789,10 @@ export interface BuiltResumedChatSession extends BuiltChatSession {
   readonly nextSequenceNumber: number;
 }
 
-export interface BuildResumedChatSessionOptions {
+export interface BuildResumedChatSessionOptions extends Pick<
+  BuildChatSessionOptions,
+  'afterTurnCompaction' | 'onCompactionStart'
+> {
   /** The resolved `[chat]` block (turn cap, cost cap) — applied to the resumed session's deps. */
   readonly chat: ResolvedChatConfig;
   readonly maxTokensEstimate?: number;
@@ -933,6 +949,7 @@ export async function buildResumedChatSession(
       sessionId: record.id,
       agent,
       context,
+      contextWindowTokens: sessionContextWindow(agent, deps),
       tools: deps.tools,
       emitSessionEvent: emit,
       resumeState,
@@ -1100,4 +1117,16 @@ export function buildGovernorWiring(
       durabilityBroken: governor.conservativeDurabilityBroken,
     }),
   };
+}
+
+/** A catalog alias does not establish the capacity of a custom service. */
+function sessionContextWindow(agent: AgentDefinition, deps: SessionDeps): number | undefined {
+  try {
+    const provider = deps.resolveProvider(agent.provider);
+    if (provider === undefined || provider.customEndpoint === true) return undefined;
+    const window = provider.contextLimit?.(agent.model);
+    return window !== undefined && Number.isSafeInteger(window) && window > 0 ? window : undefined;
+  } catch {
+    return undefined;
+  }
 }

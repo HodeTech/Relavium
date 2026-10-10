@@ -75,3 +75,13 @@ After approval, add dated forward notes to ADR-0062, ADR-0095 and ADR-0096 witho
 - Unknown-window manual compaction can still overflow; its typed outcome states that limitation and preserves history. Choosing a model with an authoritative window provides the measured-fit path.
 - A long unknown-window history can exceed the four-pass capacity; the operation fails explicitly rather than installing an incomplete summary.
 - The heuristic can under-count even with a known window. Provider classification and the bounded failure/recovery rules remain necessary.
+
+## W7 Step 8 implementation — 2026-10-10
+
+The approved measured compaction/recovery and idle budget policies are implemented on
+`development`, pending independent implementation acceptance and final whole-wave validation.
+The [session contract](../reference/contracts/agent-session-spec.md#measured-compaction-and-one-shot-recovery)
+and [event contract](../reference/contracts/sse-event-schema.md#session-event-namespace) own the
+current mechanics and shapes: all-candidate measured bounds, four-pass atomic installation,
+acknowledged unknown-window disclosure, balanced moments and distinct idle/active budget outcomes.
+No accepted policy is superseded; this dated landing note leaves the historical body intact.

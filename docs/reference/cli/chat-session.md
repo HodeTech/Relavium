@@ -184,20 +184,26 @@ the working context — so a compacted session stays compacted across `chat-resu
 `COMPACTION_SYSTEM_PROMPT` in the engine — the conversation to summarise rides an untrusted user message, never
 the authored system prompt) MUST preserve: **open tasks and their state; decisions taken and why; concrete code
 identifiers / file paths / commands / values in play; and the user's stated preferences**. A summary that loses
-these fails the feature. Under `--json` each compaction rides the stream as a `session:compacting` (the moment
-START) then a terminal `session:compacted` / `session:trimmed` event — **except** a manual `/compact` that
-**fails**, which emits `session:compacting` with **no** terminal (the host clears the moment when `compact()`
-settles). A machine consumer must not assume every `session:compacting` is followed by a terminal.
+these fails the feature. Under `--json`, an admitted compaction opens `session:compacting` and ends with
+`session:compacted`, `session:compaction_failed`, or terminal session cancellation. First-admission
+budget refusal opens no moment: manual `/compact` reports the safe cap to its caller, while optional
+after-turn refusal emits `session:compaction_budget_refused`. Later refusal closes the existing
+moment with `budget_exceeded`, once. These events never create a second user-turn terminal.
 
-**The compaction moment.** The engine emits a `session:compacting` event at the start of every compaction
-(`/compact` or automatic). The interactive surface gates input and shows a **labeled** "⟳ Summarizing
-conversation… · Esc to cancel" spinner off it while the summariser runs (so a keystroke can never race the busy
-engine), and **`Esc` aborts it** (the session survives). The moment ends on the terminal `session:compacted` /
-`session:trimmed`; a manual `/compact` that fails clears it when the command settles (the busy-gated render never
-shows a stale label). A **context-fullness** indicator on the session footer (the LAST turn's input tokens ÷ the
-model's context window, e.g. `62% ctx`) makes an impending auto-compaction anticipated; it is omitted for a custom
-base-URL model whose window is unknown (the same models that skip auto-compaction) and until the first turn
-completes.
+**The compaction moment.** The interactive surface shows "⟳ Summarizing conversation… · Esc to
+cancel" after actual first admission. `Esc` aborts compaction and keeps the session alive; an
+admitted failure clears the indicator through its engine event. Plain progress/refusal notices go
+to stderr; JSON stdout remains schema-valid events. Manual unknown/mixed-window compaction first
+shows an acknowledged fixed warning that fit cannot be guaranteed. Each pass respects the soft
+input bound and every known candidate's actual output reservation/window. Automatic entry points
+never use a guessed window. The [engine contract](../contracts/agent-session-spec.md#measured-compaction-and-one-shot-recovery)
+owns measurement, four-pass atomic installation, one-shot recovery and idle/active budget outcomes.
+A budget refusal preserves history and recommends no automatic trim.
+
+The footer's fullness indicator remains last-turn input usage divided by the bound provider's
+authoritative window. It is observability, not the automatic trigger. The host clears its denominator
+for unknown/custom endpoints even when a model id matches the catalog, including resume and model
+reseat. No soft input bound is displayed as model capacity, and no fullness appears before a turn.
 
 ## Input ergonomics (2.5.D, [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
 

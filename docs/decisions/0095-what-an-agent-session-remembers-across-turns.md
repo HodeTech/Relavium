@@ -354,3 +354,13 @@ not change compaction policy or rewrite historical messages/events. Strict sessi
 validation also retains consistent legacy projections while refusing mismatched/raw values.
 The canonical contracts remain [agent-session-spec.md](../reference/contracts/agent-session-spec.md)
 and [database-schema.md](../reference/shared-core/database-schema.md#session-content-parts).
+
+## W7 Step 8 implementation — 2026-10-10
+
+The approved measured compaction/recovery and idle budget policies are implemented on
+`development`, pending independent implementation acceptance and final whole-wave validation.
+The [session contract](../reference/contracts/agent-session-spec.md#measured-compaction-and-one-shot-recovery)
+and [event contract](../reference/contracts/sse-event-schema.md#session-event-namespace) own the
+current mechanics and shapes: all-candidate measured bounds, four-pass atomic installation,
+acknowledged unknown-window disclosure, balanced moments and distinct idle/active budget outcomes.
+No accepted policy is superseded; this dated landing note leaves the historical body intact.

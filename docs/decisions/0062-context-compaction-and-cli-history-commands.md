@@ -478,3 +478,13 @@ The last 2.5.F items — `/clear` and the two compaction-moment UX polishes — 
   still defers `/compact` to Phase 3 and forbids a stub; this ADR reverses that. The roadmap
   and its go/no-go (2.5.F acceptance; the 2.5.H "context-overflow → suggest `/trim`" hint, which
   auto-compaction now largely pre-empts) are updated in the implementing PR.
+
+## W7 Step 8 implementation — 2026-10-10
+
+The approved measured compaction/recovery and idle budget policies are implemented on
+`development`, pending independent implementation acceptance and final whole-wave validation.
+The [session contract](../reference/contracts/agent-session-spec.md#measured-compaction-and-one-shot-recovery)
+and [event contract](../reference/contracts/sse-event-schema.md#session-event-namespace) own the
+current mechanics and shapes: all-candidate measured bounds, four-pass atomic installation,
+acknowledged unknown-window disclosure, balanced moments and distinct idle/active budget outcomes.
+No accepted policy is superseded; this dated landing note leaves the historical body intact.

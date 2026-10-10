@@ -70,7 +70,7 @@ export const RUN_EVENT_TYPES = [
 export type RunEventType = (typeof RUN_EVENT_TYPES)[number];
 
 /**
- * The five **`session:*`** lifecycle event names for an agent session
+ * The ten **`session:*`** lifecycle event names for an agent session
  * (sse-event-schema.md §"Session event namespace", [ADR-0024]). Disjoint from
  * `RUN_EVENT_TYPES`; within a turn a session also reuses `agent:token` /
  * `agent:tool_call` / `agent:tool_result` / `cost:updated` carried on the session
@@ -83,6 +83,8 @@ export const SESSION_EVENT_TYPES = [
   'session:cancelled',
   'session:exported',
   'session:compacting', // ADR-0062 — context compaction STARTED (the "Summarizing…" moment; paired with the below)
+  'session:compaction_failed', // ADR-0096/0099 — closes an admitted compaction without replacing history
+  'session:compaction_budget_refused', // ADR-0099 — first-admission after-turn refusal; no moment opened
   'session:compacted', // ADR-0062 — model-summarised context compaction applied
   'session:trimmed', // ADR-0062 — deterministic history trim applied (no LLM call)
 ] as const;

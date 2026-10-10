@@ -158,12 +158,12 @@ describe('R11 sibling operation cancellation controls', () => {
         await h.session.sendMessage('first');
         await h.session.sendMessage('second');
         const outcome = await h.session.compact();
-        // Parent confirmed the existing late-abort policy is not implicitly changed by this review.
-        expect.soft(outcome.kind).toBe(action === 'cancel' ? 'cancelled' : 'compacted');
+        // ADR-0096/0099 Step 8 makes installation atomic through the final cancellation check.
+        expect.soft(outcome.kind).toBe(action === 'none' ? 'compacted' : 'cancelled');
         if (action === 'cancel') expect.soft(h.events.at(-1)?.type).toBe('session:cancelled');
         expect
           .soft(h.events.filter((e) => e.type === 'session:compacted'))
-          .toHaveLength(action === 'cancel' ? 0 : 1);
+          .toHaveLength(action === 'none' ? 1 : 0);
         if (action === 'abort') {
           let messageCount = 0,
             serialized = '';
@@ -174,10 +174,10 @@ describe('R11 sibling operation cancellation controls', () => {
             return prior(request, 'synthetic');
           };
           await h.session.sendMessage('after aborted summary');
-          expect(messageCount).toBe(3);
-          expect(serialized).not.toContain('first');
+          expect(messageCount).toBe(5);
+          expect(serialized).toContain('first');
           expect(serialized).toContain('second');
-          expect(serialized).toContain('automatically summarised');
+          expect(serialized).not.toContain('automatically summarised');
         }
       });
 });

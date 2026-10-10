@@ -884,6 +884,18 @@ const validSession: Record<string, Record<string, unknown>> = {
   'session:cancelled': { type: 'session:cancelled', ...senv },
   'session:exported': { type: 'session:exported', ...senv, workflowPath: '/w/x.relavium.yaml' },
   'session:compacting': { type: 'session:compacting', ...senv, reason: 'manual' },
+  'session:compaction_failed': {
+    type: 'session:compaction_failed',
+    ...senv,
+    reason: 'pre-send',
+    error: { code: 'validation', message: 'Compaction did not complete.', retryable: false },
+  },
+  'session:compaction_budget_refused': {
+    type: 'session:compaction_budget_refused',
+    ...senv,
+    reason: 'auto-threshold',
+    error: { code: 'budget_exceeded', message: 'Compaction budget refused.', retryable: false },
+  },
   'session:compacted': {
     type: 'session:compacted',
     ...senv,
@@ -908,7 +920,7 @@ describe('SessionEvent union — the agent-first namespace', () => {
     expect(SessionEventSchema.safeParse(validSession[name]).success).toBe(true);
   });
 
-  it('covers exactly the eight session:* names, pinned to a literal list', () => {
+  it('covers exactly the ten session:* names, pinned to a literal list', () => {
     const CONTRACT_NAMES = [
       'session:started',
       'session:turn_started',
@@ -916,6 +928,8 @@ describe('SessionEvent union — the agent-first namespace', () => {
       'session:cancelled',
       'session:exported',
       'session:compacting', // ADR-0062 — the "Summarizing…" moment START
+      'session:compaction_failed', // ADR-0096/0099
+      'session:compaction_budget_refused', // ADR-0099
       'session:compacted', // ADR-0062
       'session:trimmed', // ADR-0062
     ];
@@ -924,18 +938,22 @@ describe('SessionEvent union — the agent-first namespace', () => {
     expect(Object.keys(validSession)).toEqual(CONTRACT_NAMES);
   });
 
-  it('binds session:compacting.reason to the two-value enum (ADR-0062 — the moment START)', () => {
+  it('binds session:compacting.reason to the four entry points (ADR-0062 — the moment START)', () => {
     const ok = validSession['session:compacting'];
     expect(SessionEventSchema.safeParse(ok).success).toBe(true);
-    // Symmetric with session:compacted.reason — manual / auto-threshold (NOT auto-fallback, which is a trim).
+    // Every admitted entry opens the same balanced moment; auto-fallback remains a trim.
     expect(SessionEventSchema.safeParse({ ...ok, reason: 'auto-threshold' }).success).toBe(true);
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'pre-send' }).success).toBe(true);
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'overflow-recovery' }).success).toBe(true);
     expect(SessionEventSchema.safeParse({ ...ok, reason: 'auto-fallback' }).success).toBe(false);
     expect(SessionEventSchema.safeParse({ ...ok, reason: 'nope' }).success).toBe(false);
   });
 
-  it('binds session:compacted.reason to the two-value enum and requires a non-empty summary (ADR-0062)', () => {
+  it('binds session:compacted.reason to the four entry points and requires a non-empty summary (ADR-0062)', () => {
     const ok = validSession['session:compacted'];
     expect(SessionEventSchema.safeParse({ ...ok, reason: 'auto-threshold' }).success).toBe(true);
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'pre-send' }).success).toBe(true);
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'overflow-recovery' }).success).toBe(true);
     expect(SessionEventSchema.safeParse({ ...ok, reason: 'nope' }).success).toBe(false);
     // A compaction always carries summary text (it is what becomes the preamble) + its real spend.
     expect(SessionEventSchema.safeParse({ ...ok, summary: '' }).success).toBe(false);
@@ -949,6 +967,29 @@ describe('SessionEvent union — the agent-first namespace', () => {
         keptMessageCount: 2,
         tokensBefore: 1,
         tokensAfter: 1,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('keeps first-admission after-turn budget refusal distinct from an admitted failure', () => {
+    const budget = validSession['session:compaction_budget_refused'];
+    expect(SessionEventSchema.safeParse({ ...budget, reason: 'manual' }).success).toBe(false);
+    expect(
+      SessionEventSchema.safeParse({
+        ...budget,
+        error: { code: 'internal', message: 'fixed', retryable: false },
+      }).success,
+    ).toBe(false);
+    expect(
+      SessionEventSchema.safeParse({
+        ...validSession['session:compaction_failed'],
+        reason: 'overflow-recovery',
+      }).success,
+    ).toBe(true);
+    expect(
+      SessionEventSchema.safeParse({
+        ...validSession['session:compaction_failed'],
+        reason: 'auto-fallback',
       }).success,
     ).toBe(false);
   });

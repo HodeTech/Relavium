@@ -43,8 +43,8 @@ merged too (PR #85, 2026-08-28).
 > **W7 integration checkpoint, 2026-10-10:** consolidated ADR-0103 host integration is accepted
 > after [two clean complete cumulative rounds](../reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md) and Parent artifact/source audits.
 > MCP startup/custom-provider descendants, all actors, final receipts, original clocks, public departure
-> and shipping CLI teardown are covered. Step 8 measured compaction/recovery is next; final whole-wave
-> Step 12 remains required. All six W7 items remain OPEN (41/51 closed), PR #90 remains draft/unmerged.
+> and shipping CLI teardown are covered. Step 8 measured atomic compaction/recovery is implemented,
+> with independent acceptance pending; final whole-wave Step 12 remains required. All six W7 items remain OPEN (41/51 closed), PR #90 remains draft/unmerged.
 > No user approval, billing setup, credential or provider capture is pending.
 
 > **Prior complete composition review:** [host-closure round 5](../reviews/2026-10-10T00-38-24-w7-host-closure-round-5-review.md)

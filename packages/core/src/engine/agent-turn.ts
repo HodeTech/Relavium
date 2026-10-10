@@ -313,6 +313,8 @@ export interface AgentTurnResult {
  * the run-path adapter maps it to a `NodeOutcome.failed`. The internal correlation id rides the
  * event, never this message.
  */
+const recoverableOverflowEntries = new WeakMap<object, FallbackPlanEntry>();
+
 export class AgentTurnError extends Error {
   override readonly name = 'AgentTurnError';
   /**
@@ -543,9 +545,11 @@ function buildRequest(
   };
 }
 
-interface PreparedAgentTurnRequest {
+export interface PreparedAgentTurnRequest {
   readonly request: LlmRequest;
   readonly inputTokensEstimate: number;
+  readonly firstEntry?: FallbackPlanEntry;
+  readonly attemptableEntries: readonly FallbackPlanEntry[];
 }
 
 // Measurement metadata is local to the core factory; LLM ownership stays in @relavium/llm.
@@ -572,9 +576,14 @@ function prepareRequest<T>(prepare: () => T): T {
   }
 }
 
-function measureOwnedRequest(request: LlmRequest): PreparedAgentTurnRequest {
+function measureOwnedRequest(
+  request: LlmRequest,
+  attemptableEntries: readonly FallbackPlanEntry[],
+): PreparedAgentTurnRequest {
   return Object.freeze({
     request,
+    attemptableEntries: Object.freeze([...attemptableEntries]),
+    ...(attemptableEntries[0] === undefined ? {} : { firstEntry: attemptableEntries[0] }),
     // Ownership is wider than this existing input-price subset (ADR-0102 clarification).
     inputTokensEstimate: estimateRequestTokens({
       system: request.system ?? '',
@@ -597,11 +606,12 @@ function ownRoundRequest(
     if (inline) owned = withoutOwnedRequestTools(owned);
     // A fresh chain has no cooldown. Select its first capability-applicable entry without
     // selecting failed caps belonging only to skipped candidates. The chain still owns skips.
-    const first = entries.find(
+    const attemptable = entries.filter(
       (entry) =>
         (inline || entry.provider.supports.streaming) &&
         ownedRequestSupportReason(owned, requestCandidate(entry), entry.provider.supports) === null,
     );
+    const first = attemptable[0];
     if (entries.length === 0)
       throw new AgentTurnError('internal', 'agent turn has no fallback-plan entries', false);
     // With no applicable candidate, preserve construction ownership without selecting an unused
@@ -610,7 +620,7 @@ function ownRoundRequest(
       first === undefined
         ? ownedRequestSource(owned)
         : selectOwnedRequest(owned, requestCandidate(first)).request;
-    return measureOwnedRequest(measured);
+    return measureOwnedRequest(measured, attemptable);
   });
 }
 
@@ -769,6 +779,8 @@ function throwMappedChainError(
       false,
     );
     mapped.recoverableOverflow = !turnCommitted && error.contentCommitted !== true;
+    if (entry !== undefined && mapped.recoverableOverflow)
+      recoverableOverflowEntries.set(mapped, entry);
     throw mapped;
   }
   throw new AgentTurnError(
@@ -1367,6 +1379,7 @@ export type CapturedAgentTurnOutcome =
       readonly kind: 'failed';
       readonly error: unknown;
       readonly failureOrigin: 'observer' | 'turn';
+      readonly overflowEntry?: FallbackPlanEntry;
       readonly engaged: boolean;
       readonly usage: { readonly input: number; readonly output: number };
     };
@@ -1474,9 +1487,14 @@ export async function captureAgentTurnOutcome(
       input: acc.input + (acc.observedStopUsage?.input ?? 0),
       output: acc.output + (acc.observedStopUsage?.output ?? 0),
     };
+    const overflowEntry =
+      (typeof error === 'object' && error !== null) || typeof error === 'function'
+        ? recoverableOverflowEntries.get(error)
+        : undefined;
     return {
       kind: 'failed',
       error,
+      ...(overflowEntry === undefined ? {} : { overflowEntry }),
       failureOrigin:
         acc.observerFailure !== undefined && Object.is(acc.observerFailure.error, error)
           ? 'observer'
@@ -1573,7 +1591,7 @@ async function driveAgentTurn(
           const request = withOwnedRequestSignal(prepared.request, params.signal);
           // Validate every resolved identity without reselecting or remeasuring the first projection.
           ownLlmRequest(request, params.planEntries.map(requestCandidate));
-          return Object.freeze({ request, inputTokensEstimate: prepared.inputTokensEstimate });
+          return Object.freeze({ ...prepared, request });
         });
   const firstRequest = round.request;
 

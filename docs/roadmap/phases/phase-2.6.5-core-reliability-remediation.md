@@ -1989,7 +1989,7 @@ correction inside its own ADR rather than a rewrite, so the wrong reasoning stay
 
 ### W7 pre-implementation review and proposed execution plan — 2026-10-02
 
-**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–6 and 9–11 obtained scoped independent acceptance, but the 2026-10-04 systematic PR review reopens Step 6 request ownership and adjacent session/CLI, replay-tool and document obligations. Previous acceptance records remain historical. Step 6's configured-output-estimate precedence follows ADR-0101, approved on 2026-10-02. All five live captures exist as of 2026-10-08, including Anthropic's separate native context-stop response. Step 7 obtained fresh complete acceptance on 2026-10-08 after four cumulative rounds. Approved ADR-0102/0103 production integration, Step 8 and whole Step 12 remain open. All remaining systematic corrections require fresh independent acceptance.**
+**Status: documentation review closed; ADR-0099, ADR-0100 and this plan approved by the maintainer on 2026-10-02. Steps 1–6 and 9–11 obtained scoped independent acceptance, but the 2026-10-04 systematic PR review reopens Step 6 request ownership and adjacent session/CLI, replay-tool and document obligations. Previous acceptance records remain historical. Step 6's configured-output-estimate precedence follows ADR-0101, approved on 2026-10-02. All five live captures exist as of 2026-10-08, including Anthropic's separate native context-stop response. Step 7 obtained fresh complete acceptance on 2026-10-08 after four cumulative rounds. Approved ADR-0102/0103 production integration is accepted. Step 8 is implemented and awaiting independent acceptance; whole Step 12 remains open. All remaining systematic corrections require fresh independent acceptance.**
 The four Accepted ADRs retain their decisions. Three verified gaps were explicitly resolved before code:
 manual compaction with an unknown window and the budget outcome of idle compaction
 ([ADR-0099](../../decisions/0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md)),
@@ -4625,3 +4625,26 @@ and frozen tracked source/HEAD/index. Startup/MCP/custom-provider descendants, a
 receipt health, original clocks, departure and shipping CLI teardown are accepted within scope.
 Step 8 compaction/recovery and final whole-wave Step 12 remain open; the six W7 register items
 remain OPEN (41/51 closed), PR #90 remains draft/unmerged, with no user/provider blocker.
+
+
+### W7 Step 8 — implemented, independent acceptance pending, 2026-10-10
+
+Measured pre-send and one-shot overflow recovery now use the exact owned request and actual
+attemptable entry metadata. One bounded primitive serves manual, after-turn, pre-send and recovery
+paths: every candidate window/output reservation constrains each pass; four passes install one
+summary atomically. Pending users never count as retained durable turns. Unknown-window manual
+work waits for the surface's visible acknowledgement and remains bounded best effort.
+
+Budget refusal and cancellation preserve history without fallback trim. The idle first-pass refusal
+has its own notice; an admitted moment has one success/failure terminal. Genuine pre-content,
+pre-tool overflow can recover once; skips and ordinary pre-send failure suppress another attempt.
+One-shot agents explicitly disable after-turn work without changing authored permission. The
+[session contract](../../reference/contracts/agent-session-spec.md#measured-compaction-and-one-shot-recovery)
+and [event contract](../../reference/contracts/sse-event-schema.md#session-event-namespace) own
+these mechanics. Native SQLite tests verify the boundary across legacy bare users, empty finals,
+pending users and resume. Historical tests now measure actual next requests and require atomic
+late cancellation; billed usage and optional estimator observations do not authorise compaction.
+
+Implementation checks and two fresh complete independent review rounds precede acceptance.
+All six W7 register items remain open (41/51); final Step 12 remains required. PR #90 stays draft
+and unmerged. No provider call, credential, billing setup or user decision is pending.

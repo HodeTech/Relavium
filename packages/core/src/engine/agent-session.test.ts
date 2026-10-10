@@ -1891,6 +1891,7 @@ describe('AgentSession — authored memory request projection (ADR-0095)', () =>
     async ({ policy, auto, calls }) => {
       const agent = AgentSchema.parse({
         ...AGENT,
+        max_tokens: 64,
         ...(policy === 'omitted'
           ? {}
           : {
@@ -1908,8 +1909,8 @@ describe('AgentSession — authored memory request projection (ADR-0095)', () =>
         agent,
       );
       s.start();
-      await s.sendMessage('q1');
-      await s.sendMessage('q2');
+      await s.sendMessage('q'.repeat(17_000));
+      await s.sendMessage('r'.repeat(17_000));
       expect(captured.requests).toHaveLength(calls);
       expect(events.some((event) => event.type === 'session:compacted')).toBe(calls === 3);
       expect(s.automaticCompactionAllowed).toBe(
@@ -2216,18 +2217,20 @@ describe('AgentSession — context compaction + trim (ADR-0062)', () => {
     expect(s.trimHistory(100)).toEqual({ kind: 'nothing_to_trim', messageCount: 2 });
   });
 
-  it('auto-compacts after a turn whose real input tokens exceed threshold × the model window', async () => {
-    // window 10000 × 0.8 = 8000 budget; each turn reports 9000 input (> 8000). The projected floor
-    // (base estimate 0 + the 4096 summary bound) is under budget, so guard-b passes. Turn 1 skips (≤1
-    // exchange); after turn 2 (2 exchanges) it fires and consumes the SUMMARY script.
+  it('auto-compacts after a turn when the next measured context exceeds the threshold', async () => {
+    // Each completed exchange adds roughly 4,250 measured input tokens. One stays below 8,000;
+    // two exceed it, while the kept exchange plus the summary reserve and main cap fit 10,000.
+    // Provider-reported billing is deliberately tiny: it cannot authorise this construction.
     const { session: s, events } = compactHarness(
-      [inputTurn('a1', 9000), inputTurn('a2', 9000), textTurn('AUTO-SUMMARY')],
+      [inputTurn('a1', 1), inputTurn('a2', 1), textTurn('AUTO-SUMMARY')],
       { contextLimit: 10_000 },
+      {},
+      AgentSchema.parse({ ...AGENT, max_tokens: 64 }),
     );
     s.start();
-    await s.sendMessage('q1');
-    expect(events.some((e) => e.type === 'session:compacted')).toBe(false); // ≤1 exchange — guarded
-    await s.sendMessage('q2');
+    await s.sendMessage('q'.repeat(17_000));
+    expect(events.some((e) => e.type === 'session:compacted')).toBe(false);
+    await s.sendMessage('r'.repeat(17_000));
     const compacted = events.find((e) => e.type === 'session:compacted');
     expect(compacted?.type === 'session:compacted' && compacted.reason).toBe('auto-threshold');
   });
@@ -2262,10 +2265,12 @@ describe('AgentSession — context compaction + trim (ADR-0062)', () => {
       [inputTurn('a1', 9000), inputTurn('a2', 9000), emptySummary],
       { contextLimit: 10_000 },
       { maxMessages: 2 },
+      AgentSchema.parse({ ...AGENT, max_tokens: 64 }),
     );
     s.start();
-    await s.sendMessage('q1');
-    await s.sendMessage('q2');
+    await s.sendMessage('q'.repeat(17_000));
+    await s.sendMessage('r'.repeat(17_000));
+    expect(events.some((e) => e.type === 'session:compaction_failed')).toBe(true);
     expect(events.some((e) => e.type === 'session:compacted')).toBe(false); // the summary failed
     const trimmed = events.find((e) => e.type === 'session:trimmed');
     expect(trimmed?.type === 'session:trimmed' && trimmed.keptMessageCount).toBe(2); // degraded to /trim(2)
@@ -2281,18 +2286,19 @@ describe('AgentSession — context compaction + trim (ADR-0062)', () => {
       [inputTurn('a1', 9000), inputTurn('a2', 9000), emptySummary],
       { contextLimit: 10_000 },
       {}, // no maxMessages wired
+      AgentSchema.parse({ ...AGENT, max_tokens: 64 }),
     );
     s.start();
-    await s.sendMessage('q1');
-    await expect(s.sendMessage('q2')).resolves.toBeUndefined(); // no throw
+    await s.sendMessage('q'.repeat(17_000));
+    await expect(s.sendMessage('r'.repeat(17_000))).resolves.toBeUndefined(); // no throw
+    expect(events.some((e) => e.type === 'session:compaction_failed')).toBe(true);
     expect(events.some((e) => e.type === 'session:compacted')).toBe(false);
     expect(events.some((e) => e.type === 'session:trimmed')).toBe(false); // nothing to degrade to
   });
 
   it('skips auto-compaction when the projected floor would still exceed the budget (thrash guard b)', async () => {
-    // window 10000 × 0.8 = 8000 budget; input 9000 triggers. The estimator reports 8000 for the base kept
-    // context, so the projected floor (8000 + the 4096 summary bound) > budget → compaction cannot help; the
-    // session must NOT pay a summariser call every turn, so the SUMMARY script is never consumed.
+    // A huge kept exchange already exceeds the full window, even before reserving summary output.
+    // The trigger is the actual request; the optional provider estimator is not admission authority.
     const {
       session: s,
       events,
@@ -2303,7 +2309,7 @@ describe('AgentSession — context compaction + trim (ADR-0062)', () => {
     });
     s.start();
     await s.sendMessage('q1');
-    await s.sendMessage('q2');
+    await s.sendMessage('r'.repeat(40_000));
     expect(events.some((e) => e.type === 'session:compacted')).toBe(false);
     expect(captured.requests).toHaveLength(2); // only the two real turns — no summariser call
   });

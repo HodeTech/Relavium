@@ -1,3 +1,4 @@
+import { COMPACTION_UNKNOWN_WINDOW_NOTICE } from '../chat/repl-info.js';
 import { randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 
@@ -689,6 +690,18 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         // exactly this reason (Step-4b-3 Sonnet fix): a raw write lands on the alt buffer, where ink's next frame
         // overwrites it — the user is warned about their spend on a line that survives a single frame.
         onBudgetWarning: (warning) => store.notice(budgetWarningText(warning)),
+        onCompactionStart: async ({ windowUnknown }) => {
+          if (!windowUnknown) return;
+          if (!rendererActive || flushVisible === undefined)
+            throw new Error('Home renderer is not ready.');
+          await flushVisible(() => {
+            const visibleStore = store;
+            if (!rendererActive || visibleStore === undefined)
+              throw new Error('Home renderer is not ready.');
+            visibleStore.notice(COMPACTION_UNKNOWN_WINDOW_NOTICE);
+          });
+          if (!rendererActive) throw new Error('Home renderer is not ready.');
+        },
         // Same channel, same reason (ADR-0071 §6): a tier the bound model will not take is withheld at send, and
         // saying so on raw stderr would land on the alt buffer for one frame. `onceEffortNotice` keeps a standing
         // condition — a stale `off` on a model that cannot disable thinking — from repeating every single turn.
@@ -757,6 +770,18 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         mcpRegistrations: config.mcpServers,
         ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
         onBudgetWarning: noteBudget,
+        onCompactionStart: async ({ windowUnknown }) => {
+          if (!windowUnknown) return;
+          if (!rendererActive || flushVisible === undefined)
+            throw new Error('Home renderer is not ready.');
+          await flushVisible(() => {
+            const visibleStore = storeRef.current;
+            if (!rendererActive || visibleStore === undefined)
+              throw new Error('Home renderer is not ready.');
+            visibleStore.notice(COMPACTION_UNKNOWN_WINDOW_NOTICE);
+          });
+          if (!rendererActive) throw new Error('Home renderer is not ready.');
+        },
         // A RESEAT binds a different model — precisely when a tier that was fine a moment ago stops being accepted.
         // Through `noteToStore`, like every sink here, so none can TDZ on the store declared below.
         onEffortWithheld: onceEffortNotice(noteToStore),
