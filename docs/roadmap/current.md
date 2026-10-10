@@ -68,7 +68,7 @@ closes all twelve steps and CR-71/72/94/96/97/98 on `main`. At reviewed head `69
 five-job GitHub CI runs and SonarCloud passed; all four supplemental Sonar labels closed.
 This evidence belongs to the reviewed head, not to a future W8 change.
 
-**W8 — Provider and conformance: Steps 1–3 accepted on `development`; Step 4 is in progress.**
+**W8 — Provider and conformance: Steps 1–4 accepted on `development`; Steps 5–6 activation is in progress.**
 The [seven-step plan](phases/phase-2.6.5-core-reliability-remediation.md#w8-preflight-and-proposed-execution-plan--2026-10-10)
 and [Accepted ADR-0104](../decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md)
 were approved by the maintainer on 2026-10-10. The submitted ADR review is dispositioned;
@@ -88,6 +88,10 @@ records three complete cumulative review rounds and their verified corrections. 
    **Accepted after two NEW complete cumulative rounds.** The [Step 3 register](phases/phase-2.6.5-core-reliability-remediation.md#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
    joins the 24-case actual-SDK matrix and three independently reproduced lowering controls.
 3. **CR-82:** preserve missing or partial provider usage as unknown on every cost-total path.
+   The [Step 4 register](phases/phase-2.6.5-core-reliability-remediation.md#w8-step-4-usage-evidence-and-session-coverage-foundations--2026-10-10)
+   accepts strict inert evidence and SQLite revision/acknowledgement foundations after two NEW
+   complete cumulative review rounds. Production pending/settlement, evidence migration and
+   qualified readers remain in progress; this foundation does not close CR-82.
 
 The implementation register is **48/51 on `development`**; `main` remains **47/51** until W8
 lands. CR-81 is accepted; CR-82 remains W8 work. CR-70 (cross-turn tool-history carrying)
@@ -472,7 +476,7 @@ flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
     LEDGER["#W15-1 — realized-cost ledger ✅<br/>ADR-0076 + ADR-0077"]
-    P265["Phase 2.6.5 — Core reliability<br/>51 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094<br/>W7 merged — PR #90 · W8 Steps 1–3 accepted on development"]
+    P265["Phase 2.6.5 — Core reliability<br/>51 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094<br/>W7 merged — PR #90 · W8 Steps 1–4 accepted on development"]
     W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]

@@ -2494,7 +2494,7 @@ stand.
 
 ## W8 — Provider and conformance
 
-**Plan and ADR-0104 approved on 2026-10-10; Steps 1–3 accepted on `development`; Step 4 is in progress.**
+**Plan and ADR-0104 approved on 2026-10-10; Steps 1–4 accepted on `development`; Steps 5–6 activation is in progress.**
 ADR-0087 §1 and CR-81 have scoped implementation acceptance; CR-82 and whole-W8 publication remain open.
 CR-80 below was already closed before W7. Current execution order is in
 [current.md](../current.md#next-work--phase-265-w8).
@@ -2559,8 +2559,8 @@ remains approved and open; `main` publication follows the whole-W8 gate.
 
 ### W8 preflight and proposed execution plan — 2026-10-10
 
-**Status: preflight complete, plan and ADR-0104 approved on 2026-10-10; Steps 1–3 accepted on `development`.**
-Steps 4–7 and whole-W8 publication remain open.
+**Status: preflight complete, plan and ADR-0104 approved on 2026-10-10; Steps 1–4 accepted on `development`.**
+Steps 5–7 and whole-W8 publication remain open.
 The maintainer requests implementation on `development`, an implementation commit followed by
 two fresh independent cumulative review rounds per step, confirmed fixes committed between
 rounds, and approval of any new decision before dependent work. W7 and PR #91 are merged;
@@ -2917,7 +2917,7 @@ Steps 4–7, whole-W8 publication and existing approved residuals remain open.
 
 ### W8 Step 4 usage-evidence and session-coverage foundations — 2026-10-10
 
-**Implementation complete; independent reviews pending.** One shared complete
+**Accepted on `development`; production activation remains staged.** One shared complete
 quantity definition is re-exported through the LLM seam, preserving its current API and arithmetic.
 The new strict complete/partial/missing evidence schemas, descriptor-first bounded owned guard,
 coverage metadata and correlation payload schemas are inert. Existing result, stop, error and
@@ -2950,6 +2950,33 @@ Lock-release tests release only after observed `SQLITE_BUSY`; exhaustion proves 
 whole-transaction retry count. Removing the parent, message or cost UPDATE trigger separately
 breaks old-write → new-write sticky-taint verification; exact trigger restoration passes each.
 These foundation controls do not replace Step 6's actual predecessor executable matrix.
+
+**Rounds 1 and 2 — reviewed head `4379152a`:** each used two NEW independent read-only
+reviewers, GPT-6-astra/high for DB/transactional integrity and GPT-6.1-sol/high for
+evidence/seam/integration, inspecting the full **26-path** cumulative range from `4b98b9ca`.
+All four returned **zero actionable findings**. Each DB reviewer independently passed all
+**576** DB tests and the **46** new shared controls; each evidence reviewer passed full shared
+**865**, LLM **1,752 / 11 existing skips** and DB **576**, plus package lint/typechecks and
+schema synchronization. Rounds independently reproduced trigger-removal causal controls;
+round 2 additionally compared **1,336** values against the original legacy usage schema,
+including rejection diagnostics, and verified identical re-exports. Native snapshots preserve
+all 18 old table definitions, adding two tables and five columns. No implementation correction
+was needed. Detailed reports remain local and ignored.
+
+Tools lint/typecheck, dependency/seam fences, test isolation, formatting, whitespace, canonical
+links and offline CLI smoke passed. `db:sync-check` passed after the migration commit; its
+earlier refusal of an uncommitted migration was its documented clean-tree requirement, not
+generator drift. No live provider call, old executable or PostgreSQL execution is claimed.
+
+**Step 4 is accepted.** The register stays **48/51**; CR-82 and publication remain open.
+Steps 5–6 proceed with one honest production compatibility activation: adapters cannot wrap
+their old fabricated zeros as complete evidence while persistence/readers lag behind. The
+complete-path migration and basic uncertainty implementation therefore land atomically, then
+receive Step 5's two cumulative reviews. Step 6 adds its full crash/predecessor/retirement/
+reader and causal acceptance matrix, fixes confirmed gaps and receives two further NEW
+cumulative rounds before CR-82 can close. Existing OpenAI parameter-repair retries must retain
+their behaviour while each potentially billable native invocation is durably accounted for;
+custom 400s cannot silently inherit official refusal authority.
 
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
