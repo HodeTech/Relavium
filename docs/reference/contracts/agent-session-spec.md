@@ -41,7 +41,7 @@ pre-attempt hooks and dispatch, retaining live cancellation and creating fresh o
 The factory-measured first request can be reused by exact identity as described in the
 [runner contract](../shared-core/agent-runner.md#pre-egress-injection-contract). Core reuse and Step 8's
 session measurement, atomic compaction and overflow recovery have independent acceptance;
-[final wave review](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10) remains separate.
+[final wave review](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10) is accepted separately.
 
 ## Lifecycle
 

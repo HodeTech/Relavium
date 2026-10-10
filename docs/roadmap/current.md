@@ -40,12 +40,13 @@ and Wave 0 is merged (PR #82), as is Wave 1 (PR #83). The interlude's `W2` (core
 merged too (PR #85, 2026-08-28).
 
 
-> **W7 closing checkpoint, 2026-10-10:** Steps 1–11, all five genuine overflow records,
+> **W7 complete on `development`, 2026-10-10:** all twelve steps, five genuine overflow records,
 > production request ownership and consolidated host lifetimes have independent acceptance.
-> Final Step 12 is under review; all six W7 items remain open (41/51 closed) until that gate.
-> The [closing register](phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
-> joins all twelve steps, six causal controls and every submitted systematic finding.
-> PR #90 remains draft/unmerged. No user decision, credential, billing or capture is pending.
+> All six W7 items are closed; Phase 2.6.5 stands at **47/51**. The
+> [closing register](phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
+> joins per-item causal controls, both final review rounds and every submitted systematic finding.
+> PR #90 remains draft/unmerged for maintainer review. W8 and approved deferrals remain open.
+> No implementation, user decision, credential, billing or provider capture is pending for W7.
 
 ## Historical W7 implementation checkpoints
 
@@ -418,7 +419,7 @@ flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
     LEDGER["#W15-1 — realized-cost ledger ✅<br/>ADR-0076 + ADR-0077"]
-    P265["Phase 2.6.5 — Core reliability<br/>51 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094<br/>W7 implemented — final acceptance pending"]
+    P265["Phase 2.6.5 — Core reliability<br/>51 CR items · 8 P0 blockers behind ADR-0078–0084<br/>W0+W1+W2 merged · W3 merged with a live blocker<br/>W4 merged — the hostile-MCP class, ADR-0088<br/>W5 merged — media correctness, ADR-0089+0090<br/>W6 merged — authoring correctness, ADR-0091–0094<br/>W7 accepted on development — PR #90 draft"]
     W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]

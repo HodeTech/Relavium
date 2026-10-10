@@ -98,7 +98,7 @@ observable. Separate-endpoint `MediaGenRequest`/generation/polling remains outsi
 Core now captures its first round before measurement, reuses the factory request for quote/execution
 with only the live signal overlaid, and closes each pre-attempt check over that round before money waits.
 Real tool results create fresh owned rounds from owned static fields and working history. Core ownership and Step 8's owned summariser/pre-send/recovery integration have independent acceptance;
-final wave acceptance is tracked by the [closing register](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+accepted final wave evidence is tracked by the [closing register](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
 
 ## The core interface
 

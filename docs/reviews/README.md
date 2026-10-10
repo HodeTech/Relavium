@@ -11,6 +11,9 @@ added.
 
 ## Records
 
+- [2026-10-10 — W7 final Step 12, round 2](2026-10-10T02-46-19-w7-step-12-round-2-review.md):
+  second complete independent cross-surface round; all twelve steps accepted on development, PR draft.
+
 - [2026-10-10 — W7 final Step 12, round 1](2026-10-10T02-30-00-w7-step-12-round-1-review.md):
   complete six-CR/systematic composition review; baseline link corrected; second round required.
 
