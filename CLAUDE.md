@@ -161,11 +161,11 @@ are accepted after five cumulative rounds and 77 permanent cases; [round 5](docs
 includes Parent's complete artifact audit and qualified shared-tree comparison. Fresh-start
 and interpolation lifetimes are accepted after two cumulative rounds and fourteen permanent
 additions; [round 2](docs/reviews/2026-10-09T14-55-12-w7-startup-lifetime-round-2-review.md)
-includes Parent's complete artifact and unchanged shared-tree audits. Complete MCP
-startup/all-actor ownership, custom-provider descendants, host departure, Step 8 and final
-Step 12 remain open. Systematic review's
-ownership/lifecycle obligations remain
-open until that integration is independently verified.
+includes Parent's complete artifact and unchanged shared-tree audits. Consolidated startup/MCP/custom-provider/all-actor ownership, final receipt health, original
+clocks, public departure and shipping CLI teardown are accepted after two clean complete cumulative
+rounds and Parent artifact/source audits. Step 8 measured atomic compaction/recovery and final
+whole-wave Step 12 remain open; all six W7 register items remain open, and PR #90 remains draft.
+
 
 The first six review rounds shaped these ADRs, and they surfaced two shipping defects, opened as `CR-96` and
 `CR-97`, both open, non-deferrable and scheduled into `W7`.
@@ -180,18 +180,9 @@ with an invented output. `CR-97`: session effect rows keep tool output at rest a
 had the ADRs restated as decisions, invariants and acceptance tests, because every round's defects were in the
 previous round's fixes.
 
-The consolidated ADR-0103 host/actor/MCP/custom-provider/final-health/clock/CLI integration
-is implemented on 2026-10-10 and awaiting two fresh complete independent review rounds.
-Dispatch round 9's first-start publication High is corrected with six paired cases.
-Complete host-closure round 1 verifies three further lifecycle High findings and a shipping
-acceptance gap; Parent corrections add eighteen permanent cases. Complete round 2 confirms
-due-budget departure starvation and provider entry after synchronous cancellation. Nineteen
-additional permanent cases cover those corrections. Complete round 3 confirms retirement
-callbacks can mutate returned data or strand acknowledgement on failure. Parent corrections
-add thirty-two permanent cases. Complete round 4 confirms public iterator exit can skip
-underlying cleanup after retirement failure; twelve permanent cases cover the correction.
-Complete round 5 finds no new actionable issue; one further fresh complete clean round remains required.
-Step 8 and final Step 12 remain open; no user approval or provider capture is pending.
+[Complete host round 6](docs/reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md) records the scoped ADR-0103 acceptance,
+corrected factual review artifacts and qualified evidence. Step 8 is next, followed by Step 12.
+No user decision, billing setup, credential or provider capture is pending.
 
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);

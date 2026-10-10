@@ -4616,3 +4616,12 @@ complete reports and maps and verifies the frozen tracked tree, HEAD and index. 
 clean round; a second fresh complete clean round remains required. Step 8 and final Step 12
 remain open, all six W7 items remain open (41/51 closed), and PR #90 remains draft/unmerged.
 No provider capture, credential, billing setup or maintainer decision is pending.
+
+### W7 consolidated host closure — accepted within scope (2026-10-10)
+
+[Complete round 6](../../reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md) and the preceding clean round independently
+accept the entire consolidated ADR-0103 increment. Parent audits both full reports, corrected maps
+and frozen tracked source/HEAD/index. Startup/MCP/custom-provider descendants, all actors, final
+receipt health, original clocks, departure and shipping CLI teardown are accepted within scope.
+Step 8 compaction/recovery and final whole-wave Step 12 remain open; the six W7 register items
+remain OPEN (41/51 closed), PR #90 remains draft/unmerged, with no user/provider blocker.

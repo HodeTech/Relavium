@@ -11,6 +11,8 @@ added.
 
 ## Records
 
+- [2026-10-10 — W7 consolidated host closure, cumulative round 6](2026-10-10T00-51-34-w7-host-closure-round-6-review.md):
+  second clean complete cumulative round; consolidated host integration accepted within scope.
 - [2026-10-10 — W7 consolidated host closure, cumulative round 5](2026-10-10T00-38-24-w7-host-closure-round-5-review.md):
   zero confirmed findings; first clean complete cumulative round; a second fresh round remains required.
 - [2026-10-10 — W7 consolidated host closure, cumulative round 4](2026-10-10T00-22-00-w7-host-closure-round-4-review.md):

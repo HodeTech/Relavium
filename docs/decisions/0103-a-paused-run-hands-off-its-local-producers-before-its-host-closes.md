@@ -1187,3 +1187,11 @@ fails. Parent guarantees that cleanup entry, preserves an established consumer t
 retains actual held work until acknowledgement. Twelve permanent cases cover the correction;
 the [provider seam](../reference/shared-core/llm-provider-seam.md#the-per-attempt-deadline)
 owns the mechanics. Fresh complete review, Step 8 and final Step 12 remain required.
+
+## Consolidated implementation acceptance — 2026-10-10
+
+[Two clean complete cumulative reviews and Parent audits](../reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md)
+accept the consolidated startup/MCP/custom-provider/all-actor, final-health, clock, public-departure
+and shipping CLI integration within scope. The canonical mechanics remain in the linked engine,
+provider and CLI contracts. Step 8 compaction/recovery and final whole-wave Step 12 remain open;
+this scoped acceptance does not close W7 or merge draft PR #90. No accepted decision is changed.

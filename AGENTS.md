@@ -29,40 +29,15 @@ Phase 2.6.5 (Core reliability remediation) — running between remediation Waves
 41 of 51 items closed (`CR-96` and `CR-97` were opened 2026-09-14, `CR-98` on 2026-09-18; `W7` is unblocked, with ADR-0095–ADR-0098
 accepted) — all eight P0 blockers (ADR-0078–ADR-0084, merged 2026-08-24), the `W2`
 liveness-and-deadlines wave (ADR-0085, merged 2026-08-28 as PR #85), `W3` resource governance and bounds (ADR-0086), merged 2026-08-30 as PR #86 **with a live blocker and nine open findings** — see the `W3` residuals in docs/roadmap/deferred-tasks.md — and `W4`, the hostile MCP boundary (ADR-0088), merged 2026-09-01 as PR #87 — a systematic review of the branch found five merge blockers, all reproduced and fixed before it merged. `W5`, media correctness (ADR-0089 + ADR-0090), **merged 2026-09-02 as PR #88** — a systematic review of that branch returned six merge blockers, all reproduced and fixed before the merge. `W6`, authoring correctness (ADR-0091–ADR-0094), **MERGED 2026-09-04 as PR #89** — `merge_strategy: first` means first DECLARED, a widened tool grant is refused when the plan is BUILT, an expression sees only its transitive closure with a literal out-of-closure read refused at parse, and an `output_schema` is compiled at parse and enforced at run time with **no new dependency**. Seven internal review rounds found that most defects were in the FIXES rather than the code they repaired; a systematic maintainer review then returned two merge blockers, both breaking a headline claim of the wave, plus eight further High findings — all reproduced and fixed before the merge. Each is a dated correction inside its own ADR.
-**W7 implementation is in progress on `development`**: Steps 1–6 and 9–11 have scoped
-independent acceptance; systematic review reopened production request ownership and paused-host
-lifecycle obligations. All five live overflow records are complete. Step 7 is accepted after
-[four cumulative review rounds](docs/reviews/2026-10-08T22-30-10-w7-step-7-round-4-review.md).
-ADR-0102 controlled adapters/chain are accepted after three cumulative rounds; exact core
-measured-round reuse is accepted after two fresh cumulative review rounds. ADR-0103
-append/receipt integration is accepted after two fresh cumulative review rounds; shipping
-provider/native integration is accepted after two fresh cumulative review rounds, including
-the confirmed public-return correction and 28 permanent cases. HTTP descendants are implemented
-with 23 new permanent cases and passing root CI; two fresh complete cumulative review rounds
-and Parent artifact/freeze audits accept this scoped HTTP increment. Invocation-local provider/raw-poll
-lifetimes are accepted after three cumulative rounds, including getter/receiver corrections and 57
-permanent cases; [round 3](docs/reviews/2026-10-09T07-06-28-w7-provider-invocation-round-3-review.md)
-includes Parent's artifact and whole-shared-tree audits. MCP transport/handler/fetch lifetimes
-are accepted after five cumulative rounds and 77 permanent cases; [round 5](docs/reviews/2026-10-09T13-37-00-w7-mcp-lifetime-round-5-review.md)
-includes Parent's complete artifact audit and qualified shared-tree comparison. Fresh-start
-and interpolation lifetimes are accepted after two cumulative rounds and fourteen permanent
-additions; [round 2](docs/reviews/2026-10-09T14-55-12-w7-startup-lifetime-round-2-review.md)
-includes Parent's complete artifact and unchanged shared-tree audits. Complete MCP
-startup/all-actor ownership, custom-provider descendants and host departure remain open, as do
-Step 8 compaction/recovery
-and final whole-wave Step 12. Supplemental ADR-0099–ADR-0103 are Accepted.
-The consolidated ADR-0103 host/actor/MCP/custom-provider/final-health/clock/CLI integration
-is implemented on 2026-10-10 and awaiting two fresh complete independent review rounds.
-Dispatch round 9's first-start publication High is corrected with six paired cases.
-Complete host-closure round 1 verifies three further lifecycle High findings and a shipping
-acceptance gap; Parent corrections add eighteen permanent cases. Complete round 2 confirms
-due-budget departure starvation and provider entry after synchronous cancellation. Nineteen
-additional permanent cases cover those corrections. Complete round 3 confirms retirement
-callbacks can mutate returned data or strand acknowledgement on failure. Parent corrections
-add thirty-two permanent cases. Complete round 4 confirms public iterator exit can skip
-underlying cleanup after retirement failure; twelve permanent cases cover the correction.
-Complete round 5 finds no new actionable issue; one further fresh complete clean round remains required.
-Step 8 and final Step 12 remain open; no user approval or provider capture is pending.
+**W7 implementation is in progress on `development`**: Steps 1–7 and 9–11 have scoped
+independent acceptance. All five genuine overflow records are complete; supplemental ADR-0099–ADR-0103
+are Accepted. ADR-0102 adapters/chain and exact measured-core reuse are accepted. Consolidated
+ADR-0103 startup/MCP/custom-provider/all-actor ownership, receipt health, original clocks, public
+departure and shipping CLI teardown are accepted after two clean complete cumulative rounds;
+[round 6](docs/reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md) records the independent reviews and Parent audit.
+Step 8 measured atomic compaction/recovery is next, followed by final whole-wave Step 12.
+All six W7 register items remain open (41/51 closed); PR #90 remains draft/unmerged.
+No user decision, billing setup, credential or provider capture is pending.
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 
 ## The non-negotiable rules

@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-10-09
+> Last updated: 2026-10-10
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -40,16 +40,14 @@ and Wave 0 is merged (PR #82), as is Wave 1 (PR #83). The interlude's `W2` (core
 merged too (PR #85, 2026-08-28).
 
 
-> **W7 integration checkpoint, 2026-10-10:** the consolidated ADR-0103 implementation now covers
-> MCP startup/custom-provider invocation ownership, complete run actors, final receipt health,
-> parked clocks, public local departure and acknowledged CLI teardown. The first-start publication
-> High from [dispatch round 9](../reviews/2026-10-09T21-43-39-w7-dispatch-corrections-round-9-review.md)
-> is corrected with six permanent paired cases. This integration is awaiting two fresh complete
-> independent review rounds; implementation is not acceptance. Step 8 compaction/recovery and
-> final Step 12 remain open. All six W7 register items remain OPEN (41/51 closed), PR #90 remains
-> draft/unmerged, and no paid call, credential or maintainer approval is pending.
+> **W7 integration checkpoint, 2026-10-10:** consolidated ADR-0103 host integration is accepted
+> after [two clean complete cumulative rounds](../reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md) and Parent artifact/source audits.
+> MCP startup/custom-provider descendants, all actors, final receipts, original clocks, public departure
+> and shipping CLI teardown are covered. Step 8 measured compaction/recovery is next; final whole-wave
+> Step 12 remains required. All six W7 items remain OPEN (41/51 closed), PR #90 remains draft/unmerged.
+> No user approval, billing setup, credential or provider capture is pending.
 
-> **Latest complete composition review:** [host-closure round 5](../reviews/2026-10-10T00-38-24-w7-host-closure-round-5-review.md)
+> **Prior complete composition review:** [host-closure round 5](../reviews/2026-10-10T00-38-24-w7-host-closure-round-5-review.md)
 > finds no new confirmed actionable issue across all 126 paths / 364 hunks. This is the first
 > clean complete cumulative round; one further fresh complete clean round remains required.
 > Step 8 and final Step 12 remain open, with no user/provider blocker.
