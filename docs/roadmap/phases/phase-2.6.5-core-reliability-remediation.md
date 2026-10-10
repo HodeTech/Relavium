@@ -4865,3 +4865,6 @@ The [CLI/DB author verification](../../reviews/2026-10-10T12-25-00-w7-post-closu
 metadata-only session audits and bounded surface corrections with nine new permanent cases.
 Two NEW complete independent review rounds remain required for this increment; tooling/docs
 and final new whole-tree gates remain open.
+
+The [CLI/DB cumulative round 1](../../reviews/2026-10-10T12-34-48-w7-post-closure-step-2-round-1-review.md) records first NEW clean complete cumulative round; another NEW round remains required.
+Tooling/document corrections and final new gates remain open; PR #90 stays draft and unmerged.

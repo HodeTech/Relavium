@@ -11,6 +11,9 @@ added.
 
 ## Records
 
+- [2026-10-10 — W7 post-closure Step 2, round 1](2026-10-10T12-34-48-w7-post-closure-step-2-round-1-review.md):
+  first NEW clean complete cumulative round; another NEW round remains required.
+
 - [2026-10-10 — W7 post-closure Step 2, author verification](2026-10-10T12-25-00-w7-post-closure-step-2-author-review.md):
   CLI/DB corrections verified; two new complete independent rounds required.
 
