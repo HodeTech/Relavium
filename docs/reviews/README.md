@@ -11,6 +11,8 @@ added.
 
 ## Records
 
+- [2026-10-10 — W7 post-closure acceptance](2026-10-10T13-11-06-w7-post-closure-acceptance-review.md): all three correction increments accepted after two NEW clean complete cumulative rounds each.
+
 - [2026-10-10 — W7 post-closure Step 3, round 2](2026-10-10T13-11-06-w7-post-closure-step-3-round-2-review.md): second NEW clean complete cumulative round accepts the final correction increment.
 
 - [2026-10-10 — W7 post-closure Step 3, round 1](2026-10-10T13-00-49-w7-post-closure-step-3-round-1-review.md): first NEW clean complete cumulative round; a second NEW complete clean round remains required.

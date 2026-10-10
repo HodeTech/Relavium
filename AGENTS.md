@@ -32,15 +32,15 @@ liveness-and-deadlines wave (ADR-0085, merged 2026-08-28 as PR #85), `W3` resour
 **W7 is complete and independently accepted on `development`, including final whole-wave Step 12.**
 Steps 1–11, all five genuine overflow records, ADR-0102 request ownership and consolidated ADR-0103
 host integration have independent acceptance. ADR-0095–ADR-0103 are Accepted. All six W7 register
-items are closed (47/51 closed); PR #90 remains draft/unmerged. The
+items are closed (47/51 closed); PR #90 is ready for maintainer review and unmerged. The
 [closing register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
 joins evidence and every submitted review disposition. W8 and existing approved deferrals remain open.
 No user decision, billing setup, credential or provider capture is pending.
-**Post-closure review, 2026-10-10:** core and CLI/DB corrections have two NEW clean cumulative
-review rounds each. Tooling/document corrections and new whole-tree gates are in progress;
-current acceptance is tracked by the [post-closure register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10).
-GitHub reports PR #90 ready for review and unmerged; historical draft wording above is a snapshot.
-No provider, billing, key or user decision is pending.
+**Post-closure corrections are independently accepted, 2026-10-10:** core, CLI/DB and tooling/docs
+each have two NEW clean complete cumulative review rounds. The [post-closure register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
+joins every report disposition, new permanent/causal evidence and current gates. Published-head checks
+are reported in PR #90, which remains ready for review and unmerged. No W7 implementation, provider,
+billing, key or user decision is pending.
 
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 

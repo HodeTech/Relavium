@@ -45,18 +45,20 @@ merged too (PR #85, 2026-08-28).
 > All six W7 items are closed; Phase 2.6.5 stands at **47/51**. The
 > [closing register](phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10)
 > joins per-item causal controls, both final review rounds and every submitted systematic finding.
-> PR #90 remains draft/unmerged for maintainer review. W8 and approved deferrals remain open.
+> PR #90 is ready for maintainer review and unmerged. W8 and approved deferrals remain open.
 > No implementation, user decision, credential, billing or provider capture is pending for W7.
 
-> **Post-closure review, 2026-10-10:** the [new correction register](phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
-> supersedes the point-in-time closing checkpoint above. Core and CLI/DB corrections each have
-> two NEW clean cumulative rounds; tooling/docs and new whole-tree validation remain in progress.
-> GitHub reports PR #90 ready for review and unmerged. No provider/user prerequisite is pending.
+> **Post-closure corrections accepted, 2026-10-10:** the [new correction register](phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
+> joins every new report disposition. Core, CLI/DB and tooling/docs each have two NEW complete clean
+> cumulative review rounds. Fresh unchanged-production coverage passes 447 files / 9,512 cases /
+> eleven existing capability/key-gated LLM skips. Published-head checks are reported in PR #90.
+> W7 has no implementation, provider, credential, billing or user-decision prerequisite left.
+> PR #90 is ready for maintainer review and unmerged; W8 and existing approved limits remain open.
 
 ## Historical W7 implementation checkpoints
 
 Dated W7 checkpoints throughout this page retain their original pending states. The closing checkpoint above
-and its register control current W7 status; a historical acceptance does not supersede a later finding.
+and its later post-closure register control current W7 status; a historical acceptance does not supersede a later finding.
 
 > **Prior complete composition review:** [host-closure round 5](../reviews/2026-10-10T00-38-24-w7-host-closure-round-5-review.md)
 > finds no new confirmed actionable issue across all 126 paths / 364 hunks. This is the first

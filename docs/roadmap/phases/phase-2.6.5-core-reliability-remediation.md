@@ -4881,3 +4881,21 @@ complete cumulative review rounds and final new gates remain required; no provid
 The [tooling/docs cumulative round 1](../../reviews/2026-10-10T13-00-49-w7-post-closure-step-3-round-1-review.md) records first NEW clean complete cumulative round; a second NEW complete clean round remains required.
 
 The [tooling/docs cumulative round 2](../../reviews/2026-10-10T13-11-06-w7-post-closure-step-3-round-2-review.md) records second NEW clean complete cumulative round accepts the final correction increment.
+
+#### Post-closure correction acceptance — 2026-10-10
+
+The [final correction register](../../reviews/2026-10-10T13-11-06-w7-post-closure-acceptance-review.md) closes every new report reference through its
+intake disposition and three accepted increments: [core](../../reviews/2026-10-10T12-18-00-w7-post-closure-step-1-round-3-review.md),
+[CLI/DB](../../reviews/2026-10-10T12-45-56-w7-post-closure-step-2-round-2-review.md) and [tooling/docs](../../reviews/2026-10-10T13-11-06-w7-post-closure-step-3-round-2-review.md). Each has two NEW complete clean
+cumulative independent rounds. Nine additive ADR landings reconcile the historical open progress
+notes; no earlier substantive record or published commit history is rewritten.
+
+Fresh unchanged-production coverage passes 447 files / 9,512 cases / eleven existing capability/key-gated
+LLM skips. Fifty new permanent cases and bounded causal controls pin the confirmed corrections. The
+final all-document-tree root CI and exact published-head checks are reported in PR #90. The earlier
+source, platform/cache, dependency-origin and physical-erasure limitations remain explicit.
+
+**W7, including Step 8 and final Step 12, is independently accepted on `development`.** No new W7
+work is deferred; Phase 2.6.5 remains 47/51, with W8 and existing approved residuals open. No
+implementation, user decision, credential, capture or billing prerequisite remains. PR #90 is ready
+for maintainer review and unmerged; historical draft/progress wording above describes earlier checkpoints.
