@@ -125,6 +125,14 @@ HTTP and causal lowering mutations. Genuine captured W7 overflow artifacts retai
 distinct immutable provenance. This qualification authorizes no live calls and does not
 turn a synthetic seed into a captured provider response.
 
+**W8 Step 2 substrate checkpoint — 2026-10-10:** the internal
+[expected-exchange harness](../../packages/llm/src/conformance/README.md) now owns strict
+request matching and immutable, credential-filtered recording projections. Its unit tests
+exercise effective Fetch inputs, sequence completion and content-free refusals. Existing
+response-only suites retain the qualification above until Step 3 migrates the canonical
+scenario matrix to actual installed SDK HTTP and proves independent lowering mutations.
+This substrate alone does not close CR-81 or authorize live calls.
+
 ## End-to-end tests — Playwright
 
 The desktop app (`apps/desktop`, Tauri v2) has Playwright e2e coverage for the critical

@@ -2774,6 +2774,34 @@ the existing exact-capacity residual remains open. This documentation-only accep
 checkpoint changes no runtime source and does not claim publication to `main`. Proceed to
 Step 2's strict expected-exchange replay. CR-81/82 and whole-W8 acceptance remain open.
 
+### W8 Step 2 expected-exchange substrate — 2026-10-10
+
+**Implementation checkpoint; independent acceptance remains pending.** Base `577e0300`.
+The internal [conformance harness](../../../packages/llm/src/conformance/README.md)
+now compares independently authored method, origin, path, credential-free query, protocol
+headers and structural JSON against the effective native Fetch request. No-body and JSON
+`null` are distinct. Expectations and recorded exchanges are deeply owned; call-entry
+ordinals preserve sequence under concurrent body inspection, and a caught mismatch stays
+failed at the final consumption assertion. In-flight, unused and excess calls refuse with
+fixed typed diagnostics. Authentication remains on the forwarded Request without entering
+the stored projection. Planted-secret, immutable-snapshot and raw-exception controls cover
+both strict recording and the legacy response recorder.
+
+This step changes internal test infrastructure only, adds no dependency or public seam
+export, and leaves genuine W7 overflow artifacts untouched. Existing response-only suites
+retain their documented scope. Step 3 still owes the actual-SDK canonical scenario matrix
+and at least three independent production-lowering mutation controls; CR-81/82 and W8
+remain open. Detailed review records stay local and ignored.
+
+Author gates pass: lint/typecheck/test **23/23** (8 cached), then build **6/6** (5 cached).
+The LLM package executes **1,714 passing tests and 11 existing skips**; focused exact-restored
+checks execute **97/97** (84 strict-exchange and 13 legacy-recorder tests). Removing the actual
+request-comparison branch makes the permanent body-value mismatch regression fail because
+the fetch incorrectly succeeds; restoring byte-identical source makes all 97 controls pass.
+This substrate mutation is not one of Step 3's required production-lowering mutations.
+Relative/archive links, whitespace and package/seam/dependency screens pass. No review or
+whole-W8 acceptance is claimed by these author checks.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High
 A recorded response carries status, content type and body only; replay checks that the request body is parseable
 JSON and matches nothing else — not method, path, headers, or a canonical body. A dropped `response_format`, a

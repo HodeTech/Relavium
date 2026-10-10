@@ -68,7 +68,7 @@ closes all twelve steps and CR-71/72/94/96/97/98 on `main`. At reviewed head `69
 five-job GitHub CI runs and SonarCloud passed; all four supplemental Sonar labels closed.
 This evidence belongs to the reviewed head, not to a future W8 change.
 
-**W8 — Provider and conformance: Step 1 accepted on `development`; Step 2 is next.**
+**W8 — Provider and conformance: Step 1 accepted on `development`; Step 2 is in progress.**
 The [seven-step plan](phases/phase-2.6.5-core-reliability-remediation.md#w8-preflight-and-proposed-execution-plan--2026-10-10)
 and [Accepted ADR-0104](../decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md)
 were approved by the maintainer on 2026-10-10. The submitted ADR review is dispositioned;
