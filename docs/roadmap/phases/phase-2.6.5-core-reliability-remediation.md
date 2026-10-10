@@ -2915,7 +2915,7 @@ causal controls close the wire-oracle obligation, without claiming every provide
 live behavior. Proceed to Step 4's inert ADR-0104 evidence/database foundations. CR-82,
 Steps 4–7, whole-W8 publication and existing approved residuals remain open.
 
-### [x] CR-81 — Conformance cassettes do not verify the request wire contract · High
+### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:
 
