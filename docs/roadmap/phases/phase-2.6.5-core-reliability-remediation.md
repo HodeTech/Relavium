@@ -4868,3 +4868,6 @@ and final new whole-tree gates remain open.
 
 The [CLI/DB cumulative round 1](../../reviews/2026-10-10T12-34-48-w7-post-closure-step-2-round-1-review.md) records first NEW clean complete cumulative round; another NEW round remains required.
 Tooling/document corrections and final new gates remain open; PR #90 stays draft and unmerged.
+
+The [CLI/DB cumulative round 2](../../reviews/2026-10-10T12-45-56-w7-post-closure-step-2-round-2-review.md) records second NEW clean complete cumulative round accepts the CLI/DB increment.
+Tooling/document corrections and final new gates remain open; PR #90 remains unmerged; GitHub reports ready-for-review rather than draft as of 2026-10-10. No merge action is authorized by this scoped acceptance.

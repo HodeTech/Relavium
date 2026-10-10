@@ -11,6 +11,9 @@ added.
 
 ## Records
 
+- [2026-10-10 — W7 post-closure Step 2, round 2](2026-10-10T12-45-56-w7-post-closure-step-2-round-2-review.md):
+  second NEW clean complete cumulative round accepts the CLI/DB increment.
+
 - [2026-10-10 — W7 post-closure Step 2, round 1](2026-10-10T12-34-48-w7-post-closure-step-2-round-1-review.md):
   first NEW clean complete cumulative round; another NEW round remains required.
 
