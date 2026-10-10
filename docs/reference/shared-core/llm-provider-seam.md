@@ -1289,7 +1289,11 @@ followed by each authored `fallback_chain` entry:
   Every attempt diagnostic remains frozen before observer delivery and retry decisions, including
   locally synthesized failures, cancellation and commitment decoration/removal; causes remain private
   opaque identities. A consumer observer exception propagates once outside provider and accounting
-  guards. Core carries its exact external observer origin through generated-result handling and the
+  guards. Abrupt consumer closure still settles the exact entered invocation once, including already
+  owned complete terminal evidence or an incomplete disposition when no complete evidence exists.
+  This teardown cannot yield a replacement terminal, retry the call or discard known spend; registered
+  late receipt authority and the original consumer exception retain their existing precedence.
+  Core carries its exact external observer origin through generated-result handling and the
   runner, including later tool rounds and host clock/backoff callbacks. Throwing a genuine provider,
   turn, budget or money error class from that observer authorises neither a paid retry, a budget gate
   nor a different ledger failure-writer owner. Core unwraps a private cause as admission/money control

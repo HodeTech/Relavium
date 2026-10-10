@@ -458,3 +458,16 @@ it cannot reseat another response or mutate an already published outcome. The ca
 [event contract](../reference/contracts/sse-event-schema.md) owns publication details and the
 [runner contract](../reference/shared-core/agent-runner.md) owns receipt ownership.
 Step 5 acceptance and the further Step 6/whole-wave gates remain open at this correction.
+
+### W8 interrupted-consumer and hidden-accounting correction — 2026-10-11
+
+The fifth cumulative activation review reproduced two gaps. An abruptly closed stream consumer
+could retire its raw producer without settling the acknowledged invocation, even after owning
+complete terminal usage. Teardown must preserve that usage through the existing sole cost writer
+or record the incomplete disposition, exactly once, without replacing the established consumer
+error, retrying or publishing a new terminal. Separately, an accounting snapshot must read a
+retained owner's known money independently of the visibility filter that protects hidden one-shot
+and soft-deleted sessions. Numeric accounting access grants no transcript or resume authority.
+The canonical [seam](../reference/shared-core/llm-provider-seam.md) and
+[database schema](../reference/shared-core/database-schema.md) own these details. Step 5 still
+requires two NEW clean complete cumulative rounds; Step 6 and whole-W8 gates remain open.

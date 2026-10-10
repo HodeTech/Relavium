@@ -1186,6 +1186,7 @@ export class FallbackChain {
     let iterator: AsyncIterator<StreamChunk> | undefined;
     let invocation: ProviderInvocationWork | undefined;
     let primaryClosed = false;
+    let attemptExited = false;
     let nativeBoundaryFailure: { readonly error: unknown } | undefined;
     try {
       const plan = outputCapPlanForRequest(
@@ -1304,7 +1305,9 @@ export class FallbackChain {
         state.committed = state.committed || isContentChunk(chunk);
         yield chunk;
       }
+      attemptExited = true;
     } catch (err) {
+      attemptExited = true;
       retentionFailure = retainedEntryFailure(err);
       failure =
         retentionFailure === undefined
@@ -1349,15 +1352,32 @@ export class FallbackChain {
       // Actual provider/deadline diagnosis stays primary. A standalone host-entry fault escapes only
       // after the attempt observer has accounted any terminal usage already observed by the verifier.
       if (failure === undefined && returnFailure !== undefined) retentionFailure = returnFailure;
-      // A public consumer return completes the generator abruptly, bypassing code after finally.
-      // Observe the attempt here so that path preserves known usage and the exact host refusal too.
+      // Consumer return bypasses code after finally even after delivery of a stop. Settle that
+      // engaged invocation here, using only already-owned evidence: never pull more SDK data or
+      // yield another terminal from cleanup. Ordinary provider exits settle below instead.
+      if (retentionFailure !== undefined || !attemptExited) {
+        const error =
+          failure ??
+          (retentionFailure !== undefined
+            ? this.#retentionError(entry.provider.id, retentionFailure.error)
+            : cleanupFailure !== undefined
+              ? this.#attemptCleanupError(entry.provider.id, cleanupFailure.error)
+              : this.#cancelledError(entry.provider.id));
+        const evidence =
+          usage ??
+          (!attemptExited && retentionFailure === undefined
+            ? ownUsageEvidence({ kind: 'missing', reason: 'interrupted' })
+            : undefined);
+        try {
+          this.#emitFailure(
+            { ...record, contentReceived: state.committed },
+            evidence === undefined ? error : Object.freeze({ ...error, usage: evidence }),
+          );
+        } finally {
+          lateReceipt?.activate();
+        }
+      }
       if (retentionFailure !== undefined) {
-        const error = failure ?? this.#retentionError(entry.provider.id, retentionFailure.error);
-        this.#emitFailure(
-          { ...record, contentReceived: state.committed },
-          usage === undefined ? error : Object.freeze({ ...error, usage }),
-        );
-        lateReceipt?.activate();
         // Consumer return must reject this entry refusal; overriding its abrupt completion is intentional.
         // eslint-disable-next-line no-unsafe-finally -- Preserve the exact host refusal after accounting.
         throw retentionFailure.error;

@@ -3161,6 +3161,41 @@ schema synchronization, canonical links and whitespace passed. Offline CLI/overf
 and test-isolation (**478** files) passed before committing this correction; no remote CI or
 whole-wave coverage result is claimed here.
 
+#### Step 5 fifth cumulative review and correction — 2026-10-11
+
+Three NEW independent reviewers inspected the full `017b399c..b26a0aaa` activation,
+including the four preceding corrections. Their deduplicated result was **two High** findings.
+This round is not clean and cannot count towards acceptance. The parent independently confirmed
+the hidden-owner accounting read; two reviewers independently reproduced abrupt consumer closure,
+including the actual offline SDK and native workflow SQLite writer.
+
+| Finding | Verified correction and permanent evidence |
+| --- | --- |
+| Abrupt consumer closure skipped the invoked attempt's final accounting | Stream teardown settles the exact engaged invocation once from already-owned evidence, recording complete actual usage or incomplete disposition. It neither pulls more provider output nor yields a new terminal or retry. Permanent direct-return and real SDK/native workflow controls cover token-observer and held-stop readiness failures, raw producer closure, exact primary error identity, secondary accounting failure and once-only charging. |
+| Hidden accounting owners published a complete zero despite positive durable charges | The atomic cost breakdown reads the parent's numeric total directly by physical id, preserving canonical numeric validation, alongside existing model rows and coverage. Six native DB controls cover visible, hidden, soft-deleted, absent and corrupt-total owners with independent unpriced, pending and unknown qualifications. Actual one-shot command controls assert positive and explicit-zero deltas, every post-ACK cumulative boundary, reopened SQLite and unchanged discovery/transcript isolation. |
+
+Before the snapshot correction, the two hidden/deleted positive DB controls and the actual positive
+one-shot command fail their numeric assertions; visible, absent and explicit-zero controls pass.
+The corrected original cohort passes all 34 tests, including the added corrupt-total controls.
+Seventeen permanent consumer-closure controls pass; injecting the preceding chain into those
+same final tests produces 14 relevant assertion failures and three passing controls. The original
+conservative-admission test now expects the exact reported attempt identity, retaining its primary
+error and once-only estimate while additionally refusing actual settlement or another admission.
+An existing retained-entry refusal keeps its original missing-evidence reason; ordinary consumer
+closure does not redefine that diagnosis.
+These are author regressions, not independent acceptance. No additional decision, money writer,
+provider call or deferral is introduced. Step 5 requires two NEW clean complete cumulative rounds
+after this correction; Step 6's further matrix and reviews, CR-82 and whole-W8 publication remain open.
+
+**Correction gates:** fresh forced monorepo lint/typecheck/test passed **23/23**, none cached,
+across **481** files / **10,183 passed** / **11 existing live-provider skips**, including the
+100,000-settlement structural case and all 57 CLI child-process controls. Fresh forced build/format
+passed **7/7**. Tools lint/typecheck, seam/purity/dependency and bundle fences, schema synchronization,
+canonical links, whitespace and test isolation passed. The original 181 local review files remain
+unchanged; no review file is tracked. Compiled CLI, overflow and budget-replay smokes passed offline,
+including all 16 strict predecessor refusals and two legacy positive controls with zero egress.
+These are local author gates, not remote CI or whole-wave acceptance.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:
