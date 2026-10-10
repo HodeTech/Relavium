@@ -2,7 +2,7 @@
 
 - **Status**: Proposed — maintainer approval required before dependent implementation
 - **Date**: 2026-10-10
-- **Related**: [ADR-0011](0011-internal-llm-abstraction.md) · [ADR-0030](0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md) · [ADR-0031](0031-llm-seam-shape-amendment-multimodal-io.md) · [ADR-0065](0065-provider-economics-and-extensibility.md) · [ADR-0070](0070-durable-per-model-session-cost-attribution.md) · [ADR-0074](0074-durable-conservative-budget-commitments.md) · [ADR-0075](0075-fail-closed-resume-on-an-unreadable-event-log.md) · [ADR-0076](0076-durable-per-attempt-realized-cost-ledger.md) · [ADR-0077](0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md) · [ADR-0089](0089-media-correctness-four-boundaries.md) · [ADR-0096](0096-a-request-is-measured-before-it-is-sent.md) · [ADR-0100](0100-budget-authorization-is-durable-state-with-a-replay-barrier.md) · [ADR-0103](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md)
+- **Related**: [ADR-0005](0005-sqlite-drizzle-local-postgres-cloud.md) · [ADR-0011](0011-internal-llm-abstraction.md) · [ADR-0028](0028-workflow-resource-governance.md) · [ADR-0030](0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md) · [ADR-0031](0031-llm-seam-shape-amendment-multimodal-io.md) · [ADR-0049](0049-cli-machine-output-contract.md) · [ADR-0064](0064-live-model-catalog.md) · [ADR-0065](0065-provider-economics-and-extensibility.md) · [ADR-0070](0070-durable-per-model-session-cost-attribution.md) · [ADR-0071](0071-models-dev-as-the-model-metadata-source.md) · [ADR-0074](0074-durable-conservative-budget-commitments.md) · [ADR-0075](0075-fail-closed-resume-on-an-unreadable-event-log.md) · [ADR-0076](0076-durable-per-attempt-realized-cost-ledger.md) · [ADR-0077](0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md) · [ADR-0082](0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) · [ADR-0089](0089-media-correctness-four-boundaries.md) · [ADR-0096](0096-a-request-is-measured-before-it-is-sent.md) · [ADR-0097](0097-a-budget-approval-is-an-allowance-not-an-exemption.md) · [ADR-0099](0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md) · [ADR-0100](0100-budget-authorization-is-durable-state-with-a-replay-barrier.md) · [ADR-0103](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md)
 - **Scope**: W8 / CR-82. Refines the usage representation and coverage of reported cost without changing realized-money arithmetic, admission estimates, authorization, or native separate-endpoint media's accepted volume basis.
 - **Canonical homes on implementation**: [LLM seam](../reference/shared-core/llm-provider-seam.md), [event contract](../reference/contracts/sse-event-schema.md), [database schema](../reference/shared-core/database-schema.md), [runner](../reference/shared-core/agent-runner.md), [session contract](../reference/contracts/agent-session-spec.md), and [CLI](../reference/cli/commands.md).
 
@@ -50,7 +50,16 @@ Use that single value at the result, stop, accountable error and invoked-attempt
 Do not maintain an independently writable usage record and completeness flag that can disagree.
 An error before provider invocation has no provider evidence; a local diagnostic must not become
 an incurred charge. External implementations of the seam must migrate to the explicit evidence
-contract, with a documented compatibility change and typed boundary validation.
+contract. This is an intentional breaking change to the local/Phase-1 `LLMProvider` API, not an
+additive optional alias. Migrate all in-tree implementations, mocks and consumers together before
+activating the protocol; document the package/API compatibility change for external implementers.
+The managed gateway is **Phase 2 (cloud), not implemented**; its future provider must implement
+the new contract. There is no claim of compatibility with an old gateway or a new runtime
+version-negotiation protocol. Export `UsageEvidenceSchema` and an owned validation boundary whose
+fixed, content-free typed rejection is `InvalidUsageEvidenceError`; invalid evidence cannot enter
+pricing or become synthetic complete-zero usage. Use existing error classification, without a
+new durable `ErrorCode`. Successful stream stops carry `stopReason` and `UsageEvidence`, whose
+`missing` arm is legal; a stop no longer promises complete quantities.
 
 An explicitly reported zero remains zero. Absent required counters remain absent. Validate native
 quantities before arithmetic: a contradictory cache split must not become plausible through
@@ -58,6 +67,32 @@ clamping. Derive canonical net input only when the provider's gross/cache eviden
 Record the provider-specific omission rules for optional cache, reasoning and media quantities in
 the seam's canonical usage section. SDK optionality alone is not evidence of a zero. Non-applicable
 media on a text-only call differs from generated media whose billed units were not reported.
+
+Construct evidence from native field presence **before** applying defaults or subtraction. The
+following are decision rules; the canonical seam owns their complete dialect mapping and fixtures
+on implementation. Absence is not zero merely because a JSON/SDK field is optional.
+
+| Dialect | Required evidence and treatment of absence |
+| --- | --- |
+| OpenAI Chat Completions | A known `prompt_tokens` is gross input. Derive net input only with a validated applicable cache split (`prompt_tokens_details.cached_tokens`, including explicit zero, and any separately billed cache-write class applicable to the supported model). Gross input without the required cache evidence is partial: preserve independently known canonical output/cache quantities, but do not publish gross as net input or infer a cache miss. Missing `completion_tokens` leaves output unknown; its known value already includes reasoning. Missing an observability-only reasoning subset does not invalidate known output. |
+| DeepSeek | Validate native `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` and the compatible `cached_tokens` alias when present. Native hit/miss quantities are cache-read/net-input evidence; when gross or duplicate aliases are also present, require agreement (`gross = hit + miss`). Gross plus a known hit can derive miss, or gross plus a known miss can derive hit. Gross alone cannot establish the split; retain partial evidence. Missing completion remains unknown. |
+| Anthropic | Preserve native non-cached input, output and applicable cache-read/write quantities independently. A cumulative accumulator starts with absent fields, never zero. Later cumulative frames replace the quantities they actually report and retain earlier trustworthy fields; they are not additive deltas. Complete status requires authoritative final usage and every applicable billing quantity; an absent required input cannot be supplied by a final output-only frame. |
+| Gemini | Missing `promptTokenCount` leaves input unknown even when output is known. Prompt is gross including cached content; derive net input only when the applicable cached quantity is known. A known candidate count alone does not establish output for a thinking-enabled call: applicable thought tokens must be known too. Tool-use prompt tokens are required when applicable. An absent optional class may contribute zero only when the owned request/dialect proves that class inapplicable or a documented omission rule proves zero; otherwise retain partial evidence. Never use `Math.max` to conceal a negative cache subtraction. |
+
+These conservative rules deliberately allow useful custom/compatible responses to have partial
+billing coverage. They do not introduce another paid call. An explicit zero, or an absent class
+whose non-applicability is established, remains a valid zero. Contradictory or invalid quantities
+do not become complete through clamping; preserve only independently trustworthy observations
+with a fixed reason. Do not persist a raw provider usage object merely to retain gross counters.
+Applicable inline-media billing quantities follow the same presence rule; missing media rates
+remain the distinct ADR-0071 disclosure.
+
+The native field relationships are documented by the providers: [OpenAI Chat Completions caching](https://developers.openai.com/cookbook/examples/prompt_caching101),
+[DeepSeek completion usage](https://api-docs.deepseek.com/api/create-chat-completion/),
+[Anthropic cumulative stream usage](https://platform.claude.com/docs/en/build-with-claude/streaming),
+and [Gemini usage metadata](https://ai.google.dev/api/generate-content#UsageMetadata).
+The decision to retain uncertainty when necessary evidence is absent is Relavium's policy;
+these references do not justify treating an omitted field as zero.
 
 An interrupted cumulative observation is partial unless that dialect supplied authoritative final
 usage before interruption. Preserve the latest trustworthy quantities without summing cumulative
@@ -76,7 +111,11 @@ is zero. Reservations and authored request estimates remain separate from realiz
 Before permitting each eligible token-provider invocation, persist a coverage-only
 `cost:usage_pending` event and join its successful write through the existing asynchronous
 pre-attempt/money boundary, whether or not a governor exists. A failed pending write refuses
-egress. Skipped candidates need no marker. Admission or credential/cancellation failure after
+egress. Follow ADR-0064's bounded deterministic busy/locked retry around the entire outer
+`BEGIN IMMEDIATE` transaction, including the session revision protocol below. A retryable lock
+within that budget is not a final failed write; exhausted retries or a non-retryable failure
+roll back the whole transaction and refuse egress. Do not retry the provider call or only the
+acknowledgement. Skipped candidates need no marker. Admission or credential/cancellation failure after
 the marker resolves it only when non-invocation is proven. The marker means a call may occur;
 it is not proof of invocation or billing, a realized charge, a conservative money commitment,
 or recovered allowance/retry authority. Keep pending counts separate from observed call counts.
@@ -87,6 +126,12 @@ Use the same identity for pending coverage, authoritative settlement and registe
 receipts. Resolve pending coverage atomically with its complete, partial, missing or proven
 non-invoked disposition; duplicate settlement/receipt delivery cannot charge or count twice.
 No independently writable completion flag may assert that an unmatched marker is settled.
+
+This identity is coverage/receipt correlation only, not a second money deduplication key.
+ADR-0076's run append uniqueness remains `UNIQUE(run_id, seq)`; session model aggregation remains
+`UNIQUE(session_id, model, is_legacy)` with its one transactional writer. Keep both existing money
+arithmetic rules. ADR-0076 §3's chain-attempt and node-retry counters remain distinct and cannot
+join each other. Coverage resolution cannot replay a money write.
 
 Complete-usage settlement resolves pending coverage through the existing sole actual-cost write,
 with matching invocation correlation, including the existing distinct missing-price disclosure.
@@ -107,9 +152,14 @@ cannot silently permit another egress, tool effect or successful enclosing bound
 On crash/reopen, an unmatched pending marker remains uncertain even if its owner later succeeds
 or an estimate is released. Realized amounts are still unrecoverable without evidence; qualify
 the known sum instead of manufacturing spend or assuming a free call. This refines ADR-0070 §3
-exception 5's presentation of an unsettled crash while preserving its realized-money invariant.
+exceptions **1, 2 and 5**: usage-less successful/failed attempts and unsettled crash prefixes gain
+coverage dispositions without inventing realized spend. Complete evidence still follows the
+existing actual-money path; the missing-price and non-reconciling token-total exceptions remain
+independent. Permanently unavailable usage cannot be recovered from a revision or pending marker.
 Persisted-history hosts must acknowledge the pending write before provider egress; an entirely
-volatile embedding cannot promise crash persistence.
+volatile embedding cannot promise crash persistence. The shipping persisted-history host is the
+CLI, for both workflows and sessions. Desktop and VS Code currently have placeholder app trees;
+their future persisted hosts must honour this boundary before claiming equivalent crash coverage.
 
 An engaged, incompletely accounted attempt retains its held admission at the safe estimate.
 Proven pre-provider failures and approved official pre-content refusal cases keep their current
@@ -157,6 +207,9 @@ boundary append permits no new-contract execution; a crash prefix without it rem
 
 All three new durable discriminators supply the existing strict predecessor replay barrier under
 ADR-0075/0100, including owner-initialization and pending-only prefixes.
+The names distinguish scope: `coverage_started` establishes an owner's historical basis;
+`usage_pending` and `usage_disposition` bracket one invocation's usage evidence. All three belong
+to the durable `cost:` namespace alongside the existing `cost:attempt_settled` member.
 Optional fields on a known event alone are insufficient because predecessors can strip them.
 Prove that an executable predecessor refuses the new event before egress, while legacy positive
 controls remain resumable and tolerant read-only display still works. Do not rewrite frozen
@@ -164,14 +217,35 @@ predecessor source or dependency artifacts to obtain that result. Historical ses
 not an event log, so the run discriminator alone cannot protect session writes by a predecessor.
 
 Protect session coverage with database-maintained mutation revisions and transactional writer
-acknowledgements. Relevant session, transcript and per-model accounting writes advance the
-owning session's revision, including writes issued by an older executable. A new writer first
-checks the previously acknowledged revision, then acknowledges its own completed writes in the
-same transaction. An existing mismatch is sticky legacy/unverified coverage; a new writer must
-not acknowledge it away as complete. Reads with an unacknowledged revision are also unverified.
-Default coverage for rows inserted without the new protocol is unverified. Creation of a new,
-complete-zero owner and its initial acknowledgement are atomic. Do not rely on an old writer
-updating new columns, a timestamp, or a persistent writer-active flag that can survive a crash.
+acknowledgements. This narrowly refines **ADR-0070 §3's rejection of a trigger**: its objection
+was duplicating money logic in two languages. These triggers only advance mutation metadata;
+they never price usage, alter actual totals, reconcile money or become another cost writer.
+They are needed because an older writer cannot cooperate with newly introduced columns.
+
+The canonical [database schema](../reference/shared-core/database-schema.md) must own the concrete
+revision/acknowledgement/taint transition table, trigger/column inventory and migration on landing.
+The decision constraints for that table are:
+
+1. Relevant session business fields, transcript and per-model accounting inserts/updates/deletes
+   advance the owning session's mutation revision, including an older executable's writes.
+   Child deletion advances the prior owner's revision; reparenting affects both old and new
+   owners. Coverage/acknowledgement bookkeeping columns are excluded from these triggers so
+   acknowledging a write cannot recursively create self-taint.
+2. In one outer `BEGIN IMMEDIATE` transaction, a new writer reads the **entry** revision,
+   acknowledged revision and persisted legacy/unverified taint before its business mutations.
+   An entry mismatch first sets sticky taint. It then performs its own writes and acknowledges
+   the **final trigger-produced revision** in that transaction, preserving all existing taint.
+   Acknowledgement does not mean historical coverage is complete.
+3. For example, `(revision=10, ack=10, taint=false)` becomes `(11,10,false)` after an old write.
+   A new write observes the mismatch and commits `(12,12,true)`; subsequent writes and estimate
+   release cannot clear it. Reads classify mismatch **or** sticky taint as unverified and never
+   acknowledge. A failed transaction rolls back its business writes, taint and acknowledgement
+   together; the original mismatch remains visible.
+4. Default coverage for migrated or predecessor-inserted rows is unverified. Only genuinely new
+   owner creation may atomically insert the owner, establish complete-zero coverage and acknowledge
+   its initial revision. Resume, reseat, reinsertion of legacy history or an ordinary update cannot
+   use that privilege to reset uncertainty. Do not rely on a timestamp or a writer-active flag
+   that can survive a crash.
 
 The additive migration owns this mechanism and its triggers. Cover every shipping mutation,
 including insertion, update and deletion, with aggregate/per-model consistency and crash/reopen
@@ -179,6 +253,13 @@ controls. Preserve known amounts and existing conservative commitments; do not f
 call counts for an uninstrumented writer. A new → old → new executable session round trip must
 never recover complete/free coverage after the old writer's synthetic-zero accounting. Subsequent
 new writes and estimate release cannot clear that taint.
+
+ADR-0005 permits dialect-specific implementation inside `packages/db`, not different accounting
+semantics. SQLite trigger DDL and its transaction controls land and are tested in W8. **Phase 2
+(cloud)** PostgreSQL must implement the same transition table with dialect-specific triggers and
+locking/migration tests before that persistence target is enabled. This is a dialect/target change
+without a data-model fork; no PostgreSQL implementation or tested parity is claimed in this local
+wave. Record this refinement in dated notes to ADR-0005 and ADR-0070 on implementation.
 
 An older executable cannot display coverage or enforce this new accounting contract. Active
 downgrade execution is unsupported: these database controls preserve uncertainty after legacy
@@ -196,12 +277,43 @@ replace that basis with a fabricated token record or classify it as missing toke
 Inline generated media carried by the token seam remains within the applicable usage-evidence
 and missing-media-rate rules above.
 
+### Coverage bookkeeping and retention
+
+Coverage adds **one owner-basis event and, ordinarily, at most two durable records per eligible
+invocation**: pending plus its settlement (the existing actual-cost event or a disposition).
+Registered late evidence can add a bounded disposition per authoritative receipt transition;
+duplicate callbacks and cumulative token frames add none. Bound each record to correlated
+identity, fixed reasons and canonical quantities, with bounded identifier lengths and at most
+one entry per supported media billing axis in the canonical schemas; never include raw payloads
+or emit per token.
+
+Fold incrementally. Retire a settled invocation's identity once it has no permitted receipt
+authority, retaining its aggregate unknown/pending/model coverage rather than its completed
+attempt history. Duplicate rejection after retirement must not require a lifetime completed-ID
+set. Added fold state is `O(models + unresolved invocations + receipt-eligible invocations)`,
+not `O(all historical attempts)`; do not rescan a full prefix on every settlement. Replay must
+use incremental/batched reading, rather than materializing the additional coverage history.
+Crash-orphaned pending markers remain uncertain; aggregate them once the prior owner's receipt
+authority is fenced, preserving known model attribution and no recovered invocation authority.
+Do not discard a genuinely live late receipt to satisfy a memory target: ADR-0103's conditional
+close liveness is unchanged, and no constant bound is claimed for outstanding receipt work.
+
+The authoritative run event log remains append-only and grows linearly with attempts, as the
+existing ADR-0076 ledger does. W8 does not introduce destructive ledger compaction or silently
+change history retention. Coverage follows its owning run's existing explicit deletion/retention
+policy; it is not independently pruned while a retained run still needs replay. ADR-0087 §1's
+in-memory delivery modes do not promise a constant-size database. Acceptance uses **100,000
+settled invocations with up to 64 simultaneously unresolved controls** to pin write counts,
+bounded metadata size and no growth of completed-invocation fold state. Separately test genuinely
+unresolved prefixes and registered late receipts; acknowledge their surviving state explicitly.
+
 ### Alternatives considered
 
 - Optional complete usage alone: rejected as the final contract because it loses partial evidence
   and leaves budgetless/history totals falsely certain.
-- Optional numeric fields throughout the current `Usage`: rejected because complete-only pricing
-  becomes indistinguishable from an incomplete observation and zero defaults become tempting.
+- Optional numeric fields throughout the current `Usage`, with a completeness flag: rejected
+  because complete-only pricing becomes indistinguishable from an incomplete observation and
+  the independently writable flag can contradict the fields; zero defaults become tempting.
 - Parallel usage and status fields: rejected because two writable accounts can contradict.
 - Fail or retry every useful response without usage: rejected because unknown billing is not
   evidence that generation failed, and a retry can incur another charge.
@@ -213,34 +325,77 @@ and missing-media-rate rules above.
 
 ## Acceptance and landing obligations
 
-Actual offline SDK generate/stream controls cover missing whole usage, empty/partial counters,
-complete zero, cumulative frames, contradictory cache splits, usage before error/truncation,
-reasoning, inline media and native overflow. Preserve separate-endpoint media positive controls.
+Each numbered invariant needs direct regression evidence and its stated causal control. Mock
+parity or assertion quantity is not acceptance. These are implementation obligations, not claims
+that the Proposed contract is already shipped.
 
-Real engine and native SQLite tests cover cap/no-cap, concurrent attempts, admission retention,
-genuine zero release, failed uncertainty writes at all three barriers, crash/reopen, legacy rows,
-resume/reseat, compaction, cancellation, estimate release, late receipts and both money invariants.
-Kill a real child execution after provider invocation but before settlement; reopening retains
-pending uncertainty for capped and uncapped sessions/runs, failover and summariser calls.
-Test failed pending writes, cancellation/credential failure before invocation, repeated identities,
-and subsequent success without erasing unmatched coverage. Removing pre-egress pending durability
-must break the corresponding crash regression.
-Exercise actual predecessor session writers in the new → old → new schedule, old inserts and
-updates/deletions, new writes after taint, and crashes around revision acknowledgement. Removing
-the database revision protection must break the corresponding round-trip regression.
-Tests cover every affected human and JSON total; no unknown amount is asserted as a free call.
-
-Causal removals must separately restore whole-zero defaults, required-counter zero filling,
-the usage-less early return, omitted durable coverage and unqualified rendering. Each must fail
-its corresponding regression; exact restoration must pass. Run the executable predecessor
-against all three new discriminators and both legacy controls. Include a newly initialized run
-paused at an ordinary gate before its first provider call: old resume must refuse, release its
-lease and produce no provider invocation. A prefix without the initialization boundary and a
-genuine pre-upgrade run retain legacy/unverified coverage. Removing owner initialization must
-break this new/old/new control. Do not count assertion quantity or mock parity as these proofs.
+1. **Native evidence construction.** Actual offline SDK generate/stream controls cover missing
+   whole usage, empty/partial counters, complete zero, each dialect's gross/cache rule above,
+   contradictory splits, reasoning and applicable inline media. Separately restore whole-zero
+   defaults, required-counter zero filling and gross-as-net fallback; each restoration must break
+   its corresponding regression, and exact restoration of the fix must pass.
+2. **Owned observations survive terminal failure.** Own and validate every evidence arm across
+   adapters, fallback attempts, errors and the held terminal/confirming read. Cover cumulative
+   frames, absent Anthropic start input, usage before error/truncation, alias mutation, malformed
+   tails, deadlines and native context-window stops. Removing the relevant observation retention
+   or ownership must fail the associated control. Invalid evidence after invocation retains
+   uncertainty and never causes a paid retry solely to obtain accounting data.
+3. **Pending durability precedes every eligible invocation.** Real child executions are killed
+   after invocation but before settlement, for capped/uncapped sessions and runs, failover and
+   summariser calls. Reopen retains pending uncertainty. Removing pre-egress pending durability
+   must break the crash regression. Failed pending writes prove zero egress; retryable SQLite
+   locks can succeed within the existing bounded retry budget, while exhaustion rolls back and
+   refuses. Cover cancellation and credential failure between marker and invocation.
+4. **Settlement, correlation and money stay single-owned.** Real engine/native SQLite tests cover
+   concurrent attempts, complete/partial/missing settlement, proven non-invocation and official
+   pre-content refusal, genuine zero release, retained admissions, both money invariants,
+   repeated identities, late receipts and B1/B2/B3 uncertainty-write failures with/without a cap.
+   Restore the usage-less early return or omit the durable disposition independently: the
+   corresponding regression must fail. Later success, compaction and estimate release cannot
+   erase unknown coverage or turn a pending marker into an observed paid call.
+5. **Strict replay protects the new basis and attempts.** Run an executable predecessor against
+   all three new discriminators and genuine legacy positive controls; tolerant read-only display
+   still works. Include a newly initialized run paused at an ordinary gate before its first
+   provider call: old resume refuses, releases its lease and produces no invocation. A prefix
+   without initialization and genuine pre-upgrade history remain legacy/unverified. Removing
+   owner initialization must break this control. Do not rewrite frozen source/dependency bytes.
+6. **Session revisions cannot launder old writes.** Exercise actual new → old → new writers,
+   predecessor inserts/updates/deletes, reparenting, subsequent new writes and estimate release,
+   and crash cuts before/after acknowledgement. Cover all shipping CLI persister entry points
+   (fresh/resumed/reseated chat and Home) independent of governor presence. Check creation versus
+   migrated defaults, no recursive bookkeeping triggers, one outer transaction and atomic
+   aggregate/per-model taint. Removing database revision protection must break the real
+   round-trip regression. Add the concrete transition table and dialect obligations to the
+   database schema; do not label unimplemented PostgreSQL parity tested.
+7. **Every total qualifies coverage; media keeps its basis.** Test every affected human and JSON
+   reader, live/history/per-model, crash/resume/reseat, compaction and cancellation. Restore
+   unqualified/free rendering and its regression must fail. Preserve separate-endpoint media
+   positive controls: authored/frozen basis, fractional volumes, missing rates, once-only
+   accounting, retained reservations and terminal barriers. Unknown tokens cannot replace
+   legitimate native-media zero token quantities.
+8. **Coverage history does not become a completed-invocation memory leak.** Exercise 100,000
+   settled invocations with up to 64 simultaneous pending controls, mixed models and uncertainty.
+   Assert added write counts and bounded schema/metadata shape, no per-frame durable events,
+   retirement of completed identities and preserved aggregate coverage. Incremental replay and
+   live settlement retain only the state defined above. Duplicates after retirement, orphaned
+   crash prefixes and still-authorized late receipts preserve their stated outcomes. Removing
+   retirement or introducing a per-settlement full-prefix scan must fail the structural control;
+   a wall-clock threshold alone is insufficient.
 
 On implementation, update the canonical homes linked above and dated forward notes in
-ADR-0011/0030/0031/0070/0074/0075/0076/0077/0089/0100/0103. Preserve all accepted bodies.
+ADR-0005/0011/0028/0030/0031/0049/0064/0065/0070/0071/0074/0075/0076/0077/0082/0089/0096/0097/
+0099/0100/0103. Preserve all accepted bodies. Specifically reconcile ADR-0070 §3 exceptions
+1/2/5 and its metadata-only trigger refinement, ADR-0076's identity/two-counter rules,
+ADR-0028/0097 admission versus actual coverage, ADR-0071 missing prices, ADR-0049 JSON and
+ADR-0099 compaction totals. No proposed schema is pre-landed as current runtime behaviour.
+
+Explicit landing checks include `packages/shared/src/constants.ts`'s durable `cost:` classification
+and obsolete sole-member comment, the shared event schemas and seam cost-event inventory;
+the seam's stop grammar, owned terminal evidence, dialect cache table (including Gemini's
+existing cache split) and Phase-2 managed-gateway wording. Forced `include_usage` is a request
+for usage, not proof that a final usage chunk survives interruption. Keep these exact contracts
+in their canonical homes, not copied into runner/session guidance.
+
 Record actual schema/migration identities after generation, not hypothetical filenames. Update
 the conformance contracts and frozen replay harness coverage without regenerating genuine W7
 overflow artifacts. CR-82 remains open until end-to-end implementation and both fresh review

@@ -456,7 +456,7 @@ fenced. The diagnostic no longer falsely denies an earlier recorded approval. Th
 of the existing cancellation, durability and ownership decisions, not a new architecture decision.
 Canonical behaviour remains in [the command reference](../reference/cli/commands.md#relavium-budget-resume)
 and [the preparation contract](../reference/shared-core/agent-runner.md#preparing-and-resuming-a-budget-dispatch).
-[The second review record](../reviews/2026-10-03T21-01-16-w7-step-11-round-2-review.md) qualifies native
+[The second review record](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-03T21-01-16-w7-step-11-round-2-review.md) qualifies native
 signal evidence, exact restoration, seven permanent controls and green full CI/coverage.
 Fresh full-Step-11 round 3 precedes closure; live Steps 7–8 remain pending.
 
@@ -467,7 +467,7 @@ Two fresh reviewers accept the complete CLI surface and both corrective rounds i
 native/passive/process controls pass. The parent verifies both full reports and every sealed
 inventory entry before accepting the step. Interrupted earlier runs are excluded; signal,
 platform and inherited secret-stdin bounds remain as stated in the canonical CLI contract.
-See [Step 11 round 3](../reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md). This is a dated
+See [Step 11 round 3](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md). This is a dated
 implementation acceptance, not a policy change or closure of whole W7/Steps 7–8.
 
 ## Implementation correction — 2026-10-06, W7 systematic operator review
@@ -522,7 +522,7 @@ cooperative-cancel handler. It returns the existing failed/cancelled exit rather
 exit. Native controls hold both actual writes and verify command lifetime, durable replay and
 lease cleanup, alongside genuine approval, rejection and ordinary gates. This enforces existing
 cancellation and durability authority; no new decision, financial policy or schema is introduced.
-See the [second review record](../reviews/2026-10-06T19-25-33-w7-systematic-group-3-round-2-review.md) and
+See the [second review record](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-06T19-25-33-w7-systematic-group-3-round-2-review.md) and
 [canonical command contract](../reference/cli/commands.md#relavium-budget-resume).
 
 ## Implementation correction — 2026-10-06, cancellation owns queued gates and teardown
@@ -536,7 +536,7 @@ renderers without this summary barrier still retain command resources. Actual SI
 separate from prompt cancellation, and signal ownership ends before closing the subscription.
 Native held-writer and actual Ink regressions enforce these existing cancellation, outcome and
 durability guarantees, with genuine approval and stable paused controls. No new financial policy,
-wire schema or decision is introduced. See the [third review record](../reviews/2026-10-06T20-13-20-w7-systematic-group-3-round-3-review.md) and
+wire schema or decision is introduced. See the [third review record](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-06T20-13-20-w7-systematic-group-3-round-3-review.md) and
 [canonical command contract](../reference/cli/commands.md#relavium-budget-resume).
 
 ## Implementation correction — 2026-10-06, terminal authority ends stale cards
@@ -550,7 +550,7 @@ Rejection follows the emitted authorization rather than successful `resume` retu
 be an idempotent no-op after a competing approval. Ordinary human-gate rejection still continues.
 Native command and actual Clack synthetic-input regressions enforce these existing guarantees;
 no new financial policy, timeout, durable schema or decision is introduced. See the
-[fourth review record](../reviews/2026-10-06T20-57-47-w7-systematic-group-3-round-4-review.md) and
+[fourth review record](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-06T20-57-47-w7-systematic-group-3-round-4-review.md) and
 [canonical command contract](../reference/cli/commands.md#relavium-budget-resume).
 
 ## Implementation qualification — 2026-10-06, voluntary paused departure remains open
@@ -562,7 +562,7 @@ node/terminal append can also outlive native SQLite closure; consuming emitted e
 join that unpublished producer. This High remains open and requires an explicitly reviewed and
 maintainer-approved engine departure decision. No safe general pause handoff, lifecycle change or
 dependent implementation is accepted by this note. The cancellation regressions retain their
-tested scope. The [fifth review record](../reviews/2026-10-06T21-43-24-w7-systematic-group-3-round-5-review.md) and
+tested scope. The [fifth review record](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-06T21-43-24-w7-systematic-group-3-round-5-review.md) and
 [canonical command contract](../reference/cli/commands.md#relavium-budget-resume) record the limits.
 
 ## 2026-10-10 — ADR-0103 lifecycle integration

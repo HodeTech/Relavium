@@ -427,26 +427,26 @@ encryption or session-ownership decision was added. User text, `@` content, `!` 
 remain sensitive data at rest. The canonical scope is [effect-journal.md §11](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold),
 with the two accepted residuals in [deferred-tasks.md](../roadmap/deferred-tasks.md).
 
-[Step 4 round 1](../reviews/2026-10-02T08-05-02-w7-step-4-round-1-review.md) independently reproduced
+[Step 4 round 1](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-02T08-05-02-w7-step-4-round-1-review.md) independently reproduced
 premature deletion before the standalone Ink mount. The correction separates session opening from mounted
 activation and propagates driver activity into reconciliation.
-[Round 2](../reviews/2026-10-02T08-48-12-w7-step-4-round-2-review.md) independently reproduced activation before passive input
+[Round 2](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-02T08-48-12-w7-step-4-round-2-review.md) independently reproduced activation before passive input
 setup and before the notice was drawn. Usable setup, render acknowledgement and observed renderer lifetime
 now guard deletion; actual Ink and Home frame tests verify the boundary.
-[Round 3](../reviews/2026-10-02T09-24-27-w7-step-4-round-3-review.md) then verified schema-valid incomplete-call
+[Round 3](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-02T09-24-27-w7-step-4-round-3-review.md) then verified schema-valid incomplete-call
 attribution and unwritable-output acknowledgement. Completion now uses the shared structural projector;
 render acknowledgement observes the exact Ink output and its lifetime. Pending Node error delivery retains
 its owned sink through safe listener release.
-[Round 4](../reviews/2026-10-02T10-04-04-w7-step-4-round-4-review.md) verified headless native stderr delivery failures and an inline
+[Round 4](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-02T10-04-04-w7-step-4-round-4-review.md) verified headless native stderr delivery failures and an inline
 notice consumed during Ctrl-Z suspension without any disclosure frame. Native stderr acknowledgement now
 precedes deletion; terminal ownership covers notice insertion and render acknowledgement across suspension.
 Real owned-worker STOP/CONT controls pass.
-[Round 5](../reviews/2026-10-02T10-36-22-w7-step-4-round-5-review.md) independently verified blocked native stderr
+[Round 5](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-02T10-36-22-w7-step-4-round-5-review.md) independently verified blocked native stderr
 preventing headless Ctrl-C teardown and late Home acknowledgement deleting evidence during canceled-session
 MCP teardown. Headless activation now races an owned interrupt with permanently disarmed ownership; Home
 requires a running session outside teardown. Native pipe/FIFO before/after controls and late callback
 regressions pass.
-[Round 6](../reviews/2026-10-02T10-57-58-w7-step-4-round-6-review.md) accepted the complete step and every correction.
+[Round 6](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-02T10-57-58-w7-step-4-round-6-review.md) accepted the complete step and every correction.
 Independent native late-settlement/actual-database-close, byte-erasure, high-water, structural attribution and
 atomic-sweep probes pass. Command teardown is guaranteed independently of the inherited native stdio drain
 that can delay natural bin exit. Step 4 is closed; whole-wave closure remains pending.

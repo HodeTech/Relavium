@@ -27,7 +27,7 @@ The tree is organized by the *kind of question each section answers*, not by whi
 | [compliance/](compliance/) | **What must we satisfy legally and contractually?** *(Phase 2, managed inference)* Provider-ToS posture, data-handling (DPA / sub-processors / KVKK + GDPR / data-residency), and merchant-of-record / tax obligations that apply once Relavium sits in the data path and bills for usage. |
 | [analysis/](analysis/) | **What is the landscape, and where do we sit in it?** Competitive analysis, decision analyses (e.g. the managed-inference business model), and archived raw research. |
 | [ideas/](ideas/) | **What might we build later?** Proposals not yet committed to the roadmap. |
-| [reviews/](reviews/) | **What did we learn from looking back?** Retrospectives and review notes. |
+| [Local review records](standards/documentation-style.md#12-local-review-records) | **What did review establish?** Detailed records stay local and Git-ignored; acceptance and dispositions live in the owning roadmap register. |
 
 ## Reading order for newcomers
 

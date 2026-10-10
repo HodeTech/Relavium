@@ -181,7 +181,7 @@ map normally. Budget reflection after completed tools is guarded so a callback's
 diagnostic trap cannot replace the original failure. This repairs existing observer/privacy
 guarantees; canonical behaviour remains in [the session contract](../reference/contracts/agent-session-spec.md)
 and [LLM seam](../reference/shared-core/llm-provider-seam.md#fallback-lives-outside-the-adapter).
-The [round-7 record](../reviews/2026-10-04T23-06-22-w7-systematic-group-2a-round-7-review.md)
+The [round-7 record](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-04T23-06-22-w7-systematic-group-2a-round-7-review.md)
 qualifies the incomplete runtime review and requires a fresh complete corrective round.
 
 ## 2026-10-05 implementation correction — typed observer delivery

@@ -1,6 +1,6 @@
 # Documentation Style
 
-> Last updated: 2026-06-03
+> Last updated: 2026-10-10
 
 This is the binding style guide for everything under `docs/`. It is the Relavium
 equivalent of a CONTRIBUTING guide for documentation. Every file in the tree —
@@ -51,8 +51,8 @@ The H1 is the document's canonical title and should match the intent of the file
 - ADRs are zero-padded four digits plus a slug: `0001-tauri-v2-over-electron.md`.
 - Dated analysis docs suffix an ISO date:
   `managed-inference-business-model-2026-06-03.md`.
-- Review records use a full ISO timestamp slug (see
-  [reviews/README.md](../reviews/README.md)):
+- Local review records use a full ISO timestamp slug (see
+  [local review records](#12-local-review-records)):
   `YYYY-MM-DDTHH-MM-SS-<slug>-review.md`.
 - Every subfolder has a `README.md` that indexes its contents.
 
@@ -75,14 +75,16 @@ axis** (shared-core, desktop, cli, vscode, portal).
 | [analysis/](../analysis/README.md) | Research, competitive analysis, and the frozen `_archive/` provenance. |
 | [compliance/](../compliance/README.md) | Legal/regulatory posture for managed mode: provider ToS, data protection (KVKK/GDPR), tax & billing, security / SOC 2. *(Phase 2.)* |
 | [ideas/](../ideas/README.md) | Out-of-scope or future idea notes, explicitly not committed work. |
-| [reviews/](../reviews/README.md) | Timestamped review records. |
+| `reviews/` (local, Git-ignored) | Timestamped working review records; see [local review records](#12-local-review-records). |
 
 ## 5. Links
 
 - Internal links are **relative Markdown paths** only — they must resolve on GitHub.
   Example: `[tech-stack.md](../tech-stack.md)`,
   `[workflow YAML spec](../reference/contracts/workflow-yaml-spec.md)`.
-- Never use absolute internal URLs.
+- Never use absolute internal URLs for current tracked documents. The narrow exception is a
+  commit-pinned GitHub archive citation to a retired review record, as described in
+  [local review records](#12-local-review-records).
 - External URLs (Tauri, the provider SDK docs — Anthropic / OpenAI / Google — and
   similar) may be absolute and inline.
 - Prefer linking to a doc's H1 or a stable `##` anchor over deep link chains.
@@ -204,7 +206,37 @@ blockquote:
 | A managed-mode legal/regulatory posture (provider ToS, data protection, tax & billing, SOC 2) | `compliance/` *(Phase 2)* |
 | A future / out-of-scope idea | `ideas/` |
 | A binding rule | `standards/` |
-| A review record | `reviews/` (timestamped filename) |
+| A detailed review record | `reviews/` (local, Git-ignored timestamped file); tracked acceptance belongs in the owning roadmap register |
 
 When in doubt, pick the folder whose **question** matches what the reader will be
 asking when they open the file.
+
+## 12. Local review records
+
+**Maintainer instruction — 2026-10-10:** detailed review records in `docs/reviews/` are
+local working evidence, excluded from Git. This changes their storage, not the required
+independent reviews or their acceptance criteria. Do not force-add this directory or
+move its accumulating records into another tracked folder. Local files are preserved
+when tracking is removed; existing Git history is not rewritten.
+
+Use `YYYY-MM-DDTHH-MM-SS-<slug>-review.md`, one point-in-time review per file. Keep records
+in English, append-only, with one H1 and bold **Type**, **Date**, **Reviewer(s)**,
+**Subject** and **Outcome** fields, followed by summary, concrete findings and follow-ups.
+Types are `Business`, `Code`, `Security`, `Performance` or `Code + Security`; reviewers
+use an actual handle or stable agent identity. Record model/effort where available,
+the exact base/head or reviewed working-tree snapshot, scope limits, command results,
+and causal mutation/restoration evidence. A local README index is optional.
+
+Commit permanent regression tests and a concise acceptance/disposition entry in the owning
+roadmap register: what was reviewed, confirmed findings and resolutions, reviewed revision,
+checks, remaining gates and completion status. Do not depend on an ignored local file to
+substantiate a new tracked acceptance claim. Specifications and decisions retain their
+existing canonical homes; a review record does not replace either.
+
+Historical citations to formerly tracked records use the immutable
+[published review archive](https://github.com/HodeTech/Relavium/tree/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews).
+Point individual citations at that commit's exact file and retain any heading fragment.
+For this retirement only, repairing a historical ADR's review-link destination is allowed
+without rewriting its reasoning, findings, dates or decision. All current internal links
+remain relative. Frozen analysis provenance stays frozen; future tracked documents must
+not link to an ignored local review path.

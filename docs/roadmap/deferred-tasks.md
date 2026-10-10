@@ -1511,7 +1511,7 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   remains authoritative. See the [canonical command](../reference/cli/commands.md#relavium-budget-resume),
   [ADR-0097](../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) and the
   [W7 execution plan](phases/phase-2.6.5-core-reliability-remediation.md#w7-pre-implementation-review-and-proposed-execution-plan--2026-10-02).
-  [Step 11 round 3](../reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) accepts the complete
+  [Step 11 round 3](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) accepts the complete
   path after the two corrective rounds; this closes the moved command follow-up, not the W7 register.
   *(low · apps/cli/src/commands/gate.ts + manifest.ts + dispatch.ts; ADR-0028, ADR-0097)*
 - [ ] **`project`-tier `extraRoots` allowlist (carried from 2.5.A).** The `project` fs tier behaves as
@@ -1607,7 +1607,7 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   resume and verifies secret admission alongside frozen amount, ownership and MCP consent. Drained stdin
   disables a later interactive gate prompt. See the [canonical stdin contract](../reference/cli/commands.md#relavium-gate)
   and [ADR-0083](../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md).
-  [Step 11 round 3](../reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) accepts the complete shared
+  [Step 11 round 3](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) accepts the complete shared
   path. The inherited secret-stdin interval before the connect/build signal guard remains qualified
   in the canonical command; this does not introduce a whole-stdin signal-handling promise.
   *(medium · apps/cli/src/commands/gate.ts; ADR-0006, ADR-0083)*

@@ -70,6 +70,9 @@ __test_isolation_detector_probe__/
 # Private analysis — never commit, never reference from tracked files
 docs/analysis/private/
 
+# Detailed review records are local working evidence; tracked acceptance lives in the roadmap.
+/docs/reviews/
+
 # Ephemeral probe/repro files an agent (or a human) writes to reproduce a finding in place. They are
 # scratch by construction — a review agent working in this tree wrote three of them and a blanket
 # `git add -A` committed them into a fold commit, where they ran as part of the suite. Named, so the

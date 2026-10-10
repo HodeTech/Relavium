@@ -799,7 +799,7 @@ Step 8 and final Step 12. This scoped checkpoint does not close W7.
 
 ### 2026-10-09 — unused MCP peer reservations are revocable
 
-[Two complete cumulative first-round reviews and fresh Parent runtime evidence](../reviews/2026-10-09T08-33-00-w7-mcp-lifetime-round-1-review.md)
+[Two complete cumulative first-round reviews and fresh Parent runtime evidence](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T08-33-00-w7-mcp-lifetime-round-1-review.md)
 correct the preceding implementation checkpoint. Installed SDK task/schema rejection can bypass
 the registered handler while cancellation/close suppresses its reply. An unused queued
 reservation must be revocable without inventing an entered producer. Actual handler, send,
@@ -822,11 +822,11 @@ entered resources still require actual native acknowledgement and admitted-work 
 A new permanent regression and root CI/enforced coverage pass. A NEW complete cumulative
 round 3 remains required; this correction does not accept manager startup, all-actor host
 retirement, public departure, Step 8 or whole W7. Evidence and native/source distinctions are
-in [round 2](../reviews/2026-10-09T09-07-17-w7-mcp-lifetime-round-2-review.md).
+in [round 2](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T09-07-17-w7-mcp-lifetime-round-2-review.md).
 
 ## 2026-10-09 — Third MCP review: contain incoming admission refusal
 
-The [complete cumulative third round](../reviews/2026-10-09T10-51-01-w7-mcp-lifetime-round-3-review.md)
+The [complete cumulative third round](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T10-51-01-w7-mcp-lifetime-round-3-review.md)
 verifies that duplicate live peer-ID admission throws from the incoming base/lane callback.
 Installed SDK WebSocket delivery does not catch that refusal; legacy SSE instead promotes it
 through EventSource to a reader-loop/reconnect failure. Those are source-confirmed boundaries,
@@ -840,7 +840,7 @@ public departure, acknowledged CLI teardown, Step 8 and whole W7 remain open.
 
 ## 2026-10-09 — Fourth MCP review: release completed child references
 
-The [complete cumulative fourth round](../reviews/2026-10-09T12-58-01-w7-mcp-lifetime-round-4-review.md) confirms that HTTP control/reply
+The [complete cumulative fourth round](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T12-58-01-w7-mcp-lifetime-round-4-review.md) confirms that HTTP control/reply
 lanes remain in their parent request's controls set after all child work completes. Sequential
 valid replies therefore retain finished transports/scopes until the outer request ends. The
 owner now removes each exact lane only on its full work acknowledgement, preserving pending
@@ -853,7 +853,7 @@ acknowledged CLI teardown, Step 8 and whole W7 remain open.
 
 ## 2026-10-09 — Fifth MCP review: scoped transport acceptance
 
-[Two fresh complete cumulative reviews](../reviews/2026-10-09T13-37-00-w7-mcp-lifetime-round-5-review.md)
+[Two fresh complete cumulative reviews](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T13-37-00-w7-mcp-lifetime-round-5-review.md)
 and Parent's full source/artifact audits accept all 38 changed paths/70 literal hunks through
 `99c46bbd`. Both independently pass cold builds, strict checks, scoped lint and 268 existing
 cases; no new confirmed finding remains. The record preserves separately corrected review
@@ -880,7 +880,7 @@ Step 8 or final Step 12. The accepted decision and public departure requirements
 
 ### 2026-10-09 — First startup review: synchronous cancellation boundaries
 
-[Two complete first-round reviews and Parent source/runtime/artifact audits](../reviews/2026-10-09T14-28-09-w7-startup-lifetime-round-1-review.md)
+[Two complete first-round reviews and Parent source/runtime/artifact audits](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T14-28-09-w7-startup-lifetime-round-1-review.md)
 verify that an initial clock, elapsed-clock or timer callback can synchronously cancel the
 fresh execution before its first awaited lookup. The original continuation still enters
 that lookup and retains a newly armed timer after the terminal sweep. Startup now rechecks
@@ -894,7 +894,7 @@ health, parked clocks, public departure/CLI teardown, Step 8 and whole W7 remain
 
 ### 2026-10-09 — Fresh startup/interpolation lifetime acceptance
 
-[Two NEW complete cumulative round-2 reviews and Parent audits](../reviews/2026-10-09T14-55-12-w7-startup-lifetime-round-2-review.md)
+[Two NEW complete cumulative round-2 reviews and Parent audits](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T14-55-12-w7-startup-lifetime-round-2-review.md)
 accept the ten-path/sixteen-hunk increment through `5d44b13b`, with no new confirmed
 findings. Both independently pass the seven prescribed checks and 2,850 core cases.
 Parent verifies exact Git/head/hunk/archive and original input identities, all physical
@@ -937,7 +937,7 @@ audit. Both independent rounds must review the entire corrected cumulative scope
 
 ### Scheduler readiness diagnostic backstop — 2026-10-09
 
-The [first complete cumulative readiness review](../reviews/2026-10-09T15-44-15-w7-scheduler-readiness-round-1-review.md)
+The [first complete cumulative readiness review](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T15-44-15-w7-scheduler-readiness-round-1-review.md)
 verifies a secondary ID/event-clock fault while reporting a readiness rejection.
 It escaped the serialized scheduler and stranded its queued reevaluation; a terminal
 then depended on grace. The readiness branch now uses the established in-memory
@@ -955,7 +955,7 @@ A NEW complete cumulative round 2 remains required; the accepted decision is unc
 
 ### 2026-10-09 — Scheduler readiness cumulative acceptance
 
-[Two NEW complete cumulative round-2 reviews and Parent audits](../reviews/2026-10-09T16-14-29-w7-scheduler-readiness-round-2-review.md)
+[Two NEW complete cumulative round-2 reviews and Parent audits](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T16-14-29-w7-scheduler-readiness-round-2-review.md)
 accept all nine paths/ten hunks through `95f3923a`, with zero new scoped findings.
 Both independently pass seven prescribed checks and 2,862 core cases. Parent reads
 both complete reports/maps, verifies original source/artifact identities and observes
@@ -972,7 +972,7 @@ whole-wave Step 12 remain open. The accepted decision is unchanged.
 ### Inherited dispatch corrections staged — 2026-10-09
 
 Two inherited dispatch Highs recorded in the
-[readiness round-2 review](../reviews/2026-10-09T16-14-29-w7-scheduler-readiness-round-2-review.md)
+[readiness round-2 review](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T16-14-29-w7-scheduler-readiness-round-2-review.md)
 are corrected. Cancellation after an entered start append refuses fresh deadline/executor
 entry and immediately settles that matching node. Unexpected detached dispatch failures
 use fixed content-free text; no raw cause property or coercion is evaluated. Readiness,
@@ -1005,7 +1005,7 @@ and whole-wave Step 12 remain required; none is deferred by this ordering correc
 
 ### 2026-10-09 — inherited dispatch corrections, round-1 acceptance
 
-[Two complete independent round-1 reviews and Parent audits](../reviews/2026-10-09T17-28-06-w7-dispatch-corrections-round-1-review.md)
+[Two complete independent round-1 reviews and Parent audits](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T17-28-06-w7-dispatch-corrections-round-1-review.md)
 accept all eight paths/seventeen hunks through `1918690d`, with zero confirmed findings.
 Each passes seven prescribed original checks and 2,868 core cases; Parent verifies all
 17,542 reviewer input copies, exact Git/archive/head/hunk identities and protected artifact
@@ -1021,7 +1021,7 @@ No accepted decision is changed and no whole-wave acceptance is claimed.
 
 ### 2026-10-09 — Retry and synchronous attempt-entry corrections
 
-[Both NEW complete cumulative round-2 reviews](../reviews/2026-10-09T17-58-41-w7-dispatch-corrections-round-2-review.md)
+[Both NEW complete cumulative round-2 reviews](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T17-58-41-w7-dispatch-corrections-round-2-review.md)
 cover ten paths/nineteen hunks through `53cccc38` and independently verify one High:
 an entered retry-start append can resume into fresh executor work after cancellation,
 sibling abort or grace. The first-start guard does not cover this inherited continuation.
@@ -1056,7 +1056,7 @@ is pending. No work is deferred by this correction.
 
 ### 2026-10-09 — Retry/deadline terminal idempotence
 
-[Complete cumulative round-3 reviews](../reviews/2026-10-09T18-37-30-w7-dispatch-corrections-round-3-review.md) verify one High:
+[Complete cumulative round-3 reviews](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T18-37-30-w7-dispatch-corrections-round-3-review.md) verify one High:
 a retry refusal can publish a second node terminal behind an already pending timeout
 terminal. Lifecycle discovers it independently; Authority corroborates after disclosure.
 Parent confirms the frozen source and corrects the shared terminal-status guard, with
@@ -1067,7 +1067,7 @@ All six W7 items stay OPEN (41/51), and PR #90 remains draft/unmerged.
 
 ### 2026-10-09 — Explicit dispatch attempt correlation
 
-[Complete cumulative round-4 reviews](../reviews/2026-10-09T19-10-39-w7-dispatch-corrections-round-4-review.md)
+[Complete cumulative round-4 reviews](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T19-10-39-w7-dispatch-corrections-round-4-review.md)
 verify one High with two schedules: later-retry detached failure defaults to attempt 1,
 and an approved fresh first start can retain the previous retry basis through grace.
 Lifecycle discovers both independently; Authority corroborates after disclosure; Parent
@@ -1092,7 +1092,7 @@ items stay OPEN (41/51); PR #90 remains draft/unmerged. No W7 work is deferred.
 
 ### 2026-10-09 — Approved redispatch readiness preserves the entered retry
 
-[Complete cumulative round-5 reviews](../reviews/2026-10-09T19-41-03-w7-dispatch-corrections-round-5-review.md)
+[Complete cumulative round-5 reviews](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T19-41-03-w7-dispatch-corrections-round-5-review.md)
 verify one High: after an entered retry 2 budget-pauses and is approved, readiness may
 reject before a new first start. Literal failure attempt 1 then misattributes the terminal.
 Authority independently discovers it; Lifecycle corroborates after disclosure; Parent
@@ -1111,8 +1111,8 @@ OPEN (41/51); PR #90 remains draft/unmerged. No W7 work is deferred.
 
 ### 2026-10-09 — Grace distinguishes claims from entered starts
 
-[Complete cumulative round 6](../reviews/2026-10-09T20-08-19-w7-dispatch-corrections-round-6-review.md) finds no new confirmed issue on the twenty-path/
-thirty-four-hunk frozen candidate. [The NEW complete round 7](../reviews/2026-10-09T20-29-02-w7-dispatch-corrections-round-7-review.md) rejects the same
+[Complete cumulative round 6](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T20-08-19-w7-dispatch-corrections-round-6-review.md) finds no new confirmed issue on the twenty-path/
+thirty-four-hunk frozen candidate. [The NEW complete round 7](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T20-29-02-w7-dispatch-corrections-round-7-review.md) rejects the same
 candidate for one High: grace walks authored order while scheduler claims follow ready
 plan order, allowing a never-started sibling to receive a node failure. Lifecycle
 independently discovers it, Authority corroborates after disclosure, and Parent owns
@@ -1134,7 +1134,7 @@ OPEN (41/51), and PR #90 remains draft/unmerged. No W7 work is deferred.
 The public local-departure operation, complete run actors and transitive MCP/custom-provider
 ownership, final semantic receipt health, parked clocks and acknowledged CLI teardown are
 implemented together. The first-start publication High from
-[dispatch round 9](../reviews/2026-10-09T21-43-39-w7-dispatch-corrections-round-9-review.md)
+[dispatch round 9](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T21-43-39-w7-dispatch-corrections-round-9-review.md)
 is corrected with six permanent paired regressions. Canonical mechanics live in
 [shared-core-engine.md](../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103)
 and output/remedies in [commands.md](../reference/cli/commands.md#exit-codes).
@@ -1144,7 +1144,7 @@ above is unchanged.
 
 ## 2026-10-10 — Complete composition review corrections
 
-[Consolidated round 1](../reviews/2026-10-09T23-05-00-w7-host-closure-round-1-review.md)
+[Consolidated round 1](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T23-05-00-w7-host-closure-round-1-review.md)
 finds three live lifecycle violations: successful post-pause money publication permanently
 blocks detachment, rejected activation returns before entered heartbeat/timer work retires,
 and Ink hides a terminal after unmount while receipts remain held. Parent confirms and corrects
@@ -1156,7 +1156,7 @@ final Step 12 remain open, with no new provider capture or approval pending.
 
 ## 2026-10-10 — Due-action and invocation-entry corrections
 
-[Complete host-closure round 2](../reviews/2026-10-09T23-34-00-w7-host-closure-round-2-review.md)
+[Complete host-closure round 2](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T23-34-00-w7-host-closure-round-2-review.md)
 confirms that asynchronous budget timeout preparation needs a synchronous per-gate in-flight
 claim shared with direct departure deadline service, and that provider entry needs a final
 cancellation guard after transferring invocation ownership. Parent implements both under the
@@ -1168,7 +1168,7 @@ Step 12 remain required; no provider capture or maintainer decision is pending.
 
 ## 2026-10-10 — Retirement preserves response evidence and completion
 
-[Complete host-closure round 3](../reviews/2026-10-09T23-56-41-w7-host-closure-round-3-review.md) identifies two
+[Complete host-closure round 3](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-09T23-56-41-w7-host-closure-round-3-review.md) identifies two
 implementation violations at synchronous invocation retirement. Response data and accountable
 usage must be owned before caller cleanup runs; listener-removal failure must still attempt
 abort and quiet acknowledgement. Known usage and an established provider diagnosis survive
@@ -1181,7 +1181,7 @@ Fresh complete review, Step 8 and final Step 12 remain required.
 
 ## 2026-10-10 — Public iterator exit still enters cleanup after retirement failure
 
-[Complete host-closure round 4](../reviews/2026-10-10T00-22-00-w7-host-closure-round-4-review.md) identifies an adjacent implementation
+[Complete host-closure round 4](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-10T00-22-00-w7-host-closure-round-4-review.md) identifies an adjacent implementation
 violation: public return/throw must forward generator exit even when synchronous retirement
 fails. Parent guarantees that cleanup entry, preserves an established consumer throw and
 retains actual held work until acknowledgement. Twelve permanent cases cover the correction;
@@ -1190,7 +1190,7 @@ owns the mechanics. Fresh complete review, Step 8 and final Step 12 remain requi
 
 ## Consolidated implementation acceptance — 2026-10-10
 
-[Two clean complete cumulative reviews and Parent audits](../reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md)
+[Two clean complete cumulative reviews and Parent audits](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-10T00-51-34-w7-host-closure-round-6-review.md)
 accept the consolidated startup/MCP/custom-provider/all-actor, final-health, clock, public-departure
 and shipping CLI integration within scope. The canonical mechanics remain in the linked engine,
 provider and CLI contracts. Step 8 compaction/recovery and final whole-wave Step 12 remain open;
