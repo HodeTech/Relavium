@@ -88,9 +88,10 @@ describe('live-captured overflow dialects through actual SDK HTTP parsing (ADR-0
     for (const path of ['generate', 'stream'] as const) {
       it(`${dialect} ${path}: the unchanged recorded rejection is fatal context_overflow`, async () => {
         const capture = fixture(file, hash);
-        expect(
-          await errorFrom(adapter(dialect, capture.response), capture.model, path),
-        ).toMatchObject({ kind: 'context_overflow', retryable: false, status: 400 });
+        const error = await errorFrom(adapter(dialect, capture.response), capture.model, path);
+        expect(error).toMatchObject({ kind: 'context_overflow', retryable: false, status: 400 });
+        expect(error.usage).toBeUndefined();
+        expect(error.contentCommitted).not.toBe(true);
       });
       it(`${dialect} ${path}: hostile unmatched 400 and wrong-status controls stay unclassified`, async () => {
         const capture = fixture(file, hash);

@@ -1337,7 +1337,7 @@ export interface OpenAiAdapterDeps {
    *
    * This governs the **chain-governed** calls (`generate` / `stream`) only. The surfaces `FallbackChain` does
    * NOT sit above — live model discovery and the async media-job poll — run with `maxRetries: 0` as well. A
-   * small SDK retry there was tried and REVERTED: the SDK'''s sleep honours `retry-after` with no ceiling and no
+   * small SDK retry there was tried and REVERTED: the SDK's sleep honours `retry-after` with no ceiling and no
    * abort awareness, so a hostile `retry-after-ms` parks the call for days. See the note below.
    */
   readonly maxRetries?: number;

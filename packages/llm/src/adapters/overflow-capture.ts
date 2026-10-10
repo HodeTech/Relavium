@@ -227,6 +227,8 @@ export async function captureResponse(
       : CAPTURE_TIMEOUT_MS;
   const deadline = openDeadline(timeoutMs, () => controller, deps.setTimer, deps.signal);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let artifact: CaptureArtifact;
+  let cleanupFailed = false;
   try {
     if (deps.signal?.aborted) throw new CaptureError('cancelled');
     const fetched = await deadline.race(
@@ -264,7 +266,7 @@ export async function captureResponse(
     assertSafeBody(body, key);
     const capturedAt = z.string().datetime({ offset: true }).safeParse(deps.now());
     if (!capturedAt.success) throw new CaptureError('invalid_arguments');
-    const artifact: CaptureArtifact = {
+    artifact = {
       captureTool: CAPTURE_TOOL_VERSION,
       capturedAt: capturedAt.data,
       provider: options.provider,
@@ -277,16 +279,29 @@ export async function captureResponse(
     // Also cover metadata/field names: even an accidentally pasted opaque key cannot survive by
     // coinciding with the timestamp or a fixed artifact label. The response byte cap bounds this scan.
     assertSafeBody(JSON.stringify(artifact), key);
-    return artifact;
   } catch (error) {
     if (deadline.classify() === 'caller') throw new CaptureError('cancelled');
     if (deadline.classify() === 'deadline') throw new CaptureError('timeout');
     if (error instanceof CaptureError) throw error;
     throw new CaptureError('transport'); // Never carry a transport/body error or its cause into output.
   } finally {
-    deadline.dispose();
-    controller.abort();
+    try {
+      deadline.dispose();
+    } catch {
+      cleanupFailed = true;
+    }
+    try {
+      controller.abort();
+    } catch {
+      cleanupFailed = true;
+    }
     // A refused stream may ignore cancel; cleanup must not defeat the caller's hard deadline.
-    if (reader !== undefined) void reader.cancel().catch(() => undefined);
+    try {
+      if (reader !== undefined) void reader.cancel().catch(() => undefined);
+    } catch {
+      cleanupFailed = true;
+    }
   }
+  if (cleanupFailed) throw new CaptureError('transport');
+  return artifact;
 }

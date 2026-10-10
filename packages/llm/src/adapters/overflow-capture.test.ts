@@ -460,3 +460,38 @@ describe('bounded, secret-free live response capture', () => {
     ).rejects.toMatchObject({ code: 'invalid_arguments' });
   });
 });
+
+for (const refused of [false, true])
+  for (const cleanup of ['none', 'disarm', 'abort'] as const)
+    it(`preserves safe capture outcome (refused=${refused}, cleanup=${cleanup}) and attempts every release`, async () => {
+      const rawCleanup = new Error(`synthetic cleanup ${KEY}`);
+      const native = new AbortController();
+      let disarms = 0,
+        aborts = 0;
+      const body = refused ? JSON.stringify({ error: KEY }) : '{}';
+      const result = captureResponse(options, KEY, {
+        ...dependencies(() => Promise.resolve(jsonResponse(body))),
+        newAbortController: () => ({
+          signal: native.signal,
+          abort: () => {
+            aborts++;
+            native.abort();
+            if (cleanup === 'abort') throw rawCleanup;
+          },
+        }),
+        setTimer: () => () => {
+          disarms++;
+          if (cleanup === 'disarm') throw rawCleanup;
+        },
+      });
+      if (refused || cleanup !== 'none') {
+        const expectedCode = refused ? 'secret_in_response' : 'transport';
+        await expect(result).rejects.toMatchObject({
+          code: expectedCode,
+          message: `overflow capture refused: ${expectedCode}`,
+        });
+        await expect(result).rejects.not.toHaveProperty('cause');
+      } else expect((await result).response.body).toBe('{}');
+      expect({ disarms, aborts }).toEqual({ disarms: 1, aborts: 1 });
+      expect(native.signal.aborted).toBe(true);
+    });
