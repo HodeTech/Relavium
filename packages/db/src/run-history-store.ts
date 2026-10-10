@@ -291,12 +291,17 @@ export interface RunHistoryReader {
    * Strict, indexed batches and their owning run row under ONE SQLite snapshot. The first read
    * pins the run's stored totals; a display must use the returned row rather than a prior discovery
    * result when qualifying those amounts with its visitor's coverage fold. No money is re-folded.
-   * The visitor must be synchronous; discard its partial fold on any strict replay failure.
+   * An optional step visitor receives the per-node projections under that same transaction, only
+   * after strict replay succeeds. Qualify step amounts with this snapshot, never a later standalone
+   * loadStepExecutions read. Both visitors must be synchronous; discard partial results on failure.
    */
   visitRunEventsForReplay: (
     runId: string,
     visitor: (event: RunEvent) => void,
-    options?: { readonly streamingIncluded?: boolean },
+    options?: {
+      readonly streamingIncluded?: boolean;
+      readonly visitSteps?: (steps: readonly StepRecord[]) => void;
+    },
   ) => RunRecord | undefined;
   /** A run's STATE-BEARING events in `seq` order — the full log MINUS the per-token/tool streaming firehose
    *  (`agent:token` / `agent:tool_call` / `agent:tool_result`), which neither checkpoint reconstruction nor gate
@@ -1303,7 +1308,10 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
               visitor(event);
             after = row.seq;
           }
-          if (rows.length < 256) return owner === undefined ? undefined : fromRunRow(owner);
+          if (rows.length < 256) {
+            options?.visitSteps?.(readStepExecutions(tx, runId));
+            return owner === undefined ? undefined : fromRunRow(owner);
+          }
         }
       }),
 
@@ -1362,37 +1370,7 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         .map((row): WorkflowRunSummary => ({ slug: row.slug, lastRun: fromRunRow(row) }));
     },
 
-    loadStepExecutions: (runId) =>
-      db
-        .select({
-          nodeId: stepExecutions.nodeId,
-          nodeType: stepExecutions.nodeType,
-          status: stepExecutions.status,
-          attemptNumber: stepExecutions.attemptNumber,
-          startedAt: stepExecutions.startedAt,
-          completedAt: stepExecutions.completedAt,
-          durationMs: stepExecutions.durationMs,
-          costMicrocents: stepExecutions.costMicrocents,
-        })
-        .from(stepExecutions)
-        .where(eq(stepExecutions.runId, runId))
-        // createdAt is the execution-order key; `rowid` (insertion order = persist/seq order) is the
-        // deterministic tiebreak for same-millisecond steps, so the per-node order never depends on the
-        // engine clock resolution or a future index over createdAt.
-        .orderBy(asc(stepExecutions.createdAt), asc(sql`rowid`))
-        .all()
-        .map(
-          (r): StepRecord => ({
-            nodeId: r.nodeId,
-            nodeType: r.nodeType,
-            status: r.status,
-            attemptNumber: r.attemptNumber,
-            ...(r.startedAt === null ? {} : { startedAt: epochMsToIso(r.startedAt) }),
-            ...(r.completedAt === null ? {} : { completedAt: epochMsToIso(r.completedAt) }),
-            ...(r.durationMs === null ? {} : { durationMs: r.durationMs }),
-            costMicrocents: r.costMicrocents,
-          }),
-        ),
+    loadStepExecutions: (runId) => readStepExecutions(db, runId),
 
     loadWorkflowSlugs: (ids) => {
       if (ids.length === 0) return new Map(); // no query for an empty set — the Home with no runs hits this
@@ -1404,6 +1382,42 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
       return new Map(rows.map((r) => [r.id, r.slug]));
     },
   };
+}
+
+/** The standalone read and strict snapshot share one projection; a snapshot passes its transaction. */
+function readStepExecutions(db: Db | TxDb, runId: string): StepRecord[] {
+  return (
+    db
+      .select({
+        nodeId: stepExecutions.nodeId,
+        nodeType: stepExecutions.nodeType,
+        status: stepExecutions.status,
+        attemptNumber: stepExecutions.attemptNumber,
+        startedAt: stepExecutions.startedAt,
+        completedAt: stepExecutions.completedAt,
+        durationMs: stepExecutions.durationMs,
+        costMicrocents: stepExecutions.costMicrocents,
+      })
+      .from(stepExecutions)
+      .where(eq(stepExecutions.runId, runId))
+      // createdAt is the execution-order key; `rowid` (insertion order = persist/seq order) is the
+      // deterministic tiebreak for same-millisecond steps, so the per-node order never depends on the
+      // engine clock resolution or a future index over createdAt.
+      .orderBy(asc(stepExecutions.createdAt), asc(sql`rowid`))
+      .all()
+      .map(
+        (r): StepRecord => ({
+          nodeId: r.nodeId,
+          nodeType: r.nodeType,
+          status: r.status,
+          attemptNumber: r.attemptNumber,
+          ...(r.startedAt === null ? {} : { startedAt: epochMsToIso(r.startedAt) }),
+          ...(r.completedAt === null ? {} : { completedAt: epochMsToIso(r.completedAt) }),
+          ...(r.durationMs === null ? {} : { durationMs: r.durationMs }),
+          costMicrocents: r.costMicrocents,
+        }),
+      )
+  );
 }
 
 /** Match the `step_executions` row for a node attempt (the node-retry dispatch index; absent ⇒ 1). */

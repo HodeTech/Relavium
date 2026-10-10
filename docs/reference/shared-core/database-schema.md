@@ -958,7 +958,7 @@ commitments do not cure the predecessor's synthetic-zero release behavior.
 
 #### Incremental strict run replay
 
-`RunHistoryReader.visitRunEventsForReplay(runId, visitor, { streamingIncluded })` uses indexed
+`RunHistoryReader.visitRunEventsForReplay(runId, visitor, { streamingIncluded, visitSteps })` uses indexed
 256-row sequence batches inside one SQLite read transaction. The method returns the typed
 `RunRecord | undefined` for that same snapshot: its first SELECT reads the owning `runs` row and
 pins the snapshot before visiting event rows. Coverage readers must qualify this returned row's
@@ -972,6 +972,14 @@ mismatched projections raise `CorruptRunEventError`. The caller discards its par
 The original array-returning strict read remains available for compatibility; the production
 checkpointer uses the incremental port. Concurrent WAL writes cannot enter the snapshot halfway
 through replay. This does not compact or delete the authoritative append-only event log.
+
+The optional synchronous `visitSteps` callback receives the existing per-node step projection
+after strict event validation succeeds, read through the same transaction handle as the owner and
+event batches. Status uses it to pair each step's amount and lifecycle with that snapshot's coverage.
+It must not join a later standalone `loadStepExecutions` result to the earlier fold. Other visitors
+do not query or allocate step rows. A strict failure invokes no step callback; display degradation
+may still show standalone step detail only with explicitly unverified coverage and an unavailable
+usage marker. This grants no resume or mutation authority.
 
 #### Session content parts
 

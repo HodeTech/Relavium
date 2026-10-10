@@ -65,6 +65,13 @@ describe('statusCommand', () => {
       usageUnavailable: true,
       usageUnavailableReason: 'unreadable_event_log',
       usageCoverage: { unverified: true, pendingInvocations: 0, unknownCalls: 0 },
+      steps: [
+        expect.objectContaining({
+          nodeId: 'n1',
+          status: 'completed',
+          usageCoverage: { unverified: true, pendingInvocations: 0, unknownCalls: 0 },
+        }),
+      ],
     });
     expect(records.find((row) => row['runId'] === 'healthy')).not.toHaveProperty(
       'usageUnavailable',

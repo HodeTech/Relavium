@@ -156,7 +156,9 @@ describe('strict incremental replay', () => {
       }
       const prepare = client.sqlite.prepare.bind(client.sqlite);
       let batches = 0;
+      let stepReads = 0;
       const spy = vi.spyOn(client.sqlite, 'prepare').mockImplementation((query) => {
+        if (/select.*from "step_executions"/i.test(query)) stepReads += 1;
         if (/select.*from "run_events"/i.test(query)) {
           expect(query).toMatch(/limit \?/i);
           batches += 1;
@@ -187,6 +189,13 @@ describe('strict incremental replay', () => {
       );
       expect(seen).toBe(600);
       expect(batches).toBe(3);
+      expect(stepReads).toBe(0);
+      const visitSteps = vi.fn();
+      expect(() => store.visitRunEventsForReplay('r', () => undefined, { visitSteps })).toThrow(
+        UnreadableRunEventLogError,
+      );
+      expect(visitSteps).not.toHaveBeenCalled();
+      expect(stepReads).toBe(0);
       expect(() => store.visitRunEventsForReplay('r', () => undefined)).toThrow(
         UnreadableRunEventLogError,
       );

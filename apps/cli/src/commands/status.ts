@@ -91,6 +91,7 @@ export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> 
   const held = await heldTerminalRunIds(homeDir, deps.readTerminalOutbox);
   try {
     const statuses: ActiveRunStatus[] = reader.listActiveRuns().map((run) => {
+      let steps: readonly StepRecord[] = [];
       const usage = readPerRunOrDegrade(
         {
           totalCostMicrocents: run.totalCostMicrocents,
@@ -98,14 +99,20 @@ export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> 
           unpricedCalls: 0,
           nodes: new Map(),
         },
-        () => readRunUsageCoverage(reader, run.id),
+        () =>
+          readRunUsageCoverage(reader, run.id, (snapshot) => {
+            steps = snapshot;
+          }),
       );
+      // A strict read's step amounts and usage fold share one SQLite snapshot. On a damaged log,
+      // retain discoverable step detail with explicitly unverified coverage, never the partial fold.
+      if (usage.degraded) steps = reader.loadStepExecutions(run.id);
       return {
         run,
         usage: usage.value,
         usageUnavailable: usage.degraded,
         terminalHeld: held.has(run.id),
-        steps: reader.loadStepExecutions(run.id),
+        steps,
         // Native authority and companion crash prefixes can leave either active status with pending gates.
         // Per-run isolation (`readPerRunOrDegrade`): one damaged row in one run must not blank the whole list.
         // The degradation travels WITH the value (#W15-15) — an empty `pendingGates` on a damaged run would

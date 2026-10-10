@@ -1,4 +1,4 @@
-import type { RunHistoryReader } from '@relavium/db';
+import type { RunHistoryReader, StepRecord } from '@relavium/db';
 import { UsageCoverageFold, type UsageCoverage } from '@relavium/shared';
 
 /** Conservative fallback for old/foreign histories. A read never establishes a fresh basis. */
@@ -12,6 +12,7 @@ export const UNVERIFIED_USAGE: UsageCoverage = Object.freeze({
 export function readRunUsageCoverage(
   reader: Pick<RunHistoryReader, 'visitRunEventsForReplay'>,
   runId: string,
+  visitSteps?: (steps: readonly StepRecord[]) => void,
 ): {
   readonly totalCostMicrocents: number;
   readonly usageCoverage: UsageCoverage;
@@ -43,7 +44,7 @@ export function readRunUsageCoverage(
       if (event.type === 'cost:attempt_settled' && event.priced === false) ledgerUnpricedCalls++;
       snapshotUnpricedCalls = Math.max(snapshotUnpricedCalls, event.cumulativeUnpricedCalls ?? 0);
     },
-    { streamingIncluded: false },
+    { streamingIncluded: false, ...(visitSteps === undefined ? {} : { visitSteps }) },
   );
   return {
     totalCostMicrocents: run?.totalCostMicrocents ?? 0,
