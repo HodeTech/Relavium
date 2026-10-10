@@ -11,6 +11,9 @@ added.
 
 ## Records
 
+- [2026-10-10 — W7 Step 8, cumulative round 3](2026-10-10T01-55-00-w7-step-8-round-3-review.md):
+  first fresh clean complete round after the current-attempt correction; second required.
+
 - [2026-10-10 — W7 Step 8, cumulative round 2](2026-10-10T01-38-00-w7-step-8-round-2-review.md):
   current provider-attempt authority High corrected; two fresh clean complete rounds required.
 
