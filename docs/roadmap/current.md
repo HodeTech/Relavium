@@ -49,7 +49,12 @@ merged too (PR #85, 2026-08-28).
 > final Step 12 remain open. All six W7 register items remain OPEN (41/51 closed), PR #90 remains
 > draft/unmerged, and no paid call, credential or maintainer approval is pending.
 
-> **Latest complete composition review:** [host-closure round 4](../reviews/2026-10-10T00-22-00-w7-host-closure-round-4-review.md)
+> **Latest complete composition review:** [host-closure round 5](../reviews/2026-10-10T00-38-24-w7-host-closure-round-5-review.md)
+> finds no new confirmed actionable issue across all 126 paths / 364 hunks. This is the first
+> clean complete cumulative round; one further fresh complete clean round remains required.
+> Step 8 and final Step 12 remain open, with no user/provider blocker.
+>
+> **Complete composition review:** [host-closure round 4](../reviews/2026-10-10T00-22-00-w7-host-closure-round-4-review.md)
 > confirms public stream exit can skip underlying cleanup on retirement failure. Parent adds
 > twelve paired permanent cases and guarantees cleanup while preserving the original throw.
 > Two fresh complete clean rounds, Step 8 and final Step 12 remain required; no user input is pending.

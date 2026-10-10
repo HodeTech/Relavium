@@ -4607,3 +4607,12 @@ cleanup when invocation retirement throws. Parent guarantees exit forwarding, re
 cleanup acknowledgement and preserves the established consumer throw. Twelve permanent paired
 cases cover quiet/held cleanup and normal/faulting detach. Two fresh complete clean rounds,
 Step 8 and final Step 12 remain required; no provider capture or maintainer decision is pending.
+
+### W7 consolidated host closure — first clean cumulative round (2026-10-10)
+
+[Complete round 5](../../reviews/2026-10-10T00-38-24-w7-host-closure-round-5-review.md) independently
+accepts all 126 paths / 364 hunks with zero confirmed actionable findings. Parent audits both
+complete reports and maps and verifies the frozen tracked tree, HEAD and index. This is one
+clean round; a second fresh complete clean round remains required. Step 8 and final Step 12
+remain open, all six W7 items remain open (41/51 closed), and PR #90 remains draft/unmerged.
+No provider capture, credential, billing setup or maintainer decision is pending.
