@@ -4910,3 +4910,5 @@ pass, including a PATH-trap negative intervention. Two NEW complete clean cumula
 exact new published-head gates are required before this supplemental increment is accepted.
 
 The [publication correction cumulative round 1](../../reviews/2026-10-10T13-29-08-w7-publication-sonar-round-1-review.md) records first NEW clean complete cumulative round; another NEW round and published-head gates remain required.
+
+The [publication correction cumulative round 2](../../reviews/2026-10-10T13-35-14-w7-publication-sonar-round-2-review.md) records second NEW clean complete cumulative round accepts the publication correction; exact published-head gates remain required.
