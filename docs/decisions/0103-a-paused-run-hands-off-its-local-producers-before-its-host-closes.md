@@ -1177,3 +1177,13 @@ accepted policy, with thirty-two permanent cases. The
 [provider seam](../reference/shared-core/llm-provider-seam.md#the-per-attempt-deadline) owns
 these mechanics; no media request-ownership extension or new wire policy is introduced.
 Fresh complete review, Step 8 and final Step 12 remain required.
+
+
+## 2026-10-10 — Public iterator exit still enters cleanup after retirement failure
+
+[Complete host-closure round 4](../reviews/2026-10-10T00-22-00-w7-host-closure-round-4-review.md) identifies an adjacent implementation
+violation: public return/throw must forward generator exit even when synchronous retirement
+fails. Parent guarantees that cleanup entry, preserves an established consumer throw and
+retains actual held work until acknowledgement. Twelve permanent cases cover the correction;
+the [provider seam](../reference/shared-core/llm-provider-seam.md#the-per-attempt-deadline)
+owns the mechanics. Fresh complete review, Step 8 and final Step 12 remain required.

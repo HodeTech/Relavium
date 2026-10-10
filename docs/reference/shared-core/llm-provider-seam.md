@@ -632,6 +632,11 @@ listener removal throws; admitted descendants still hold their own completion. P
 setup retires its transferred aggregate without replacing the original entry error. An existing
 provider/cancellation diagnosis stays primary over cleanup; a standalone cleanup fault remains
 loud, without retry authority, and text attempts account known usage exactly once.
+Public iterator `return()` and `throw()` attempt the underlying generator exit even when
+immediate invocation retirement fails. A consumer throw remains primary over secondary
+retirement failure; a standalone retirement failure remains observable after cleanup entry.
+Neither path acknowledges held iterator work before its actual settlement (ADR-0103).
+
 
 The controlled OpenAI-compatible adapter transfers one aggregate lifetime before SDK construction
 or entry. It binds that invocation's work and retirement signal into its own client fetch closure,

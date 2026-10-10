@@ -871,3 +871,74 @@ it('captures generated content and accountable usage before invocation abort obs
   expect(attempts[0]?.cost?.costMicrocents).toBeGreaterThan(0);
   await until(() => tracked.pending.size === 0);
 });
+
+for (const operation of ['return', 'throw'] as const)
+  for (const faulty of [false, true])
+    for (const held of [false, true])
+      it(`public stream ${operation} joins actual iterator cleanup: faulty=${faulty}, held=${held}`, async () => {
+        const tracked = tracking();
+        const close = latch<IteratorResult<StreamChunk>>();
+        const removalFailure = new Error('offline caller removal failure');
+        const injected = new Error('offline consumer throw');
+        let closed = 0,
+          removed = 0;
+        const signal = {
+          aborted: false,
+          addEventListener: () => undefined,
+          removeEventListener: () => {
+            removed++;
+            if (faulty) throw removalFailure;
+          },
+        };
+        const p = source({
+          stream: () => ({
+            [Symbol.asyncIterator]() {
+              return {
+                next: (): Promise<IteratorResult<StreamChunk>> =>
+                  Promise.resolve({ done: false, value: { type: 'text_delta', text: 'one' } }),
+                return: (): Promise<IteratorResult<StreamChunk>> => {
+                  closed++;
+                  return held ? close.promise : Promise.resolve({ done: true, value: undefined });
+                },
+              };
+            },
+          }),
+        });
+        const reader = chain(p, { retainWork: tracked.retain })
+          .stream({ ...request, signal })
+          [Symbol.asyncIterator]();
+        try {
+          expect(await reader.next()).toMatchObject({
+            done: false,
+            value: { type: 'text_delta', text: 'one' },
+          });
+          let failure: unknown;
+          let outcome: IteratorResult<StreamChunk, unknown> | undefined;
+          try {
+            if (operation === 'return') outcome = await reader.return?.();
+            else outcome = await reader.throw?.(injected);
+          } catch (error) {
+            failure = error;
+          }
+          if (operation === 'return' && faulty)
+            expect(Object.is(failure, removalFailure)).toBe(true);
+          else expect(failure).toBeUndefined();
+          if (operation === 'throw') {
+            expect(outcome).toMatchObject({ done: false, value: { type: 'error' } });
+            if (outcome === undefined || outcome.done !== false || outcome.value.type !== 'error')
+              throw new Error('missing consumer error');
+            expect(Object.is(outcome.value.error.cause, injected)).toBe(true);
+          }
+          expect(removed).toBe(1);
+          expect(closed).toBe(1); // A cleanup fault never requires a second consumer call to start the close.
+          if (held) {
+            expect(tracked.pending.size).toBeGreaterThan(0);
+            close.resolve({ done: true, value: undefined });
+          }
+          await until(() => tracked.pending.size === 0);
+        } finally {
+          close.resolve({ done: true, value: undefined });
+          await reader.return?.().catch(() => undefined);
+          await until(() => tracked.pending.size === 0);
+        }
+      });

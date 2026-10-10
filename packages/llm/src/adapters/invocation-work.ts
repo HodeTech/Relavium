@@ -250,18 +250,35 @@ export function retiringStream<T>(
   const iterator = open((admitted) => {
     work = admitted;
   });
+  const close = async (
+    operation: () => Promise<IteratorResult<T, void>>,
+    establishedFailure: boolean,
+  ): Promise<IteratorResult<T, void>> => {
+    let retirementFailure: { readonly error: unknown } | undefined;
+    try {
+      work?.retire();
+    } catch (error) {
+      retirementFailure = { error };
+    }
+    // Immediate retirement must never prevent the generator from entering its own cleanup.
+    // A consumer throw is already the primary failure; normal generator propagation owns it.
+    let result: IteratorResult<T, void>;
+    try {
+      result = await operation();
+    } catch (error) {
+      throw !establishedFailure && retirementFailure !== undefined
+        ? retirementFailure.error
+        : error;
+    }
+    if (!establishedFailure && retirementFailure !== undefined) throw retirementFailure.error;
+    return result;
+  };
   return {
     [Symbol.asyncIterator]() {
       return {
         next: () => iterator.next(),
-        return: async () => {
-          work?.retire();
-          return iterator.return();
-        },
-        throw: async (error: unknown) => {
-          work?.retire();
-          return iterator.throw(error);
-        },
+        return: () => close(() => iterator.return(), false),
+        throw: (error: unknown) => close(() => iterator.throw(error), true),
       };
     },
   };

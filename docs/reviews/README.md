@@ -11,6 +11,8 @@ added.
 
 ## Records
 
+- [2026-10-10 — W7 consolidated host closure, cumulative round 4](2026-10-10T00-22-00-w7-host-closure-round-4-review.md):
+  public stream cleanup High; twelve permanent correction cases; fresh complete review required.
 - [2026-10-09 — W7 consolidated host closure, cumulative round 3](2026-10-09T23-56-41-w7-host-closure-round-3-review.md):
   two confirmed retirement-boundary Highs; thirty-two permanent corrections require fresh
   complete independent review.

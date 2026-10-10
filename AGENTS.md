@@ -59,7 +59,9 @@ acceptance gap; Parent corrections add eighteen permanent cases. Complete round 
 due-budget departure starvation and provider entry after synchronous cancellation. Nineteen
 additional permanent cases cover those corrections. Complete round 3 confirms retirement
 callbacks can mutate returned data or strand acknowledgement on failure. Parent corrections
-add thirty-two permanent cases; fresh complete review remains required.
+add thirty-two permanent cases. Complete round 4 confirms public iterator exit can skip
+underlying cleanup after retirement failure; twelve permanent cases cover the correction.
+Fresh complete review remains required.
 Step 8 and final Step 12 remain open; no user approval or provider capture is pending.
 See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 

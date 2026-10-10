@@ -272,3 +272,71 @@ it.each(['parent', 'attach'] as const)(
     expect(quiet).toBe(true);
   },
 );
+
+for (const faulty of [false, true])
+  for (const held of [false, true])
+    it(`public throw preserves original failure after mandatory cleanup: faulty=${faulty}, held=${held}`, async () => {
+      const close = deferred<IteratorResult<string>>();
+      const parent = owner();
+      const original = new Error('offline consumer failure');
+      const cleanup = new Error('offline detach failure');
+      let closed = 0;
+      let received: unknown;
+      const signal = {
+        aborted: false,
+        addEventListener: () => undefined,
+        removeEventListener: () => {
+          if (faulty) throw cleanup;
+        },
+      };
+      const iterable = retiringStream<string>(async function* (setWork) {
+        const work = new ProviderInvocationWork(parent.options, signal);
+        setWork(work);
+        const raw = work
+          .ownIterator({
+            [Symbol.asyncIterator]: () => ({
+              next: () => Promise.resolve({ done: false, value: 'one' }),
+              return: () => {
+                closed++;
+                return held ? close.promise : Promise.resolve({ done: true, value: undefined });
+              },
+            }),
+          })
+          [Symbol.asyncIterator]();
+        try {
+          yield (await raw.next()).value;
+        } catch (error) {
+          received = error;
+          throw error;
+        } finally {
+          await raw.return?.();
+          work.retire();
+        }
+      });
+      const reader = iterable[Symbol.asyncIterator]();
+      await reader.next();
+      const result = reader.throw?.(original).then(
+        () => ({ error: undefined }),
+        (error: unknown) => ({ error }),
+      );
+      try {
+        await tick();
+        expect(closed).toBe(1);
+        expect(Object.is(received, original)).toBe(true);
+        if (held) {
+          let acknowledged = false;
+          void Promise.all(parent.admitted).then(() => {
+            acknowledged = true;
+          });
+          await tick();
+          expect(acknowledged).toBe(false);
+        }
+        close.resolve({ done: true, value: undefined });
+        expect(Object.is((await result)?.error, original)).toBe(true);
+      } finally {
+        close.resolve({ done: true, value: undefined });
+        await result;
+        await reader.return?.().catch(() => undefined);
+        await Promise.all(parent.admitted);
+      }
+    });

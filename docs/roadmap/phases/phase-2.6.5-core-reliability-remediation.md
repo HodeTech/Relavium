@@ -4598,3 +4598,12 @@ all-path retirement and primary-failure preservation, with thirty-two permanent 
 Fresh complete independent review remains required. Step 8 and final Step 12 remain open;
 all six W7 items remain open (41/51 closed), PR #90 remains draft/unmerged, and no paid call,
 credential or approval is pending.
+
+
+### W7 consolidated host closure — complete round 4 correction (2026-10-10)
+
+[Complete round 4](../../reviews/2026-10-10T00-22-00-w7-host-closure-round-4-review.md) confirms public stream return/throw skips underlying
+cleanup when invocation retirement throws. Parent guarantees exit forwarding, retains actual
+cleanup acknowledgement and preserves the established consumer throw. Twelve permanent paired
+cases cover quiet/held cleanup and normal/faulting detach. Two fresh complete clean rounds,
+Step 8 and final Step 12 remain required; no provider capture or maintainer decision is pending.
