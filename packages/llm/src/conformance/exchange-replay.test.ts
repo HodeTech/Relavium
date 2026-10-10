@@ -359,6 +359,68 @@ describe('credential-safe projection and diagnostics', () => {
     );
   });
 
+  for (const newline of ['\n', '\r\n', '\r']) {
+    it.each(['expectation', 'recording'])(
+      `refuses assembled credential-bearing SSE with ${JSON.stringify(newline)} framing: %s`,
+      async (entry) => {
+        const body = [
+          ': synthetic comment',
+          'event: message',
+          'data: {"api_key":',
+          'data: "opaque-synthetic-credential"}',
+          '',
+          '',
+        ].join(newline);
+        const recorder = recordExchangeFetch(() =>
+          Promise.resolve(new Response(body, { headers: { 'content-type': 'text/event-stream' } })),
+        );
+        const attempt =
+          entry === 'expectation'
+            ? Promise.resolve().then(() => createExchangeReplay([fixture(request(), body)]))
+            : recorder.fetch(URL_VALUE, init());
+        await refusal(attempt, 'unsafe_content');
+        expect(recorder.exchanges).toEqual([]);
+      },
+    );
+
+    it(`preserves safe assembled SSE text with ${JSON.stringify(newline)} framing`, async () => {
+      const body = [
+        ': ignored comment',
+        'event: message',
+        'data: {"ok":',
+        ': another comment',
+        'data: true,"signature":"synthetic-signature"}',
+        '',
+        '',
+      ].join(newline);
+      const response = { status: 200, contentType: 'text/event-stream', body };
+      const recorder = recordExchangeFetch(() =>
+        Promise.resolve(new Response(body, { headers: { 'content-type': 'text/event-stream' } })),
+      );
+      expect(await (await recorder.fetch(URL_VALUE, init())).text()).toBe(body);
+      expect(recorder.exchanges[0]?.response).toEqual(response);
+      const replay = createExchangeReplay([{ request: request(), response }]);
+      expect(await (await replay.fetch(URL_VALUE, init())).text()).toBe(body);
+      replay.assertConsumed();
+    });
+  }
+
+  it('checks BOM-prefixed trailing SSE data without a final separator', async () => {
+    const body = '\uFEFFdata: {"password":\ndata: "opaque-synthetic-credential"}';
+    const recorder = recordExchangeFetch(() => Promise.resolve(new Response(body)));
+    await refusal(recorder.fetch(URL_VALUE, init()), 'unsafe_content');
+    expect(() => createExchangeReplay([fixture(request(), body)])).toThrow('unsafe_content');
+    expect(recorder.exchanges).toEqual([]);
+  });
+
+  it('checks JSON after native UTF-8 BOM decoding at both entry points', async () => {
+    const body = '\uFEFF{"api_key":"opaque-synthetic-credential"}';
+    const recorder = recordExchangeFetch(() => Promise.resolve(new Response(body)));
+    await refusal(recorder.fetch(URL_VALUE, init()), 'unsafe_content');
+    expect(() => createExchangeReplay([fixture(request(), body)])).toThrow('unsafe_content');
+    expect(recorder.exchanges).toEqual([]);
+  });
+
   it('excludes authentication/volatile headers, credential query parameters and URL fragments', async () => {
     const recorder = recordExchangeFetch(() => Promise.resolve(new Response('{}')));
     await recorder.fetch(`${URL_VALUE}&api_key=${secret}&access-token=opaque#${secret}`, {

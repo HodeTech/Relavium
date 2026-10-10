@@ -2823,6 +2823,28 @@ retains the same throwing prototype trap. All three final regressions were rerun
 `a63f4bbd` source and fail, then byte-exact corrected source restores **100/100** passing
 focused controls. Whitespace and relative/archive links pass; the review gate remains open.
 
+**Round 2 — reviewed head `f9ed27de9103f658cb6e88aa3d6ea300cc9d4788`:** two further NEW
+reviewers (GPT-6-astra/high and GPT-6.1-sol/high) inspected the complete cumulative step.
+Both independently verified the round-1 corrections and one new Medium: response inspection
+parsed individual SSE data lines instead of assembled events, allowing an opaque credential
+field to bypass the contextual safeguard through valid multiline or CR-only framing.
+The boundary reviewer confirmed both forms with the installed SDK's event decoder.
+Both passed 100 focused controls, typecheck and changed-file lint; the integration reviewer
+also passed 1,717 LLM tests with 11 existing skips. Neither claims full monorepo validation.
+
+The correction inspects assembled event data across LF/CRLF/CR, comments, optional initial
+BOM and trailing candidates without rewriting response framing. Seven permanent negative
+controls fail on the reviewed source; a further parent-verified native BOM-decoded JSON
+expectation control fails before its correction. The corrected focused suite passes **111/111**, with
+paired safe multiline controls. Recordings retain native UTF-8 `Response.text()` semantics,
+including BOM decoding; returned Responses are untouched. The initial positive-control BOM
+expectation was corrected to respect native decoding before gates. A third NEW complete
+cumulative round follows the correction; Step 2 and whole W8 remain open until acceptance.
+
+Final corrected author gates pass **23/23** lint/typecheck/test (8 cached) and **6/6** build
+(5 cached), with 1,728 passing LLM tests and 11 existing skips. Relative/archive links and
+whitespace pass. Genuine overflow artifacts and public exports remain unchanged.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High
 A recorded response carries status, content type and body only; replay checks that the request body is parseable
 JSON and matches nothing else — not method, path, headers, or a canonical body. A dropped `response_format`, a

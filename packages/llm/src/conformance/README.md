@@ -91,6 +91,8 @@ Request to `realFetch` without a second init argument. Authentication and the
 native signal remain on the forwarded Request; its body has not been consumed
 by inspection. Credentials removed from the projection never enter the stored
 request. The response is likewise read from a clone and the original is returned.
+Response recordings store native `Response.text()` UTF-8 text, including its BOM
+decoding semantics; they are not byte archives.
 Only complete validated successes are retained; a rejected request, network
 failure or rejected response creates no partial record. Successful records are
 ordered by call entry, including concurrent requests. `exchanges` returns a
@@ -113,6 +115,11 @@ checked decoded as well as in stored form; protocol-header values and response
 content types are checked too. Excluded authentication headers and named
 credential URL parameters are intentionally forwarded without being retained.
 Planted-secret regressions cover both refusals and exclusions.
+
+SSE inspection joins each event's `data` fields with newline across LF, CRLF and
+CR framing, ignoring comments and metadata; it accepts an initial BOM. A trailing
+unterminated data candidate is inspected conservatively too. Inspection preserves
+the original response bytes and leaves protocol parsing to the installed SDK.
 
 This is a synthetic fixture safeguard, not proof that arbitrary provider or user
 content is secret-free. Pattern scanning cannot recognize every opaque secret,

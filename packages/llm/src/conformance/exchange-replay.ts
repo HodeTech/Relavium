@@ -264,6 +264,27 @@ async function projectRequest(request: Request, ordinal: number): Promise<Reques
   }
 }
 
+/** Safety inspection only: SDKs still parse the unchanged response bytes themselves. */
+function* responseJsonCandidates(body: string): Iterable<string> {
+  const text = body.startsWith('\uFEFF') ? body.slice(1) : body;
+  yield text;
+  let data: string[] = [];
+  for (const line of text.split(/\r\n|\r|\n/)) {
+    if (line === '') {
+      if (data.length > 0) yield data.join('\n');
+      data = [];
+      continue;
+    }
+    const colon = line.indexOf(':');
+    const field = colon < 0 ? line : line.slice(0, colon);
+    if (field !== 'data') continue;
+    const value = colon < 0 ? '' : line.slice(colon + 1);
+    data.push(value.startsWith(' ') ? value.slice(1) : value);
+  }
+  // Inspect a final unterminated candidate conservatively, without altering replay framing.
+  if (data.length > 0) yield data.join('\n');
+}
+
 function ownedResponse(response: RecordedResponse, ordinal: number): RecordedResponse {
   if (
     typeof response.body !== 'string' ||
@@ -275,13 +296,7 @@ function ownedResponse(response: RecordedResponse, ordinal: number): RecordedRes
   safeText(response.body, ordinal);
   if (response.contentType !== undefined) safeText(response.contentType, ordinal);
   // JSON and SSE data records get the contextual credential-field check as well as the scanner.
-  for (const text of [
-    response.body,
-    ...response.body
-      .split('\n')
-      .filter((line) => line.startsWith('data:'))
-      .map((line) => line.slice(5)),
-  ]) {
+  for (const text of responseJsonCandidates(response.body)) {
     let parsed: unknown;
     try {
       parsed = JSON.parse(text);
