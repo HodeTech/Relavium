@@ -11,6 +11,8 @@ added.
 
 ## Records
 
+- [2026-10-10 — W7 post-closure Step 3, author verification](2026-10-10T12-50-13-w7-post-closure-step-3-author-review.md): tooling/docs implemented; two NEW independent cumulative rounds required.
+
 - [2026-10-10 — W7 post-closure Step 2, round 2](2026-10-10T12-45-56-w7-post-closure-step-2-round-2-review.md):
   second NEW clean complete cumulative round accepts the CLI/DB increment.
 
