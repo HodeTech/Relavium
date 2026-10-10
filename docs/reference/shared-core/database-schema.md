@@ -986,6 +986,9 @@ through replay. This does not compact or delete the authoritative append-only ev
 The optional synchronous `visitSteps` callback receives the existing per-node step projection
 after strict event validation succeeds, read through the same transaction handle as the owner and
 event batches. Status uses it to pair each step's amount and lifecycle with that snapshot's coverage.
+Each `node:started` establishes that node's coverage under the owner's current basis, including
+native-media and ordinary nodes without token-invocation events. A pre-basis node remains
+unverified; a later owner basis cannot retroactively qualify its history.
 It must not join a later standalone `loadStepExecutions` result to the earlier fold. Other visitors
 do not query or allocate step rows. A strict failure invokes no step callback; display degradation
 may still show standalone step detail only with explicitly unverified coverage and an unavailable

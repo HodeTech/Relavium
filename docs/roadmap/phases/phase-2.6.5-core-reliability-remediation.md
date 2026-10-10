@@ -3421,6 +3421,72 @@ two NEW clean complete cumulative reviews. Step 6's further matrix and reviews, 
 whole-W8 acceptance/publication remain open; the register stays **48/51** on `development`,
 **47/51** on `main`. No new deferral is introduced.
 
+#### Step 5 eleventh cumulative review — 2026-10-11
+
+Three NEW independent reviewers completed the full `017b399c..dc0627d1` activation and all
+ten corrections. Their combined result is **two High and one Medium finding**. **This is not
+a clean round.** All three released the source freeze after full reports and unchanged
+HEAD/index/source receipts; only then did implementation resume.
+
+| Finding | Validated correction |
+| --- | --- |
+| A public pending-event subscriber could mutate private settlement correlation | The incremental fold owns all five scalar identity fields before retaining them. Later exact complete/incomplete/released receipts match the original identity regardless of public-event mutation. No public-event freezing contract, completed-ID history or new authority is introduced. |
+| Optional native predecessor cost notifications omitted observer provenance | `emitCost` preserves both its original receiver and observer failure origin. The exact throwable survives; a budget/provider-shaped host observer failure receives fixed internal/nonretryable session presentation. Mandatory realized accounting still records once and no repair invocation is authorized. The demonstrated boundary is a supported external host, not a reproduced built-in CLI sink fault. |
+| Native-media and ordinary status steps falsely became usage-unverified | Node coverage starts at `node:started` under the owner's established basis, even without token events. Pre-basis nodes remain unverified after a later owner basis. Native volume prices and known money do not change. |
+
+The parent independently reproduced both ownership findings and the reader finding using unchanged
+reviewer probes and isolated physical source copies. For identity retention, original **one pass /
+two semantic failures** becomes **three passes**. For optional observer origin, original **four
+semantic failures** becomes **four passes**. For actual engine/SQLite native and input/output
+status plus legacy controls, original **two passes / three semantic failures** becomes **five
+passes**. The legacy control uses unchanged bytes from the actual frozen predecessor. The identity
+probe's persistence host models JSON serialization and is not actual SQLite; the cost-observer
+probe uses the supported native hook rather than an SDK HTTP capture. Developer source was never
+swapped. An LLM iterator-throw candidate was falsified by matching current/baseline controls and
+requires no change.
+
+Independent cumulative money/core/shared execution passed **64 files / 2,033 tests**, plus three
+new actual SQLite checkpoint/resume/reopen controls. The independently copied LLM/provider and
+adjacent engine graph passed **72 files / 2,302 tests / 11 existing live skips**. Storage/CLI
+passed **28 files / 585 tests**, including **65** source-bound native child controls; the frozen
+predecessor harness passed **16 strict refusals, two legacy controls, three isolated discriminators
+and eight old-session operations**. These overlapping cohorts are not added. No live provider,
+credential, dependency, billing action, new policy or new deferral is involved.
+
+**Author permanent and causal controls:** the two whole shared/engine identity files pass **45/45**,
+including 42 new cases. Replacing only the physical copied fold with original bytes produces
+**five passes / 40 semantic failures**; fixed and byte-exact restored copies pass all 45. All five
+identity fields, complete/incomplete/proven-release/late receipts, forgery/duplicate refusal,
+ordinal progress, one provider call and live/serialized/checkpoint equality are covered. These
+actual engine controls use the explicitly described in-memory serialization host.
+
+The whole behavioral-port file passes **126/126**, including 48 new generate/stream controls
+across four receiver shapes and Error/budget/retry/null/undefined observer values, plus real
+session classification checks. Original copied turn source yields **78 passes / 48 semantic
+failures**; fixed and exact restored bytes pass 126. The unchanged adjacent four-file cohort
+passes **204/204**; these overlapping counts are not added. Optional absence and original
+receiver, complete predecessor accounting once, no repair call and exact throwable identity
+remain pinned. The reader's two whole files pass **11/11**; original isolated helper gives
+**six passes / five actual-status assertion failures** and exact restoration passes 11. The
+broader eight-file source-bound reader cohort passes **67/67**. Permanent legacy fixtures are
+honestly synthetic; the separate root/frozen-predecessor positive control remains distinct.
+No developer source swap, filtered case or collection failure receives causal credit.
+
+Fresh forced `CI=true` workspace lint/typecheck/test passes **23/23**, none cached:
+**495 files / 10,604 passing / 12 skipped**. Eleven skips are the existing live-provider cases;
+one is the pre-existing CI-disabled wrap-scale performance guard. Its complete 106-test file
+also passes locally without `CI`, exercising that guard; the two overlapping runs cover **10,605
+distinct passing tests**. Build passes **6/6** and format **1/1**, none cached. Strict CLI/core and
+purity checks, tools lint/typecheck, schema synchronization, seam/dependency/bundle fences,
+495-file isolation, whitespace and **2,294 relative links / 343 pinned archive citations** pass.
+The original 181 ignored review files remain byte-identical and none is tracked. Compiled CLI,
+overflow capture and frozen budget replay pass offline, including all 16/2/3/8 compatibility
+controls. No remote CI, live provider or whole-wave coverage is claimed.
+
+This finding-bearing round contributes neither required clean acceptance round. Step 5, the
+further Step 6 controls/reviews, CR-82 and Step 7/whole-W8 publication remain open. The register
+stays **48/51** on `development`, **47/51** on `main`; no new deferral is introduced.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

@@ -551,3 +551,22 @@ remain intact, and genuinely priced zero does not acquire an invented price gap.
 owns this clarification. No actual-money arithmetic, admission policy, writer or public seam
 changes. This finding-bearing round supplies no clean acceptance; Step 5 still requires two NEW
 complete clean cumulative reviews, followed by the further Step 6 and whole-W8 gates.
+
+### W8 retained-correlation and observer-origin correction — 2026-10-11
+
+The eleventh cumulative activation review reproduced two ownership gaps and one reader gap.
+A fold must own the scalar invocation identity it retains: a mutable public pending event cannot
+change the private correlation used to accept a later exact receipt. This requires no public-event
+freezing guarantee, additional authority or completed-identity history. Separately, optional native
+predecessor `emitCost` notifications keep observer provenance as well as their original receiver.
+A supported external host's budget/provider-shaped observer exception cannot become admission or
+retry authority; exact throwable identity and mandatory realized accounting remain intact.
+
+Status also initializes node coverage from `node:started` under the current owner basis. Native
+media and ordinary nodes need no token-invocation event to retain an already verified basis;
+genuine pre-basis history remains unverified. Known money and native volume accounting do not
+change. The canonical [event contract](../reference/contracts/sse-event-schema.md),
+[runner contract](../reference/shared-core/agent-runner.md#usage-evidence-and-durable-coverage) and
+[database contract](../reference/shared-core/database-schema.md) own these requirements. This
+finding-bearing round supplies no clean acceptance; Step 5 still requires two NEW complete clean
+cumulative reviews before Step 6's further controls/reviews and the whole-W8 gates.

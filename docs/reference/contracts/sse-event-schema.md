@@ -87,6 +87,8 @@ Coverage does not estimate an invoice, alter an
 admission estimate, or authorize egress. Invocation correlation contains `producerId`, an
 owner-wide positive `ordinal`, `dispatchId`, zero-based `round` and positive `chainAttempt`.
 It grants no authority and does not replace existing money uniqueness keys.
+The fold owns a scalar snapshot of retained invocation correlation. Mutating a delivered public
+event cannot mutate its private pending identity or change acceptance of a later exact receipt.
 
 The incremental fold retains only unresolved and explicitly receipt-eligible identities. An
 incomplete disposition's optional literal `receiptPending: true` retains that correlation for
