@@ -4850,3 +4850,8 @@ The [first core-increment review](../../reviews/2026-10-10T11-51-35-w7-post-clos
 independently reproduced two adjacent failure schedules. `11453744` corrects returned poll-refusal
 precedence and bounded unstamped terminal preparation, with fourteen additional permanent cases.
 Current root CI and 321 focused cases pass; two fresh clean complete cumulative reviews remain required.
+
+The [second core-increment review](../../reviews/2026-10-10T12-08-30-w7-post-closure-step-1-round-2-review.md)
+finds no new material issue across all fifteen paths/thirty-one hunks. Both independent 321-case
+runs and additional held-writer/paid-accounting probes pass. Parent verifies the complete artifacts
+and exact clean freeze after both releases. One further NEW complete clean round remains required.

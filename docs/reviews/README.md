@@ -11,6 +11,9 @@ added.
 
 ## Records
 
+- [2026-10-10 — W7 post-closure Step 1, round 2](2026-10-10T12-08-30-w7-post-closure-step-1-round-2-review.md):
+  first clean complete cumulative round; second fresh round required.
+
 - [2026-10-10 — W7 post-closure Step 1, round 1](2026-10-10T11-51-35-w7-post-closure-step-1-round-1-review.md):
   two confirmed failure schedules corrected; two fresh clean cumulative rounds required.
 
