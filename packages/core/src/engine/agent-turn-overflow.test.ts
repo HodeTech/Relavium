@@ -1,10 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PricingOverlay } from '@relavium/llm';
-import { createAnthropicAdapter } from '@relavium/llm/adapters';
+import {
+  createAnthropicAdapter,
+  createOpenAiAdapter,
+  createGeminiAdapter,
+} from '@relavium/llm/adapters';
 import { unwiredEffectJournal } from '@relavium/shared';
-import { runAgentTurn, DEFAULT_AGENT_TURN_LIMITS } from './agent-turn.js';
+import { runAgentTurn, DEFAULT_AGENT_TURN_LIMITS, AgentTurnError } from './agent-turn.js';
 import { MoneyDurability, type SettledAttemptDraft } from './money-durability.js';
 import { BudgetGovernor } from './budget-governor.js';
 
@@ -184,4 +188,86 @@ describe('captured native overflow through SDK → chain → core → governor a
     expect(writes).toHaveLength(1);
     expect(total).toBe(212677);
   });
+});
+
+describe('recorded HTTP overflow safe explanation through actual SDK and core', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  for (const [dialect, file] of [
+    ['anthropic', '2026-10-04-anthropic-overflow.json'],
+    ['openai', '2026-10-04-openai-overflow.json'],
+    ['deepseek', '2026-10-04-deepseek-overflow.json'],
+    ['gemini', '2026-10-08-gemini-overflow.json'],
+  ] as const)
+    it(`${dialect}: engine-authored refusal contains no upstream diagnostic or paid usage`, async () => {
+      const captured = capturedSchema.parse(
+        JSON.parse(
+          readFileSync(
+            new URL(`../../../llm/src/conformance/fixtures/overflow/${file}`, import.meta.url),
+            'utf8',
+          ),
+        ),
+      );
+      const fetch = vi.fn(() =>
+        Promise.resolve(
+          new Response(captured.response.body, {
+            status: captured.response.status,
+            headers: { 'content-type': 'application/json' },
+          }),
+        ),
+      );
+      if (dialect === 'gemini') vi.stubGlobal('fetch', fetch);
+      const actual =
+        dialect === 'anthropic'
+          ? createAnthropicAdapter({ fetch })
+          : dialect === 'gemini'
+            ? createGeminiAdapter()
+            : createOpenAiAdapter({ providerId: dialect, fetch });
+      // Explicit unknown metadata prevents a catalog window from replacing this distinct safe wording.
+      const provider = { ...actual, contextLimit: () => undefined };
+      const expected = `The request exceeded its context window (size unknown) for model ${captured.model}. No tools ran in this turn.`;
+      let costEvents = 0;
+      const refusal = await runAgentTurn({
+        nodeId: 'captured-http-refusal',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'offline synthetic replay' }] }],
+        planEntries: [{ provider, model: captured.model, maxAttempts: 3 }],
+        maxTokens: 64,
+        chainCapabilities: {
+          keyFor: () => 'offline-synthetic-key',
+          sleep: () => Promise.resolve(),
+        },
+        signal: new AbortController().signal,
+        emit: (event) => {
+          if (event.type === 'cost:updated') costEvents++;
+        },
+        registry: {
+          has: () => false,
+          list: () => [],
+          dispatch: () => {
+            throw new Error('unexpected tool execution');
+          },
+        },
+        dispatchContext: {
+          nodeId: 'captured-http-refusal',
+          grantedToolIds: new Set(),
+          config: {},
+          toolPolicy: {},
+          fsScope: 'sandboxed',
+          gateApproved: false,
+          effects: unwiredEffectJournal(),
+          effectSlot: 0,
+        },
+        limits: DEFAULT_AGENT_TURN_LIMITS,
+      }).catch((error: unknown) => error);
+      expect(refusal).toBeInstanceOf(AgentTurnError);
+      if (!(refusal instanceof AgentTurnError)) throw new Error('expected core overflow refusal');
+      expect(refusal.message).toBe(expected);
+      expect(refusal).toMatchObject({
+        code: 'context_overflow',
+        recoverableOverflow: true,
+        retryable: false,
+      });
+      expect(refusal.usage).toBeUndefined();
+      expect(costEvents).toBe(0);
+      expect(fetch).toHaveBeenCalledOnce();
+    });
 });
