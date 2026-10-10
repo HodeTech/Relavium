@@ -9,6 +9,7 @@ import {
   LEGACY_COST_SENTINEL,
   runMigrations,
 } from '@relavium/db';
+import { AgentSchema, UsageModelSchema } from '@relavium/shared';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { expect, it } from 'vitest';
 import { z } from 'zod';
@@ -17,8 +18,8 @@ import { costNotice } from './repl-info.js';
 
 const migrations = fileURLToPath(new URL('../../../../packages/db/drizzle', import.meta.url));
 
-/** Upgrade a real pre-attribution session through shipped migrations, including the legacy backfill. */
-function legacySession() {
+/** Upgrade real pre-attribution or pre-coverage history through the shipped migrations. */
+function legacySession(historicalModel?: string) {
   const staged = mkdtempSync(join(tmpdir(), 'relavium-cost-history-'));
   const client = createClient();
   try {
@@ -26,8 +27,9 @@ function legacySession() {
       .object({ entries: z.array(z.object({ idx: z.number(), tag: z.string() }).passthrough()) })
       .passthrough()
       .parse(JSON.parse(readFileSync(join(migrations, 'meta/_journal.json'), 'utf8')));
-    const entries = journal.entries.filter((entry) => entry.idx <= 8);
-    expect(entries).toHaveLength(9);
+    const lastMigration = historicalModel === undefined ? 8 : 17;
+    const entries = journal.entries.filter((entry) => entry.idx <= lastMigration);
+    expect(entries).toHaveLength(lastMigration + 1);
     mkdirSync(join(staged, 'meta'));
     for (const entry of entries)
       copyFileSync(join(migrations, `${entry.tag}.sql`), join(staged, `${entry.tag}.sql`));
@@ -38,6 +40,13 @@ function legacySession() {
         'INSERT INTO agent_sessions (id, agent_slug, total_cost_microcents, created_at, updated_at) VALUES (?, ?, ?, 0, 0)',
       )
       .run('legacy', 'a', 100_000_000);
+    if (historicalModel !== undefined) {
+      client.sqlite
+        .prepare(
+          'INSERT INTO session_costs (id, session_id, model, cost_microcents, call_count, input_tokens, output_tokens, unpriced_calls, is_legacy, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 2, 3, 0, 0, 0, 0)',
+        )
+        .run('historical-model', 'legacy', historicalModel, 100_000_000);
+    }
     runMigrations(client.db);
     return client;
   } catch (error) {
@@ -47,6 +56,56 @@ function legacySession() {
     rmSync(staged, { recursive: true, force: true });
   }
 }
+
+it.each([4096, 4097, 10_000])(
+  'preserves an old-schema raw model of %i characters without weakening new invocation bounds',
+  (length) => {
+    const model = `custom-${'m'.repeat(length - 7)}`;
+    expect(
+      AgentSchema.safeParse({ id: 'a', provider: 'openai', model, system_prompt: 's' }).success,
+    ).toBe(true);
+    expect(UsageModelSchema.safeParse(model).success).toBe(length <= 4096);
+    const client = legacySession(model);
+    try {
+      const costs = createSessionStore(client.db);
+      const usage = createSessionUsageStore(client.db);
+      const expectedCoverage = { unverified: true, pendingInvocations: 0, unknownCalls: 0 };
+      const before = costs.loadSessionCosts('legacy');
+      expect(before).toMatchObject([
+        { model, isLegacy: false, costMicrocents: 100_000_000, callCount: 1 },
+      ]);
+      const breakdown = costs.loadSessionCostBreakdown('legacy');
+      expect(breakdown.totalCostMicrocents).toBe(100_000_000);
+      expect(breakdown.rows).toEqual(before);
+      expect(breakdown.coverage).toEqual(expectedCoverage);
+      expect(breakdown.models).toEqual([{ model, coverage: expectedCoverage }]);
+      expect(usage.loadCoverage('legacy')).toEqual({
+        coverage: expectedCoverage,
+        models: breakdown.models,
+      });
+      const notice = costNotice(breakdown.totalCostMicrocents, breakdown.rows, breakdown);
+      expect(notice).toContain('Session cost: $1.0000 known; usage unverified');
+      expect(notice).toContain('(1 call, 5 tok)');
+      expect(notice).not.toContain('breakdown unavailable');
+      expect(notice).not.toContain('$0.0000');
+      if (length > 4096) {
+        expect(() =>
+          usage.beginInvocation({
+            sessionId: 'legacy',
+            model,
+            producerId: 'new-writer',
+            dispatchId: 'turn',
+            round: 0,
+            chainAttempt: 1,
+          }),
+        ).toThrow();
+        expect(costs.loadSessionCostBreakdown('legacy')).toEqual(breakdown);
+      }
+    } finally {
+      client.sqlite.close();
+    }
+  },
+);
 
 it('a migrated legacy aggregate stays unavailable without inventing a zero-cost model', () => {
   const client = legacySession();

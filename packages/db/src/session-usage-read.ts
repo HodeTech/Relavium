@@ -38,7 +38,9 @@ export function readSessionCoverage(tx: TxDb, sessionId: string): SessionUsageSn
     .from(sessionCosts)
     .where(and(eq(sessionCosts.sessionId, sessionId), eq(sessionCosts.isLegacy, false)))
     .all()) {
-    models.set(UsageModelSchema.parse(row.model), {
+    // Historical money uses the existing raw attribution key, as loadSessionCosts does. The new
+    // invocation bound must not retroactively reject or truncate valid pre-coverage model names.
+    models.set(row.model, {
       unverified,
       pendingInvocations: 0,
       unknownCalls: 0,
