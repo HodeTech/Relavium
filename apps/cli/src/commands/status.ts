@@ -54,6 +54,7 @@ const defaultReadTerminalOutbox = (homeDir: string): Promise<readonly RunEvent[]
 interface ActiveRunStatus {
   readonly run: RunRecord;
   readonly usage: ReturnType<typeof readRunUsageCoverage>;
+  readonly usageUnavailable: boolean;
   /** `true` when this run's terminal is held in the outbox — its outcome is known but not yet durable. */
   readonly terminalHeld: boolean;
   readonly steps: readonly StepRecord[];
@@ -89,20 +90,29 @@ export async function statusCommand(deps: StatusCommandDeps): Promise<ExitCode> 
   // ownership of a run another process may be finishing right now.
   const held = await heldTerminalRunIds(homeDir, deps.readTerminalOutbox);
   try {
-    const statuses: ActiveRunStatus[] = reader.listActiveRuns().map((run) => ({
-      run,
-      usage: readPerRunOrDegrade(
-        { usageCoverage: UNVERIFIED_USAGE, unpricedCalls: 0, nodes: new Map() },
+    const statuses: ActiveRunStatus[] = reader.listActiveRuns().map((run) => {
+      const usage = readPerRunOrDegrade(
+        {
+          totalCostMicrocents: run.totalCostMicrocents,
+          usageCoverage: UNVERIFIED_USAGE,
+          unpricedCalls: 0,
+          nodes: new Map(),
+        },
         () => readRunUsageCoverage(reader, run.id),
-      ).value,
-      terminalHeld: held.has(run.id),
-      steps: reader.loadStepExecutions(run.id),
-      // Native authority and companion crash prefixes can leave either active status with pending gates.
-      // Per-run isolation (`readPerRunOrDegrade`): one damaged row in one run must not blank the whole list.
-      // The degradation travels WITH the value (#W15-15) — an empty `pendingGates` on a damaged run would
-      // otherwise read as "this run has no gates" when the truth is "its gates could not be read".
-      ...gatesOf(reader, run),
-    }));
+      );
+      return {
+        run,
+        usage: usage.value,
+        usageUnavailable: usage.degraded,
+        terminalHeld: held.has(run.id),
+        steps: reader.loadStepExecutions(run.id),
+        // Native authority and companion crash prefixes can leave either active status with pending gates.
+        // Per-run isolation (`readPerRunOrDegrade`): one damaged row in one run must not blank the whole list.
+        // The degradation travels WITH the value (#W15-15) — an empty `pendingGates` on a damaged run would
+        // otherwise read as "this run has no gates" when the truth is "its gates could not be read".
+        ...gatesOf(reader, run),
+      };
+    });
 
     if (deps.global.json) {
       writeRecordLines(deps.io, statuses.map(toJson));
@@ -144,9 +154,12 @@ function toJson(status: ActiveRunStatus): unknown {
     runId: status.run.id,
     workflowId: status.run.workflowId,
     status: status.run.status,
-    totalCostMicrocents: status.run.totalCostMicrocents,
+    totalCostMicrocents: status.usage.totalCostMicrocents,
     usageCoverage: status.usage.usageCoverage,
     unpricedCalls: status.usage.unpricedCalls,
+    ...(status.usageUnavailable
+      ? { usageUnavailable: true, usageUnavailableReason: 'unreadable_event_log' }
+      : {}),
     // The run's outcome is already known and only its durable record is missing — the exit-5 state. A
     // machine consumer needs this to tell "still working" from "finished, not yet recorded".
     terminalHeld: status.terminalHeld,
@@ -186,6 +199,9 @@ function toJson(status: ActiveRunStatus): unknown {
 /** Render one run's status block: a header line, its per-node steps, then any pending gates. */
 function renderRun(io: CliIo, status: ActiveRunStatus): void {
   io.writeOut(`run ${status.run.id} — ${status.run.status} (workflow ${status.run.workflowId})\n`);
+  if (status.usageUnavailable) {
+    io.writeOut("  ⚠ usage coverage unavailable — this run's event log could not be read\n");
+  }
   if (status.steps.length === 0) {
     io.writeOut('  (no node activity recorded yet)\n');
   }

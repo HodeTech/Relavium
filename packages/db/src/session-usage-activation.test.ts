@@ -145,6 +145,43 @@ describe('ADR-0104 production session coverage', () => {
     ]);
   });
 
+  it.each<UsageDisposition>([
+    { kind: 'incomplete', evidence: { kind: 'missing', reason: 'not_reported' } },
+    {
+      kind: 'incomplete',
+      evidence: { kind: 'partial', known: { outputTokens: 3 }, reason: 'missing_fields' },
+    },
+    { kind: 'incomplete', evidence: { kind: 'missing', reason: 'invalid_fields' } },
+  ])(
+    'retires final incomplete late evidence without recounting unknown or retaining receipt identity: %j',
+    (finalDisposition) => {
+      const { usage, costs, begin, entry } = setup();
+      const receipt = begin('late');
+      expect(usage.disposition(receipt, missing)).toBe(true);
+      // The late receipt resolved without complete evidence. The producer's final disposition
+      // does not establish another unknown call; positive authority-end separately retires its row.
+      expect(usage.disposition(receipt, finalDisposition)).toBe(false);
+      usage.retire(receipt);
+      usage.retire(receipt);
+      expect(usage.disposition(receipt, finalDisposition)).toBe(false);
+      expect(costs.recordSessionCost(entry(receipt))).toBe(false);
+      expect(
+        client.sqlite.prepare('SELECT count(*) AS n FROM session_usage_invocations').get(),
+      ).toEqual({ n: 0 });
+      expect(costs.loadSessionCostBreakdown('s')).toMatchObject({
+        totalCostMicrocents: 0,
+        rows: [],
+        coverage: { unverified: false, pendingInvocations: 0, unknownCalls: 1 },
+        models: [
+          {
+            model: 'late',
+            coverage: { unverified: false, pendingInvocations: 0, unknownCalls: 1 },
+          },
+        ],
+      });
+    },
+  );
+
   it('does not re-admit retired ordinals or grant authority by reading/reopening a store', () => {
     const { usage, begin } = setup();
     const receipt = begin();

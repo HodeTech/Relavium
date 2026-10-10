@@ -1,4 +1,8 @@
-import { CorruptRunEventError, isCorruptRunEventError } from '@relavium/db';
+import {
+  CorruptRunEventError,
+  isCorruptRunEventError,
+  UnreadableRunEventLogError,
+} from '@relavium/db';
 import { describe, expect, it } from 'vitest';
 
 import { readPerRunOrDegrade } from './per-run-read.js';
@@ -40,6 +44,18 @@ describe('readPerRunOrDegrade', () => {
         }),
       ).toThrow(thrown);
     }
+  });
+
+  it('marks forward-written histories unavailable without granting replay permission', () => {
+    const error = new UnreadableRunEventLogError('future-run', [12]);
+    expect(
+      readPerRunOrDegrade('unverified', () => {
+        throw error;
+      }),
+    ).toEqual({
+      value: 'unverified',
+      degraded: true,
+    });
   });
 
   it('does not accept a NON-Error that merely carries the code', () => {

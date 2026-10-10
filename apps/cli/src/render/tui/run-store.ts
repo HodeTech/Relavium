@@ -93,8 +93,10 @@ export function createRunStore(color: boolean): RunStoreController {
       ) {
         coverage.apply(event);
         const unpricedCalls =
-          (state.unpricedCalls ?? 0) +
-          (event.type === 'cost:updated' && event.priced === false ? 1 : 0);
+          event.cumulativeUnpricedCalls === undefined
+            ? (state.unpricedCalls ?? 0) +
+              (event.type === 'cost:updated' && event.priced === false ? 1 : 0)
+            : Math.max(state.unpricedCalls ?? 0, event.cumulativeUnpricedCalls);
         state = {
           ...reduceRunEvent(state, event),
           usageCoverage: coverage.snapshot().coverage,

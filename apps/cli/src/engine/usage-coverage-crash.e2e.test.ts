@@ -34,6 +34,10 @@ type Cut =
   | 'credentials'
   | 'cancel-before-invoke'
   | 'late-receipt'
+  | 'late-missing'
+  | 'late-partial'
+  | 'late-invalid'
+  | 'late-rejected'
   | 'lock-release'
   | 'lock-hold';
 interface Barrier {
@@ -307,46 +311,54 @@ describe('ADR-0104 actual engine and CLI host process crashes', () => {
     }
   }
   for (const cap of ['uncapped', 'capped']) {
-    it(`session ${cap}: a retained raw read refines interrupted uncertainty exactly once`, async () => {
-      const root = mkdtempSync(join(tmpdir(), 'relavium-usage-late-receipt-'));
-      const path = join(root, 'history.db');
-      const worker = startWorker(path, 'session', 'primary', 'late-receipt', cap);
-      try {
-        const entered = await worker.ready;
-        expect(entered.kind).toBe('ENTERED');
-        expect(entered.invocations).toBe(1);
-        worker.child.stdin.write('ABORT\n');
-        await worker.waitFor('INTERRUPTED');
-        const interrupted = reopen(path, 'session', entered.ownerId);
-        expect(interrupted.coverage).toEqual({
-          unverified: false,
-          pendingInvocations: 0,
-          unknownCalls: 1,
-        });
-        expect(interrupted.actual).toBe(0);
-        expect(interrupted.calls).toBe(0);
-        if (cap === 'capped') expect(interrupted.conservative).toBeGreaterThan(0);
-        else expect(interrupted.conservative).toBe(0);
-        worker.child.stdin.end('RECEIPT\n');
-        await worker.waitFor('DONE');
-        const closed = await worker.closed;
-        expect(closed.code, closed.error).toBe(0);
-        const settled = reopen(path, 'session', entered.ownerId);
-        expect(settled.coverage).toEqual({
-          unverified: false,
-          pendingInvocations: 0,
-          unknownCalls: 0,
-        });
-        expect(settled.actual).toBe(7);
-        expect(settled.calls).toBe(1);
-        expect(settled.conservative).toBe(interrupted.conservative);
-        expect(reopen(path, 'session', entered.ownerId)).toEqual(settled);
-      } finally {
-        worker.child.kill('SIGKILL');
-        await worker.closed;
-        rmSync(root, { recursive: true, force: true });
-      }
-    }, 20_000);
+    for (const cut of [
+      'late-receipt',
+      'late-missing',
+      'late-partial',
+      'late-invalid',
+      'late-rejected',
+    ] as const) {
+      it(`session ${cap} ${cut}: a final raw read settles or retires interrupted uncertainty exactly once`, async () => {
+        const root = mkdtempSync(join(tmpdir(), 'relavium-usage-late-receipt-'));
+        const path = join(root, 'history.db');
+        const worker = startWorker(path, 'session', 'primary', cut, cap);
+        try {
+          const entered = await worker.ready;
+          expect(entered.kind).toBe('ENTERED');
+          expect(entered.invocations).toBe(1);
+          worker.child.stdin.write('ABORT\n');
+          await worker.waitFor('INTERRUPTED');
+          const interrupted = reopen(path, 'session', entered.ownerId);
+          expect(interrupted.coverage).toEqual({
+            unverified: false,
+            pendingInvocations: 0,
+            unknownCalls: 1,
+          });
+          expect(interrupted.actual).toBe(0);
+          expect(interrupted.calls).toBe(0);
+          if (cap === 'capped') expect(interrupted.conservative).toBeGreaterThan(0);
+          else expect(interrupted.conservative).toBe(0);
+          worker.child.stdin.end('RECEIPT\n');
+          await worker.waitFor('DONE');
+          const closed = await worker.closed;
+          expect(closed.code, closed.error).toBe(0);
+          const settled = reopen(path, 'session', entered.ownerId);
+          expect(settled.coverage).toEqual({
+            unverified: false,
+            pendingInvocations: 0,
+            unknownCalls: cut === 'late-receipt' ? 0 : 1,
+          });
+          expect(settled.actual).toBe(cut === 'late-receipt' ? 7 : 0);
+          expect(settled.calls).toBe(cut === 'late-receipt' ? 1 : 0);
+          expect(settled.conservative).toBe(interrupted.conservative);
+          expect(reopen(path, 'session', entered.ownerId)).toEqual(settled);
+        } finally {
+          worker.child.kill('SIGKILL');
+          await worker.closed;
+          rmSync(root, { recursive: true, force: true });
+        }
+      }, 20_000);
+    }
   }
   for (const cap of ['uncapped', 'capped'])
     for (const cut of ['lock-release', 'lock-hold'] as const) {

@@ -1,6 +1,11 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import {
   createClient,
   createRunHistoryReader,
+  createRunHistoryStore,
   createSessionStore,
   runEvents,
   runMigrations,
@@ -11,6 +16,7 @@ import { SessionContextSchema, type AgentSessionRecord } from '@relavium/shared'
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { formatCostShort } from '../render/tui/format.js';
 import { seedRun } from '../test-support.js';
 import {
   buildHomeSnapshot,
@@ -48,6 +54,32 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
     createdAt: ISO(T0),
     updatedAt: ISO(T0),
     ...overrides,
+  });
+
+  it('isolates a future discriminator discovered by strict coverage while retaining healthy Home rows', async () => {
+    await seedRun(client.db, { slug: 'healthy', runId: 'healthy', state: 'running', atMs: T0 });
+    await seedRun(client.db, { slug: 'future', runId: 'future', state: 'running', atMs: T0 + 1 });
+    client.db
+      .insert(runEvents)
+      .values({
+        id: 'future-event',
+        runId: 'future',
+        seq: 900,
+        eventType: 'future:usage',
+        payloadJson: JSON.stringify({
+          type: 'future:usage',
+          runId: 'future',
+          sequenceNumber: 900,
+          timestamp: ISO(T0),
+        }),
+        ts: T0,
+      })
+      .run();
+    const snapshot = buildHomeSnapshot(deps);
+    expect(snapshot.recentRuns.map((run) => run.runId)).toEqual(['healthy']);
+    expect(snapshot.unreadableRunIds).toEqual(['future']);
+    expect(snapshot.attention.failedRuns).toEqual([]);
+    expect(snapshot.isEmpty).toBe(false);
   });
 
   it('is empty (first-run welcome path) on a fresh db', () => {
@@ -440,4 +472,100 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
     // have nothing", which is this finding in its most misleading form.
     expect(snapshot.isEmpty).toBe(false);
   });
+});
+
+it('Home qualifies the atomic current amount when another SQLite writer settles after discovery', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'relavium-home-usage-race-'));
+  const readerClient = createClient(join(root, 'history.db'));
+  const writerClient = createClient(readerClient.path);
+  try {
+    runMigrations(readerClient.db, { dbPath: readerClient.path });
+    let id = 0;
+    const writer = createRunHistoryStore(writerClient.db, {
+      uuid: () => `00000000-0000-4000-8000-${String(++id).padStart(12, '0')}`,
+      now: () => T0,
+      workflow: { slug: 'race', name: 'race', definitionJson: '{}' },
+    });
+    const workflowId = await writer.resolveWorkflowId('race');
+    const envelope = { runId: 'race', timestamp: ISO(T0) };
+    const invocation = { producerId: 'p', ordinal: 1, dispatchId: 'd', round: 0, chainAttempt: 1 };
+    await writer.persistEvent({
+      ...envelope,
+      type: 'run:started',
+      workflowId,
+      inputs: {},
+      executionMode: 'local',
+      sequenceNumber: 0,
+    });
+    await writer.persistEvent({
+      ...envelope,
+      type: 'cost:coverage_started',
+      basis: 'complete',
+      sequenceNumber: 1,
+    });
+    await writer.persistEvent({
+      ...envelope,
+      type: 'node:started',
+      nodeId: 'n',
+      nodeType: 'agent',
+      sequenceNumber: 2,
+    });
+    await writer.persistEvent({
+      ...envelope,
+      type: 'cost:usage_pending',
+      nodeId: 'n',
+      model: 'm',
+      invocation,
+      sequenceNumber: 3,
+    });
+    const reader = createRunHistoryReader(readerClient.db);
+    let discoveredCost: number | undefined;
+    let settlement: Promise<void> | undefined;
+    const snapshot = buildHomeSnapshot({
+      sessions: createSessionStore(readerClient.db),
+      runs: {
+        ...reader,
+        listRuns: (options) => {
+          const rows = reader.listRuns(options);
+          const discovered = rows.find((row) => row.id === 'race');
+          if (discovered !== undefined) discoveredCost = discovered.totalCostMicrocents;
+          return rows;
+        },
+        visitRunEventsForReplay: (...args) => {
+          settlement = writer.persistEvent({
+            ...envelope,
+            type: 'cost:attempt_settled',
+            attemptNumber: 1,
+            nodeId: 'n',
+            model: 'm',
+            invocation,
+            inputTokens: 10,
+            outputTokens: 5,
+            costMicrocents: 70_000,
+            cumulativeCostMicrocents: 70_000,
+            priced: true,
+            sequenceNumber: 4,
+          });
+          expect(writer.loadRun('race')?.totalCostMicrocents).toBe(70_000);
+          return reader.visitRunEventsForReplay(...args);
+        },
+      },
+    });
+    await settlement;
+    expect(discoveredCost).toBe(0);
+    const row = snapshot.recentRuns[0];
+    expect(row).toMatchObject({
+      runId: 'race',
+      totalCostMicrocents: 70_000,
+      usageCoverage: { unverified: false, pendingInvocations: 0, unknownCalls: 0 },
+    });
+    if (row === undefined) throw new Error('Home omitted the settled run');
+    expect(formatCostShort(row.totalCostMicrocents, row.usageCoverage, row.unpricedCalls)).not.toBe(
+      'free',
+    );
+  } finally {
+    writerClient.sqlite.close();
+    readerClient.sqlite.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });

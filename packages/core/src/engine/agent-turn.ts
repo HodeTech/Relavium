@@ -1705,13 +1705,15 @@ async function driveAgentTurn(
           model: record.model,
           invocation,
           disposition,
-          ...(record.receiptPending === true ? { receiptPending: true } : {}),
+          ...(record.receiptPending === true && record.receiptFinal !== true
+            ? { receiptPending: true }
+            : {}),
         });
     }
     // Native request repair and raw late receipt settlement carry their own coverage identity,
     // but cannot consume the admission belonging to the outer chain attempt.
     const coverageOnly = record.coverageOnly === true;
-    if (!coverageOnly && disposition?.kind === 'incomplete')
+    if (record.receiptFinal !== true && disposition?.kind === 'incomplete')
       usage.unknownCalls = (usage.unknownCalls ?? 0) + 1;
     if (coverageOnly && evidence.kind !== 'complete') return;
 
@@ -1881,6 +1883,9 @@ async function driveAgentTurn(
           },
         }),
     costTracker,
+    ...(params.money?.accountingFailure === undefined
+      ? {}
+      : { onAccountingFailure: params.money.accountingFailure }),
     onAttempt: (record) => {
       try {
         onAttempt(record);

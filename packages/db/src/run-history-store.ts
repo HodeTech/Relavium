@@ -287,12 +287,17 @@ export interface RunHistoryReader {
    * @throws {CorruptRunEventError} when a row is damaged (unchanged from the tolerant reads).
    */
   loadRunEventLogForReplay: (runId: string) => RunEvent[];
-  /** Strict, indexed batches under one SQLite snapshot. The visitor must be synchronous. */
+  /**
+   * Strict, indexed batches and their owning run row under ONE SQLite snapshot. The first read
+   * pins the run's stored totals; a display must use the returned row rather than a prior discovery
+   * result when qualifying those amounts with its visitor's coverage fold. No money is re-folded.
+   * The visitor must be synchronous; discard its partial fold on any strict replay failure.
+   */
   visitRunEventsForReplay: (
     runId: string,
     visitor: (event: RunEvent) => void,
     options?: { readonly streamingIncluded?: boolean },
-  ) => void;
+  ) => RunRecord | undefined;
   /** A run's STATE-BEARING events in `seq` order — the full log MINUS the per-token/tool streaming firehose
    *  (`agent:token` / `agent:tool_call` / `agent:tool_result`), which neither checkpoint reconstruction nor gate
    *  detection consults. Every stored row is validated before genuine streaming events are excluded from
@@ -1268,8 +1273,12 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
     // does not use this — see `loadRunEventLogForReplay` below (ADR-0075).
     loadRunEventLog: (runId) => readEventLog(db, runId, { streamingIncluded: true }),
 
-    visitRunEventsForReplay: (runId, visitor, options) => {
+    visitRunEventsForReplay: (runId, visitor, options) =>
       db.transaction((tx) => {
+        // Pin amount and coverage to the same read snapshot, even if discovery happened before
+        // another process settled a charge. Visibility remains the caller's responsibility, just
+        // as for the existing strict log read keyed by run id (including retained deleted rows).
+        const owner = tx.select().from(runs).where(eq(runs.id, runId)).get();
         let after: number | undefined;
         for (;;) {
           const rows = tx
@@ -1294,10 +1303,9 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
               visitor(event);
             after = row.seq;
           }
-          if (rows.length < 256) return;
+          if (rows.length < 256) return owner === undefined ? undefined : fromRunRow(owner);
         }
-      });
-    },
+      }),
 
     loadRunEventLogForReplay: (runId) => {
       const log = readEventLog(db, runId, { streamingIncluded: true });

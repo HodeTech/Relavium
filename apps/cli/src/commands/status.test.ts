@@ -27,6 +27,50 @@ describe('statusCommand', () => {
     return { io, global: globalOptions(json), openDb: () => ({ db, close: () => {} }) };
   }
 
+  it('keeps healthy status beside a future event and explicitly marks unavailable usage in human and JSON output', async () => {
+    await seedRun(db, { slug: 'healthy', runId: 'healthy', state: 'running' });
+    await seedRun(db, { slug: 'future', runId: 'future', state: 'running' });
+    client.db
+      .insert(runEvents)
+      .values({
+        id: 'future-usage',
+        runId: 'future',
+        seq: 900,
+        eventType: 'future:usage',
+        payloadJson: JSON.stringify({
+          type: 'future:usage',
+          runId: 'future',
+          sequenceNumber: 900,
+          timestamp: '2026-10-10T00:00:00.000Z',
+        }),
+        ts: 1,
+      })
+      .run();
+    const human = captureIo();
+    expect(
+      await statusCommand({ ...deps(human.io), readTerminalOutbox: () => Promise.resolve([]) }),
+    ).toBe(EXIT_CODES.success);
+    expect(human.out()).toContain('run healthy — running');
+    expect(human.out()).toContain('run future — running');
+    expect(human.out()).toContain('usage coverage unavailable');
+    const machine = captureIo();
+    expect(
+      await statusCommand({
+        ...deps(machine.io, true),
+        readTerminalOutbox: () => Promise.resolve([]),
+      }),
+    ).toBe(EXIT_CODES.success);
+    const records = parseNdjson(machine.out());
+    expect(records.find((row) => row['runId'] === 'future')).toMatchObject({
+      usageUnavailable: true,
+      usageUnavailableReason: 'unreadable_event_log',
+      usageCoverage: { unverified: true, pendingInvocations: 0, unknownCalls: 0 },
+    });
+    expect(records.find((row) => row['runId'] === 'healthy')).not.toHaveProperty(
+      'usageUnavailable',
+    );
+  });
+
   it('NAMES a run whose terminal is held in the outbox — the exit-5 state (ADR-0078 §4/§5)', async () => {
     // A run in this state is still `running` in the derived projection, so it listed here as an ordinary
     // active run with nothing saying its outcome was already known. Exit 5 tells a script to "re-check

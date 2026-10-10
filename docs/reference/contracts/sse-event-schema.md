@@ -53,7 +53,14 @@ it does not publish a separate basis event or create a run ledger for chat.
 Coverage is `{unverified, pendingInvocations, unknownCalls}`; all must be clear before a reported
 amount is complete. Canonical envelopes can carry optional `usageCoverage` alongside a numeric
 known sum. Its absence means unverified history, never proof of free usage. Missing prices remain
-independent (`priced: false` / `unpricedCalls`); coverage does not estimate an invoice, alter an
+independent (`priced: false` / `unpricedCalls`). Run envelopes also carry optional
+`cumulativeUnpricedCalls`, a non-negative safe integer counting accepted unpriced cost observations.
+The workflow engine increments it once per observation, stamps it on durable boundaries and restores
+the maximum on replay. This preserves native separate-endpoint media's missing-price qualification
+without introducing a token-attempt ledger for its authored volume basis. Readers take the maximum
+of this snapshot and legacy unpriced attempt counts, never their sum; a queued boundary may already
+contain a later counter. Historical absence does not establish complete price coverage.
+Coverage does not estimate an invoice, alter an
 admission estimate, or authorize egress. Invocation correlation contains `producerId`, an
 owner-wide positive `ordinal`, `dispatchId`, zero-based `round` and positive `chainAttempt`.
 It grants no authority and does not replace existing money uniqueness keys.

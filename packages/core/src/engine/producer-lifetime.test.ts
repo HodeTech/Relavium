@@ -13,7 +13,7 @@ import { parseWorkflow } from '../parser.js';
 import { createAgentNodeExecutor, type AgentRunnerDeps } from './agent-runner.js';
 import { captureAgentTurnOutcome, type AgentTurnParams } from './agent-turn.js';
 import { WorkflowEngine } from './engine.js';
-import { createInMemoryHost } from './execution-host.js';
+import { createInMemoryHost, InMemoryRunStore } from './execution-host.js';
 import type { NodeExecContext, NodeStreamEvent, NodeReceiptContext } from './node-executor.js';
 import type { BudgetAdmission } from './budget-governor.js';
 
@@ -724,3 +724,41 @@ for (const failed of [false, true])
       expect(await host.runLeases.read(handle.runId)).toBeUndefined();
       expect(host.armedCount() + host.deadlineCount() + host.livenessCount()).toBe(0);
     });
+
+it('late complete usage with a pricing fault records known quantities and unhealthy departure without rewriting terminal', async () => {
+  const raw = latch<LlmResult>(),
+    entered = latch<void>();
+  const pricing = new Map<string, import('@relavium/llm').ModelPricing>();
+  const p = provider({
+    generate: () => {
+      entered.resolve();
+      return raw.promise;
+    },
+  });
+  const run = start(p, true, { resolvePrice: pricing });
+  await entered.promise;
+  run.clock.fire();
+  await run.drained;
+  const terminal = run.events.at(-1);
+  expect(terminal?.type).toBe('run:failed');
+  pricing.get = () => {
+    throw new Error('PRIVATE late pricing resolver');
+  };
+  raw.resolve(generated);
+  await until(async () => (await run.host.runLeases.read(run.handle.runId)) === undefined);
+  const cp = await run.host.checkpointer.load(run.handle.runId);
+  expect(cp?.usageCoverage?.coverage).toEqual({
+    unverified: false,
+    pendingInvocations: 0,
+    unknownCalls: 0,
+  });
+  expect(cp?.cumulativeUnpricedCalls).toBe(1);
+  if (!(run.host.store instanceof InMemoryRunStore)) throw new Error('missing in-memory ledger');
+  expect(
+    run.host.store
+      .eventsFor(run.handle.runId)
+      .filter((event) => event.type === 'cost:attempt_settled'),
+  ).toMatchObject([{ inputTokens: 3, outputTokens: 2, priced: false }]);
+  expect(await run.handle.depart()).toMatchObject({ kind: 'closed', moneyDurability: 'uncertain' });
+  expect(run.events.at(-1)).toBe(terminal);
+});

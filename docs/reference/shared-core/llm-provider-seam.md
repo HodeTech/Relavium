@@ -1130,7 +1130,7 @@ arm schemas (`CompleteUsageEvidenceSchema`, `PartialUsageEvidenceSchema`,
 
 ```ts
 type UsageEvidence =
-  | { kind: 'complete'; usage: UsageEvidence }
+  | { kind: 'complete'; usage: Usage }
   | { kind: 'partial'; known: KnownUsageQuantities; reason: UsageEvidenceReason }
   | { kind: 'missing'; reason: UsageEvidenceReason };
 ```
@@ -1187,8 +1187,13 @@ unknown. Successful final complete usage follows the existing sole actual-cost w
 A deadline with a still-live correlated producer marks its incomplete record `receiptPending: true`.
 The exact raw promise remains retained; a separate registered retained continuation owns late
 settlement before the host can close. Its `receiptFinal: true`, `coverageOnly: true` record carries
-the same invocation identity and owned evidence; complete evidence reaches pricing once. This
-refines coverage without reopening the public stream or rewriting a published terminal. A held
+the same invocation identity and owned evidence, omits `receiptPending`, and retires receipt authority
+for every evidence arm. Complete evidence reaches pricing once. Generated usage is read and owned
+once, shared by primary settlement and the late receipt; a late accountable stream rejection contributes
+its owned usage unless a held terminal already established authority. If late pricing throws, the final
+observation retains complete evidence with `priced: false` and a fixed non-retryable diagnostic before
+`onAccountingFailure` latches the host's money health failure. This refines coverage without reopening
+the public stream or rewriting a published terminal. A held
 already-complete terminal does not create another late charge. Receipt authority is process-local;
 persisted identity cannot reconstruct permission to deliver a receipt or invoke another call.
 The [event contract](../contracts/sse-event-schema.md) owns durable pending/disposition semantics.

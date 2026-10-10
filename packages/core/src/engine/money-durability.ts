@@ -98,6 +98,8 @@ export interface MoneyDurabilityOptions {
  * the barrier, and has no business inspecting or clearing durability state.
  */
 export interface TurnMoneyPort {
+  /** Retain late accounting failure independently of an already published terminal. */
+  readonly accountingFailure?: (error: unknown) => void;
   readonly emitCost?: (
     event: Extract<import('./node-executor.js').NodeStreamEvent, { type: 'cost:updated' }>,
   ) => void;
@@ -212,6 +214,11 @@ export class MoneyDurability {
     return invocation;
   }
 
+  accountingFailure(error: unknown): void {
+    this.#failure ??= new LedgerDurabilityError(error);
+    this.#broken = true;
+  }
+
   claimUsage(
     invocation: UsageInvocation,
     kind: 'complete' | 'incomplete' | 'released' | 'retired',
@@ -294,6 +301,7 @@ export class MoneyDurability {
    */
   turnPort(snapshotCumulative: () => number): TurnMoneyPort {
     return {
+      accountingFailure: (error) => this.accountingFailure(error),
       ...(this.#options.beginUsageInvocation === undefined
         ? {}
         : {

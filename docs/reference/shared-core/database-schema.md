@@ -952,7 +952,13 @@ commitments do not cure the predecessor's synthetic-zero release behavior.
 #### Incremental strict run replay
 
 `RunHistoryReader.visitRunEventsForReplay(runId, visitor, { streamingIncluded })` uses indexed
-256-row sequence batches inside one SQLite read transaction. Its synchronous visitor folds each
+256-row sequence batches inside one SQLite read transaction. The method returns the typed
+`RunRecord | undefined` for that same snapshot: its first SELECT reads the owning `runs` row and
+pins the snapshot before visiting event rows. Coverage readers must qualify this returned row's
+`totalCostMicrocents`, not a prior `listRuns`/`loadRun` discovery amount. The existing stored-money
+projection remains authoritative; the reader does not introduce a second actual-cost fold. Raw
+replay remains keyed by run id, including retained deleted rows, and visibility remains the caller's
+responsibility. An absent owner returns `undefined` after strict validation of any stored rows. Its synchronous visitor folds each
 validated event without materializing the full prefix. Every stored row is validated before any
 stream exclusion; an unknown discriminator raises `UnreadableRunEventLogError`, and malformed or
 mismatched projections raise `CorruptRunEventError`. The caller discards its partial fold on failure.

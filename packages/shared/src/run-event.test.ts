@@ -1524,3 +1524,20 @@ describe('media_job:submitted — the frozen basis (#W15-7)', () => {
     expect(RunEventSchema.safeParse(base).success).toBe(true);
   });
 });
+
+describe('durable independent missing-price qualifier', () => {
+  it('preserves zero and positive safe counters on canonical terminal events', () => {
+    for (const cumulativeUnpricedCalls of [0, 1, Number.MAX_SAFE_INTEGER]) {
+      expect(
+        RunEventSchema.parse({ ...valid['run:completed'], cumulativeUnpricedCalls }),
+      ).toMatchObject({ cumulativeUnpricedCalls });
+    }
+  });
+  it('refuses fractional, negative and unsafe counters', () => {
+    for (const cumulativeUnpricedCalls of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(
+        RunEventSchema.safeParse({ ...valid['run:completed'], cumulativeUnpricedCalls }).success,
+      ).toBe(false);
+    }
+  });
+});

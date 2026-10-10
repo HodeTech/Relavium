@@ -16,6 +16,37 @@ const invocation = {
 };
 
 describe('usage coverage across live and persisted cost projections', () => {
+  it('uses the durable missing-price counter without adding queued observations twice', () => {
+    const store = createRunStore(false);
+    const apply = (sequenceNumber: number, body: Record<string, unknown>) =>
+      store.apply(
+        RunEventSchema.parse({
+          ...body,
+          runId: 'run',
+          timestamp: '2026-10-10T00:00:00.000Z',
+          sequenceNumber,
+        }),
+      );
+    apply(1, { type: 'cost:coverage_started', basis: 'complete', cumulativeUnpricedCalls: 0 });
+    for (const sequenceNumber of [2, 3]) {
+      apply(sequenceNumber, {
+        type: 'cost:updated',
+        nodeId: 'worker',
+        model: 'model',
+        inputTokens: 0,
+        outputTokens: 0,
+        costMicrocents: 0,
+        cumulativeCostMicrocents: 0,
+        priced: false,
+        cumulativeUnpricedCalls: 2,
+      });
+    }
+    store.flush();
+    expect(store.getSnapshot().state.unpricedCalls).toBe(2);
+    expect(store.getSnapshot().state.usageCoverage).toEqual(complete);
+    expect(store.summaryText()).toContain('price unknown for 2 calls');
+    expect(store.summaryText()).not.toContain('free');
+  });
   it('qualifies zero and positive known sums through pending, unknown and exact late settlement', () => {
     const store = createRunStore(false);
     let seq = 0;

@@ -210,7 +210,12 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
     let usage = usageByRun.get(run.id);
     if (usage === undefined) {
       const read = readPerRunOrDegrade(
-        { usageCoverage: UNVERIFIED_USAGE, unpricedCalls: 0, nodes: new Map() },
+        {
+          totalCostMicrocents: run.totalCostMicrocents,
+          usageCoverage: UNVERIFIED_USAGE,
+          unpricedCalls: 0,
+          nodes: new Map(),
+        },
         () => readRunUsageCoverage(deps.runs, run.id),
       );
       usage = read.value;
@@ -219,22 +224,24 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
     }
     return {
       ...toRunRow(run, slugOf(run)),
+      totalCostMicrocents: usage.totalCostMicrocents,
       usageCoverage: usage.usageCoverage,
       unpricedCalls: usage.unpricedCalls,
     };
   };
   const failedRuns = failedRunRecords.map(runRow);
   const recentRuns = recentRunRecords
+    // Discover strict coverage failures before filtering attention rows, including future event types.
+    .map(runRow)
     // Never repeat an attention row. A run whose log could not be read is an attention row too (#W15-15) —
     // without this it rendered in BOTH strips, once as "event log unreadable" and once as an ordinary run.
     .filter(
       (run) =>
         run.status !== 'failed' &&
-        !humanGatedRunIds.has(run.id) &&
-        !unreadableRunIds.includes(run.id),
+        !humanGatedRunIds.has(run.runId) &&
+        !unreadableRunIds.includes(run.runId),
     )
-    .slice(0, limit) // trim the over-fetch back to the top-N survivors
-    .map(runRow);
+    .slice(0, limit); // trim the over-fetch back to the top-N survivors
 
   const recentSessions = recentSessionRecords.map((session) => {
     const costs = deps.sessions.loadSessionCostBreakdown(session.id);

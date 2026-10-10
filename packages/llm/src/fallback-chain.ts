@@ -249,6 +249,8 @@ export interface FallbackChainOptions {
   readonly costTracker?: Pick<CostTracker, 'record'>;
   /** Visibility hook fired once per attempt (succeeded / failed / skipped). */
   readonly onAttempt?: (record: AttemptRecord) => void;
+  /** Late pricing fault after public completion; latch host money health without reopening the terminal. */
+  readonly onAccountingFailure?: (error: unknown) => void;
   /**
    * Pre-egress hook called before every real provider attempt (not called for skipped entries).
    * See {@link PreAttemptHook}.
@@ -864,6 +866,17 @@ export class FallbackChain {
     let knownUsage: UsageEvidence | undefined;
     let projection: GeneratedResultProjection | undefined;
     let captureFailure: { readonly error: unknown } | undefined;
+    let generatedObserved = false;
+    const observeGenerated = (result: LlmResult): void => {
+      if (generatedObserved) return;
+      generatedObserved = true;
+      try {
+        knownUsage = ownUsageEvidence(result.usage);
+        projection = captureGeneratedResult(result, knownUsage);
+      } catch (error) {
+        captureFailure = { error };
+      }
+    };
     let retentionFailure: { readonly error: unknown } | undefined;
     let outcome: GenerateAttempt;
     try {
@@ -915,7 +928,12 @@ export class FallbackChain {
         const receipt = this.#retainWork(() =>
           call.then(
             (result) => {
-              usageReceipt.observe(() => result.usage);
+              observeGenerated(result);
+              usageReceipt.observe(() => {
+                if (knownUsage === undefined && captureFailure !== undefined)
+                  throw captureFailure.error;
+                return knownUsage;
+              });
             },
             (error: unknown) => {
               usageReceipt.observe(() => this.#errorOf(error, entry.provider.id).usage);
@@ -938,13 +956,7 @@ export class FallbackChain {
       providerSucceeded = true;
       // Retirement invokes caller code synchronously. Own quantities and output before that boundary,
       // but defer capture faults so the normal post-provider path still charges known valid usage.
-      try {
-        const resultUsage = outcome.result.usage;
-        if (resultUsage !== undefined) knownUsage = ownUsageEvidence(resultUsage);
-        projection = captureGeneratedResult(outcome.result, knownUsage ?? resultUsage);
-      } catch (error) {
-        captureFailure = { error };
-      }
+      observeGenerated(outcome.result);
     } catch (err) {
       retentionFailure = retainedEntryFailure(err);
       const error =
@@ -1225,8 +1237,14 @@ export class FallbackChain {
           deadline,
           this.#options.beginUsageInvocation === undefined
             ? undefined
-            : () => {
-                readReceipt.observe(() => usage);
+            : (failure) => {
+                readReceipt.observe(
+                  () =>
+                    usage ??
+                    (failure === undefined
+                      ? undefined
+                      : this.#errorOf(failure.error, entry.provider.id).usage),
+                );
               },
         );
         if (step.kind === 'timeout') {
@@ -1592,11 +1610,16 @@ export class FallbackChain {
   async #raceStep(
     openIterator: () => AsyncIterator<StreamChunk>,
     deadline: DeadlineScope | undefined,
-    onReadSettled?: () => void,
+    onReadSettled?: (failure?: { readonly error: unknown }) => void,
   ): Promise<{ kind: 'chunk'; chunk: StreamChunk } | { kind: 'done' } | { kind: 'timeout' }> {
     const next = this.#retainWork(() => openIterator().next());
     if (onReadSettled !== undefined) {
-      const receipt = this.#retainWork(() => next.then(onReadSettled, onReadSettled));
+      const receipt = this.#retainWork(() =>
+        next.then(
+          () => onReadSettled(),
+          (error: unknown) => onReadSettled({ error }),
+        ),
+      );
       void receipt.catch(() => undefined);
     }
     if (deadline === undefined) {
@@ -1892,9 +1915,35 @@ export class FallbackChain {
         reason: value === undefined ? 'interrupted' : 'invalid_fields',
       });
     }
-    const folded = this.#foldUsage(record.model, usage);
+    const { receiptPending, ...finalRecord } = record;
+    void receiptPending;
+    let folded: FoldedUsage;
+    try {
+      folded = this.#foldUsage(record.model, usage);
+    } catch (cause) {
+      const error = makeLlmError({
+        provider: record.provider,
+        kind: 'unknown',
+        message: 'cost accounting failed after a late provider receipt',
+        cause,
+      });
+      try {
+        this.#emit({
+          ...finalRecord,
+          receiptFinal: true,
+          coverageOnly: true,
+          usage,
+          priced: false,
+          outcome: 'failed',
+          error,
+        });
+      } finally {
+        this.#options.onAccountingFailure?.(cause);
+      }
+      return;
+    }
     this.#emit({
-      ...record,
+      ...finalRecord,
       receiptFinal: true,
       coverageOnly: true,
       usage,

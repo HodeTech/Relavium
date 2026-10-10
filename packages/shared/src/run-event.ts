@@ -40,6 +40,7 @@ import { GateTypeSchema, TimeoutActionSchema } from './node.js';
 // session. Exactly one correlation key — `runId` on a run, `sessionId` on a session — is present.
 
 const timestampSeq = {
+  cumulativeUnpricedCalls: nonNegativeInt.max(Number.MAX_SAFE_INTEGER).optional(),
   usageCoverage: UsageCoverageSchema.optional(),
   timestamp: z.string().datetime({ offset: true }),
   sequenceNumber: nonNegativeInt,

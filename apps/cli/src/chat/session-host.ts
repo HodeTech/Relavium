@@ -445,8 +445,10 @@ function buildSessionRuntime(
   let usageCoverage: UsageCoverageFold | undefined;
   const requiredUsageWriter = (): SessionUsageWriter => {
     if (usageWriter === undefined) throw new Error('session usage durability is not attached');
-    const initial = usageWriter.initialCoverage();
-    if (initial !== undefined) usageCoverage ??= new UsageCoverageFold(initial);
+    if (usageCoverage === undefined) {
+      const initial = usageWriter.initialCoverage();
+      if (initial !== undefined) usageCoverage = new UsageCoverageFold(initial);
+    }
     return usageWriter;
   };
   const hostWork = new HostWorkRegistry(sessionId);

@@ -3031,6 +3031,40 @@ new CLI worker lives in the existing test-fixture directory, outside production-
 Schema synchronization is checked after committing its generated migration. Remote CI and
 whole-W8 coverage are not claimed at this author checkpoint.
 
+#### Step 5 first cumulative review and correction — 2026-10-10
+
+Three new independent reviewers inspected the complete `017b399c..e253e8f4` activation,
+covering money/lifetime, storage/CLI and adapter/seam contracts. The first round established
+**eight High and two Medium** findings despite the green author gates. Acceptance remains open.
+
+| Finding | Verified correction and permanent evidence |
+| --- | --- |
+| Final incomplete late receipts retained `receiptPending` | Both chain and turn boundaries remove the final pending hint. Generate/stream lifecycle controls and native session rows retain one unknown call while retiring correlation. The real CLI worker checks retirement before persister close. |
+| Hidden native request repair disappeared from summary coverage | The turn counts incomplete native repair invocations, excluding only final refinements. Actual installed-SDK custom-400 repair controls cover returned turn and compaction summary coverage. |
+| Late pricing failure lost complete usage and host health | Final known quantities are recorded as unpriced before the sticky money-health failure. The retained receipt cannot reopen a public terminal. Actual throwing price-overlay and host-departure controls pin this ordering. |
+| Native separate-endpoint media lost missing-price qualification | The existing volume basis remains unchanged. A canonical cumulative unpriced-observation counter survives durable boundaries and replay; actual workflow/SQLite/Home/status controls distinguish an absent rate from an explicit zero rate. |
+| Future event type aborted all discovery | Read-only aggregation degrades only typed per-run unreadability into explicit unavailable/unverified output. Healthy runs remain visible; strict checkpoint reconstruction still refuses the same future event. |
+| Amount and coverage came from different snapshots | The strict indexed visitor returns its owning run row from the same SQLite read transaction. Home and status use that amount. Actual two-connection controls cover settlement before and during the visit. |
+| Correlated generated usage was read twice | Receipt capture and result projection share one owned observation. A getter regression permits one read and refuses any second read. |
+| Late rejected stream reads discarded accountable usage | The exact raw-read rejection supplies its owned usage evidence, preserving any earlier authoritative terminal observation. Deadline and cancellation controls cover both cases. |
+| Session coverage was reloaded for every streamed event | The host seeds its fold once. The structural stream control observes one initial read instead of 106. |
+| Complete evidence example referred recursively to itself | The canonical seam example uses `usage: Usage` in the complete arm. |
+
+The supplemental real CLI matrix adds **eight** capped/uncapped final missing, partial,
+invalid and rejected-read cases (**57** total child-process cases). Their unknown count stays one,
+realized money stays zero and the conservative hold stays unchanged; the original two complete
+late receipts still write the actual charge exactly once. Independent uncertainty and price counters
+use the maximum of snapshot and legacy ledger counts, avoiding double counting queued boundaries.
+Author source-restoration controls reproduce each corrected LLM/core guard's prior failure and restore
+exact bytes. These controls do not replace new complete cumulative review rounds. Step 6's extra
+acceptance matrix, CR-82 and final whole-W8 gates remain open; no new deferral is introduced.
+
+**Correction gates:** fresh forced lint/typecheck/test passed **23/23**, none cached, across
+**467** files / **9,971 passed** / **11 existing live-provider skips**. This includes the native
+100,000-settlement structural case and all **57** CLI child-process cases. Fresh build/format
+passed **7/7**; tools lint/typecheck, whitespace and canonical links passed. These are local
+author results, not independent acceptance or remote CI.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

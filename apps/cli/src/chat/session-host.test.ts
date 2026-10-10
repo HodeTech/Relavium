@@ -1681,3 +1681,46 @@ function requestInfo(input: { model: string; maxTokens: number }): PreEgressInfo
     outputCapPlan: prepareOutputCapPlan(identity),
   };
 }
+
+it('reads the attached initial usage snapshot once across a streamed turn', async () => {
+  const ids = deterministicIds();
+  const chunks: StreamChunk[] = Array.from({ length: 100 }, () => ({
+    type: 'text_delta',
+    text: '.',
+  }));
+  chunks.push(stop());
+  const built = await buildFreshSession({
+    chat: EMPTY_CHAT,
+    agentRef: undefined,
+    cwd: '/workspace',
+    projectConfigDir: undefined,
+    ...ids,
+    providers: scriptedResolver([chunks]),
+  });
+  built.attachEffectTurnAllocator(() => 1);
+  const initialCoverage = vi.fn(() => ({
+    coverage: { unverified: false, pendingInvocations: 0, unknownCalls: 0 },
+    models: [],
+    started: true,
+    highWater: 0,
+  }));
+  built.attachUsageWriter({
+    initialCoverage,
+    begin: (draft) =>
+      Promise.resolve(
+        Object.freeze({
+          producerId: 'memoized',
+          ordinal: 1,
+          dispatchId: draft.nodeId,
+          round: draft.round,
+          chainAttempt: draft.chainAttempt,
+        }),
+      ),
+    disposition: () => undefined,
+    record: () => undefined,
+  });
+  built.session.start();
+  await built.session.sendMessage('stream');
+  await built.whenHostSafeToClose();
+  expect(initialCoverage).toHaveBeenCalledTimes(1);
+});

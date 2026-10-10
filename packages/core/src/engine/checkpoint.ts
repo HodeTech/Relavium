@@ -114,6 +114,7 @@ export interface CheckpointPendingMediaJob {
 
 /** The derived state a rehydrating run is rebuilt from — never a persisted blob (reconstructed from rows). */
 export interface CheckpointState {
+  readonly cumulativeUnpricedCalls?: number;
   readonly usageCoverage?: UsageCoverageSnapshot;
   readonly schemaVersion: number;
   readonly runStatus: RunStatus;
@@ -443,7 +444,9 @@ export function createCheckpointReconstructor(): {
     nodeLife: new NodeLifeClockReducer(),
   };
 
+  let cumulativeUnpricedCalls = 0;
   const apply = (event: RunEvent): void => {
+    cumulativeUnpricedCalls = Math.max(cumulativeUnpricedCalls, event.cumulativeUnpricedCalls ?? 0);
     coverage.apply(event);
     acc.lastSequenceNumber = Math.max(acc.lastSequenceNumber, event.sequenceNumber);
     if (event.type === 'cost:updated') {
@@ -505,6 +508,7 @@ export function createCheckpointReconstructor(): {
       .map(([id]) => id);
     return {
       usageCoverage: coverage.snapshot(),
+      cumulativeUnpricedCalls,
       schemaVersion: CHECKPOINT_SCHEMA_VERSION,
       runStatus: acc.runStatus,
       workflowId: acc.workflowId,

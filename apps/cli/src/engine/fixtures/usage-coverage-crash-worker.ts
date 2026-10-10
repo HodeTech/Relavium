@@ -9,7 +9,13 @@ import {
   createSessionUsageStore,
   runMigrations,
 } from '@relavium/db';
-import { makeLlmError, type LlmProvider, type ModelPricing } from '@relavium/llm';
+import {
+  LlmProviderError,
+  makeLlmError,
+  type LlmProvider,
+  type ModelPricing,
+  type UsageEvidence,
+} from '@relavium/llm';
 import { CHAT_TEXT_CAPABILITY_FLAGS } from '../../test-support.js';
 import { createCliHost } from '../host.js';
 import { buildChatSession } from '../../chat/session-host.js';
@@ -17,6 +23,7 @@ import { createSessionPersister } from '../../chat/persister.js';
 import type { ResolvedChatConfig } from '../../config/resolve.js';
 
 const [path, surface, route, cut, cap] = process.argv.slice(2);
+const late = cut?.startsWith('late-') === true;
 if (path === undefined) throw new Error('missing crash worker database');
 const client = createClient(path);
 runMigrations(client.db, { dbPath: path });
@@ -65,7 +72,7 @@ function command(name: string): Promise<void> {
     commandWaiters.set(name, resolve);
   });
 }
-if (cut === 'late-receipt' || cut?.startsWith('lock-') === true) {
+if (late || cut?.startsWith('lock-') === true) {
   let input = '';
   process.stdin.setEncoding('utf8').on('data', (chunk: string) => {
     input += chunk;
@@ -109,7 +116,7 @@ const provider: LlmProvider = {
   stream: async function* (request) {
     await Promise.resolve();
     invocations++;
-    if (cut === 'late-receipt') {
+    if (late) {
       const receipt = command('RECEIPT');
       void command('ABORT').then(() => abortOwner?.());
       announce('ENTERED');
@@ -127,11 +134,28 @@ const provider: LlmProvider = {
       };
       return;
     }
-    if (cut !== 'late-receipt') yield { type: 'text_delta', text: 'synthetic reply' };
+    if (!late) yield { type: 'text_delta', text: 'synthetic reply' };
+    const usage: UsageEvidence =
+      cut === 'late-missing'
+        ? { kind: 'missing', reason: 'not_reported' }
+        : cut === 'late-partial' || cut === 'late-rejected'
+          ? { kind: 'partial', known: { outputTokens: 4 }, reason: 'missing_fields' }
+          : cut === 'late-invalid'
+            ? { kind: 'partial', known: { outputTokens: -1 }, reason: 'missing_fields' }
+            : { kind: 'complete', usage: { inputTokens: 3, outputTokens: 4 } };
+    if (cut === 'late-rejected')
+      throw new LlmProviderError({
+        ...makeLlmError({
+          provider: 'openai',
+          kind: 'transport',
+          message: 'synthetic late rejection',
+        }),
+        usage,
+      });
     yield {
       type: 'stop',
       stopReason: 'stop',
-      usage: { kind: 'complete', usage: { inputTokens: 3, outputTokens: 4 } },
+      usage,
     };
   },
 };
@@ -324,8 +348,16 @@ async function runSession() {
     targeted = true;
     await built.session.compact('manual');
   }
-  if (cut === 'late-receipt') announce('INTERRUPTED');
+  if (late) announce('INTERRUPTED');
   await built.whenHostSafeToClose();
+  if (
+    late &&
+    client.sqlite
+      .prepare('SELECT count(*) FROM session_usage_invocations WHERE session_id = ?')
+      .pluck()
+      .get(ownerId) !== 0
+  )
+    throw new Error('final usage receipt retained an invocation identity before persister close');
   persister.close();
   if (cut === 'lock-hold' && busyFailures !== 5)
     throw new Error(`expected five native busy attempts, received ${busyFailures}`);

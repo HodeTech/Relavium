@@ -620,6 +620,7 @@ class RunExecution {
   readonly #money: MoneyDurability;
   #usageCoverage = new UsageCoverageFold();
   #usageOrdinal = 0;
+  #cumulativeUnpricedCalls = 0;
   readonly #hostWork: HostWorkRegistry;
   readonly #effectHealth = new EffectReceiptHealth();
   #hostRetirement: Promise<void> | undefined;
@@ -1534,6 +1535,7 @@ class RunExecution {
   #seedFromCheckpoint(plan: RunPlan, cp: CheckpointState, bus: RunEventBus, runId: string): void {
     this.#usageCoverage = new UsageCoverageFold(cp.usageCoverage);
     this.#usageOrdinal = this.#usageCoverage.highWater;
+    this.#cumulativeUnpricedCalls = cp.cumulativeUnpricedCalls ?? 0;
     for (const id of plan.vertices.keys()) {
       const node = cp.nodeStates.get(id);
       if (node === undefined) {
@@ -2760,6 +2762,7 @@ class RunExecution {
     const issued = new WeakMap<UsageInvocation, 'pending' | 'claimed' | 'emitted' | 'recorded'>();
     return Object.freeze({
       money: {
+        accountingFailure: (error) => this.#money.accountingFailure(error),
         beginUsageInvocation: (draft) => {
           scope.assertActive();
           return scope.enter(async () => {
@@ -5028,6 +5031,7 @@ class RunExecution {
         this.#bus.emit({ ...event, runId });
         return;
       case 'cost:updated':
+        if (event.priced === false) this.#cumulativeUnpricedCalls++;
         if (event.invocation !== undefined)
           this.#usageCoverage.complete(event.model, event.invocation);
         // The FOLD is unconditional: it is what keeps `#cumulativeCostMicrocents` a truthful record of money
@@ -5041,6 +5045,7 @@ class RunExecution {
             runId,
             cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
             usageCoverage: this.#usageCoverage.snapshot().coverage,
+            cumulativeUnpricedCalls: this.#cumulativeUnpricedCalls,
           });
         }
         return;
@@ -5141,6 +5146,7 @@ class RunExecution {
     },
   ): Promise<DurableAppendAcknowledgement> {
     const handOff = opts?.handOff === true;
+    draft = { ...draft, cumulativeUnpricedCalls: this.#cumulativeUnpricedCalls };
     if (!draft.type.startsWith('cost:usage_') && draft.type !== 'cost:coverage_started')
       draft = { ...draft, usageCoverage: this.#usageCoverage.snapshot().coverage };
     // **`CR-32`'s durable-event bound, and the terminal is exempt.** A run that cannot publish its terminal

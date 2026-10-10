@@ -529,7 +529,10 @@ describe('post-return private result accessor provenance', () => {
                 stopReason: 'stop',
                 usage: { kind: 'complete', usage: { inputTokens: 5, outputTokens: 7 } },
               };
-              if (!usagePresent) Object.defineProperty(result, 'usage', { value: undefined });
+              if (!usagePresent)
+                Object.defineProperty(result, 'usage', {
+                  value: { kind: 'missing', reason: 'not_reported' },
+                });
               const prior = result[field];
               Object.defineProperty(result, field, {
                 get: () => {

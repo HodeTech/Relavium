@@ -13,14 +13,16 @@ export function readRunUsageCoverage(
   reader: Pick<RunHistoryReader, 'visitRunEventsForReplay'>,
   runId: string,
 ): {
+  readonly totalCostMicrocents: number;
   readonly usageCoverage: UsageCoverage;
   readonly unpricedCalls: number;
   readonly nodes: ReadonlyMap<string, UsageCoverage>;
 } {
   const fold = new UsageCoverageFold();
-  let unpricedCalls = 0;
+  let ledgerUnpricedCalls = 0;
+  let snapshotUnpricedCalls = 0;
   const nodes = new Map<string, UsageCoverageFold>();
-  reader.visitRunEventsForReplay(
+  const run = reader.visitRunEventsForReplay(
     runId,
     (event) => {
       fold.apply(event);
@@ -38,13 +40,16 @@ export function readRunUsageCoverage(
         }
         node.apply(event);
       }
-      if (event.type === 'cost:attempt_settled' && event.priced === false) unpricedCalls++;
+      if (event.type === 'cost:attempt_settled' && event.priced === false) ledgerUnpricedCalls++;
+      snapshotUnpricedCalls = Math.max(snapshotUnpricedCalls, event.cumulativeUnpricedCalls ?? 0);
     },
     { streamingIncluded: false },
   );
   return {
-    usageCoverage: fold.snapshot().coverage,
-    unpricedCalls,
+    totalCostMicrocents: run?.totalCostMicrocents ?? 0,
+    usageCoverage: run === undefined ? UNVERIFIED_USAGE : fold.snapshot().coverage,
+    // A queued boundary may already carry a later counter. Never add ledger rows to that snapshot.
+    unpricedCalls: Math.max(ledgerUnpricedCalls, snapshotUnpricedCalls),
     nodes: new Map([...nodes].map(([id, node]) => [id, node.snapshot().coverage])),
   };
 }
