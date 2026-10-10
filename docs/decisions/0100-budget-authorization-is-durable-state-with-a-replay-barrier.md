@@ -223,3 +223,14 @@ The approved W7 implementation and scoped independent reviews are complete. Fina
 acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
 the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
 This dated note preserves the earlier decision and status history; W8 and the phase remain open.
+
+### Replay evidence and companion domain qualification — 2026-10-10
+
+The [canonical suspension contract](../reference/contracts/sse-event-schema.md) defines semantic
+companion conflicts, including historical absent-field compatibility; whole event objects are not
+compared because sequence/time and display prose do not confer authority. The offline replay parent
+requires twelve exact unique refusal cuts and two named completed legacy controls from actual worker
+evidence. Source and lockfile bytes are independently anchored to the immutable Git predecessor;
+portable dependency bytes remain reviewed, digest-pinned captures, not a registry-origin attestation.
+The [harness](../../tools/budget-replay-compat/README.md) documents that provenance boundary,
+read-only packaging verification and CI-only exact predecessor-object setup. No frozen bytes are refreshed.

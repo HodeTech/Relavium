@@ -17,7 +17,11 @@ The predecessor's actual parser, SQLite strict reader, CLI checkpointer and
 engine entry must refuse every prefix before execution registration, scheduling,
 credential resolution or egress. Its exact acquired lease must be released. A
 legacy budget rejection and an ordinary human-gate approval are positive controls.
-Tolerant display is tested separately and never supplies a replay checkpoint.
+Tolerant display is tested separately and never supplies a replay checkpoint. The parent independently
+asserts the exact twelve unique `(label, cut)` pairs, exactly matching producer capture metadata in every
+completed predecessor refusal, zero egress and both named completed positive controls. Eleven mutation
+controls remove/duplicate/change coverage or acceptance evidence and must be refused; unchanged actual
+worker evidence remains a positive control. Worker stdout counts alone cannot certify coverage.
 
 `frozen/pre-w7-source.tar.gz` contains the original source, package metadata,
 lockfile, SQLite migrations and source manifest. Its SHA256 is
@@ -27,8 +31,11 @@ the source manifest's SHA256 is
 Both are verified before any frozen source runs. Every one of the 143 manifest files is also checked
 against the actual Git blob at the pinned baseline commit, using `git --no-replace-objects cat-file`
 and the manifest byte/hash inventory. An archive and self-declared digest changed together cannot
-certify a different predecessor. The pinned commit must be available locally; CI checks out full
-history (`fetch-depth: 0`). The loader also verifies each
+certify a different predecessor. The pinned commit must be available locally. CI checks out full
+history (`fetch-depth: 0`) and explicitly fetches the canonical exact SHA during setup when absent,
+including main-based or post-squash branches. If origin no longer retains that object, setup fails
+with its exact pin; no different baseline is accepted. The offline command never fetches implicitly
+and refuses a missing baseline before allocating/extracting an evidence tree. The loader also verifies each
 source it loads and forbids mixing versions or resolving workspace source/dist.
 It transpiles TypeScript for execution; normal CI owns typechecking.
 
@@ -125,3 +132,28 @@ This check proves the downgrade boundary for its captured current sources. The
 core runtime suites separately prove allowance exhaustion, quote refusal, crash
 identity, deadline, effect preflight and acknowledgement races. Compatibility
 evidence alone does not constitute whole-W7 acceptance.
+
+## Provenance and packaging verification
+
+The 143 source files, including package metadata and the baseline lockfile, are verified against
+Git objects at the exact predecessor SHA. The 180-root portable dependency inventory and captured
+file bytes are reviewed, digest-pinned evidence. Membership of their package keys in that Git-anchored
+lockfile verifies version/graph correspondence; it does **not** prove the extracted files came from
+a registry tarball with that lockfile's integrity value. File digests are not tarball integrity values.
+The native SQLite binary is the separately disclosed invocation-specific platform exception. These
+boundaries do not provide an external supply-chain attestation for all executable dependency bytes.
+
+Read-only verification preserves the committed archives. Decompress `dependencies.json.gz` as JSON;
+walk `packages` in recorded array order and each root's `files` in recorded array order. After the
+literal `relavium-budget-replay-dependencies-v1\n` header, consume exactly each file's declared byte
+count from the decompressed binary archive and verify its SHA-256, with no trailing bytes. Verify
+compressed/decompressed digests and bounded sizes as `check.mjs` does. Extract the source tarball
+only into an exclusive temporary directory, verify every manifest byte/hash and compare with the
+pinned Git blobs before execution. `pnpm smoke:budget-replay` performs these checks offline using
+physical owned copies and retains the invocation's manifests, inventory, guard results and logs.
+
+The original source-tar member metadata and compression flags were not recorded as a byte-identical
+regeneration recipe. This procedure verifies the existing immutable artifacts; it does not claim
+that rebuilding tar/gzip output recreates their compressed bytes. Do not refresh archives, manifests
+or digests to accommodate a current dependency update. A deliberate new predecessor requires its own
+reviewed compatibility decision rather than silently replacing this one.

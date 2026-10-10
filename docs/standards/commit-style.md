@@ -68,11 +68,13 @@ trailer on the last line:
 Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
-Either form is accepted: the bare `Claude`, or the model-versioned `Claude Opus 4.x`
-(e.g. `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`) that some tooling
-emits. The email is always `<noreply@anthropic.com>`. Conformance checks match the
-trailer loosely (`Co-Authored-By: Claude.*<noreply@anthropic.com>`) so either form
-passes.
+Use the actual assisting tool: `Claude <noreply@anthropic.com>` or
+`Codex <noreply@openai.com>`. A model-versioned name may follow the same tool prefix
+and corresponding email. Never claim Claude authored a Codex-assisted change (or the reverse).
+Conformance checks accept either truthful family:
+`Co-Authored-By: (Claude.*<noreply@anthropic.com>|Codex.*<noreply@openai.com>)`.
+Other assisting tools need an explicit documented identity rather than a forged existing trailer.
+This applies to new commits; published historical subjects and trailers are not rewritten.
 
 ## Examples
 
@@ -97,7 +99,7 @@ Refs: ADR-0011
 ```
 
 ```
-docs(standards): index the seven new engineering standards
+docs(docs): index the seven new engineering standards
 ```
 
 ## Rules

@@ -48,6 +48,11 @@ merged too (PR #85, 2026-08-28).
 > PR #90 remains draft/unmerged for maintainer review. W8 and approved deferrals remain open.
 > No implementation, user decision, credential, billing or provider capture is pending for W7.
 
+> **Post-closure review, 2026-10-10:** the [new correction register](phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
+> supersedes the point-in-time closing checkpoint above. Core and CLI/DB corrections each have
+> two NEW clean cumulative rounds; tooling/docs and new whole-tree validation remain in progress.
+> GitHub reports PR #90 ready for review and unmerged. No provider/user prerequisite is pending.
+
 ## Historical W7 implementation checkpoints
 
 Dated W7 checkpoints throughout this page retain their original pending states. The closing checkpoint above

@@ -262,3 +262,15 @@ See the [canonical engine lifecycle](../architecture/shared-core-engine.md#inter
 and [CLI exit/remedy contract](../reference/cli/commands.md#exit-codes). Consolidated independent
 acceptance is tracked in [current.md](../roadmap/current.md); Step 8 and final whole-wave
 validation remain open. The accepted body above is preserved.
+
+### W7 implementation landing — 2026-10-10
+
+The earlier W7 progress note is a historical snapshot. Step 8 and final Step 12 were subsequently
+accepted in the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
+The later [post-closure systematic correction register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10)
+tracks reopened review findings and their scoped acceptance; it governs the current PR acceptance status.
+This additive note does not rewrite the original decision or claim that PR #90 has merged.
+
+Under ADR-0103, the exact fence remains held until registered actors, writers and receipts are
+quiescent. Publication alone does not authorize early release; inline decisions and successor
+claims must respect that acknowledged retirement boundary.

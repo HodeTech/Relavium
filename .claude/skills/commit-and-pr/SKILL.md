@@ -46,9 +46,9 @@ Turn finished work into a clean, auditable commit history and a reviewable PR. R
    - Types: `feat fix refactor perf test docs chore build ci`. Breaking change appends `!` (`feat(core)!: …`) and explains under a `BREAKING CHANGE:` line.
    - Adapter work names the layer in the summary, not a vendor scope (`feat(llm): add anthropic …`, not `feat(anthropic)`).
    - Use canonical vocabulary in messages too (`cost:updated`, `sequenceNumber`), never legacy dotted names.
-5. **Checkpoint — verify the trailer.** Every commit ends with a `Co-Authored-By: Claude <noreply@anthropic.com>` trailer. Either the bare `Claude` or the model-versioned `Claude Opus 4.x` form is accepted — [commit-style.md](../../../docs/standards/commit-style.md#co-authored-by-trailer) is the canonical rule.
+5. **Checkpoint — verify the trailer.** Every commit ends with a truthful AI co-author trailer for its actual assisting tool (`Claude`/Anthropic or `Codex`/OpenAI), optionally model-versioned — [commit-style.md](../../../docs/standards/commit-style.md#co-authored-by-trailer) is the canonical rule.
    ```bash
-   git -C "$(git rev-parse --show-toplevel)" log -1 --pretty=%B | grep -E 'Co-Authored-By: Claude.*<noreply@anthropic.com>'
+   git -C "$(git rev-parse --show-toplevel)" log -1 --pretty=%B | grep -E 'Co-Authored-By: (Claude.*<noreply@anthropic.com>|Codex.*<noreply@openai.com>)'
    ```
 6. **Push and open the PR** with `gh`. Title is the Conventional-Commit summary of the headline change.
    ```bash
@@ -70,7 +70,7 @@ Turn finished work into a clean, auditable commit history and a reviewable PR. R
 
    Refs: ADR-NNNN
 
-   🤖 Generated with [Claude Code](https://claude.com/claude-code)
+   <Optional truthful footer naming the actual assisting tool>
    EOF
    )"
    ```
@@ -84,9 +84,9 @@ Turn finished work into a clean, auditable commit history and a reviewable PR. R
 - [ ] On a non-default branch.
 - [ ] Each commit is `type(scope): summary`, imperative, ≤ ~72 chars, valid scope.
 - [ ] Body explains why; ADR referenced via `Refs: ADR-NNNN` where applicable.
-- [ ] Every commit ends with a `Co-Authored-By: Claude.*<noreply@anthropic.com>` trailer (bare or model-versioned form).
+- [ ] Every commit ends with a `Co-Authored-By: (Claude.*<noreply@anthropic.com>|Codex.*<noreply@openai.com>)` trailer (bare or model-versioned form).
 - [ ] One scope per commit; no bundled formatting/generated churn.
-- [ ] PR body has the conformance checklist and the Claude Code footer.
+- [ ] PR body has the conformance checklist and a truthful tool footer when one is used.
 
 ## Common pitfalls
 - Capitalized or past-tense summary, or a trailing period.

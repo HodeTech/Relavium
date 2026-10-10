@@ -126,6 +126,12 @@ joins the accepted scopes, causal controls and systematic-review dispositions. E
 stay in [deferred-tasks.md](docs/roadmap/deferred-tasks.md); W8 and the phase remain open. No user decision,
 billing setup, credential or provider capture is pending.
 
+**Post-closure review, 2026-10-10:** core and CLI/DB corrections have two NEW clean cumulative
+review rounds each. Tooling/document corrections and new whole-tree gates are in progress;
+current acceptance is tracked by the [post-closure register](docs/roadmap/phases/phase-2.6.5-core-reliability-remediation.md#post-closure-systematic-review--2026-10-10).
+GitHub reports PR #90 ready for review and unmerged; historical draft wording above is a snapshot.
+No provider, billing, key or user decision is pending.
+
 For live status, per-PR history, milestone dates, and open obligations, see the canonical
 home [docs/roadmap/current.md](docs/roadmap/current.md);
 [README.md](README.md) is the public overview;

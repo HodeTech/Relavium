@@ -388,6 +388,12 @@ optional `allowanceQuote` and the exact approved amount when granted. Matching h
 do not overwrite a real output or resolve a later gate; contradictory persisted companions are corrupt
 in either arrival order. A present companion approval amount must equal the authority's amount;
 absence remains compatible with historical companions and `legacy_no_allowance` cannot grant an amount.
+Conflict means disagreement within the authoritative semantic domain: triple identity, frozen quote,
+repeated authoritative state, decision/actor/payload and any present grant. Budget spent/limit counters
+are checked when a paused authority supplies that witness; a decided authority has no such counters.
+Present deadline fields must fit witnessed authority and other present deadline values. Missing legacy
+fields retain their explicit compatibility rules. Human-pause message, gate type and assignee are
+presentation, not budget authority; sequence/time identify rows, not semantic equality.
 A decided authority witnesses absent-versus-matching-amount duplicate compatibility: each present
 amount must independently match its grant. Without that decided witness, differing optional amounts
 remain corrupt. This never inserts an amount into a historical row or changes its stored bytes.

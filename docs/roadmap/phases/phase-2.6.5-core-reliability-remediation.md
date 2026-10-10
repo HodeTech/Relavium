@@ -4796,7 +4796,9 @@ Every row of [W7's checklist](#w7s-canonical-document-checklist-recorded-2026-09
 configuration, workflow/agent/session contracts, runner, schema, effect journal, LLM seam, error handling,
 events, chat/commands and architecture describe implemented behaviour. ADR-0029 already carried the
 required security correction; no additional edit is owed. Dated notes in ADR-0026/0028/0050/0062/0074/0080
-and ADR-0095–0103 link this landing without rewriting earlier decisions. Existing CR-82 usage and
+and ADR-0095–0103 link this landing without rewriting earlier decisions. The later post-closure
+landing also appends notes to ADR-0036/0042/0045/0049/0076/0077/0078/0079/0085, preserving
+their earlier progress snapshots. Existing CR-82 usage and
 ADR-0087 gap-free-stream limits remain W8 obligations; no blanket at-rest secrecy is claimed.
 
 ### Final source gates
