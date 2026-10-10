@@ -1019,8 +1019,11 @@ export class FallbackChain {
         outcome.error.usage.kind !== 'missing'
           ? { ...record, contentReceived: true }
           : record;
-      const error = this.#emitFailure(received, outcome.error);
-      if (lateReceipt) usageReceipt.activate();
+      const error = this.#emitFailureAndActivateReceipt(
+        received,
+        outcome.error,
+        lateReceipt ? usageReceipt : undefined,
+      );
       if (retentionFailure !== undefined) throw retentionFailure.error;
       return { status: 'error', error: received.contentReceived ? committed(error) : error };
     }
@@ -1119,14 +1122,46 @@ export class FallbackChain {
     record: InternalAttemptRecord,
     error: LlmError,
     state: StreamAttemptState,
-    afterObservation?: () => void,
+    receipt?: UsageReceipt,
   ): Generator<StreamChunk, LlmError | undefined> {
-    error = this.#emitFailure({ ...record, contentReceived: state.committed }, error);
-    afterObservation?.();
+    error = this.#emitFailureAndActivateReceipt(
+      { ...record, contentReceived: state.committed },
+      error,
+      receipt,
+    );
     if (state.committed) {
       yield { type: 'error', error: committed(error) };
       return undefined;
     }
+    return error;
+  }
+
+  /** Primary observation cannot strand a registered receipt or lose precedence to its callback. */
+  #emitFailureAndActivateReceipt(
+    record: InternalAttemptRecord,
+    diagnostic: LlmError,
+    receipt?: UsageReceipt,
+  ): LlmError {
+    let error: LlmError;
+    try {
+      error = this.#emitFailure(record, diagnostic);
+    } catch (primary) {
+      try {
+        receipt?.activate();
+      } catch (secondary) {
+        // An already observed receipt settles synchronously. Preserve the original opaque observer
+        // throwable, but expose this independent settlement fault to the host's money-health latch.
+        try {
+          this.#options.onAccountingFailure?.(secondary);
+        } catch {
+          // Even a failing diagnostic sink remains subordinate to the established observer failure.
+          throw primary;
+        }
+      }
+      throw primary;
+    }
+    // With no primary observer failure, the receipt's exact failure still propagates normally.
+    receipt?.activate();
     return error;
   }
 
@@ -1418,8 +1453,7 @@ export class FallbackChain {
     }
     // An existing provider failure keeps its diagnosis and financial evidence; cleanup cannot
     // replace it with an unrelated host exception or prevent its attempt record.
-    if (failure !== undefined)
-      return yield* this.#failAttempt(record, failure, state, () => lateReceipt?.activate());
+    if (failure !== undefined) return yield* this.#failAttempt(record, failure, state, lateReceipt);
     return yield* this.#settleUsage(entry, record, usage, state, cleanupFailure);
   }
 
