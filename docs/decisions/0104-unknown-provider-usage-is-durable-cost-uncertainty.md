@@ -487,3 +487,17 @@ The canonical [seam](../reference/shared-core/llm-provider-seam.md) and
 [database contract](../reference/shared-core/database-schema.md) own these corrections. Step 5
 requires two NEW clean complete cumulative reviews after correction. Step 6's further controls
 and reviews, CR-82 and whole-W8 acceptance remain open.
+
+### W8 missing-evidence and legacy-model correction — 2026-10-11
+
+The seventh cumulative activation review reproduced two gaps. An explicit `missing` error
+usage arm cannot establish processed content merely by being present. Generate and native
+repair must preserve the same pre-content refusal/failover policy as an omitted usage field;
+partial or complete quantities, including zero, and actual content retain their existing proof.
+Separately, a legacy session-money aggregate is not an attributable model. The coverage/model
+union excludes monetary rows by their `is_legacy` flag while preserving a real model whose
+literal name happens to match the sentinel. Historical money and its unavailable-breakdown
+disclosure remain visible. The canonical [seam](../reference/shared-core/llm-provider-seam.md)
+and [database contract](../reference/shared-core/database-schema.md) own these corrections.
+Step 5 requires two NEW clean complete cumulative reviews after correction. Step 6's further
+controls and reviews, CR-82 and whole-W8 acceptance remain open.

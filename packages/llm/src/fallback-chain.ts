@@ -1010,10 +1010,13 @@ export class FallbackChain {
       // A cleanup fault is secondary to an existing provider/admission failure. Preserve its
       // original diagnosis, refusal proof and attempt observation instead of replacing them.
       // A failed generated response may carry real usage (native context-window stop).
-      // Only usage from an invoked provider is processed-response evidence. A typed host-hook
-      // exception cannot establish response processing; provider-supplied commitment is disowned.
+      // Only quantity-bearing usage from an invoked provider is processed-response evidence.
+      // Explicit missing evidence, like omission, says nothing about content processing. A typed
+      // host-hook exception cannot establish it; provider-supplied commitment is disowned.
       const received =
-        record.providerInvoked && outcome.error.usage !== undefined
+        record.providerInvoked &&
+        outcome.error.usage !== undefined &&
+        outcome.error.usage.kind !== 'missing'
           ? { ...record, contentReceived: true }
           : record;
       const error = this.#emitFailure(received, outcome.error);
@@ -2075,7 +2078,11 @@ export class FallbackChain {
               ...previous,
               coverageOnly: true,
               providerInvoked: true,
-              contentReceived: previous.contentReceived || owned.usage !== undefined,
+              // Preserve actual content proof and partial/complete observations, including zero.
+              // A missing-evidence marker alone cannot turn a refused predecessor into processed content.
+              contentReceived:
+                previous.contentReceived ||
+                (owned.usage !== undefined && owned.usage.kind !== 'missing'),
             },
             owned,
             (failure) => {

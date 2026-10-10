@@ -10,6 +10,7 @@ import {
 import {
   LlmProviderError,
   makeLlmError,
+  type LlmInvocationOptions,
   type LlmProvider,
   type ModelPricing,
   type StreamChunk,
@@ -71,6 +72,9 @@ function fixture({
   budgeted = false,
   failDisposition = false,
   primary = 'bad_request',
+  omitUsage = false,
+  nativeRepair = false,
+  visibleContent = false,
 }: {
   mode?: 'generate' | 'stream';
   evidence?: UsageEvidence;
@@ -78,6 +82,9 @@ function fixture({
   budgeted?: boolean;
   failDisposition?: boolean;
   primary?: Primary;
+  omitUsage?: boolean;
+  nativeRepair?: boolean;
+  visibleContent?: boolean;
 } = {}) {
   const fold = new UsageCoverageFold();
   fold.start('complete');
@@ -125,7 +132,12 @@ function fixture({
       message: 'original provider diagnosis',
     }),
     retryable: false,
-    ...(evidence.kind === 'missing' ? {} : { usage: evidence }),
+    ...(omitUsage ? {} : { usage: evidence }),
+  };
+  const repair = async (options?: LlmInvocationOptions): Promise<void> => {
+    await options?.beforeNativeRetry?.(error);
+    options?.nativeInvocationStarted?.();
+    calls++;
   };
   const provider: LlmProvider = {
     id: 'openai',
@@ -142,15 +154,25 @@ function fixture({
         outputCombinations: [['image']],
       },
     },
-    generate: () => {
+    generate: async (_request, _key, options) => {
       calls++;
+      if (nativeRepair) {
+        await repair(options);
+        return { content: [], stopReason: 'stop', usage: completeZero };
+      }
       return primary === 'success'
         ? Promise.resolve({ content: [], stopReason: 'stop', usage: evidence })
         : Promise.reject(new LlmProviderError(error));
     },
-    stream: async function* (): AsyncGenerator<StreamChunk> {
+    stream: async function* (_request, _key, options): AsyncGenerator<StreamChunk> {
       calls++;
       await Promise.resolve();
+      if (nativeRepair) {
+        await repair(options);
+        yield { type: 'stop', stopReason: 'stop', usage: completeZero };
+        return;
+      }
+      if (visibleContent) yield { type: 'text_delta', text: 'visible' };
       if (primary === 'observer') yield { type: 'text_delta', text: 'visible' };
       if (primary === 'success' || primary === 'observer')
         yield { type: 'stop', stopReason: 'stop', usage: evidence };
@@ -207,38 +229,72 @@ function fixture({
   };
 }
 
+const evidenceCases = [
+  { label: 'omitted', evidence: missing, omitUsage: true },
+  { label: 'missing', evidence: missing, omitUsage: false },
+  { label: 'partial', evidence: partial, omitUsage: false },
+  { label: 'partial-zero', evidence: partialZero, omitUsage: false },
+  { label: 'complete-zero', evidence: completeZero, omitUsage: false },
+];
 for (const mode of ['generate', 'stream'] as const)
   for (const custom of [false, true])
-    for (const evidence of [missing, partial, partialZero, completeZero])
-      it(`${mode} ${custom ? 'custom' : 'official'} 400 ${evidence.kind}/${evidence.kind === 'partial' ? evidence.known.inputTokens : 'none'} preserves usage and cap obligations`, async () => {
-        const h = fixture({ mode, custom, evidence, budgeted: true });
-        const outcome = await captureAgentTurnOutcome(h.params);
-        expect(outcome.kind).toBe('failed');
-        expect(h.calls()).toBe(1);
-        const released = !custom && evidence.kind === 'missing';
-        expect(h.fold.snapshot().coverage).toEqual({
-          unverified: false,
-          pendingInvocations: 0,
-          unknownCalls: evidence.kind === 'complete' || released ? 0 : 1,
-        });
-        expect(h.governor.conservativeCostMicrocents > 0).toBe(
-          evidence.kind !== 'complete' && !released,
-        );
-        expect(h.settlements).toHaveLength(evidence.kind === 'complete' ? 1 : 0);
-        if (evidence.kind === 'complete')
-          expect(h.settlements[0]).toMatchObject({
-            inputTokens: 0,
-            outputTokens: 0,
-            costMicrocents: 0,
-            priced: true,
+    for (const nativeRepair of [false, true])
+      for (const { label, evidence, omitUsage } of evidenceCases)
+        it(`${mode} ${custom ? 'custom' : 'official'} 400 ${label} ${nativeRepair ? 'native predecessor' : 'direct'} preserves usage and cap obligations`, async () => {
+          const h = fixture({ mode, custom, evidence, omitUsage, nativeRepair, budgeted: true });
+          const outcome = await captureAgentTurnOutcome(h.params);
+          expect(outcome.kind).toBe(nativeRepair ? 'succeeded' : 'failed');
+          expect(h.calls()).toBe(nativeRepair ? 2 : 1);
+          if (!nativeRepair && outcome.kind === 'failed')
+            expect(outcome.error).toMatchObject({
+              code: 'validation',
+              message: 'original provider diagnosis',
+            });
+          const released = !custom && evidence.kind === 'missing';
+          expect(h.fold.snapshot().coverage).toEqual({
+            unverified: false,
+            pendingInvocations: 0,
+            unknownCalls: evidence.kind === 'complete' || released ? 0 : 1,
           });
-        else
-          expect(h.dispositions).toEqual([
-            released
-              ? { kind: 'official_refusal', reason: 'pre_content_refusal' }
-              : { kind: 'incomplete', evidence },
-          ]);
-      });
+          expect(h.governor.conservativeCostMicrocents > 0).toBe(
+            evidence.kind !== 'complete' && !released,
+          );
+          expect(h.settlements).toHaveLength(
+            (evidence.kind === 'complete' ? 1 : 0) + (nativeRepair ? 1 : 0),
+          );
+          for (const settlement of h.settlements)
+            expect(settlement).toMatchObject({
+              inputTokens: 0,
+              outputTokens: 0,
+              costMicrocents: 0,
+              priced: true,
+            });
+          expect(h.dispositions).toEqual(
+            evidence.kind === 'complete'
+              ? []
+              : [
+                  released
+                    ? { kind: 'official_refusal', reason: 'pre_content_refusal' }
+                    : { kind: 'incomplete', evidence },
+                ],
+          );
+        });
+
+for (const omitUsage of [false, true])
+  it(`actual visible content retains missing usage uncertainty (omitted=${omitUsage})`, async () => {
+    const h = fixture({ omitUsage, visibleContent: true, budgeted: true });
+    const outcome = await captureAgentTurnOutcome(h.params);
+    expect(outcome.kind).toBe('failed');
+    expect(h.calls()).toBe(1);
+    expect(h.fold.snapshot().coverage).toEqual({
+      unverified: false,
+      pendingInvocations: 0,
+      unknownCalls: 1,
+    });
+    expect(h.governor.conservativeCostMicrocents).toBeGreaterThan(0);
+    expect(h.settlements).toEqual([]);
+    expect(h.dispositions).toEqual([{ kind: 'incomplete', evidence: missing }]);
+  });
 
 for (const budgeted of [false, true])
   for (const primary of ['auth', 'context_overflow', 'cancelled', 'observer'] as const)

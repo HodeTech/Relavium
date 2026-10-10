@@ -3236,6 +3236,41 @@ author typecheck runs rejected non-canonical fields in the new status fixture; t
 corrected before the reported fresh full pass. No remote CI, full coverage or whole-wave acceptance
 is claimed by these local gates.
 
+#### Step 5 seventh cumulative review and correction — 2026-10-11
+
+Three NEW independent reviewers completed the full `017b399c..284e2b53` activation range,
+including every preceding correction. The deduplicated result was **one High and one Medium**;
+the complete core/money/lifetime scope had no further verified finding. The parent independently
+reproduced both defects before correction. This round is not clean and cannot count towards acceptance.
+
+| Finding | Verified correction and permanent evidence |
+| --- | --- |
+| Explicit missing usage fabricated processed-content proof | Generate and native-repair predecessor failures distinguish the missing arm from quantity-bearing partial/complete evidence, including zero. Permanent source-bound LLM/core controls cover omission versus explicit missing, official/custom endpoints, direct/native calls, failover, visible content, coverage dispositions and cap obligations. An official pre-content refusal releases consistently; a missing transport observation cannot suppress valid failover. |
+| A historical legacy money aggregate became a fabricated zero-cost model | The model union selects only non-legacy monetary rows plus actual coverage models. A real old-schema SQLite migration and production breakdown/formatter controls preserve historical money and its unavailable-breakdown disclosure, a real model literally named like the sentinel, unattributed historical model money and usage-only uncertainty. Identity depends on the flag, never the sentinel string. |
+
+The 111-case LLM/core regression cohort fails ten relevant assertions before the two-site correction
+and passes afterward. The four permanent legacy-reader controls produce one relevant failure and
+three passing controls against physically isolated prior DB source, then all pass after correction;
+developer source bytes stay unchanged. The 133-case adjacent DB/CLI cohort passes. Independent
+reviewers also completed their full scoped suites and actual frozen replay checks. A deliberately
+nonconforming external provider that swallows a rejected native-repair hook is recorded as a tested
+boundary limit, not inflated into a supported-provider finding.
+
+**Correction gates:** fresh forced monorepo lint/typecheck/test passed **23/23**, none cached,
+across **486** files / **10,293 passed** / **11 existing live-provider skips**, including the
+100,000-settlement case and all 57 CLI process controls. Fresh forced build/format passed **7/7**.
+Tools lint/typecheck, schema synchronization, seam/purity/dependency/bundle fences and all three
+offline smokes passed; 486-file test isolation, canonical links and whitespace passed. The frozen
+predecessor again refused 16 strict prefixes with two legacy
+positive controls. A planning inventory command briefly misdirected output into an unchanged test;
+the format gate caught it, the exact HEAD blob was restored and independently hash-verified, and
+the reported fresh full gates ran after restoration. That failed preliminary format run is not
+acceptance evidence. No remote CI or whole-wave coverage is claimed.
+
+These author corrections do not substitute for acceptance. Step 5 requires two NEW clean complete
+cumulative rounds after correction. Step 6's further causal matrix and reviews, CR-82 and whole-W8
+publication remain open. No new policy, dependency, money writer, provider call or deferral is introduced.
+
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High · ✅ CLOSED on `development` 2026-10-10
 **Accepted on `development`, 2026-10-10; publication pending.** The [Step 3 register](#w8-step-3-canonical-sdk-http-matrix--2026-10-10)
 joins all four independent review verdicts and three causal lowering controls. The pre-W8 defect was:

@@ -1193,6 +1193,12 @@ disposition/conservative-write barrier before admitting that next call. An offic
 refusal can release its estimate; a custom endpoint's unknown prior call retains conservative
 exposure, and a later zero cannot refund it. Repair never drops an output cap: only temperature and
 reasoning effort are repairable, so every retry uses the same central `outputCapPlan`.
+An explicit `missing` usage arm supplies no processed-content evidence, just like an absent
+error usage field. Generate and native-repair failure accounting preserve this distinction:
+partial or complete quantities, including explicit zero, and actual content still establish
+processing. Without such proof, an official enumerated pre-content refusal can release its
+reservation and a retryable pre-content failure can fail over. A custom endpoint retains its
+existing uncertainty; the mere presence of a missing-evidence object cannot change either policy.
 `AttemptRecord.preAttemptInfo` carries the exact fresh frozen admission-info object for each native
 call. It is ephemeral correlation, never durable data or billing authority, and prevents late cleanup
 from releasing a newer fallback admission. `nativeInvocationStarted` marks the repaired call only
