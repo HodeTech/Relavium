@@ -563,6 +563,89 @@ describe('agentRunCommand (2.Q)', () => {
     expect(out()).toContain('cassette reply'); // the recorded chunks were replayed
   });
 
+  it.each([
+    { name: 'positive', inputTokens: 1000, outputTokens: 1000, expected: 1_800_000 },
+    { name: 'explicit zero', inputTokens: 0, outputTokens: 0, expected: 0 },
+  ])('publishes the acknowledged hidden owner total for $name usage', async (sample) => {
+    writeFileSync(
+      join(cwd, 'accounted.json'),
+      JSON.stringify({
+        ...CASSETTE,
+        calls: [
+          [
+            { type: 'text_delta', text: 'offline accounted reply' },
+            {
+              type: 'stop',
+              stopReason: 'stop',
+              usage: {
+                kind: 'complete',
+                usage: { inputTokens: sample.inputTokens, outputTokens: sample.outputTokens },
+              },
+            },
+          ],
+        ],
+      }),
+    );
+    const { d, out, err } = deps('private-accounting-prompt', { json: true });
+    expect(
+      await agentRunCommand(
+        { agent: agentPath(), input: [], allowMcpStdio: [], fixture: 'accounted.json' },
+        d,
+      ),
+    ).toBe(EXIT_CODES.success);
+    const events = parseNdjson<Record<string, unknown>>(out());
+    const actual = events.filter((event) => event['type'] === 'cost:updated');
+    expect(actual).toHaveLength(1);
+    expect(actual[0]).toMatchObject({
+      costMicrocents: sample.expected,
+      cumulativeCostMicrocents: sample.expected,
+      cumulativeUnpricedCalls: 0,
+      usageCoverage: { unverified: false, pendingInvocations: 0, unknownCalls: 0 },
+    });
+    for (const type of ['session:turn_completed', 'session:cancelled']) {
+      const boundary = events.filter((event) => event['type'] === type);
+      expect(boundary).toHaveLength(1);
+      expect(boundary[0]).toMatchObject({
+        cumulativeCostMicrocents: sample.expected,
+        cumulativeUnpricedCalls: 0,
+        usageCoverage: { unverified: false, pendingInvocations: 0, unknownCalls: 0 },
+      });
+    }
+    expect(err()).toBe('');
+    const opened = openSessionStore(home);
+    try {
+      const rows = opened.db.$client
+        .prepare('SELECT id, total_cost_microcents FROM agent_sessions')
+        .all();
+      expect(rows).toHaveLength(1);
+      const row = rows[0];
+      if (!isRecord(row) || typeof row['id'] !== 'string') throw new Error('missing hidden owner');
+      expect(row['total_cost_microcents']).toBe(sample.expected);
+      const snapshot = opened.store.loadSessionCostBreakdown(row['id']);
+      expect(snapshot.totalCostMicrocents).toBe(sample.expected);
+      expect(snapshot.rows).toHaveLength(1);
+      expect(snapshot.rows[0]).toMatchObject({
+        costMicrocents: sample.expected,
+        callCount: 1,
+        unpricedCalls: 0,
+      });
+      expect(snapshot.coverage).toEqual({
+        unverified: false,
+        pendingInvocations: 0,
+        unknownCalls: 0,
+      });
+      expect(opened.store.loadSession(row['id'])).toBeUndefined();
+      expect(opened.store.loadFull(row['id'])).toBeUndefined();
+      expect(opened.store.loadMessages(row['id'])).toEqual([]);
+      expect(opened.store.listSessions()).toEqual([]);
+      expect(
+        JSON.stringify(opened.db.$client.prepare('SELECT * FROM agent_sessions').all()),
+      ).not.toContain('private-accounting-prompt');
+    } finally {
+      opened.close();
+    }
+  });
+
   it('maps a turn failure to exit 1 (the turn outcome, not the command shell)', async () => {
     const { d } = deps('hi', { providers: unresolvedResolver() }); // every turn settles as an internal error
     expect(await agentRunCommand({ agent: agentPath(), input: [], allowMcpStdio: [] }, d)).toBe(

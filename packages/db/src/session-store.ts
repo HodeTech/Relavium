@@ -441,6 +441,8 @@ export interface SessionStore {
    * same session (the very concurrency the single-writer design defends against) can commit a `recordSessionCost`
    * BETWEEN a `loadSession` and a `loadSessionCosts`. The panel would then print rows that sum to MORE than the total
    * above them — a share over 100% on a money surface. One snapshot, one truth.
+   * Accounting includes retained hidden/soft-deleted owners; discovery and resume filters do not erase
+   * their known money. This numeric read grants no transcript access or live owner capability.
    */
   loadSessionCostBreakdown: (sessionId: string) => {
     readonly totalCostMicrocents: number;
@@ -757,8 +759,15 @@ export function createSessionStore(db: Db): SessionStore {
       withBusyRetry(() =>
         db.transaction((tx) => {
           const usage = readSessionCoverage(tx, sessionId);
+          const owner = tx
+            .select({ totalCostMicrocents: agentSessions.totalCostMicrocents })
+            .from(agentSessions)
+            .where(eq(agentSessions.id, sessionId))
+            .get();
           return {
-            totalCostMicrocents: loadSession(sessionId, tx)?.totalCostMicrocents ?? 0,
+            totalCostMicrocents: AgentSessionSchema.shape.totalCostMicrocents.parse(
+              owner?.totalCostMicrocents ?? 0,
+            ),
             rows: readCostRows(sessionId, tx),
             coverage: usage?.coverage ?? {
               unverified: true,

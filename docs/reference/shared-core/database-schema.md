@@ -864,6 +864,13 @@ complete-zero coverage and final acknowledgement. It returns an opaque `SessionU
 reloaded owner gains no authority, and no transcript, visible/resumable session, prompt or context
 is introduced. The existing one-shot reservation API retains its numeric compatibility behavior.
 
+`loadSessionCostBreakdown` reads the retained owner's numeric total directly by physical id in
+the same read transaction as per-model money and coverage. Hidden one-shot and soft-deleted
+owners retain their actual known sum; the visibility filter used by `loadSession`, `loadFull`
+and `listSessions` cannot replace it with zero. This accounting-only snapshot grants neither
+transcript discovery nor admission, resume or receipt authority. An absent owner remains
+unverified with no invented money.
+
 Triggers never price, reconcile, change actual/conservative money, or acknowledge. Revision
 exhaustion refuses the entire business statement with the fixed
 `session_usage_revision_exhausted` marker; store boundaries expose `SessionUsageError` with
