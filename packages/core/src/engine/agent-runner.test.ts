@@ -984,8 +984,8 @@ describe('createAgentNodeExecutor — a delegate-backed tool is not OFFERED with
     // seam to supply the delegate through**: `agent-runner.ts`'s `dispatchContext` literal has no
     // `invokeAgent` and no `mediaRead` field at all, so no host can populate one today. That is a sharper
     // statement of `CR-73` than "nothing wires it" — on this path the tool was advertised and *structurally*
-    // guaranteed to fail. `W7` adds the field; this test says what must then become true, and it fails if the
-    // filter is ever "fixed" by blacklisting the two ids forever.
+    // guaranteed to fail. Delegate wiring is a separate tracked follow-up, outside W7's scope. This
+    // predicate control fails if the filter is "fixed" by blacklisting the two ids forever.
     expect(delegateAvailable(INVOKE_AGENT, {})).toBe(false);
     expect(delegateAvailable(INVOKE_AGENT, { invokeAgent: () => Promise.resolve('done') })).toBe(
       true,
