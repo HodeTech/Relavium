@@ -1383,6 +1383,33 @@ export type CapturedAgentTurnOutcome =
       readonly usage: { readonly input: number; readonly output: number };
     };
 
+/** Behavioral ports may use prototype/private state; forwarding preserves presence and receiver. */
+function observeTurnMoney(
+  money: TurnMoneyPort,
+  noteObserverFailure: (error: unknown) => never,
+): TurnMoneyPort {
+  const { beginUsageInvocation, claimUsage, usageDisposition, accountingFailure, emitCost } = money;
+  return {
+    ...(beginUsageInvocation === undefined
+      ? {}
+      : { beginUsageInvocation: beginUsageInvocation.bind(money) }),
+    ...(claimUsage === undefined ? {} : { claimUsage: claimUsage.bind(money) }),
+    ...(usageDisposition === undefined ? {} : { usageDisposition: usageDisposition.bind(money) }),
+    ...(accountingFailure === undefined
+      ? {}
+      : { accountingFailure: accountingFailure.bind(money) }),
+    ...(emitCost === undefined ? {} : { emitCost: emitCost.bind(money) }),
+    join: () => money.join(),
+    record: (draft) => {
+      try {
+        money.record(draft);
+      } catch (error) {
+        noteObserverFailure(error);
+      }
+    },
+  };
+}
+
 /**
  * Capture canonical accounting independently of an exception's type. A trusted callback can throw any
  * value after a provider engaged; replacing that value would break money/pause/host error contracts.
@@ -1447,19 +1474,7 @@ export async function captureAgentTurnOutcome(
         }),
     ...(supplied.money === undefined
       ? {}
-      : {
-          money: {
-            ...supplied.money,
-            join: () => supplied.money?.join() ?? Promise.resolve(),
-            record: (draft) => {
-              try {
-                supplied.money?.record(draft);
-              } catch (error) {
-                noteObserverFailure(error);
-              }
-            },
-          },
-        }),
+      : { money: observeTurnMoney(supplied.money, noteObserverFailure) }),
     emit: (event) => {
       try {
         supplied.emit(event);
@@ -1642,6 +1657,14 @@ async function driveAgentTurn(
     { readonly attemptNumber: number; readonly unknown: boolean }
   >();
   const outstandingAdmissions = new Set<AdmissionSlot>();
+  const reportSecondaryAccountingFailure = (error: unknown): void => {
+    try {
+      params.money?.accountingFailure?.(error);
+    } catch {
+      // An established primary already owns the outcome. A failing health observer cannot
+      // replace it; hosts with the existing money latch retain the secondary accounting fault.
+    }
+  };
   const dischargeAdmission = (
     info: PreAttemptInfo | undefined,
     discharge: (active: BudgetAdmission | undefined) => void,
@@ -1655,16 +1678,29 @@ async function driveAgentTurn(
     delete slot.admission;
     if (!slot.acquiring) outstandingAdmissions.delete(slot);
   };
-  const settleUnreportedAttemptAdmission = (): void => {
+  const settleUnreportedAttemptAdmission = (primaryFailure?: { readonly error: unknown }): void => {
+    let failure: { readonly error: unknown } | undefined;
     for (const slot of outstandingAdmissions) {
       if (slot.acquiring || slot.settle !== undefined) continue;
       // No matching record: a consumer may have failed after egress. Retain the estimate
       // without inventing an attempt number. Pending acquisitions are disposed by their
       // exact eventual non-invoked record, never by another invocation's cleanup.
-      slot.admission?.settleAtReservedEstimate({ nodeId: params.nodeId });
-      slot.settle = (active) => active?.settleAtReservedEstimate({ nodeId: params.nodeId });
-      delete slot.admission;
-      outstandingAdmissions.delete(slot);
+      try {
+        slot.admission?.settleAtReservedEstimate({ nodeId: params.nodeId });
+        slot.settle = (active) => active?.settleAtReservedEstimate({ nodeId: params.nodeId });
+        delete slot.admission;
+        outstandingAdmissions.delete(slot);
+      } catch (error) {
+        // Keep failed slots owed, but one failed callback must not skip independent ready leases.
+        if (failure === undefined) failure = { error };
+        else reportSecondaryAccountingFailure(error);
+      }
+    }
+    if (failure !== undefined) {
+      // The explicit carrier includes undefined/null throws. Without an earlier primary,
+      // this cleanup failure is itself the outcome and must still surface.
+      if (primaryFailure === undefined) throw failure.error;
+      reportSecondaryAccountingFailure(failure.error);
     }
   };
 
@@ -1832,12 +1868,16 @@ async function driveAgentTurn(
         // Settlement rejects an unsafe actual before consuming the lease. Retain E with this recorded
         // attempt number before propagating the fault. The slot stays owned if this action also fails.
         // A lease already settled before another callback fault makes this conservative fallback a no-op.
-        dischargeAttemptAdmission((active) =>
-          active?.settleAtReservedEstimate({
-            nodeId: params.nodeId,
-            attemptNumber: accountingAttempt,
-          }),
-        );
+        try {
+          dischargeAttemptAdmission((active) =>
+            active?.settleAtReservedEstimate({
+              nodeId: params.nodeId,
+              attemptNumber: accountingAttempt,
+            }),
+          );
+        } catch (secondary) {
+          reportSecondaryAccountingFailure(secondary);
+        }
         throw error;
       }
     }
@@ -2012,6 +2052,7 @@ async function driveAgentTurn(
     content: [...m.content],
   }));
 
+  let primaryFailure: { readonly error: unknown } | undefined;
   try {
     // Inline media-out (1.AG/[ADR-0046]): a node requesting a non-text output modality runs a single-shot
     // `generate()` (the chain's existing non-streaming path) — terminal, NO tool loop (a media turn is the
@@ -2171,9 +2212,12 @@ async function driveAgentTurn(
         toolHistory,
       ));
     }
+  } catch (error) {
+    primaryFailure = { error };
+    throw error;
   } finally {
     // An iterator consumer/fold/event sink can throw before FallbackChain emits its record. The provider may
     // already have received work, so close that half-open admission conservatively rather than freeing capacity.
-    settleUnreportedAttemptAdmission();
+    settleUnreportedAttemptAdmission(primaryFailure);
   }
 }

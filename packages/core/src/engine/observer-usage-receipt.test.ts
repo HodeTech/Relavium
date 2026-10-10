@@ -22,7 +22,8 @@ function deferred<T>() {
 }
 
 for (const streaming of [false, true]) {
-  for (const throws of [false, true]) {
+  for (const failureMode of ['none', 'attempt', 'attempt-and-cleanup']) {
+    const throws = failureMode !== 'none';
     for (const [name, evidence] of Object.entries({
       positive: { kind: 'complete', usage: { inputTokens: 3, outputTokens: 2 } },
       zero: { kind: 'complete', usage: { inputTokens: 0, outputTokens: 0 } },
@@ -30,11 +31,13 @@ for (const streaming of [false, true]) {
       missing: { kind: 'missing', reason: 'not_reported' },
       invalid: { kind: 'complete', usage: { inputTokens: -1, outputTokens: 2 } },
     } satisfies Record<string, UsageEvidence>)) {
-      it(`${streaming}/${throws}/${name}: an admission fault cannot strand late accounting authority`, async () => {
+      it(`${streaming}/${failureMode}/${name}: an admission fault cannot strand late accounting authority`, async () => {
         const raw = deferred<LlmResult>();
         const entered = deferred<void>();
         const held: Promise<unknown>[] = [];
         const primary = Object.freeze({ admission: 'opaque primary fault' });
+        const secondary = new Error('secondary conservative cleanup fault');
+        const accountingFailures: unknown[] = [];
         const fold = new UsageCoverageFold();
         fold.start('complete');
         const rows: SettledAttemptDraft[] = [];
@@ -126,7 +129,13 @@ for (const streaming of [false, true]) {
             effectSlot: 0,
           },
           limits: DEFAULT_AGENT_TURN_LIMITS,
-          money: money.turnPort(() => 0),
+          money: {
+            ...money.turnPort(() => 0),
+            accountingFailure: (error) => {
+              accountingFailures.push(error);
+              money.accountingFailure(error);
+            },
+          },
           preEgress: () => ({
             settle: () => {
               actualSettlements++;
@@ -137,6 +146,7 @@ for (const streaming of [false, true]) {
             settleAtReservedEstimate: () => {
               // eslint-disable-next-line @typescript-eslint/only-throw-error -- Supplied admission callbacks may throw opaque non-Error values.
               if (++estimates === 1 && throws) throw primary;
+              if (estimates === 2 && failureMode === 'attempt-and-cleanup') throw secondary;
             },
           }),
         };
@@ -146,8 +156,15 @@ for (const streaming of [false, true]) {
         const outcome = await running;
         if (throws) {
           expect(outcome.kind).toBe('failed');
-          if (outcome.kind === 'failed') expect(outcome.error).toBe(primary);
+          if (outcome.kind === 'failed') {
+            expect.soft(outcome.error).toBe(primary);
+            expect(outcome.failureOrigin).toBe('turn');
+          }
         } else expect(outcome.kind).toBe('failed');
+        expect
+          .soft(accountingFailures)
+          .toEqual(failureMode === 'attempt-and-cleanup' ? [secondary] : []);
+        expect.soft(money.durabilityBroken).toBe(failureMode === 'attempt-and-cleanup');
         const published = JSON.stringify(outcome);
         expect(fold.snapshot().coverage).toEqual({
           unverified: false,
