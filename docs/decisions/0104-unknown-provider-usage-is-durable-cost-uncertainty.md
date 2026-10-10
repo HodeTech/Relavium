@@ -1,6 +1,6 @@
 # ADR-0104: Unknown provider usage is durable cost uncertainty
 
-- **Status**: Proposed — maintainer approval required before dependent implementation
+- **Status**: Accepted — maintainer approved the reviewed revision and W8 execution plan on 2026-10-10; implementation staged in W8
 - **Date**: 2026-10-10
 - **Related**: [ADR-0005](0005-sqlite-drizzle-local-postgres-cloud.md) · [ADR-0011](0011-internal-llm-abstraction.md) · [ADR-0028](0028-workflow-resource-governance.md) · [ADR-0030](0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md) · [ADR-0031](0031-llm-seam-shape-amendment-multimodal-io.md) · [ADR-0049](0049-cli-machine-output-contract.md) · [ADR-0064](0064-live-model-catalog.md) · [ADR-0065](0065-provider-economics-and-extensibility.md) · [ADR-0070](0070-durable-per-model-session-cost-attribution.md) · [ADR-0071](0071-models-dev-as-the-model-metadata-source.md) · [ADR-0074](0074-durable-conservative-budget-commitments.md) · [ADR-0075](0075-fail-closed-resume-on-an-unreadable-event-log.md) · [ADR-0076](0076-durable-per-attempt-realized-cost-ledger.md) · [ADR-0077](0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md) · [ADR-0082](0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) · [ADR-0089](0089-media-correctness-four-boundaries.md) · [ADR-0096](0096-a-request-is-measured-before-it-is-sent.md) · [ADR-0097](0097-a-budget-approval-is-an-allowance-not-an-exemption.md) · [ADR-0099](0099-compaction-has-an-idle-budget-outcome-and-an-unknown-window-policy.md) · [ADR-0100](0100-budget-authorization-is-durable-state-with-a-replay-barrier.md) · [ADR-0103](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md)
 - **Scope**: W8 / CR-82. Refines the usage representation and coverage of reported cost without changing realized-money arithmetic, admission estimates, authorization, or native separate-endpoint media's accepted volume basis.
@@ -35,9 +35,12 @@ request ownership, error provenance, receipt lifetimes and durability barriers.
 
 ## Decision
 
-**We propose one discriminated usage-evidence value, durable coverage bracketing each potentially
+**We adopt one discriminated usage-evidence value, durable coverage bracketing each potentially
 billable token-provider invocation, and qualified totals through every live and persisted reader.**
-This proposal does not authorize dependent code until the maintainer accepts it.
+The maintainer accepted the complete reviewed revision (SHA-256
+`e7aa88cb48c4293476906d946652c828ae66f02b876dd7edd9b9d80581306d50`) and seven-step W8 plan on
+2026-10-10. Dependent implementation is authorized; acceptance of this decision does not claim
+that its runtime protocol or CR-82 is implemented.
 
 ### One evidence value, with a complete-only pricing boundary
 
@@ -327,7 +330,7 @@ unresolved prefixes and registered late receipts; acknowledge their surviving st
 
 Each numbered invariant needs direct regression evidence and its stated causal control. Mock
 parity or assertion quantity is not acceptance. These are implementation obligations, not claims
-that the Proposed contract is already shipped.
+that the accepted contract is already shipped.
 
 1. **Native evidence construction.** Actual offline SDK generate/stream controls cover missing
    whole usage, empty/partial counters, complete zero, each dialect's gross/cache rule above,

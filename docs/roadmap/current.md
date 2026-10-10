@@ -68,13 +68,13 @@ closes all twelve steps and CR-71/72/94/96/97/98 on `main`. At reviewed head `69
 five-job GitHub CI runs and SonarCloud passed; all four supplemental Sonar labels closed.
 This evidence belongs to the reviewed head, not to a future W8 change.
 
-**W8 — Provider and conformance is in preflight; runtime implementation has not started.**
-The [proposed seven-step plan](phases/phase-2.6.5-core-reliability-remediation.md#w8-preflight-and-proposed-execution-plan--2026-10-10)
-and [Proposed ADR-0104](../decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md)
-await maintainer approval before implementation. The submitted ADR review is dispositioned;
-two fresh complete cumulative rounds returned zero actionable findings at `292ccccd`.
+**W8 — Provider and conformance: plan approved; Step 1 implementation is in progress.**
+The [seven-step plan](phases/phase-2.6.5-core-reliability-remediation.md#w8-preflight-and-proposed-execution-plan--2026-10-10)
+and [Accepted ADR-0104](../decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md)
+were approved by the maintainer on 2026-10-10. The submitted ADR review is dispositioned;
+two fresh complete cumulative rounds returned zero actionable findings at `292ccccd` before approval.
 Detailed review records are now local and Git-ignored; acceptance remains in the linked plan.
-Begin with the existing W3 blocker, then the two remaining provider items:
+Step 1 addresses the existing W3 blocker, followed by the two remaining provider items:
 
 1. **ADR-0087 §1:** declare primary-stream consumption for run and session handles; an
    un-pulled stream must preserve its terminal, and a subscribe-only handle must buffer nothing.

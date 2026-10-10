@@ -2550,7 +2550,8 @@ closes against exit criteria 2 and 4 and `W8`'s closing register rather than aga
 
 ### W8 preflight and proposed execution plan — 2026-10-10
 
-**Status: documentation/code preflight; no W8 runtime implementation is accepted or started.**
+**Status: preflight complete, plan and ADR-0104 approved on 2026-10-10; Step 1 implementation in progress.**
+No W8 runtime step is accepted yet.
 The maintainer requests implementation on `development`, an implementation commit followed by
 two fresh independent cumulative review rounds per step, confirmed fixes committed between
 rounds, and approval of any new decision before dependent work. W7 and PR #91 are merged;
@@ -2659,7 +2660,7 @@ performs final review. The phase remains 47/51 until its actual item acceptance 
 
 #### Maintainer ADR review disposition — 2026-10-10
 
-ADR-0104 remains **Proposed**. The submitted findings were checked against the accepted ADRs,
+At this review checkpoint ADR-0104 remained **Proposed**. The submitted findings were checked against the accepted ADRs,
 actual provider mappings, pricing/store code and official provider usage documentation. The
 following corrections refine the decision for approval; no W8 runtime implementation has started.
 
@@ -2697,7 +2698,13 @@ for all **181** retired local files, zero tracked review files and URI-only repa
 Accepted ADRs. Independent remote checks confirm the archive commit is published; whitespace
 checks pass. Detailed round records remain local and ignored. The follow-up register records
 these results only; ADR-0104 remains Proposed and W8/CR-81/CR-82 remain open pending maintainer
-approval and implementation.
+approval and implementation at that checkpoint.
+
+**Maintainer approval checkpoint — 2026-10-10:** the maintainer approved the complete revised
+ADR-0104 and seven-step execution plan after both new cumulative review rounds. ADR-0104 and its
+index are now Accepted; implementation is authorized on `development`, with two fresh independent
+review rounds per implementation step. Step 1 starts with ADR-0087 §1. Approval closes the decision
+gate only; CR-81/CR-82, the stream blocker and all implementation acceptance gates remain open.
 
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High
 A recorded response carries status, content type and body only; replay checks that the request body is parseable
