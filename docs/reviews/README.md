@@ -11,6 +11,9 @@ added.
 
 ## Records
 
+- [2026-10-10 — W7 post-closure systematic intake](2026-10-10T11-30-00-w7-post-closure-intake-review.md):
+  new report triaged; confirmed corrections require two fresh reviews per increment.
+
 - [2026-10-10 — W7 final Step 12, round 2](2026-10-10T02-46-19-w7-step-12-round-2-review.md):
   second complete independent cross-surface round; all twelve steps accepted on development, PR draft.
 

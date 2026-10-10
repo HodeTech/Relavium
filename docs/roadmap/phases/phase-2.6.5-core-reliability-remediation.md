@@ -4836,3 +4836,12 @@ checks are verified separately in PR #90.
 The phase is 47/51; CR-70/81/82/93 and W8 remain open. No new W7 deferral is introduced. All five genuine
 provider records are complete, with no further paid operation required. PR #90 remains draft/unmerged
 for maintainer review; no implementation, user decision, credential, billing or capture is pending for W7.
+
+### Post-closure systematic review — 2026-10-10
+
+A new maintainer report at `b7fe32d8` reopens bounded compaction, scheduler, media-cleanup,
+checkpoint-notice and replay-inventory corrections. The [intake dispositions and three-increment plan](../../reviews/2026-10-10T11-30-00-w7-post-closure-intake-review.md)
+distinguish confirmed defects from intentional security/compatibility guarantees. Previous
+acceptances remain dated evidence; current closure requires the new corrections, two NEW independent
+review rounds per increment and new source gates. No capture, billing, key or maintainer decision is
+pending for these existing-contract fixes. PR #90 remains draft and unmerged.
