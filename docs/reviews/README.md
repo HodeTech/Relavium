@@ -11,6 +11,22 @@ added.
 
 ## Records
 
+- [2026-10-10 — W8 preflight and proposal, round 4](2026-10-10T15-23-18-w8-preflight-proposal-round-4-review.md):
+  both fresh complete reviewers return zero findings; proposal ready for maintainer approval,
+  ADR remains Proposed and W8 implementation remains open.
+
+- [2026-10-10 — W8 preflight and proposal, round 3](2026-10-10T15-19-45-w8-preflight-proposal-round-3-review.md):
+  gate-first run downgrade gap corrected with proposed owner coverage basis; fresh cumulative
+  review and maintainer approval required, no runtime acceptance.
+
+- [2026-10-10 — W8 preflight and proposal, round 2](2026-10-10T15-11-58-w8-preflight-proposal-round-2-review.md):
+  pre-settlement crash coverage gap corrected with proposed pending durability; fresh cumulative
+  review and maintainer approval required, no runtime acceptance.
+
+- [2026-10-10 — W8 preflight and proposal, round 1](2026-10-10T15-06-52-w8-preflight-proposal-round-1-review.md):
+  one confirmed predecessor-session coverage High corrected in the proposal; fresh cumulative
+  review and maintainer approval required, no W8 implementation acceptance.
+
 - [2026-10-10 — W7 publication quality gate, round 2](2026-10-10T13-35-14-w7-publication-sonar-round-2-review.md): second NEW clean complete cumulative round accepts the publication correction; exact published-head gates remain required.
 
 - [2026-10-10 — W7 publication quality gate, round 1](2026-10-10T13-29-08-w7-publication-sonar-round-1-review.md): first NEW clean complete cumulative round; another NEW round and published-head gates remain required.

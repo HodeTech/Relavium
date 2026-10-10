@@ -254,3 +254,18 @@ caller narrow on the fault class and an admission ceiling is a genuinely new cla
   its own ceilings: the alternative is an engine with no defined behaviour at the extremes.
 - **Retention is one more number that will eventually be wrong.** Accepted rather than pretended otherwise;
   it is a named constant and moving it upward is not a breaking change.
+
+## W8 preflight correction — 2026-10-10
+
+Correction 2's statement that parked waiters reserve correctly is also false. The current
+`#wakeDrainWaiters` subtracts buffered events but tracks no outstanding grants. At capacity 2,
+with six parked producers, two immediate buffered pulls before producer continuations can
+wake three producers and reach depth 3. The previously measured fast-path depth 11 at capacity
+4 with eight producers remains reproducible. Both schedules belong to the same recorded
+exact-capacity residual; neither is repaired by accepting §1's consumption mode.
+
+The [W8 proposed plan](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w8-preflight-and-proposed-execution-plan--2026-10-10)
+separates §1's no-drop/no-primary-buffer obligation from that existing residual and specifies
+mode/default plumbing and its interaction with ADR-0103's primary-delivery authority for
+maintainer review. No implementation or new producer-await decision is claimed here. The
+accepted body and all nine corrections remain historical records.

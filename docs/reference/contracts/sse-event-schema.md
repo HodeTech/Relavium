@@ -300,7 +300,9 @@ before another store entry or head change, preserving the original terminal-outb
 Required money failure remains distinct from terminal durability. The ordered acknowledgement
 rules live in [execution-model.md](../../architecture/execution-model.md#per-append-acknowledgement-and-late-incurred-receipts),
 and retained receipt lifetime in [shared-core-engine.md](../../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103).
-These scoped rules do not yet expose a public host-safe departure result or change the event union.
+Public host-safe departure is implemented separately under the
+[engine lifecycle contract](../../architecture/shared-core-engine.md#internal-departure-foundations-adr-0103).
+These receipt rules do not change the event union.
 
 ## Human-gate suspend/resume across the stream
 

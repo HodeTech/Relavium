@@ -147,6 +147,7 @@ flowchart TD
 | 0101 | [Configured output estimates apply only when the wire is uncapped](0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md) | Accepted | 2026-10-02 |
 | 0102 | [A measured request owns its inert data through egress](0102-a-measured-request-owns-its-inert-data-through-egress.md) | Accepted | 2026-10-04 |
 | 0103 | [A paused run hands off its local producers before its host closes](0103-a-paused-run-hands-off-its-local-producers-before-its-host-closes.md) | Accepted | 2026-10-07 |
+| 0104 | [Unknown provider usage is durable cost uncertainty](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) | Proposed | 2026-10-10 |
 
 ## Creating a new ADR
 

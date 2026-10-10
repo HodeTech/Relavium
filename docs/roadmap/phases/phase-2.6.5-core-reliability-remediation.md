@@ -2489,8 +2489,8 @@ stand.
 
 ## W8 — Provider and conformance
 
-**Next wave after W7's merge; not yet started (2026-10-10).** ADR-0087 §1, CR-81 and CR-82
-remain open. CR-80 below was already closed before W7. Current execution order is in
+**Preflight in progress (2026-10-10); implementation awaits the proposed decision and plan approval.**
+ADR-0087 §1, CR-81 and CR-82 remain open. CR-80 below was already closed before W7. Current execution order is in
 [current.md](../current.md#next-work--phase-265-w8).
 
 ### CR-80 — An invalid custom base URL fails OPEN to the official endpoint · High (security/compliance) · ✅ **closed 2026-09-06**
@@ -2545,8 +2545,112 @@ been open with no owner. It lands here, in both halves: `createSessionHandle` ca
 rather than `W7` so that `W7`'s PR stays about its own four ADRs; the phase cannot close until it ships.
 **Fix + acceptance.** ADR-0087 §1, and the residual's own test: an un-pulled stream still delivers its terminal
 event, and a `subscribe-only` handle buffers nothing while every subscriber still sees every event. It carries no
-`CR` number and sits outside the 41-of-51 count deliberately: it is an accepted ADR's unimplemented section, and it
+`CR` number and sits outside the 51-item denominator deliberately: it is an accepted ADR's unimplemented section, and it
 closes against exit criteria 2 and 4 and `W8`'s closing register rather than against a register row.
+
+### W8 preflight and proposed execution plan — 2026-10-10
+
+**Status: documentation/code preflight; no W8 runtime implementation is accepted or started.**
+The maintainer requests implementation on `development`, an implementation commit followed by
+two fresh independent cumulative review rounds per step, confirmed fixes committed between
+rounds, and approval of any new decision before dependent work. W7 and PR #91 are merged;
+the W8 baseline is `f267bb0d`. CR-80 is already closed and is a regression constraint.
+
+#### Preflight findings and document actions
+
+Three independent reviews cover streams/lifecycle, provider wire conformance and usage/money.
+The relevant sources are ADR-0011/0024/0028/0030/0031/0036/0039/0043/0045/0049/0065/0070–0079/
+0082/0085/0087/0089/0090/0096/0100–0103, their canonical engine/seam/event/session/store/CLI
+contracts, the W3 residuals, actual conformance fixtures and the binding code/error/testing/
+documentation/commit/security standards. Findings are checked against current source rather
+than inferred from old line numbers or W7's acceptance.
+
+- The never-pulled queue still declines a terminal after capacity; W7's sticky gap observation
+  detects but does not repair it. ADR-0087 §1 supplies the accepted consumption-mode decision.
+- The separate capacity residual affects both un-parked and parked waiters. A dated factual
+  correction is appended to ADR-0087 and the residual's current description is corrected.
+- Workflow checkpoint admission can emit before returning its handle. Mode plumbing must cover
+  those paths and preserve startup liveness; do not insert an unapproved emission permit.
+- W7 departure requires actual primary consumption. A subscribe-only run cannot manufacture
+  an empty consumed cursor to obtain paused detachment.
+- Replay currently ignores method, origin/path/query, protocol headers and JSON values.
+  Gemini's shared conformance suite bypasses actual SDK HTTP. Existing SDK wire tests are
+  parity/ownership evidence, not a static canonical request oracle.
+- Missing/partial usage can become schema-valid zero, and locally observed usage can disappear
+  on error/truncation. Budgetless owners and cost readers have no durable usage-completeness
+  account. [Proposed ADR-0104](../../decisions/0104-unknown-provider-usage-is-durable-cost-uncertainty.md)
+  records the required seam, durable uncertainty, migration, replay and display decision.
+- The testing standard now qualifies actual response-seed/live-smoke coverage; the LLM package
+  README no longer calls shipped adapters future work. The event contract no longer calls the
+  shipped public departure result unimplemented. Canonical future schemas are not pre-landed
+  while ADR-0104 remains Proposed.
+
+#### Decisions to review before implementation
+
+1. **ADR-0087 §1 API/default:** an immutable per-execution `eventConsumption` choice with
+   `iterated` as the compatibility default on workflow start/checkpoint resume and standalone
+   session construction. Preserve existing positional factory arguments. Every shipping caller
+   explicitly selects its actual mode: workflow drivers iterate; CLI fresh/resumed/reseated
+   sessions select `subscribe-only`, attaching subscribers before production.
+2. **No-primary behaviour:** a subscribe-only handle owns no primary event buffer, reports zero
+   depth and immediate readiness. Attempted iteration rejects with a fixed typed
+   `RunLoopInvariantError`, including after closure; it never masquerades as clean EOF.
+   Preserve terminal metadata capture independently. Paused run departure without a primary
+   refuses `invalid_departure`; actual terminal/fenced `closed` host joining remains available.
+   No passive callback gains W7 primary acknowledgement authority.
+3. **CR-82 compatibility:** approve ADR-0104's single complete/partial/missing evidence value,
+   complete-only pricing, durable owner-basis/pending/disposition discriminators, additive coverage migration,
+   legacy-unverified history and qualified human/JSON totals. DB-maintained mutation revisions
+   prevent old session writes from leaving complete coverage behind; active execution by an
+   older binary cannot enforce this new contract and is unsupported. A coverage-only marker is
+   durably acknowledged before each eligible provider invocation, including without a cap;
+   an interrupted call stays uncertain without inventing money or recovered allowance. This
+   adds a durability write per eligible call. A once-per-run coverage basis also protects an
+   ordinary-gate pause before the first provider call from predecessor resume. No runtime
+   dependency or paid provider call is proposed.
+4. **Existing scope limit:** §1 repairs lossless iterated delivery and absence of a subscribe-only
+   primary buffer. It does not close ADR-0087 Correction 2's already approved exact-capacity
+   residual. That residual remains explicitly recorded; this plan creates no new deferral.
+   Replacing producer readiness with exact asynchronous emit admission would need a separate
+   ADR covering synchronous lifecycle/cancellation, pre-handle resume, ordered durability,
+   bounded terminal publication and receipt/departure liveness. It is not silently included.
+
+#### Implementation steps
+
+| Step | Deliverable and principal files | Acceptance beyond the ordinary gates |
+| --- | --- | --- |
+| 1 | Consumption modes end to end: core queue/handles/engine inputs, CLI session constructors and canonical consumption/lifecycle guidance | Later iterated consumers receive every owed event and terminal; readiness applies before first pull; subscribe-only buffers nothing; typed misuse/no-primary departure refusals; capacity-1 start/resume, all gate/media/terminal branches and W7 cursor/receipt controls |
+| 2 | Internal strict expected-exchange replay and recorder safeguards in `packages/llm/src/conformance`, with its harness README | String/URL/Request inputs, effective Fetch precedence, exact method/origin/path/query, documented protocol-header projection, structural JSON equality, no-body distinction, sequence under/over-consumption and credential-safe diagnostics; exclude authentication headers and credential URL fields from stored projections, with planted-secret rejection controls; existing response-only overflow artifacts unchanged |
+| 3 | Canonical wire scenario matrix for Anthropic/OpenAI/DeepSeek/Gemini using actual installed SDK HTTP | Static expectations independent of production lowering; populated system/structured-output/tool-continuation/signature cases for generate/stream; at least three separately applied actual lowering mutations fail, exact restoration passes; no live call |
+| 4 | ADR-0104 foundations: evidence schemas/owned guards and additive DB coverage migration, with canonical seam/event/database definitions | Complete-only arithmetic remains strict; partial observations retain absence and real zero; migration preserves amounts and records legacy uncertainty; DB mutation revisions/transactional acknowledgements detect old session writes without clearing prior taint; new types/storage alone do not claim CR-82 integration or closure |
+| 5 | Complete-path contract migration through adapters/chain/core, stores, session persister/resume and all CLI total readers | All in-tree consumers use one evidence contract; existing complete usage, native-media volume basis, zero-price controls and money invariants remain sound; no dual writable usage/status authority |
+| 6 | Missing/partial/interrupted evidence and durable uncertainty activated across the same vertical path | Cap/no-cap accounting, acknowledged pre-egress pending coverage and once-per-run basis, all money barriers, known observations before failure, actual process death during invocation and crash/reopen/reseat/compaction, legacy coverage, actual new/old/new session writes and gate-first run resume, estimate release, all three new-event predecessor refusals, every live/history/JSON total; causal removal of each unknown-usage protection must fail |
+| 7 | Whole-W8 verification, canonical landing checklist, closing register and PR | Full local CI/build/coverage/offline smokes, strict replay and isolation, current published checks, two whole-wave reviews; close only accepted obligations, reconcile every phase exit criterion and preserve approved deferrals |
+
+Steps 4–6 stage an intentional cross-package compatibility change. Step 4 adds validated
+foundations without enabling a partial production protocol; Step 5 migrates complete paths;
+Step 6 closes the existing incomplete-usage defect. Each commit must compile and pass its
+required checks. Splitting the inseparable financial activation into adapter-only acceptance
+would leave persisted/UI totals false, so its end-to-end scope stays together. CR-82 remains
+open throughout staging. If a subdivision cannot remain green and honest, keep that change
+atomic and report the concrete reason rather than accepting a broken intermediate state.
+
+#### Review and completion discipline
+
+Each step is implemented and committed after standards, lint/typecheck/test/build and relevant
+regressions pass. Use new read-only reviewers for each round: frontier/high-effort lifecycle
+and financial review, plus an independent high-effort integration/adversarial review; bounded
+fixture/tooling work can use the workhorse model at high effort. Review the full cumulative
+step, its contracts and failure schedules, not just the last correction. Verify every finding
+before fixing; commit confirmed fixes and obtain a second fresh complete round. Material new
+findings require another fresh round after correction; a time limit is not acceptance.
+
+Keep evidence outside collected source trees; commit permanent regressions and concise review
+records with exact base/head, command results, mutation/restoration and scope limits. Do not
+regenerate genuine provider records, modify immutable predecessor bytes, claim cache replay as
+a fresh test execution, or claim remote CI at a different head. No API-key, billing or live-capture
+input is needed. At completion publish the reviewable W8 PR without merging it; the maintainer
+performs final review. The phase remains 47/51 until its actual item acceptance is recorded.
 
 ### CR-81 — Conformance cassettes do not verify the request wire contract · High
 A recorded response carries status, content type and body only; replay checks that the request body is parseable

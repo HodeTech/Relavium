@@ -114,6 +114,17 @@ It runs in two modes:
   logged). A nightly failure is the early-warning signal that a provider changed its
   contract under us. New model ids and pricing-table entries are validated here.
 
+**Implementation qualification — 2026-10-10:** the preceding request/response and same-suite
+descriptions are the intended discipline, not the current harness's complete coverage.
+The ordinary offline fixtures are hand-authored response seeds; replay currently validates
+JSON syntax without matching a canonical request, and Gemini's shared suite bypasses SDK HTTP
+through a transport double. Live cases are separate smoke/effort probes, not execution of
+the complete offline scenario matrix or an automatic fixture recorder. W8 / CR-81 closes
+the offline request-contract gap with independent static request expectations, actual SDK
+HTTP and causal lowering mutations. Genuine captured W7 overflow artifacts retain their
+distinct immutable provenance. This qualification authorizes no live calls and does not
+turn a synthetic seed into a captured provider response.
+
 ## End-to-end tests — Playwright
 
 The desktop app (`apps/desktop`, Tauri v2) has Playwright e2e coverage for the critical

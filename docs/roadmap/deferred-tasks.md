@@ -843,9 +843,12 @@ severity, the trigger and the product claim each narrows, per exit criterion 2.
   and `tool_call_*`, `reasoning_start/end`, `stop`, `media_*` and `tool_result` emit nothing, so every such
   chunk leaks a permit. The correct shape moves the await to the emit site, which revises CR-30's producer-await
   and therefore wants an ADR. **ADR-0087 is Accepted with this explicitly OUT of scope** (its Correction 2), so
-  its §1 "bounded per consumer" must not be read as a guarantee that holds today — the un-parked fast path of
-  `whenDrained()` grants a slot it does not reserve, while `#wakeDrainWaiters` reserves correctly for producers
-  already parked. *(packages/core/src/engine/event-stream.ts)*
+  its §1 "bounded per consumer" must not be read as a guarantee that holds today. **Corrected 2026-10-10:**
+  neither the un-parked fast path nor `#wakeDrainWaiters` reserves outstanding grants. At capacity 2,
+  six parked producers and two immediate pulls before their continuations can wake three producers
+  and reach depth 3. This is a second schedule of the same residual, not a new deferral; the dated
+  [ADR correction](../decisions/0087-consumed-streams-size-bounds-and-run-retention.md#w8-preflight-correction--2026-10-10)
+  preserves the original claim and its correction. *(packages/core/src/engine/event-stream.ts)*
 
 - [ ] **Dispatch headroom is computed but not reserved.** *Medium.* Retry timers can dispatch from the same
   headroom during a batch's durable `node:started` awaits, so a pre-selected batch still starts.
